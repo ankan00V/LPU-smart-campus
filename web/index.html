@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>LPU Smart Campus Command Deck</title>
+    <link rel="stylesheet" href="/web/styles.css?v=20260223j">
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <script src="/web/app.js?v=20260223j" defer></script>
+</head>
+<body>
+    <div class="scene" id="scene">
+        <div class="parallax-layer nebula layer-a" data-depth="22"></div>
+        <div class="parallax-layer nebula layer-b" data-depth="14"></div>
+        <div class="parallax-layer grid-field"></div>
+        <div class="parallax-layer orb orb-one"></div>
+        <div class="parallax-layer orb orb-two"></div>
+    </div>
+
+    <section id="auth-overlay" class="auth-overlay">
+        <div class="auth-card glass tilt" data-tilt>
+            <div class="auth-shell">
+                <aside class="auth-brand-panel">
+                </aside>
+
+                <div class="auth-form-panel">
+                    <p class="kicker">SECURE ACCESS</p>
+                    <h2>Welcome to LPU Smart Campus</h2>
+                    <p class="auth-sub">Signup once, then login quickly with email, password, and OTP.</p>
+
+            <div class="auth-mode-switch" role="tablist" aria-label="Authentication Mode">
+                <button id="auth-mode-login-btn" class="btn auth-mode-btn active" type="button" role="tab" aria-selected="true">Login</button>
+                <button id="auth-mode-signup-btn" class="btn auth-mode-btn" type="button" role="tab" aria-selected="false">Signup</button>
+            </div>
+
+            <section id="auth-login-section" class="auth-flow-section auth-login-section">
+                <div class="auth-section-head">
+                    <h3>1. Login</h3>
+                    <p>Enter your account credentials first.</p>
+                </div>
+                <label class="field">
+                    <span>Email</span>
+                    <input id="auth-email" type="email" placeholder="you@gmail.com" autocomplete="username">
+                </label>
+                <label class="field">
+                    <span>Password</span>
+                    <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password">
+                </label>
+                <p id="auth-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
+            </section>
+
+            <div id="auth-login-controls" class="auth-login-controls auth-flow-section auth-otp-section">
+                <div class="auth-section-head">
+                    <h3>2. Send OTP</h3>
+                    <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
+                </div>
+                <div class="auth-actions auth-actions-emphasis">
+                    <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
+                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Login</button>
+                </div>
+                <label id="auth-send-alt-wrap" class="checkbox-wrap">
+                    <input id="auth-send-alt-otp" type="checkbox">
+                    <span>Send OTP to alternate Gmail (if configured)</span>
+                </label>
+                <label id="auth-otp-wrap" class="field">
+                    <span>OTP Code</span>
+                    <input id="auth-otp" type="text" inputmode="numeric" placeholder="6-digit OTP" maxlength="6">
+                </label>
+            </div>
+
+            <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
+                <div class="auth-section-head">
+                    <h3>3. Signup</h3>
+                    <p>Create your account once, then use Login + OTP.</p>
+                </div>
+                <label class="field">
+                    <span>Email</span>
+                    <input id="auth-signup-email" type="email" placeholder="you@gmail.com" autocomplete="email">
+                </label>
+                <label class="field">
+                    <span>Password</span>
+                    <input id="auth-signup-password" type="password" placeholder="Create password" autocomplete="new-password">
+                </label>
+                <p id="auth-signup-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
+                <label id="auth-role-wrap" class="field">
+                    <span>Role</span>
+                    <select id="auth-role-select">
+                        <option value="faculty">faculty (@gmail.com)</option>
+                        <option value="student">student (@gmail.com)</option>
+                        <option value="owner">shop owner (@gmail.com)</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Full Name</span>
+                    <input id="auth-name" type="text" placeholder="Your full name">
+                </label>
+                <label class="field">
+                    <span>Department</span>
+                    <input id="auth-department" type="text" placeholder="CSE">
+                </label>
+                <label id="auth-semester-wrap" class="field">
+                    <span>Semester (student only)</span>
+                    <input id="auth-semester" type="number" min="1" max="12" placeholder="1-12">
+                </label>
+                <label id="auth-parent-email-wrap" class="field">
+                    <span>Parent Email (optional)</span>
+                    <input id="auth-parent-email" type="email" placeholder="parent@example.com">
+                </label>
+            </div>
+
+            <div id="auth-signup-actions" class="auth-actions auth-signup-actions hidden">
+                <button id="register-btn" class="btn btn-ghost" type="button">Register Account</button>
+            </div>
+
+                    <p id="auth-message" class="auth-message" aria-live="polite">Enter email/password, request OTP, then verify to login.</p>
+                    <p id="otp-debug" class="otp-debug hidden"></p>
+                    <p class="auth-hint">No predefined users. Signup once, then use Login mode for OTP access.</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="otp-popup" class="otp-popup hidden" role="alertdialog" aria-live="polite" aria-modal="true">
+            <div class="otp-popup-card glass">
+                <div id="otp-popup-loader" class="otp-popup-loader hidden" aria-hidden="true"></div>
+                <h4 id="otp-popup-title">OTP Sent</h4>
+                <p id="otp-popup-text">OTP has been sent.</p>
+                <button id="otp-popup-close-btn" class="btn btn-primary" type="button">OK</button>
+            </div>
+        </div>
+
+        <div id="forgot-password-panel" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="forgot-modal-title">
+            <div class="auth-modal-card glass">
+                <div class="auth-modal-head">
+                    <h3 id="forgot-modal-title">Reset Password via OTP</h3>
+                    <button id="forgot-modal-close-btn" class="btn btn-ghost" type="button">Close</button>
+                </div>
+                <p class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
+                <label class="field">
+                    <span>Email</span>
+                    <input id="forgot-email" type="email" placeholder="you@gmail.com" autocomplete="email">
+                </label>
+                <label class="field">
+                    <span>Registration Number</span>
+                    <input id="forgot-registration-number" type="text" placeholder="e.g. R9P132A48">
+                </label>
+                <div class="auth-actions">
+                    <button id="forgot-request-otp-btn" class="btn btn-secondary" type="button">Request Reset OTP</button>
+                    <button id="forgot-verify-otp-btn" class="btn" type="button">Verify Reset OTP</button>
+                </div>
+                <label class="field">
+                    <span>OTP Code</span>
+                    <input id="forgot-otp" type="text" inputmode="numeric" placeholder="6-digit OTP" maxlength="6">
+                </label>
+                <label class="field">
+                    <span>New Password</span>
+                    <input id="forgot-new-password" type="password" placeholder="Set a new password" autocomplete="new-password">
+                </label>
+                <p id="forgot-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
+                <label class="field">
+                    <span>Confirm New Password</span>
+                    <input id="forgot-confirm-password" type="password" placeholder="Re-enter new password" autocomplete="new-password">
+                </label>
+                <div class="auth-actions">
+                    <button id="forgot-reset-btn" class="btn btn-primary" type="button">Set New Password</button>
+                    <button id="forgot-cancel-btn" class="btn" type="button">Back to Login</button>
+                </div>
+                <p id="forgot-message" class="auth-message" aria-live="polite"></p>
+            </div>
+        </div>
+    </section>
+
+    <aside class="ums-sidebar" aria-label="Section Navigation">
+        <div class="ums-logo">
+            <div class="ums-logo-mark-frame">
+                <img
+                    class="ums-logo-mark"
+                    src="/assets/static/lpu-smart-campus-logo"
+                    alt="LPU Smart Campus logo"
+                    loading="eager"
+                    decoding="async"
+                >
+            </div>
+            <span>LPU SMART</span>
+        </div>
+        <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">Dashboard</button>
+        <button id="nav-courses-btn" class="ums-side-item" data-nav="courses" type="button">My Courses</button>
+        <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">Attendance</button>
+    </aside>
+
+    <main class="dashboard" id="dashboard-root">
+        <header id="main-dashboard-header" class="topbar glass nav-anchor">
+            <div class="ums-top-left">
+                <p class="kicker">UNIVERSITY MANAGEMENT SYSTEM</p>
+                <h1 id="dashboard-title">Vertos Dashboard</h1>
+                <p id="dashboard-subtitle" class="subline">Your all in one Uni-need.</p>
+                <p id="live-datetime" class="live-datetime" aria-live="polite">Loading local time...</p>
+            </div>
+            <nav class="ums-top-nav" aria-label="Primary Modules">
+                <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">Attendance</button>
+                <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">Food Hall</button>
+                <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">Administrative</button>
+                <button id="top-nav-remedial" class="ums-module-btn" data-module="remedial" type="button">Remedial</button>
+            </nav>
+            <div class="topbar-actions">
+                <button id="theme-toggle-btn" class="btn btn-ghost theme-toggle-btn" type="button" aria-label="Toggle light and dark mode">
+                    Dark Mode
+                </button>
+                <div class="account-menu">
+                    <button id="account-menu-btn" class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                        <img id="account-menu-avatar" class="account-avatar hidden" alt="Profile">
+                        <span id="account-menu-initial" class="account-initial">G</span>
+                    </button>
+                    <div id="account-menu-dropdown" class="account-dropdown hidden" role="menu">
+                        <div class="account-dropdown-head">
+                            <img id="account-dropdown-photo" class="account-avatar" alt="Profile">
+                            <div class="account-lines">
+                                <strong id="account-dropdown-email">guest@example.com</strong>
+                                <small id="account-dropdown-reg">Reg No: Not set</small>
+                            </div>
+                        </div>
+                        <button id="view-profile-btn" class="dropdown-item" type="button" role="menuitem">View Profile</button>
+                        <button id="logout-btn" class="dropdown-item hidden" type="button" role="menuitem">Logout</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <section id="executive-section" class="role-section module-panel hidden" data-module="administrative">
+            <section class="control-grid glass tilt" data-tilt>
+                <button id="refresh-btn" class="btn">Refresh Telemetry</button>
+
+                <label class="field">
+                    <span>Working Date</span>
+                    <input id="work-date" type="date">
+                </label>
+
+                <label class="field">
+                    <span>Course ID</span>
+                    <input id="course-id" type="number" min="1" value="1">
+                </label>
+            </section>
+
+            <section class="metric-grid">
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Blocks</h2>
+                    <p id="metric-blocks" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Classrooms</h2>
+                    <p id="metric-classrooms" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Courses</h2>
+                    <p id="metric-courses" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Faculty</h2>
+                    <p id="metric-faculty" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Students</h2>
+                    <p id="metric-students" class="metric-value">0</p>
+                </article>
+            </section>
+
+            <section class="viz-grid">
+                <article class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Attendance Pulse</h3>
+                        <small>Live day snapshot</small>
+                    </div>
+
+                    <div class="donut-wrap">
+                        <div id="attendance-donut" class="donut" aria-label="Attendance utilization chart">
+                            <div class="donut-core">
+                                <span id="attendance-rate">0%</span>
+                                <small>Presence</small>
+                            </div>
+                        </div>
+                        <div class="legend">
+                            <div class="legend-row">
+                                <span class="dot good"></span>
+                                <span>Present</span>
+                                <strong id="present-count">0</strong>
+                            </div>
+                            <div class="legend-row">
+                                <span class="dot warn"></span>
+                                <span>Absent</span>
+                                <strong id="absent-count">0</strong>
+                            </div>
+                            <div class="legend-row">
+                                <span class="dot neutral"></span>
+                                <span>Enrolled</span>
+                                <strong id="enrolled-count">0</strong>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Canteen Demand Spectrum</h3>
+                        <small>Module 2 load curve</small>
+                    </div>
+                    <div id="demand-chart" class="bar-chart" aria-label="Food slot demand chart"></div>
+                </article>
+
+                <article id="capacity-card" class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Capacity Utilization</h3>
+                        <small>Module 3 efficiency bars • <span id="mongo-sync-status">Mongo: --</span></small>
+                    </div>
+                    <div id="capacity-chart" class="hbar-chart" aria-label="Capacity utilization chart"></div>
+                </article>
+
+                <article id="workload-card" class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Faculty Workload Distribution</h3>
+                        <small>Assigned courses + student load</small>
+                    </div>
+                    <div id="workload-chart" class="list-wrap" aria-label="Faculty workload distribution"></div>
+                </article>
+            </section>
+
+            <section class="ops-grid">
+                <article id="absentee-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Absentee Watchlist</h3>
+                        <small>Module 1</small>
+                    </div>
+                    <div id="absentees-wrap" class="list-wrap"></div>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>LPU AI Strategy Layer</h3>
+                        <small>Gemini 3 Flash via Puter.js</small>
+                    </div>
+                    <div class="ai-actions">
+                        <button id="ai-absent-btn" class="btn">Draft Parent Notice</button>
+                        <button id="ai-rush-btn" class="btn">Generate Rush Plan</button>
+                        <button id="ai-remedial-btn" class="btn">Build Remedial Strategy</button>
+                    </div>
+                    <div id="ai-output" class="ai-output">AI output will appear here.</div>
+                </article>
+            </section>
+        </section>
+
+        <section id="student-section" class="role-section hidden module-panel" data-module="attendance" data-module-role="student">
+            <article id="student-courses-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Weekly Timetable</h3>
+                    <small>Weekly class view</small>
+                </div>
+                <div class="inline-controls">
+                    <label class="field">
+                        <input id="week-start-date" type="date" aria-label="Timetable view date">
+                    </label>
+                    <button id="prev-week-btn" class="btn" type="button">Prev Week</button>
+                    <button id="go-current-week-btn" class="btn">Go To Today</button>
+                    <button id="next-week-btn" class="btn" type="button">Next Week</button>
+                </div>
+                <p id="timetable-view-info" class="helper-text">Week --</p>
+                <div id="timetable-grid" class="timetable-grid"></div>
+            </article>
+
+            <article id="student-attendance-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Attendance Management</h3>
+                    <small id="attendance-kpi-subtitle">Live class state (auto-updates). Window opens for first 10 minutes only.</small>
+                </div>
+                <p id="selected-class-label" class="helper-text">Upcoming Class | --:-- -- - --:-- -- | --</p>
+                <div class="inline-controls">
+                    <button id="take-selfie-btn" class="btn btn-primary" disabled>Open Camera & Mark Attendance</button>
+                </div>
+                <div class="inline-controls attendance-trial-controls">
+                    <button id="trial-mark-btn" class="btn btn-secondary" type="button" disabled>Trial Mark Attendance</button>
+                    <button id="trial-reset-btn" class="btn btn-ghost" type="button" disabled>Reset Trial</button>
+                </div>
+                <p class="helper-text attendance-trial-note">
+                    Trial mode is for verification testing only. It can be reset any time.
+                </p>
+                <div class="photo-preview-wrap">
+                    <img id="selfie-preview" class="photo-preview hidden" alt="Latest selfie capture">
+                </div>
+                <div id="student-attendance-result" class="ai-output compact" aria-live="polite">Attendance result will appear here.</div>
+            </article>
+
+            <article id="student-ledger-card" class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Attendance Ledger</h3>
+                    <small>Realtime marked classes + aggregate</small>
+                </div>
+                <section class="student-aggregate-panel">
+                    <div class="aggregate-chip">
+                        <span>Aggregate Attendance</span>
+                        <strong id="student-aggregate-percent">0%</strong>
+                    </div>
+                    <div class="aggregate-chip">
+                        <span>Attended / Delivered</span>
+                        <strong id="student-attended-delivered">0 / 0</strong>
+                    </div>
+                </section>
+                <p class="helper-text">Click a subject card to view date-wise attendance details.</p>
+                <div id="student-aggregate-courses" class="list-wrap"></div>
+            </article>
+        </section>
+
+        <section id="faculty-section" class="role-section hidden module-panel" data-module="attendance" data-module-role="faculty">
+            <article id="faculty-dashboard-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Faculty Attendance Control Center</h3>
+                    <small>Review pending AI submissions</small>
+                </div>
+                <div class="faculty-controls">
+                    <label class="field">
+                        <span>Class Schedule</span>
+                        <select id="faculty-schedule-select"></select>
+                    </label>
+                    <label class="field">
+                        <span>Class Date</span>
+                        <input id="faculty-class-date" type="date">
+                    </label>
+                    <button id="faculty-refresh-btn" class="btn">Refresh Class Data</button>
+                </div>
+            </article>
+
+            <section class="faculty-stats-grid">
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Total Students</h2>
+                    <p id="faculty-total" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Present</h2>
+                    <p id="faculty-present" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Pending Review</h2>
+                    <p id="faculty-pending" class="metric-value">0</p>
+                </article>
+                <article class="metric glass tilt" data-tilt>
+                    <h2>Absent</h2>
+                    <p id="faculty-absent" class="metric-value">0</p>
+                </article>
+            </section>
+
+            <article id="faculty-attendance-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Submission Review Queue</h3>
+                    <small>Batch approve or reject pending rows</small>
+                </div>
+                <div class="review-actions">
+                    <label class="checkbox-wrap">
+                        <input id="review-select-all" type="checkbox">
+                        <span>Select all pending</span>
+                    </label>
+                    <input id="faculty-review-note" type="text" placeholder="Optional review note">
+                    <button id="faculty-approve-btn" class="btn btn-primary">Batch Approve</button>
+                    <button id="faculty-reject-btn" class="btn">Batch Reject</button>
+                </div>
+                <div class="table-wrap">
+                    <table class="submissions-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+                                <th>Student</th>
+                                <th>Status</th>
+                                <th>AI Confidence</th>
+                                <th>Reason</th>
+                                <th>Submitted</th>
+                            </tr>
+                        </thead>
+                        <tbody id="faculty-submissions-body"></tbody>
+                    </table>
+                </div>
+            </article>
+
+            <section class="analysis-grid">
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>AI Classroom Analysis</h3>
+                        <small>Headcount + engagement from class photo</small>
+                    </div>
+                    <div class="inline-controls">
+                        <label class="field">
+                            <span>Upload classroom photo</span>
+                            <input id="classroom-photo-input" type="file" accept="image/*">
+                        </label>
+                        <button id="capture-classroom-btn" class="btn">Capture with Camera</button>
+                        <button id="analyze-classroom-btn" class="btn btn-primary">Analyze & Save</button>
+                    </div>
+                    <div class="photo-preview-wrap">
+                        <img id="classroom-photo-preview" class="photo-preview hidden" alt="Classroom capture">
+                    </div>
+                    <div id="classroom-analysis-output" class="ai-output compact">Classroom analysis output will appear here.</div>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Analysis History</h3>
+                        <small>Latest records for selected class/date</small>
+                    </div>
+                    <div id="classroom-analysis-history" class="list-wrap"></div>
+                </article>
+            </section>
+        </section>
+
+        <section id="food-section" class="role-section module-panel hidden" data-module="food">
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Smart Food Stall Pre-Ordering</h3>
+                    <small>Order ahead to avoid break-time queues</small>
+                </div>
+                <div class="inline-controls food-order-controls">
+                    <label class="field food-order-field">
+                        <span>Pickup Date</span>
+                        <input id="food-order-date" type="date">
+                    </label>
+                    <label class="field food-order-field">
+                        <span>Break Slot</span>
+                        <select id="food-slot-select"></select>
+                    </label>
+                    <div class="food-order-actions">
+                        <button id="food-enable-location-btn" class="btn btn-secondary" type="button">Enable Location Access</button>
+                        <button id="food-open-cart-btn" class="btn btn-primary" type="button">Open Cart</button>
+                    </div>
+                </div>
+                <p id="food-location-status" class="helper-text">Location access is required. Delivery is allowed only inside LPU campus.</p>
+                <p id="food-status-msg" class="helper-text">Select one shop card, add items, then open cart to checkout.</p>
+            </article>
+
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Shop Directory</h3>
+                    <small>Choose one shop, add multiple items, then checkout</small>
+                </div>
+                <div id="food-shop-grid" class="food-shop-grid"></div>
+            </article>
+
+            <article id="food-orders-panel" class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Orders & Tracking</h3>
+                    <small class="food-orders-head-meta">
+                        <span>Current and previous orders with payment recovery + ratings</span>
+                        <span id="food-orders-panel-freshness" class="food-freshness-indicator">Updated --</span>
+                    </small>
+                </div>
+                <div id="food-orders-scroll" class="food-orders-scroll">
+                    <div class="food-orders-tabs" role="tablist" aria-label="Order list type">
+                        <button id="food-orders-tab-current" class="btn food-orders-tab is-active" type="button" role="tab" aria-selected="true">Current</button>
+                        <button id="food-orders-tab-previous" class="btn food-orders-tab" type="button" role="tab" aria-selected="false">Previous</button>
+                    </div>
+                    <section class="food-orders-section">
+                        <div class="food-orders-subhead">
+                            <h4>Payment Recovery</h4>
+                            <small class="food-orders-subhead-meta">
+                                <span>Retry incomplete payment attempts safely.</span>
+                                <span id="food-payment-recovery-freshness" class="food-freshness-indicator">Updated --</span>
+                            </small>
+                        </div>
+                        <div id="food-payment-recovery-list" class="list-wrap food-payment-recovery-list"></div>
+                    </section>
+                    <section class="food-orders-section">
+                        <div class="food-orders-subhead">
+                            <h4>Orders</h4>
+                            <small class="food-orders-subhead-meta">
+                                <span>Live tracking from create to delivery.</span>
+                                <span id="food-orders-list-freshness" class="food-freshness-indicator">Updated --</span>
+                            </small>
+                        </div>
+                        <div id="food-orders-list" class="list-wrap food-orders-list"></div>
+                    </section>
+                </div>
+            </article>
+
+            <section class="viz-grid">
+                <article class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Demand Trends</h3>
+                        <small>Peak ordering visualization by slot</small>
+                    </div>
+                    <div id="food-demand-chart-module" class="bar-chart" aria-label="Food demand chart"></div>
+                </article>
+                <article class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Predicted Rush Windows</h3>
+                        <small>AI-style peak forecast from historical orders</small>
+                    </div>
+                    <div id="food-peak-list" class="list-wrap"></div>
+                </article>
+            </section>
+
+            <article id="food-admin-panel" class="ops-card glass tilt hidden" data-tilt>
+                <div class="panel-head">
+                    <h3 id="food-admin-panel-title">Food Configuration & Status Control</h3>
+                    <small id="food-admin-panel-subtitle">Create items/slots and push live order status updates</small>
+                </div>
+                <div id="food-global-item-controls" class="inline-controls food-setup-grid">
+                    <label class="field">
+                        <span>Item Name</span>
+                        <input id="food-new-item-name" type="text" placeholder="Veg Sandwich">
+                    </label>
+                    <label class="field">
+                        <span>Item Price</span>
+                        <input id="food-new-item-price" type="number" min="1" step="0.01" placeholder="60">
+                    </label>
+                    <button id="food-create-item-btn" class="btn" type="button">Create Item</button>
+                </div>
+                <div id="food-global-slot-controls" class="inline-controls food-setup-grid">
+                    <label class="field">
+                        <span>Slot Label</span>
+                        <input id="food-new-slot-label" type="text" placeholder="Morning Break">
+                    </label>
+                    <label class="field">
+                        <span>Start</span>
+                        <input id="food-new-slot-start" type="time">
+                    </label>
+                    <label class="field">
+                        <span>End</span>
+                        <input id="food-new-slot-end" type="time">
+                    </label>
+                    <label class="field">
+                        <span>Capacity</span>
+                        <input id="food-new-slot-capacity" type="number" min="1" step="1" placeholder="80">
+                    </label>
+                    <button id="food-create-slot-btn" class="btn" type="button">Create Slot</button>
+                </div>
+                <div id="food-order-status-controls" class="inline-controls food-setup-grid">
+                    <label class="field">
+                        <span>Order</span>
+                        <select id="food-admin-order-select"></select>
+                    </label>
+                    <label class="field">
+                        <span>Status</span>
+                        <select id="food-admin-status-select">
+                            <option value="placed">Order being verified</option>
+                            <option value="ready">Order verified</option>
+                            <option value="preparing">Cooking your meals</option>
+                            <option value="collected">Out for delivery</option>
+                            <option value="cancelled">Cancelled</option>
+                        </select>
+                    </label>
+                    <button id="food-admin-update-status-btn" class="btn btn-primary" type="button">Update Live Status</button>
+                </div>
+                <p id="food-admin-status-msg" class="helper-text">Select order + status to push real-time updates.</p>
+            </article>
+        </section>
+
+        <section id="remedial-section" class="role-section module-panel hidden" data-module="remedial">
+            <article id="remedial-faculty-panel" class="ops-card glass tilt hidden" data-tilt>
+                <div class="panel-head">
+                    <h3>Make-Up Class Scheduler</h3>
+                    <small>Create remedial sessions and generate secure attendance codes</small>
+                </div>
+                <div class="inline-controls remedial-form-grid">
+                    <label class="field">
+                        <span>Course</span>
+                        <select id="remedial-course-select"></select>
+                    </label>
+                    <label class="field">
+                        <span>Class Date</span>
+                        <input id="remedial-date" type="date">
+                    </label>
+                    <label class="field">
+                        <span>Start Time</span>
+                        <input id="remedial-start-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>End Time</span>
+                        <input id="remedial-end-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>Topic</span>
+                        <input id="remedial-topic" type="text" placeholder="Pointers revision + Q&A">
+                    </label>
+                    <button id="remedial-create-btn" class="btn btn-primary" type="button">Schedule + Generate Code</button>
+                </div>
+                <p id="remedial-faculty-status" class="helper-text">Create a class to generate remedial code.</p>
+                <div id="remedial-classes-list" class="list-wrap"></div>
+                <div class="inline-controls remedial-attendance-controls">
+                    <label class="field">
+                        <span>View Attendance For</span>
+                        <select id="remedial-class-select"></select>
+                    </label>
+                    <button id="remedial-refresh-attendance-btn" class="btn" type="button">Load Attendance</button>
+                </div>
+                <div id="remedial-attendance-list" class="list-wrap"></div>
+            </article>
+
+            <article id="remedial-student-panel" class="ops-card glass tilt hidden" data-tilt>
+                <div class="panel-head">
+                    <h3>Mark Remedial Attendance</h3>
+                    <small>Enter faculty-provided remedial code</small>
+                </div>
+                <div class="inline-controls">
+                    <label class="field">
+                        <span>Remedial Code</span>
+                        <input id="remedial-code-input" type="text" placeholder="AB12CD34" maxlength="16">
+                    </label>
+                    <button id="remedial-mark-btn" class="btn btn-primary" type="button">Mark Attendance</button>
+                </div>
+                <p id="remedial-student-status" class="helper-text">Enter code exactly as shared by faculty.</p>
+            </article>
+        </section>
+
+        <section class="glass tilt log-card" data-tilt>
+            <div class="panel-head">
+                <h3>Command Log</h3>
+                <small>Operational timeline</small>
+            </div>
+            <div id="status-log" class="status-log" aria-live="polite"></div>
+        </section>
+    </main>
+
+    <section id="camera-modal" class="camera-modal hidden">
+        <div class="camera-card glass">
+            <div class="panel-head">
+                <h3 id="camera-title">Camera Capture</h3>
+                <small>Live capture required</small>
+            </div>
+            <div class="verification-split">
+                <div id="camera-reference-wrap" class="verification-panel hidden">
+                    <p>Stored Profile Photo</p>
+                    <img id="camera-reference-photo" class="photo-preview" alt="Stored profile reference">
+                </div>
+                <div class="verification-panel">
+                    <p>Live Camera Feed</p>
+                    <video id="camera-video" autoplay playsinline></video>
+                </div>
+            </div>
+            <canvas id="camera-canvas" class="hidden"></canvas>
+            <p id="camera-message" class="helper-text">Allow camera permission to continue.</p>
+            <div class="auth-actions">
+                <button id="camera-capture-btn" class="btn btn-primary">Capture</button>
+                <button id="camera-close-btn" class="btn">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="profile-modal" class="camera-modal hidden">
+        <div class="camera-card glass profile-modal-card">
+            <div class="panel-head">
+                <h3 id="profile-modal-title">Complete Your Profile</h3>
+                <small id="profile-modal-subtitle">Registration number and profile photo are required for attendance verification.</small>
+            </div>
+            <div class="profile-tab-switch" role="tablist" aria-label="Profile Sections">
+                <button id="profile-tab-details-btn" class="btn profile-tab-btn active" type="button" role="tab" aria-selected="true" aria-controls="profile-tab-details">Profile Details</button>
+                <button id="profile-tab-enrollment-btn" class="btn profile-tab-btn" type="button" role="tab" aria-selected="false" aria-controls="profile-tab-enrollment">Enrollment Details</button>
+            </div>
+            <section id="profile-tab-details" class="profile-tab-panel active" role="tabpanel">
+                <label class="field">
+                    <span>Primary Email</span>
+                    <input id="profile-primary-email" type="email" disabled>
+                </label>
+                <label class="field">
+                    <span>Registration Number</span>
+                    <input id="profile-registration-number" type="text" placeholder="e.g. R9P132A48">
+                </label>
+                <p id="profile-registration-note" class="helper-text">
+                    Registration number is permanent and cannot be changed without admin permissions.
+                </p>
+                <label class="field">
+                    <span>Alternate Gmail (optional)</span>
+                    <input id="profile-alternate-email" type="email" placeholder="you@gmail.com">
+                </label>
+                <label class="field">
+                    <span>Upload profile photo</span>
+                    <input id="profile-photo-input" type="file" accept="image/*">
+                </label>
+                <div class="photo-preview-wrap">
+                    <img id="profile-photo-preview" class="photo-preview hidden" alt="Stored profile face">
+                </div>
+                <p id="profile-status" class="helper-text">No profile photo uploaded.</p>
+                <p id="alternate-email-status" class="helper-text"></p>
+            </section>
+            <section id="profile-tab-enrollment" class="profile-tab-panel hidden" role="tabpanel">
+                <p class="helper-text">Enrollment photo is synced from your current profile photo and used for attendance verification.</p>
+                <div class="photo-preview-wrap">
+                    <img id="enrollment-photo-preview" class="photo-preview hidden" alt="Enrollment photo reference">
+                </div>
+                <p id="enrollment-summary-status" class="helper-text">Enrollment video not uploaded yet.</p>
+                <p id="enrollment-summary-updated" class="helper-text"></p>
+                <button id="open-enrollment-modal-btn" class="btn" type="button">Update Enrollment Video</button>
+            </section>
+            <div class="auth-actions">
+                <button id="save-profile-photo-btn" class="btn btn-primary">Save Profile</button>
+                <button id="save-alternate-email-btn" class="btn">Save Alternate Email</button>
+                <button id="profile-close-btn" class="btn">Close</button>
+                <button id="account-logout-btn" class="btn btn-ghost">Logout</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="enrollment-modal" class="camera-modal hidden">
+        <div class="camera-card glass profile-modal-card">
+            <div class="panel-head">
+                <h3 id="enrollment-modal-title">One-Time Video Enrollment</h3>
+                <small id="enrollment-modal-subtitle">Capture multi-angle face movement for secure identity verification.</small>
+            </div>
+            <div class="profile-modal-grid">
+                <div class="verification-panel">
+                    <p>Live Enrollment Camera</p>
+                    <div class="video-shell">
+                        <img
+                            id="enrollment-video-demo"
+                            src="https://kby-ai.com/wp-content/uploads/2023/10/face-recognition-1.png"
+                            alt="Face recognition demo reference"
+                        >
+                        <video id="enrollment-video" autoplay playsinline></video>
+                    </div>
+                </div>
+                <canvas id="enrollment-canvas" class="hidden"></canvas>
+                <p class="helper-text">
+                    Follow on-screen steps: keep face centered and eye-level with clear front lighting. Then do straight, left, right, up, down, and slow side-to-side sweep.
+                </p>
+                <p id="enrollment-instruction" class="helper-text">Press Start Capture to begin guided recording.</p>
+                <p id="enrollment-progress" class="helper-text"></p>
+                <p id="enrollment-status" class="helper-text">Enrollment video is required before accessing dashboard.</p>
+            </div>
+            <div class="auth-actions">
+                <button id="enrollment-start-btn" class="btn btn-primary">Start Guided Capture</button>
+                <button id="enrollment-save-btn" class="btn" disabled>Save Enrollment</button>
+                <button id="enrollment-close-btn" class="btn">Close</button>
+                <button id="enrollment-logout-btn" class="btn btn-ghost">Logout</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="attendance-details-modal" class="camera-modal hidden">
+        <div class="camera-card glass attendance-details-card">
+            <div class="panel-head">
+                <h3 id="attendance-details-title">Attendance Details</h3>
+                <small id="attendance-details-meta">Course-wise class records</small>
+            </div>
+            <div id="attendance-details-list" class="attendance-details-list"></div>
+            <div class="auth-actions">
+                <button id="attendance-details-close-btn" class="btn btn-primary" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="food-shop-modal" class="camera-modal hidden">
+        <div class="camera-card glass food-shop-modal-card">
+            <div class="panel-head">
+                <h3 id="food-shop-modal-title">Shop Menu</h3>
+                <small id="food-shop-modal-subtitle">Add menu items for checkout</small>
+            </div>
+            <div id="food-shop-menu-list" class="list-wrap food-shop-menu-list"></div>
+            <div class="auth-actions">
+                <button id="food-shop-modal-close-btn" class="btn btn-primary" type="button">Done</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="food-cart-modal" class="camera-modal hidden">
+        <div class="camera-card glass food-cart-modal-card">
+            <div class="panel-head">
+                <h3>Cart & Live Order Status</h3>
+                <small>Single-shop ordering rule enforced</small>
+            </div>
+            <div class="food-cart-tabs" role="tablist" aria-label="Cart checkout flow tabs">
+                <button id="food-cart-tab-cart-btn" class="btn food-cart-tab-btn is-active" type="button" role="tab" aria-controls="food-cart-tab-cart" aria-selected="true">Cart</button>
+                <button id="food-cart-tab-review-btn" class="btn food-cart-tab-btn" type="button" role="tab" aria-controls="food-cart-tab-review" aria-selected="false">Review &amp; Pay</button>
+            </div>
+            <div id="food-cart-stepper" class="food-cart-stepper" aria-label="Checkout steps">
+                <div id="food-cart-step-cart" class="food-cart-step is-active">1. Cart</div>
+                <div id="food-cart-step-review" class="food-cart-step">2. Review</div>
+                <div id="food-cart-step-pay" class="food-cart-step">3. Pay</div>
+            </div>
+
+            <section id="food-cart-tab-cart" class="food-cart-pane food-cart-pane-cart" role="tabpanel" aria-labelledby="food-cart-tab-cart-btn">
+                <div id="food-cart-summary" class="food-cart-summary">No items in cart.</div>
+                <div id="food-cart-list" class="list-wrap food-cart-list"></div>
+                <div id="food-order-status-timeline" class="list-wrap food-order-status-timeline"></div>
+                <div class="auth-actions food-cart-pane-actions">
+                    <button id="food-cart-clear-btn" class="btn" type="button">Clear Cart</button>
+                    <button id="food-cart-checkout-btn" class="btn btn-primary" type="button">Review Cart</button>
+                </div>
+            </section>
+
+            <section id="food-cart-tab-review" class="food-cart-pane food-cart-pane-review hidden" role="tabpanel" aria-labelledby="food-cart-tab-review-btn">
+                <div id="food-review-summary-strip" class="food-review-summary-strip">Order summary will appear here once items are added.</div>
+                <section id="food-checkout-preview" class="food-checkout-preview hidden">
+                    <div class="panel-head">
+                        <h4>Checkout Preview</h4>
+                        <small>Verify items, quantity, and delivery block</small>
+                    </div>
+                    <div id="food-checkout-items" class="list-wrap food-checkout-items"></div>
+                    <div id="food-checkout-fee-breakdown" class="food-checkout-fee-breakdown"></div>
+                    <label class="field">
+                        <span>Delivery Block</span>
+                        <select id="food-delivery-block-select"></select>
+                    </label>
+                    <p id="food-checkout-summary" class="helper-text">Select delivery block to continue payment.</p>
+                </section>
+                <div class="auth-actions food-cart-pane-actions">
+                    <button id="food-cart-back-btn" class="btn" type="button">Back to Cart</button>
+                    <button id="food-cart-pay-btn" class="btn btn-primary hidden" type="button">Pay &amp; Place Order</button>
+                </div>
+            </section>
+
+            <div class="auth-actions">
+                <button id="food-cart-modal-close-btn" class="btn btn-ghost" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="chotu-widget" class="chotu-widget hidden" aria-live="polite">
+        <div id="chotu-hint" class="chotu-hint">
+            <strong>Need food suggestions?</strong>
+            <small>Ask Chotu</small>
+        </div>
+        <button id="chotu-toggle-btn" class="chotu-toggle-btn" type="button" aria-expanded="false" aria-controls="chotu-panel">
+            <span class="chotu-avatar" aria-hidden="true">AI</span>
+            <span class="chotu-toggle-copy">
+                <strong>Chotu</strong>
+                <small>Food Chat</small>
+            </span>
+            <span class="chotu-live-dot" aria-hidden="true"></span>
+        </button>
+        <div id="chotu-panel" class="chotu-panel" role="dialog" aria-label="Chotu AI Food Assistant">
+            <div class="chotu-head">
+                <div class="chotu-head-main">
+                    <span class="chotu-head-avatar" aria-hidden="true">AI</span>
+                    <div class="chotu-head-copy">
+                        <strong>Chat with Chotu</strong>
+                        <small>Fast food suggestions in seconds</small>
+                    </div>
+                </div>
+                <button id="chotu-minimize-btn" class="btn btn-ghost chotu-minimize-btn" type="button">Minimize</button>
+            </div>
+            <div class="chotu-body">
+                <div id="food-ai-output" class="ai-output compact chotu-output">Hi, I am Chotu. Tell me your craving and I will suggest the best LPU food outlets.</div>
+                <div id="food-ai-quick-chips" class="food-ai-quick-chips" aria-label="Quick craving suggestions"></div>
+            </div>
+            <label class="field food-ai-field chotu-compose-field">
+                <span>Message</span>
+                <input id="food-ai-craving-input" type="text" placeholder="e.g. spicy street food, quick budget snacks, cold coffee + dessert">
+            </label>
+            <div class="inline-controls food-ai-controls">
+                <button id="food-ai-suggest-btn" class="btn btn-primary" type="button">Send to Chotu</button>
+            </div>
+        </div>
+    </section>
+
+    <div id="food-toast" class="food-toast hidden" role="status" aria-live="polite" aria-atomic="true">
+        <div id="food-toast-card" class="food-toast-card glass">
+            <div class="food-toast-copy">
+                <strong id="food-toast-title">Cart Updated</strong>
+                <p id="food-toast-text">Item added to cart.</p>
+            </div>
+            <button id="food-toast-close-btn" class="btn btn-ghost" type="button" aria-label="Close notification">Close</button>
+        </div>
+    </div>
+</body>
+</html>
