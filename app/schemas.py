@@ -775,28 +775,6 @@ class RealtimeAttendanceMarkResponse(BaseModel):
     verification_reason: Optional[str] = None
 
 
-class TrialAttendanceMarkResponse(BaseModel):
-    status: AttendanceSubmissionStatus
-    message: str
-    verification_engine: str = "ai"
-    verification_confidence: float = 0.0
-    verification_reason: Optional[str] = None
-    class_date: date
-    schedule_id: int
-
-
-class TrialAttendanceResetRequest(BaseModel):
-    schedule_id: int
-    class_date: Optional[date] = None
-
-
-class TrialAttendanceResetResponse(BaseModel):
-    message: str
-    deleted: bool
-    class_date: date
-    schedule_id: int
-
-
 class StudentAttendanceHistoryItemOut(BaseModel):
     class_date: date
     start_time: time

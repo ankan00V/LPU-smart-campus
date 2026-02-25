@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>LPU Smart Campus Command Deck</title>
-    <link rel="stylesheet" href="/web/styles.css?v=20260223j">
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="stylesheet" href="/web/styles.css?v=20260225c">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <script src="/web/app.js?v=20260223j" defer></script>
+    <script src="/web/app.js?v=20260225c" defer></script>
 </head>
 <body>
     <div class="scene" id="scene">
@@ -226,51 +228,68 @@
         </header>
 
         <section id="executive-section" class="role-section module-panel hidden" data-module="administrative">
-            <section class="control-grid glass tilt" data-tilt>
-                <button id="refresh-btn" class="btn">Refresh Telemetry</button>
+            <article class="ops-card glass tilt admin-hero-card" data-tilt>
+                <div class="panel-head admin-hero-head">
+                    <div>
+                        <h3>Administrative Operations Hub</h3>
+                        <small>Live command center for campus resources, attendance, and demand monitoring.</small>
+                    </div>
+                    <span class="chip chip-live admin-live-chip">Live Telemetry</span>
+                </div>
+                <section class="admin-toolbar" aria-label="Administrative controls">
+                    <label class="field admin-toolbar-field">
+                        <span>Working Date</span>
+                        <input id="work-date" type="date">
+                    </label>
+                    <label class="field admin-toolbar-field">
+                        <span>Course ID</span>
+                        <input id="course-id" type="number" min="1" value="1">
+                    </label>
+                    <button id="refresh-btn" class="btn btn-primary admin-refresh-btn" type="button">Refresh Telemetry</button>
+                </section>
+            </article>
 
-                <label class="field">
-                    <span>Working Date</span>
-                    <input id="work-date" type="date">
-                </label>
+            <article class="ops-card glass tilt admin-kpi-card" data-tilt>
+                <div class="panel-head">
+                    <h3>Overview Snapshot</h3>
+                    <small>Current institution footprint and population counts</small>
+                </div>
+                <section class="metric-grid admin-metric-grid" aria-label="Administrative overview metrics">
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Blocks</h2>
+                        <p id="metric-blocks" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Classrooms</h2>
+                        <p id="metric-classrooms" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Courses</h2>
+                        <p id="metric-courses" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Faculty</h2>
+                        <p id="metric-faculty" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Students</h2>
+                        <p id="metric-students" class="metric-value">0</p>
+                    </article>
+                </section>
+            </article>
 
-                <label class="field">
-                    <span>Course ID</span>
-                    <input id="course-id" type="number" min="1" value="1">
-                </label>
-            </section>
+            <div class="admin-cluster-head">
+                <h4>Operational Analytics</h4>
+                <small>Attendance, food demand, capacity and workload in one screen.</small>
+            </div>
 
-            <section class="metric-grid">
-                <article class="metric glass tilt" data-tilt>
-                    <h2>Blocks</h2>
-                    <p id="metric-blocks" class="metric-value">0</p>
-                </article>
-                <article class="metric glass tilt" data-tilt>
-                    <h2>Classrooms</h2>
-                    <p id="metric-classrooms" class="metric-value">0</p>
-                </article>
-                <article class="metric glass tilt" data-tilt>
-                    <h2>Courses</h2>
-                    <p id="metric-courses" class="metric-value">0</p>
-                </article>
-                <article class="metric glass tilt" data-tilt>
-                    <h2>Faculty</h2>
-                    <p id="metric-faculty" class="metric-value">0</p>
-                </article>
-                <article class="metric glass tilt" data-tilt>
-                    <h2>Students</h2>
-                    <p id="metric-students" class="metric-value">0</p>
-                </article>
-            </section>
-
-            <section class="viz-grid">
-                <article class="viz-card glass tilt" data-tilt>
+            <section class="viz-grid admin-viz-grid">
+                <article id="admin-attendance-card" class="viz-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>Attendance Pulse</h3>
                         <small>Live day snapshot</small>
                     </div>
-
-                    <div class="donut-wrap">
+                    <div class="donut-wrap admin-attendance-wrap">
                         <div id="attendance-donut" class="donut" aria-label="Attendance utilization chart">
                             <div class="donut-core">
                                 <span id="attendance-rate">0%</span>
@@ -295,6 +314,30 @@
                             </div>
                         </div>
                     </div>
+                    <div class="admin-attendance-pulse" aria-label="Attendance quality signals">
+                        <div class="admin-pulse-row" data-tone="good">
+                            <div class="admin-pulse-meta">
+                                <span>Present Ratio</span>
+                                <strong id="attendance-present-percent">0%</strong>
+                            </div>
+                            <div class="admin-pulse-track"><span id="attendance-present-fill" class="admin-pulse-fill"></span></div>
+                        </div>
+                        <div class="admin-pulse-row" data-tone="warn">
+                            <div class="admin-pulse-meta">
+                                <span>Absence Load</span>
+                                <strong id="attendance-absent-percent">0%</strong>
+                            </div>
+                            <div class="admin-pulse-track"><span id="attendance-absent-fill" class="admin-pulse-fill"></span></div>
+                        </div>
+                        <div class="admin-pulse-row" data-tone="mid">
+                            <div class="admin-pulse-meta">
+                                <span>Net Health</span>
+                                <strong id="attendance-health-score">0%</strong>
+                            </div>
+                            <div class="admin-pulse-track"><span id="attendance-health-fill" class="admin-pulse-fill"></span></div>
+                        </div>
+                        <p id="attendance-health-note" class="admin-attendance-note">Awaiting attendance records.</p>
+                    </div>
                 </article>
 
                 <article class="viz-card glass tilt" data-tilt>
@@ -303,6 +346,43 @@
                         <small>Module 2 load curve</small>
                     </div>
                     <div id="demand-chart" class="bar-chart" aria-label="Food slot demand chart"></div>
+                </article>
+
+                <article id="admin-telemetry-card" class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Live Telemetry Trends</h3>
+                        <small>Rolling performance signal (latest 12 refreshes)</small>
+                    </div>
+                    <div class="admin-telemetry-layout">
+                        <div id="admin-telemetry-chart" class="telemetry-chart" aria-label="Administrative telemetry trend chart"></div>
+                        <aside class="admin-telemetry-stats" aria-label="Telemetry live stats">
+                            <div class="admin-telemetry-stat" data-tone="attendance">
+                                <span>Attendance</span>
+                                <strong id="admin-telemetry-attendance-now">0%</strong>
+                                <small id="admin-telemetry-attendance-delta">Δ --</small>
+                            </div>
+                            <div class="admin-telemetry-stat" data-tone="capacity">
+                                <span>Capacity</span>
+                                <strong id="admin-telemetry-capacity-now">0%</strong>
+                                <small id="admin-telemetry-capacity-delta">Δ --</small>
+                            </div>
+                            <div class="admin-telemetry-stat" data-tone="demand">
+                                <span>Demand</span>
+                                <strong id="admin-telemetry-demand-now">0%</strong>
+                                <small id="admin-telemetry-demand-delta">Δ --</small>
+                            </div>
+                            <div class="admin-telemetry-stat" data-tone="stability">
+                                <span>Stability</span>
+                                <strong id="admin-telemetry-stability-now">--</strong>
+                                <small id="admin-telemetry-stability-note">Collecting trend points</small>
+                            </div>
+                        </aside>
+                    </div>
+                    <div class="telemetry-legend">
+                        <span class="telemetry-key telemetry-key-attendance">Attendance</span>
+                        <span class="telemetry-key telemetry-key-capacity">Capacity</span>
+                        <span class="telemetry-key telemetry-key-demand">Demand</span>
+                    </div>
                 </article>
 
                 <article id="capacity-card" class="viz-card glass tilt" data-tilt>
@@ -320,9 +400,59 @@
                     </div>
                     <div id="workload-chart" class="list-wrap" aria-label="Faculty workload distribution"></div>
                 </article>
+
+                <article id="admin-health-card" class="viz-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Executive Health Index</h3>
+                        <small>Quick operational KPI health scores</small>
+                    </div>
+                    <div class="admin-health-grid">
+                        <div class="admin-health-row" data-tone="good">
+                            <div class="admin-health-meta">
+                                <span>Attendance Health</span>
+                                <strong id="admin-health-attendance-value">0%</strong>
+                            </div>
+                            <div class="admin-health-track">
+                                <span id="admin-health-attendance-fill" class="admin-health-fill"></span>
+                            </div>
+                        </div>
+                        <div class="admin-health-row" data-tone="mid">
+                            <div class="admin-health-meta">
+                                <span>Capacity Balance</span>
+                                <strong id="admin-health-capacity-value">0%</strong>
+                            </div>
+                            <div class="admin-health-track">
+                                <span id="admin-health-capacity-fill" class="admin-health-fill"></span>
+                            </div>
+                        </div>
+                        <div class="admin-health-row" data-tone="warn">
+                            <div class="admin-health-meta">
+                                <span>Demand Pressure</span>
+                                <strong id="admin-health-demand-value">0%</strong>
+                            </div>
+                            <div class="admin-health-track">
+                                <span id="admin-health-demand-fill" class="admin-health-fill"></span>
+                            </div>
+                        </div>
+                        <div class="admin-health-row" data-tone="cool">
+                            <div class="admin-health-meta">
+                                <span>Workload Index</span>
+                                <strong id="admin-health-workload-value">0%</strong>
+                            </div>
+                            <div class="admin-health-track">
+                                <span id="admin-health-workload-fill" class="admin-health-fill"></span>
+                            </div>
+                        </div>
+                    </div>
+                </article>
             </section>
 
-            <section class="ops-grid">
+            <div class="admin-cluster-head">
+                <h4>Intervention & Actions</h4>
+                <small>Operational watchlists and AI-assisted planning actions.</small>
+            </div>
+
+            <section class="ops-grid admin-ops-grid">
                 <article id="absentee-card" class="ops-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>Absentee Watchlist</h3>
@@ -373,13 +503,6 @@
                 <div class="inline-controls">
                     <button id="take-selfie-btn" class="btn btn-primary" disabled>Open Camera & Mark Attendance</button>
                 </div>
-                <div class="inline-controls attendance-trial-controls">
-                    <button id="trial-mark-btn" class="btn btn-secondary" type="button" disabled>Trial Mark Attendance</button>
-                    <button id="trial-reset-btn" class="btn btn-ghost" type="button" disabled>Reset Trial</button>
-                </div>
-                <p class="helper-text attendance-trial-note">
-                    Trial mode is for verification testing only. It can be reset any time.
-                </p>
                 <div class="photo-preview-wrap">
                     <img id="selfie-preview" class="photo-preview hidden" alt="Latest selfie capture">
                 </div>
@@ -577,7 +700,10 @@
                 <article class="viz-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>Demand Trends</h3>
-                        <small>Peak ordering visualization by slot</small>
+                        <small class="food-demand-head-meta">
+                            <span>Peak ordering visualization by slot</span>
+                            <span id="food-demand-freshness" class="food-freshness-indicator">Live sync --</span>
+                        </small>
                     </div>
                     <div id="food-demand-chart-module" class="bar-chart" aria-label="Food demand chart"></div>
                 </article>
@@ -774,13 +900,23 @@
                 <p id="alternate-email-status" class="helper-text"></p>
             </section>
             <section id="profile-tab-enrollment" class="profile-tab-panel hidden" role="tabpanel">
-                <p class="helper-text">Enrollment photo is synced from your current profile photo and used for attendance verification.</p>
-                <div class="photo-preview-wrap">
-                    <img id="enrollment-photo-preview" class="photo-preview hidden" alt="Enrollment photo reference">
+                <div class="enrollment-split-grid">
+                    <article class="enrollment-box">
+                        <h4 class="enrollment-box-title">Enrollment Photo</h4>
+                        <p class="helper-text">Used as the primary identity reference for attendance verification.</p>
+                        <div class="photo-preview-wrap">
+                            <img id="enrollment-photo-preview" class="photo-preview hidden" alt="Enrollment photo reference">
+                        </div>
+                        <button id="open-profile-photo-update-btn" class="btn" type="button">Update Enrollment Photo</button>
+                    </article>
+                    <article class="enrollment-box">
+                        <h4 class="enrollment-box-title">Enrollment Video</h4>
+                        <p id="enrollment-summary-status" class="helper-text">Enrollment video not uploaded yet.</p>
+                        <p id="enrollment-summary-updated" class="helper-text"></p>
+                        <p id="enrollment-summary-lock" class="helper-text"></p>
+                        <button id="open-enrollment-modal-btn" class="btn btn-primary" type="button">Update Enrollment Video</button>
+                    </article>
                 </div>
-                <p id="enrollment-summary-status" class="helper-text">Enrollment video not uploaded yet.</p>
-                <p id="enrollment-summary-updated" class="helper-text"></p>
-                <button id="open-enrollment-modal-btn" class="btn" type="button">Update Enrollment Video</button>
             </section>
             <div class="auth-actions">
                 <button id="save-profile-photo-btn" class="btn btn-primary">Save Profile</button>

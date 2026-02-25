@@ -2,7 +2,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
 .venv/
 venv/
+.venv_corrupt_backup/
+
 .env
+.vscode/
+.DS_Store
+
 campus.db

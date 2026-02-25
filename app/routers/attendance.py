@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import re
-from threading import Lock
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -37,8 +36,6 @@ FACE_MATCH_PASS_THRESHOLD = max(
 )
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
 ACADEMIC_START_DATE_DEFAULT = "2026-01-21"
-_trial_state_lock = Lock()
-_trial_attendance_state: dict[tuple[int, int, str], dict] = {}
 
 
 def _academic_start_date() -> date:
@@ -47,24 +44,6 @@ def _academic_start_date() -> date:
         return date.fromisoformat(raw)
     except ValueError:
         return date.fromisoformat(ACADEMIC_START_DATE_DEFAULT)
-
-
-def _trial_state_key(student_id: int, schedule_id: int, class_date: date) -> tuple[int, int, str]:
-    return int(student_id), int(schedule_id), class_date.isoformat()
-
-
-def _set_trial_state(student_id: int, schedule_id: int, class_date: date, payload: dict) -> None:
-    key = _trial_state_key(student_id, schedule_id, class_date)
-    with _trial_state_lock:
-        _trial_attendance_state[key] = dict(payload)
-
-
-def _pop_trial_state(student_id: int, schedule_id: int, class_date: date) -> bool:
-    key = _trial_state_key(student_id, schedule_id, class_date)
-    with _trial_state_lock:
-        existed = key in _trial_attendance_state
-        _trial_attendance_state.pop(key, None)
-        return existed
 
 
 def _time_from_hhmm(value: str) -> time:
@@ -1622,93 +1601,6 @@ def mark_realtime_attendance(
         verification_engine=final_engine,
         verification_confidence=final_confidence,
         verification_reason=final_reason,
-    )
-
-
-@router.post("/student/realtime/trial-mark", response_model=schemas.TrialAttendanceMarkResponse)
-def mark_trial_attendance(
-    payload: schemas.RealtimeAttendanceMarkRequest,
-    db: Session = Depends(get_db),
-    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
-):
-    student, schedule, course = _resolve_student_schedule_context(
-        db=db,
-        current_user=current_user,
-        schedule_id=payload.schedule_id,
-    )
-    target_date = date.today()
-    primary_selfie, final_confidence, final_engine, status_value, final_reason = _verify_student_face_payload(
-        student=student,
-        schedule=schedule,
-        payload=payload,
-    )
-    final_match = status_value == models.AttendanceSubmissionStatus.VERIFIED
-    _set_trial_state(
-        int(current_user.student_id or 0),
-        schedule.id,
-        target_date,
-        {
-            "course_id": course.id,
-            "course_code": course.code,
-            "status": status_value.value,
-            "ai_match": final_match,
-            "ai_confidence": final_confidence,
-            "ai_model": final_engine,
-            "ai_reason": final_reason,
-            "selfie_photo_fingerprint": _photo_fingerprint(primary_selfie),
-            "updated_at": datetime.utcnow().isoformat(),
-        },
-    )
-    logger.info(
-        "trial_attendance_ephemeral_mark student=%s schedule_id=%s class_date=%s status=%s confidence=%.4f",
-        current_user.student_id,
-        schedule.id,
-        target_date.isoformat(),
-        status_value.value,
-        float(final_confidence),
-    )
-
-    return schemas.TrialAttendanceMarkResponse(
-        status=status_value,
-        message=(
-            "Trial attendance marked successfully"
-            if status_value == models.AttendanceSubmissionStatus.VERIFIED
-            else _public_rejection_message(final_reason, final_confidence)
-        ),
-        verification_engine=final_engine,
-        verification_confidence=final_confidence,
-        verification_reason=final_reason,
-        class_date=target_date,
-        schedule_id=schedule.id,
-    )
-
-
-@router.post("/student/realtime/trial-reset", response_model=schemas.TrialAttendanceResetResponse)
-def reset_trial_attendance(
-    payload: schemas.TrialAttendanceResetRequest,
-    db: Session = Depends(get_db),
-    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
-):
-    _, schedule, _ = _resolve_student_schedule_context(
-        db=db,
-        current_user=current_user,
-        schedule_id=payload.schedule_id,
-    )
-    target_date = payload.class_date or date.today()
-    deleted = _pop_trial_state(int(current_user.student_id or 0), schedule.id, target_date)
-    logger.info(
-        "trial_attendance_ephemeral_reset student=%s schedule_id=%s class_date=%s deleted=%s",
-        current_user.student_id,
-        schedule.id,
-        target_date.isoformat(),
-        deleted,
-    )
-
-    return schemas.TrialAttendanceResetResponse(
-        message="Trial attendance removed. You can mark again.",
-        deleted=deleted,
-        class_date=target_date,
-        schedule_id=schedule.id,
     )
 
 

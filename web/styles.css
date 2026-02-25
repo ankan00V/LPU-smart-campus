@@ -682,6 +682,669 @@ select:focus {
     animation: micro-pop 180ms var(--motion-ease);
 }
 
+#executive-section {
+    gap: 0.9rem;
+    --adm-heading: #edf6ff;
+    --adm-text: #cfe2f5;
+    --adm-muted: #9eb7cf;
+    --adm-border: rgba(120, 169, 205, 0.54);
+    --adm-border-strong: rgba(151, 208, 245, 0.72);
+    --adm-chip-bg: rgba(31, 70, 103, 0.52);
+    --adm-chip-text: #d7ebff;
+    --adm-surface-hero: linear-gradient(156deg, rgba(23, 58, 86, 0.9), rgba(14, 40, 61, 0.9));
+    --adm-surface-panel: linear-gradient(160deg, rgba(18, 50, 74, 0.84), rgba(10, 33, 52, 0.8));
+    --adm-surface-elevated: linear-gradient(160deg, rgba(21, 56, 83, 0.9), rgba(12, 37, 58, 0.88));
+    --adm-top-glow: rgba(246, 170, 119, 0.18);
+    --adm-card-shadow: 0 14px 28px rgba(4, 14, 24, 0.26);
+    --adm-telemetry-attendance: #72e6b2;
+    --adm-telemetry-capacity: #7ac9ff;
+    --adm-telemetry-demand: #ffbf8e;
+    --adm-track-bg: rgba(17, 54, 83, 0.5);
+    --adm-track-border: rgba(136, 194, 235, 0.38);
+}
+
+body.ums-theme #executive-section {
+    --adm-heading: #17344d;
+    --adm-text: #3c5a74;
+    --adm-muted: #5f7d97;
+    --adm-border: #b8cee2;
+    --adm-border-strong: #95b9d6;
+    --adm-chip-bg: #edf4fb;
+    --adm-chip-text: #315472;
+    --adm-surface-hero: linear-gradient(160deg, #ffffff 0%, #f4f9ff 56%, #fbf6ef 100%);
+    --adm-surface-panel: linear-gradient(162deg, #ffffff 0%, #f5f9ff 62%, #fefaf5 100%);
+    --adm-surface-elevated: linear-gradient(165deg, #fafdff 0%, #edf6ff 60%, #f8fbff 100%);
+    --adm-top-glow: rgba(242, 164, 92, 0.2);
+    --adm-card-shadow: 0 8px 20px rgba(67, 97, 128, 0.12);
+    --adm-telemetry-attendance: #2cbf77;
+    --adm-telemetry-capacity: #2f8fdf;
+    --adm-telemetry-demand: #d9803e;
+    --adm-track-bg: #eaf2fb;
+    --adm-track-border: #c2d6e7;
+}
+
+#executive-section .admin-hero-card,
+#executive-section .admin-kpi-card,
+#executive-section .viz-card,
+#executive-section .ops-card {
+    border-width: 1.5px;
+    border-color: var(--adm-border);
+    box-shadow: var(--adm-card-shadow);
+}
+
+#executive-section .panel-head h3 {
+    color: var(--adm-heading);
+    letter-spacing: 0.012em;
+}
+
+#executive-section .panel-head small {
+    color: var(--adm-muted);
+}
+
+#executive-section .admin-hero-card {
+    background:
+        radial-gradient(circle at 92% 6%, var(--adm-top-glow), transparent 42%),
+        var(--adm-surface-hero);
+    border-color: var(--adm-border-strong);
+}
+
+#executive-section .admin-hero-head {
+    align-items: center;
+    padding-bottom: 0.45rem;
+    border-bottom: 1px solid var(--adm-border);
+}
+
+#executive-section .admin-live-chip {
+    white-space: nowrap;
+    border-color: var(--adm-border);
+    background: var(--adm-chip-bg);
+    color: var(--adm-chip-text);
+    box-shadow: none;
+}
+
+#executive-section .admin-toolbar {
+    margin-top: 0.72rem;
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(160px, 0.8fr) auto;
+    gap: 0.58rem;
+    align-items: end;
+}
+
+#executive-section .admin-toolbar-field span {
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    color: var(--adm-text);
+}
+
+#executive-section .admin-refresh-btn {
+    min-height: 42px;
+    min-width: 190px;
+    border-color: var(--adm-border-strong);
+}
+
+#executive-section .admin-kpi-card {
+    background:
+        radial-gradient(circle at 88% 10%, rgba(99, 202, 255, 0.1), transparent 46%),
+        var(--adm-surface-panel);
+    border-color: var(--adm-border);
+}
+
+#executive-section .admin-metric-grid {
+    margin-top: 0.68rem;
+    grid-template-columns: repeat(5, minmax(130px, 1fr));
+    gap: 0.7rem;
+}
+
+#executive-section .admin-metric-grid .metric {
+    padding: 0.86rem 0.82rem;
+    border: 1.4px solid var(--adm-border);
+    background: var(--adm-surface-elevated);
+}
+
+#executive-section .admin-metric-grid .metric h2 {
+    color: var(--adm-text);
+}
+
+#executive-section .admin-metric-grid .metric-value {
+    font-size: clamp(1.5rem, 2.1vw, 1.95rem);
+    color: var(--adm-heading);
+    text-shadow: none;
+}
+
+#executive-section .admin-cluster-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.7rem;
+    padding: 0.08rem 0.2rem 0.02rem;
+}
+
+#executive-section .admin-cluster-head h4 {
+    margin: 0;
+    font-size: 0.96rem;
+    letter-spacing: 0.01em;
+    color: var(--adm-heading);
+}
+
+#executive-section .admin-cluster-head small {
+    color: var(--adm-muted);
+    font-size: 0.76rem;
+}
+
+#executive-section .admin-viz-grid {
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
+    gap: 0.74rem;
+    align-items: start;
+}
+
+#executive-section .admin-viz-grid .viz-card {
+    min-height: 258px;
+    display: flex;
+    flex-direction: column;
+    background:
+        radial-gradient(circle at 90% 8%, rgba(255, 167, 117, 0.1), transparent 48%),
+        var(--adm-surface-panel);
+    border-color: var(--adm-border);
+}
+
+#executive-section .admin-viz-grid .viz-card .panel-head {
+    flex-shrink: 0;
+}
+
+#executive-section #admin-attendance-card .admin-attendance-wrap {
+    margin-top: 0.62rem;
+    align-items: start;
+    gap: 0.78rem;
+}
+
+#executive-section #admin-attendance-card .donut {
+    width: 168px;
+    box-shadow: inset 0 0 28px rgba(0, 0, 0, 0.42), 0 0 26px rgba(67, 208, 255, 0.26);
+}
+
+#executive-section #admin-attendance-card .legend {
+    gap: 0.46rem;
+    align-content: start;
+}
+
+#executive-section .admin-attendance-pulse {
+    margin-top: 0.62rem;
+    padding-top: 0.58rem;
+    border-top: 1px solid var(--adm-border);
+    display: grid;
+    gap: 0.42rem;
+    align-content: start;
+}
+
+#executive-section .admin-pulse-row {
+    border-radius: 11px;
+    border: 1.2px solid var(--adm-border);
+    background: var(--adm-surface-elevated);
+    padding: 0.44rem 0.56rem;
+    display: grid;
+    gap: 0.3rem;
+}
+
+#executive-section .admin-pulse-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+#executive-section .admin-pulse-meta span {
+    font-size: 0.74rem;
+    color: var(--adm-text);
+}
+
+#executive-section .admin-pulse-meta strong {
+    font-size: 0.84rem;
+    font-weight: 800;
+    color: var(--adm-heading);
+}
+
+#executive-section .admin-pulse-track {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    border: 1px solid var(--adm-track-border);
+    background: var(--adm-track-bg);
+    overflow: hidden;
+}
+
+#executive-section .admin-pulse-fill {
+    display: block;
+    width: calc(var(--w, 0) * 1%);
+    height: 100%;
+    border-radius: inherit;
+    transition: width 0.36s ease;
+    background: linear-gradient(90deg, rgba(120, 214, 255, 0.92), rgba(69, 155, 226, 0.92));
+}
+
+#executive-section .admin-pulse-fill[data-state="good"] {
+    background: linear-gradient(90deg, #8df0be, #41cb89);
+}
+
+#executive-section .admin-pulse-fill[data-state="mid"] {
+    background: linear-gradient(90deg, #9ad9ff, #4fa9ef);
+}
+
+#executive-section .admin-pulse-fill[data-state="warn"] {
+    background: linear-gradient(90deg, #ffc89c, #e98b4c);
+}
+
+#executive-section .admin-attendance-note {
+    margin: 0.05rem 0 0;
+    font-size: 0.73rem;
+    color: var(--adm-muted);
+}
+
+#executive-section #admin-telemetry-card,
+#executive-section #admin-health-card {
+    position: relative;
+    overflow: hidden;
+}
+
+#executive-section #admin-telemetry-card::before,
+#executive-section #admin-health-card::before {
+    content: "";
+    position: absolute;
+    top: 0.55rem;
+    left: 0.72rem;
+    right: 0.72rem;
+    height: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--adm-telemetry-capacity), var(--adm-telemetry-demand));
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+#executive-section .telemetry-chart {
+    margin-top: 0;
+    border-radius: 14px;
+    border: 1.3px solid var(--adm-border);
+    background:
+        radial-gradient(circle at 85% 14%, rgba(255, 169, 118, 0.1), transparent 44%),
+        var(--adm-surface-elevated);
+    min-height: 216px;
+    height: 100%;
+    overflow: hidden;
+}
+
+#executive-section .admin-telemetry-layout {
+    margin-top: 0.62rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(138px, 0.45fr);
+    gap: 0.54rem;
+    align-items: stretch;
+    flex: 1;
+    min-height: 228px;
+}
+
+#executive-section .admin-telemetry-stats {
+    display: grid;
+    gap: 0.4rem;
+    grid-template-rows: repeat(4, minmax(0, 1fr));
+}
+
+#executive-section .admin-telemetry-stat {
+    border-radius: 11px;
+    border: 1.2px solid var(--adm-border);
+    background: var(--adm-surface-elevated);
+    padding: 0.42rem 0.5rem;
+    display: grid;
+    gap: 0.12rem;
+    align-content: center;
+}
+
+#executive-section .admin-telemetry-stat span {
+    font-size: 0.7rem;
+    color: var(--adm-text);
+    letter-spacing: 0.01em;
+}
+
+#executive-section .admin-telemetry-stat strong {
+    font-size: 1.05rem;
+    line-height: 1;
+    color: var(--adm-heading);
+    font-family: "Space Mono", monospace;
+}
+
+#executive-section .admin-telemetry-stat small {
+    font-size: 0.68rem;
+    color: var(--adm-muted);
+}
+
+#executive-section .admin-telemetry-stat small[data-trend="up"] {
+    color: #8cf2bd;
+}
+
+#executive-section .admin-telemetry-stat small[data-trend="down"] {
+    color: #ffc39b;
+}
+
+#executive-section .admin-telemetry-stat small[data-trend="flat"] {
+    color: #bdd6eb;
+}
+
+#executive-section .admin-telemetry-stat[data-tone="attendance"] {
+    border-color: color-mix(in srgb, var(--adm-telemetry-attendance) 56%, var(--adm-border));
+}
+
+#executive-section .admin-telemetry-stat[data-tone="capacity"] {
+    border-color: color-mix(in srgb, var(--adm-telemetry-capacity) 56%, var(--adm-border));
+}
+
+#executive-section .admin-telemetry-stat[data-tone="demand"] {
+    border-color: color-mix(in srgb, var(--adm-telemetry-demand) 56%, var(--adm-border));
+}
+
+#executive-section .admin-telemetry-stat[data-tone="stability"] {
+    border-color: color-mix(in srgb, #c1d7eb 58%, var(--adm-border));
+}
+
+#executive-section .telemetry-svg {
+    width: 100%;
+    height: 216px;
+    display: block;
+}
+
+#executive-section .telemetry-chart .list-item {
+    margin: 0.44rem;
+    min-height: calc(100% - 0.88rem);
+    display: grid;
+    place-items: center;
+    text-align: center;
+}
+
+#executive-section .telemetry-guides line {
+    stroke: rgba(149, 205, 240, 0.24);
+    stroke-width: 1;
+    stroke-dasharray: 3 4;
+}
+
+#executive-section .telemetry-line {
+    fill: none;
+    stroke-width: 2.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    filter: drop-shadow(0 0 5px rgba(0, 0, 0, 0.22));
+}
+
+#executive-section .telemetry-line-attendance {
+    stroke: var(--adm-telemetry-attendance);
+}
+
+#executive-section .telemetry-line-capacity {
+    stroke: var(--adm-telemetry-capacity);
+}
+
+#executive-section .telemetry-line-demand {
+    stroke: var(--adm-telemetry-demand);
+}
+
+#executive-section .telemetry-dot {
+    stroke-width: 1.2;
+}
+
+#executive-section .telemetry-dot-attendance {
+    fill: #9af2c8;
+    stroke: rgba(24, 98, 66, 0.95);
+}
+
+#executive-section .telemetry-dot-capacity {
+    fill: #99dbff;
+    stroke: rgba(24, 76, 121, 0.95);
+}
+
+#executive-section .telemetry-dot-demand {
+    fill: #ffd0a3;
+    stroke: rgba(117, 66, 22, 0.95);
+}
+
+#executive-section .telemetry-legend {
+    margin-top: 0.56rem;
+    display: flex;
+    gap: 0.42rem;
+    flex-wrap: wrap;
+}
+
+#executive-section .telemetry-key {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0.12rem 0.52rem;
+    border-radius: 999px;
+    border: 1.2px solid var(--adm-border);
+    background: var(--adm-chip-bg);
+    color: var(--adm-chip-text);
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+
+#executive-section .telemetry-key-attendance {
+    border-color: rgba(129, 231, 183, 0.64);
+    color: #c7f7df;
+}
+
+#executive-section .telemetry-key-capacity {
+    border-color: rgba(129, 201, 248, 0.66);
+    color: #d2ecff;
+}
+
+#executive-section .telemetry-key-demand {
+    border-color: rgba(250, 190, 136, 0.66);
+    color: #ffe3c7;
+}
+
+#executive-section .admin-health-grid {
+    margin-top: 0.68rem;
+    display: grid;
+    gap: 0.5rem;
+}
+
+#executive-section .admin-health-row {
+    border-radius: 12px;
+    border: 1.2px solid var(--adm-border);
+    background: var(--adm-surface-elevated);
+    padding: 0.5rem 0.58rem;
+    display: grid;
+    gap: 0.34rem;
+}
+
+#executive-section .admin-health-meta {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.55rem;
+    font-size: 0.76rem;
+    color: var(--adm-text);
+}
+
+#executive-section .admin-health-meta strong {
+    color: var(--adm-heading);
+    font-size: 0.86rem;
+    font-weight: 800;
+}
+
+#executive-section .admin-health-track {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    border: 1px solid var(--adm-track-border);
+    background: var(--adm-track-bg);
+    overflow: hidden;
+}
+
+#executive-section .admin-health-fill {
+    display: block;
+    width: calc(var(--w, 0) * 1%);
+    height: 100%;
+    border-radius: inherit;
+    transition: width 0.36s ease;
+    background: linear-gradient(90deg, rgba(120, 214, 255, 0.92), rgba(69, 155, 226, 0.92));
+}
+
+#executive-section .admin-health-fill[data-state="good"] {
+    background: linear-gradient(90deg, #8df0be, #41cb89);
+}
+
+#executive-section .admin-health-fill[data-state="mid"] {
+    background: linear-gradient(90deg, #9ad9ff, #4fa9ef);
+}
+
+#executive-section .admin-health-fill[data-state="warn"] {
+    background: linear-gradient(90deg, #ffc89c, #e98b4c);
+}
+
+#executive-section .admin-viz-grid #workload-card .list-wrap,
+#executive-section .admin-viz-grid #capacity-card .hbar-chart {
+    max-height: 244px;
+}
+
+#executive-section #demand-chart.bar-chart {
+    margin-top: 0.62rem;
+    min-height: 158px;
+    max-height: 266px;
+    grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+    gap: 0.48rem;
+    align-content: start;
+    overflow-y: auto;
+    padding-right: 0.22rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(116, 170, 210, 0.52) rgba(18, 42, 64, 0.16);
+}
+
+#executive-section #demand-chart.bar-chart::-webkit-scrollbar {
+    width: 8px;
+}
+
+#executive-section #demand-chart.bar-chart::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgba(18, 42, 64, 0.16);
+}
+
+#executive-section #demand-chart.bar-chart::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(115, 187, 240, 0.8), rgba(92, 141, 188, 0.72));
+}
+
+#executive-section #demand-chart .bar-wrap {
+    min-height: 92px;
+}
+
+#executive-section #demand-chart .bar-label {
+    font-size: 0.69rem;
+    line-height: 1.2;
+}
+
+#executive-section #demand-chart .bar-value {
+    font-size: 0.72rem;
+}
+
+#executive-section .hbar-meta,
+#executive-section .legend-row,
+#executive-section .bar-label {
+    color: var(--adm-text);
+}
+
+#executive-section .bar-value,
+#executive-section .legend-row strong {
+    color: var(--adm-heading);
+}
+
+#executive-section .bar {
+    border-color: rgba(146, 214, 255, 0.58);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 18px rgba(22, 99, 170, 0.26);
+}
+
+#executive-section .donut-core {
+    background: rgba(8, 26, 40, 0.9);
+    border: 1px solid var(--adm-border-strong);
+}
+
+#executive-section .donut-core span {
+    color: var(--adm-heading);
+}
+
+#executive-section .donut-core small {
+    color: var(--adm-muted);
+}
+
+#executive-section .admin-ops-grid {
+    grid-template-columns: minmax(250px, 0.88fr) minmax(320px, 1.12fr);
+    gap: 0.74rem;
+}
+
+#executive-section .admin-ops-grid .ops-card {
+    min-height: 250px;
+    background:
+        radial-gradient(circle at 86% 8%, rgba(100, 197, 255, 0.1), transparent 45%),
+        var(--adm-surface-panel);
+    border-color: var(--adm-border);
+}
+
+#executive-section .admin-ops-grid .panel-head {
+    padding-bottom: 0.28rem;
+    border-bottom: 1px solid var(--adm-border);
+}
+
+#executive-section .list-item {
+    border-color: var(--adm-border);
+    background: rgba(31, 69, 99, 0.32);
+    color: var(--adm-text);
+}
+
+#executive-section .list-item.warn {
+    border-color: rgba(244, 176, 147, 0.62);
+    background: rgba(146, 75, 53, 0.24);
+}
+
+#executive-section .list-item.good {
+    border-color: rgba(126, 225, 180, 0.64);
+    background: rgba(26, 105, 74, 0.24);
+}
+
+#executive-section .ai-actions .btn {
+    border-color: var(--adm-border-strong);
+    background: var(--adm-chip-bg);
+    color: var(--adm-heading);
+}
+
+#executive-section .ai-actions .btn:hover {
+    border-color: var(--adm-border-strong);
+    filter: saturate(1.06);
+}
+
+#executive-section #ai-output {
+    min-height: 170px;
+    border: 1px solid var(--adm-border);
+    background: var(--adm-surface-elevated);
+    color: var(--adm-text);
+}
+
+body.ums-theme #executive-section .list-item {
+    background: rgba(241, 248, 255, 0.94);
+}
+
+body.ums-theme #executive-section .list-item.warn {
+    background: rgba(255, 236, 231, 0.92);
+}
+
+body.ums-theme #executive-section .list-item.good {
+    background: rgba(231, 249, 241, 0.94);
+}
+
+body.ums-theme #executive-section .bar {
+    border-color: rgba(134, 190, 233, 0.68);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36), 0 8px 16px rgba(56, 115, 163, 0.2);
+}
+
+body.ums-theme #executive-section .donut-core {
+    background: #ffffff;
+    border-color: #b6cde0;
+}
+
 .list-wrap {
     margin-top: 0.7rem;
     display: grid;
@@ -1492,6 +2155,15 @@ body.ums-theme .profile-tab-panel {
     background: #f8fbff;
 }
 
+body.ums-theme .enrollment-box {
+    border-color: #c9dcee;
+    background: #ffffff;
+}
+
+body.ums-theme .enrollment-box-title {
+    color: #183957;
+}
+
 body.ums-theme .auth-section-head h3 {
     color: #1f3348;
 }
@@ -1593,27 +2265,11 @@ body.ums-theme .password-strength.strong {
     flex-wrap: wrap;
 }
 
-.attendance-trial-controls {
-    margin-top: 0.4rem;
-    padding-top: 0.44rem;
-    border-top: 1px dashed rgba(152, 208, 246, 0.42);
-}
-
-.attendance-trial-controls .btn {
-    min-height: 38px;
-}
-
-.attendance-trial-note {
-    margin-top: 0.4rem;
-    color: #a8cce8;
-    font-size: 0.78rem;
-}
-
 .food-order-controls {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr) auto;
     align-items: end;
     gap: 0.55rem;
-    flex-wrap: wrap;
 }
 
 .food-order-controls .food-order-field {
@@ -1621,9 +2277,9 @@ body.ums-theme .password-strength.strong {
     flex-direction: column;
     justify-content: flex-start;
     margin: 0;
-    flex: 0 0 340px;
-    max-width: 340px;
-    min-width: 260px;
+    min-width: 0;
+    max-width: none;
+    width: 100%;
 }
 
 .food-order-controls .food-order-field > span {
@@ -1650,10 +2306,10 @@ body.ums-theme .password-strength.strong {
     display: inline-flex;
     align-items: flex-end;
     gap: 0.55rem;
-    justify-content: flex-start;
+    justify-content: flex-end;
     flex-wrap: wrap;
     min-height: 50px;
-    flex: 1 1 280px;
+    align-self: end;
 }
 
 .food-order-actions .btn {
@@ -1766,9 +2422,29 @@ body.ums-theme .password-strength.strong {
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--food-accent) 34%, transparent), 0 12px 24px rgba(8, 27, 45, 0.32);
 }
 
+.food-shop-card.is-closed {
+    border-color: rgba(154, 167, 182, 0.6);
+    background: linear-gradient(160deg, rgba(66, 77, 90, 0.88), rgba(46, 55, 67, 0.84));
+    box-shadow: none;
+    filter: grayscale(0.9) saturate(0.28);
+    cursor: not-allowed;
+}
+
+.food-shop-card.is-closed:hover {
+    transform: none;
+    border-color: rgba(154, 167, 182, 0.6);
+    box-shadow: none;
+    filter: grayscale(0.9) saturate(0.28);
+}
+
+.food-shop-card.is-closed.is-selected {
+    box-shadow: 0 0 0 1px rgba(154, 167, 182, 0.55);
+}
+
 .food-shop-cover-wrap {
     width: 100%;
     aspect-ratio: 16 / 9;
+    position: relative;
     background: rgba(255, 255, 255, 0.08);
     overflow: hidden;
     border-bottom: 1px solid color-mix(in srgb, var(--food-accent) 45%, transparent);
@@ -1780,6 +2456,34 @@ body.ums-theme .password-strength.strong {
     object-fit: cover;
     object-position: center;
     display: block;
+}
+
+.food-shop-card.is-closed .food-shop-cover {
+    filter: grayscale(1) brightness(0.72);
+}
+
+.food-shop-closed-badge {
+    position: absolute;
+    top: 0.5rem;
+    left: 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.58rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.68);
+    background: rgba(39, 44, 51, 0.92);
+    color: #ffffff;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.food-shop-hours-note {
+    margin-top: 0.3rem;
+    color: rgba(219, 229, 239, 0.95);
+    font-size: 0.74rem;
+    font-weight: 700;
 }
 
 .food-shop-card-body {
@@ -1949,6 +2653,31 @@ body.ums-theme .food-shop-section[data-group="campus"] {
 
 body.ums-theme .food-shop-card {
     box-shadow: 0 6px 12px rgba(27, 54, 78, 0.08);
+}
+
+body.ums-theme .food-shop-card.is-closed {
+    border-color: #aeb8c4;
+    background: linear-gradient(160deg, #edf1f5, #e1e7ee);
+    filter: grayscale(1);
+    box-shadow: none;
+}
+
+body.ums-theme .food-shop-card.is-closed h4 {
+    color: #5a6d80;
+}
+
+body.ums-theme .food-shop-card.is-closed small {
+    color: #62788d;
+}
+
+body.ums-theme .food-shop-closed-badge {
+    border-color: rgba(86, 99, 112, 0.46);
+    background: rgba(111, 122, 134, 0.94);
+    color: #ffffff;
+}
+
+body.ums-theme .food-shop-hours-note {
+    color: #5f7388;
 }
 
 body.ums-theme .food-shop-card h4 {
@@ -2290,10 +3019,11 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 #food-orders-panel {
     position: relative;
     overflow: hidden;
-    border-color: rgba(136, 212, 255, 0.56);
+    border-color: rgba(132, 206, 255, 0.74);
     background:
-        radial-gradient(circle at 92% 6%, rgba(255, 154, 109, 0.15), transparent 44%),
-        linear-gradient(160deg, rgba(19, 58, 90, 0.44), rgba(12, 37, 60, 0.42));
+        radial-gradient(circle at 92% 7%, rgba(255, 173, 118, 0.22), transparent 46%),
+        linear-gradient(160deg, rgba(13, 45, 72, 0.94), rgba(8, 28, 48, 0.96));
+    box-shadow: inset 0 1px 0 rgba(182, 225, 255, 0.2), 0 14px 30px rgba(4, 18, 33, 0.42);
 }
 
 @keyframes food-sync-pulse {
@@ -2318,17 +3048,17 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     left: 0.72rem;
     right: 0.72rem;
     top: 0.56rem;
-    height: 3px;
+    height: 4px;
     border-radius: 999px;
     background: linear-gradient(90deg, #5db9ff, #f0a766);
-    opacity: 0.9;
+    opacity: 0.95;
     pointer-events: none;
 }
 
 #food-orders-panel .panel-head {
     padding-top: 0.28rem;
     padding-bottom: 0.3rem;
-    border-bottom: 1px solid rgba(131, 199, 241, 0.34);
+    border-bottom: 1px solid rgba(141, 208, 246, 0.5);
 }
 
 .food-orders-head-meta {
@@ -2359,16 +3089,36 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     overflow: auto;
     padding-right: 0.2rem;
     display: grid;
-    gap: 0.72rem;
+    gap: 0.82rem;
+    position: relative;
+    --food-orders-tabs-sticky-top: 0;
+    scroll-padding-top: 3rem;
+    border-top: 1px solid rgba(126, 196, 239, 0.34);
+    padding-top: 0.46rem;
+}
+
+.food-orders-scroll::-webkit-scrollbar {
+    width: 8px;
+}
+
+.food-orders-scroll::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: rgba(11, 36, 57, 0.52);
+}
+
+.food-orders-scroll::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(112, 194, 248, 0.86), rgba(70, 135, 194, 0.8));
 }
 
 .food-orders-section {
     border-radius: var(--radius-sm);
-    border: var(--card-border-w) solid rgba(134, 203, 245, 0.34);
-    background: rgba(18, 52, 79, 0.22);
-    padding: 0.34rem;
+    border: var(--card-border-w) solid rgba(132, 203, 247, 0.48);
+    background: linear-gradient(168deg, rgba(12, 46, 74, 0.6), rgba(8, 34, 56, 0.58));
+    padding: 0.46rem;
     display: grid;
-    gap: 0.44rem;
+    gap: 0.56rem;
+    box-shadow: inset 0 1px 0 rgba(170, 219, 255, 0.14);
 }
 
 #food-section .viz-grid .viz-card {
@@ -2388,14 +3138,18 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.34rem;
     margin-top: 0.06rem;
-    width: min(360px, 100%);
+    width: 100%;
     padding: 0.2rem;
     border-radius: var(--radius-sm);
     border: var(--card-border-w) solid rgba(130, 204, 248, 0.4);
-    background: linear-gradient(170deg, rgba(30, 76, 111, 0.28), rgba(14, 45, 68, 0.28));
+    background: linear-gradient(170deg, rgba(22, 62, 93, 0.96), rgba(14, 45, 68, 0.95));
     position: sticky;
-    top: 0.1rem;
-    z-index: 8;
+    top: var(--food-orders-tabs-sticky-top);
+    z-index: 12;
+    backdrop-filter: blur(7px);
+    -webkit-backdrop-filter: blur(7px);
+    box-shadow: 0 10px 16px rgba(7, 30, 49, 0.28);
+    margin-bottom: 0.08rem;
 }
 
 .food-orders-tab {
@@ -2436,21 +3190,27 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     gap: 0.5rem;
     padding: 0.42rem 0.58rem;
     border-radius: var(--radius-sm);
-    border: var(--card-border-w) solid rgba(134, 202, 244, 0.38);
-    background: linear-gradient(90deg, rgba(34, 82, 120, 0.28), rgba(47, 70, 96, 0.18));
-    position: sticky;
-    top: 2.92rem;
-    z-index: 7;
+    border: var(--card-border-w) solid rgba(142, 211, 251, 0.54);
+    background: linear-gradient(92deg, rgba(25, 72, 105, 0.97), rgba(18, 52, 78, 0.96));
+    position: relative;
+    top: auto;
+    z-index: 1;
+    min-height: 46px;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: 0 6px 10px rgba(8, 31, 49, 0.16);
 }
 
 .food-orders-subhead h4 {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: 0.94rem;
+    color: #f2f9ff;
+    letter-spacing: 0.01em;
 }
 
 .food-orders-subhead small,
 .food-orders-subhead-meta {
-    color: var(--muted);
+    color: #bbd9f0;
     font-size: 0.72rem;
 }
 
@@ -2463,21 +3223,21 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-payment-recovery-list {
-    margin-top: 0.08rem;
+    margin-top: 0.14rem;
     padding: 0.2rem;
     border-radius: var(--radius-sm);
-    border: var(--card-border-w) solid rgba(133, 202, 245, 0.36);
-    background: rgba(19, 52, 78, 0.24);
+    border: var(--card-border-w) solid rgba(133, 201, 243, 0.46);
+    background: rgba(14, 47, 73, 0.42);
     max-height: none;
     overflow: visible;
 }
 
 .food-orders-list {
-    margin-top: 0.08rem;
+    margin-top: 0.14rem;
     padding: 0.2rem;
     border-radius: var(--radius-sm);
-    border: var(--card-border-w) solid rgba(133, 202, 245, 0.36);
-    background: rgba(18, 50, 75, 0.24);
+    border: var(--card-border-w) solid rgba(133, 202, 245, 0.46);
+    background: rgba(14, 45, 69, 0.42);
     max-height: none;
     overflow: visible;
 }
@@ -2519,15 +3279,17 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     position: relative;
     padding: 0;
     overflow: hidden;
-    border: 1px solid rgba(136, 205, 248, 0.38);
-    background: linear-gradient(152deg, rgba(18, 52, 80, 0.34), rgba(10, 35, 56, 0.32));
+    border: 1px solid rgba(136, 205, 248, 0.56);
+    background: linear-gradient(152deg, rgba(22, 60, 90, 0.56), rgba(10, 35, 56, 0.52));
+    box-shadow: 0 8px 18px rgba(6, 27, 44, 0.24), inset 0 1px 0 rgba(181, 223, 252, 0.12);
+    color: #e8f4ff;
 }
 
 .food-order-card::before {
     content: "";
     position: absolute;
     inset: 0 auto 0 0;
-    width: 8px;
+    width: 10px;
     background: linear-gradient(180deg, #68cbff, #339de8);
     box-shadow: 1px 0 0 rgba(148, 214, 251, 0.36);
     pointer-events: none;
@@ -2580,7 +3342,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     background: transparent;
     color: inherit;
     text-align: left;
-    padding: 0.58rem 0.64rem 0.6rem 0.92rem;
+    padding: 0.62rem 0.66rem 0.64rem 0.98rem;
     display: grid;
     gap: 0.35rem;
     cursor: pointer;
@@ -2589,7 +3351,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-order-card-toggle:hover {
-    background: rgba(73, 125, 168, 0.14);
+    background: rgba(77, 139, 186, 0.22);
 }
 
 .food-order-card-toggle:focus-visible {
@@ -2612,11 +3374,12 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 
 .food-order-card-title strong {
     font-size: 0.88rem;
+    color: #f5fbff;
 }
 
 .food-order-card-title small {
     font-size: 0.72rem;
-    color: var(--muted);
+    color: #b7d2e8;
 }
 
 .food-order-badge {
@@ -2627,6 +3390,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     font-weight: 700;
     letter-spacing: 0.02em;
     background: rgba(34, 92, 132, 0.36);
+    color: #e9f6ff;
 }
 
 .food-order-card.tone-verified .food-order-badge {
@@ -2701,7 +3465,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-order-card-meta {
-    color: var(--muted);
+    color: #bdd8ee;
     font-size: 0.73rem;
     line-height: 1.3;
     word-break: break-word;
@@ -2713,7 +3477,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-order-tracker small {
-    color: var(--muted);
+    color: #bdd8ee;
     font-size: 0.73rem;
 }
 
@@ -2721,8 +3485,8 @@ body.ums-theme #food-open-cart-btn.has-items::after {
     width: 100%;
     height: 10px;
     border-radius: 999px;
-    border: 1px solid rgba(150, 205, 246, 0.32);
-    background: rgba(26, 70, 104, 0.35);
+    border: 1px solid rgba(150, 205, 246, 0.5);
+    background: rgba(19, 58, 87, 0.64);
     overflow: hidden;
 }
 
@@ -2758,7 +3522,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-order-card-foot small {
-    color: var(--muted);
+    color: #bdd8ee;
     font-size: 0.72rem;
 }
 
@@ -2792,7 +3556,7 @@ body.ums-theme #food-open-cart-btn.has-items::after {
 }
 
 .food-order-card-details {
-    border-top: 1px dashed rgba(143, 202, 241, 0.4);
+    border-top: 1px dashed rgba(148, 208, 248, 0.56);
     padding: 0.55rem 0.64rem 0.64rem 0.92rem;
     position: relative;
     z-index: 1;
@@ -3039,7 +3803,8 @@ body.ums-theme #food-section .viz-grid .viz-card:hover {
 
 body.ums-theme .food-orders-tabs {
     border-color: #c6dbee;
-    background: linear-gradient(180deg, #f7fbff, #eef6fd);
+    background: linear-gradient(180deg, rgba(247, 251, 255, 0.98), rgba(238, 246, 253, 0.98));
+    box-shadow: 0 8px 16px rgba(22, 47, 71, 0.12);
 }
 
 body.ums-theme .food-orders-tab {
@@ -3062,7 +3827,8 @@ body.ums-theme .food-orders-tab.is-active {
 
 body.ums-theme .food-orders-subhead {
     border-color: #c8dcec;
-    background: linear-gradient(92deg, #eff7ff, #fff6ec);
+    background: linear-gradient(92deg, rgba(239, 247, 255, 0.98), rgba(255, 246, 236, 0.98));
+    box-shadow: 0 6px 12px rgba(24, 52, 78, 0.1);
 }
 
 body.ums-theme .food-orders-subhead small,
@@ -3072,94 +3838,98 @@ body.ums-theme .food-orders-subhead-meta {
 
 body.ums-theme .food-payment-recovery-list,
 body.ums-theme .food-orders-list {
-    border-color: #caddec;
-    background: rgba(252, 254, 255, 0.94);
+    border-color: #b9d1e4;
+    background: linear-gradient(180deg, #ffffff, #f6fbff);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 body.ums-theme .food-payment-recovery-list .list-item,
 body.ums-theme .food-orders-list .list-item {
-    border-color: #cfdfed;
+    border-color: #bfd5e7;
+    background: #ffffff;
+    box-shadow: 0 1px 0 rgba(34, 73, 109, 0.05);
 }
 
 body.ums-theme .food-payment-recovery-list .list-item:hover,
 body.ums-theme .food-orders-list .list-item:hover {
-    border-color: #a8cce7;
-    background: #f4faff;
-    box-shadow: 0 8px 14px rgba(24, 52, 78, 0.12);
+    border-color: #8fb8d7;
+    background: #f1f8ff;
+    box-shadow: 0 8px 16px rgba(24, 52, 78, 0.14);
 }
 
 body.ums-theme .food-order-badge {
-    border-color: #9fcae6;
-    background: #eaf4fd;
-    color: #2d4e67;
+    border-color: #7eaed3;
+    background: #dfeefe;
+    color: #1e4968;
 }
 
 body.ums-theme .food-order-card {
-    border-color: #c6dcec;
-    background: #f4f9fe;
+    border-color: #aac8de;
+    background: linear-gradient(160deg, #ffffff, #f5f9ff);
+    box-shadow: 0 8px 16px rgba(22, 53, 80, 0.1);
 }
 
 body.ums-theme .food-order-card::before {
-    background: linear-gradient(180deg, #67baea, #2d96e0);
-    box-shadow: 1px 0 0 rgba(135, 186, 223, 0.42);
+    background: linear-gradient(180deg, #4ea6de, #2b7fc0);
+    box-shadow: 1px 0 0 rgba(117, 171, 212, 0.44);
 }
 
 body.ums-theme .food-order-card.warn {
-    border-color: #ebc8ab;
-    background: #fff4eb;
+    border-color: #e7b992;
+    background: linear-gradient(160deg, #fff8f1, #fff0e5);
 }
 
 body.ums-theme .food-order-card.good {
-    border-color: #c5e2d1;
-    background: #edf9f1;
+    border-color: #9ad7b5;
+    background: linear-gradient(160deg, #f2fcf6, #e7f8ef);
 }
 
 body.ums-theme .food-order-card.tone-verified {
-    border-color: #b8dfca;
-    background: linear-gradient(160deg, #eefbf2, #e7f8ee);
+    border-color: #8ec8a7;
+    background: linear-gradient(160deg, #f0fcf4, #e2f5ea);
 }
 
 body.ums-theme .food-order-card.tone-verified::before {
-    background: linear-gradient(180deg, #76d1a1, #3ca373);
-    box-shadow: 1px 0 0 rgba(142, 212, 173, 0.45);
+    background: linear-gradient(180deg, #4fbe87, #2d9164);
+    box-shadow: 1px 0 0 rgba(125, 198, 159, 0.48);
 }
 
 body.ums-theme .food-order-card.tone-failed {
-    border-color: #e8beb9;
-    background: linear-gradient(160deg, #fff0ef, #ffe7e6);
+    border-color: #e4aaa2;
+    background: linear-gradient(160deg, #fff4f2, #ffe5e2);
 }
 
 body.ums-theme .food-order-card.tone-failed::before {
-    background: linear-gradient(180deg, #ee9389, #cb4d42);
-    box-shadow: 1px 0 0 rgba(225, 161, 154, 0.48);
+    background: linear-gradient(180deg, #e17367, #c2473b);
+    box-shadow: 1px 0 0 rgba(215, 139, 131, 0.5);
 }
 
 body.ums-theme .food-order-card.tone-delivered {
-    border-color: #e8d19f;
-    background: linear-gradient(160deg, #fff8e8, #fff2d8);
+    border-color: #dcb779;
+    background: linear-gradient(160deg, #fff9ea, #ffefcc);
 }
 
 body.ums-theme .food-order-card.tone-delivered::before {
-    background: linear-gradient(180deg, #e8bb64, #c88c20);
-    box-shadow: 1px 0 0 rgba(219, 187, 127, 0.48);
+    background: linear-gradient(180deg, #d9ab4f, #b47c19);
+    box-shadow: 1px 0 0 rgba(203, 165, 96, 0.52);
 }
 
 body.ums-theme .food-order-card.tone-verified .food-order-badge {
-    border-color: #bde2cd;
-    background: #e9f8ef;
-    color: #266344;
+    border-color: #95c9aa;
+    background: #dbf2e4;
+    color: #1c5b3c;
 }
 
 body.ums-theme .food-order-card.tone-failed .food-order-badge {
-    border-color: #e6bcb7;
-    background: #fdebe8;
-    color: #8b3128;
+    border-color: #deada7;
+    background: #fce6e3;
+    color: #81261d;
 }
 
 body.ums-theme .food-order-card.tone-delivered .food-order-badge {
-    border-color: #e9ce9a;
-    background: #fef1d9;
-    color: #7b580f;
+    border-color: #d4b16f;
+    background: #fbe9c3;
+    color: #684706;
 }
 
 body.ums-theme .food-order-card-toggle:hover {
@@ -3176,66 +3946,98 @@ body.ums-theme .food-order-card-details {
 }
 
 body.ums-theme .food-order-progress-bar {
-    border-color: #c8dceb;
-    background: #ebf4fb;
+    border-color: #b6d2e5;
+    background: #e4eff9;
 }
 
 body.ums-theme .food-order-progress-fill {
-    box-shadow: none;
+    box-shadow: 0 0 0 1px rgba(88, 155, 202, 0.08);
 }
 
 body.ums-theme .food-order-item-row {
-    border-color: #d1e1ed;
+    border-color: #bfd5e5;
     background: #ffffff;
 }
 
 body.ums-theme .food-order-item-row.warn {
-    border-color: #edd2bb;
-    background: #fff6ee;
+    border-color: #e6c39c;
+    background: #fff5e9;
 }
 
 body.ums-theme .food-order-item-row.good {
-    border-color: #cee7d7;
-    background: #f3fbf6;
+    border-color: #b5dcc5;
+    background: #eef9f2;
 }
 
 body.ums-theme .food-order-item-row.tone-verified {
-    border-color: #c6e6d3;
-    background: #f2fbf5;
+    border-color: #abd8bf;
+    background: #eaf8f0;
 }
 
 body.ums-theme .food-order-item-row.tone-failed {
-    border-color: #ecc9c3;
-    background: #fff4f2;
+    border-color: #e1b5af;
+    background: #fff0ed;
 }
 
 body.ums-theme .food-order-item-row.tone-delivered {
-    border-color: #ecd8ad;
-    background: #fff8eb;
+    border-color: #e0c38b;
+    background: #fff5df;
 }
 
 body.ums-theme .food-order-item-badge {
-    border-color: #b7d2e5;
-    background: #edf5fc;
-    color: #325774;
+    border-color: #9fc1db;
+    background: #e2effa;
+    color: #254e70;
 }
 
 body.ums-theme .food-order-item-row.tone-verified .food-order-item-badge {
-    border-color: #bfe3cf;
-    background: #eaf8f0;
-    color: #226041;
+    border-color: #98c9ac;
+    background: #dff2e7;
+    color: #1a5a3a;
 }
 
 body.ums-theme .food-order-item-row.tone-failed .food-order-item-badge {
-    border-color: #e7c1bb;
-    background: #fdece9;
-    color: #8a3229;
+    border-color: #d8aaa4;
+    background: #fbe3df;
+    color: #7c261d;
 }
 
 body.ums-theme .food-order-item-row.tone-delivered .food-order-item-badge {
-    border-color: #e9d0a1;
-    background: #fef3dd;
-    color: #7c5913;
+    border-color: #d3b16f;
+    background: #f9e8c5;
+    color: #66470a;
+}
+
+body.ums-theme .food-order-card-title strong {
+    color: #193d5d;
+}
+
+body.ums-theme .food-order-card-title small {
+    color: #45698a;
+}
+
+body.ums-theme .food-order-card-meta {
+    color: #3d6588;
+}
+
+body.ums-theme .food-order-tracker small {
+    color: #416a8d;
+}
+
+body.ums-theme .food-order-card-foot small {
+    color: #4b7393;
+}
+
+body.ums-theme .food-order-card-chevron {
+    color: #4b7393;
+}
+
+body.ums-theme .food-order-item-head strong {
+    color: #173b59;
+}
+
+body.ums-theme .food-order-item-meta {
+    color: #4a6f90;
 }
 
 body.ums-theme .food-delivery-confirm-btn {
@@ -4215,6 +5017,29 @@ body.ums-theme .food-ai-chip:hover {
     justify-self: flex-start;
 }
 
+.enrollment-split-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.62rem;
+}
+
+.enrollment-box {
+    border: 1px solid rgba(143, 199, 239, 0.34);
+    border-radius: 12px;
+    background: rgba(9, 34, 58, 0.34);
+    padding: 0.64rem;
+    display: grid;
+    gap: 0.42rem;
+    align-content: start;
+}
+
+.enrollment-box-title {
+    margin: 0;
+    font-size: 0.94rem;
+    color: #e9f6ff;
+    letter-spacing: 0.01em;
+}
+
 .profile-modal-grid {
     display: grid;
     gap: 0.62rem;
@@ -4477,6 +5302,53 @@ body.ums-theme .ums-side-item.active {
     cursor: not-allowed;
     transform: none;
     box-shadow: none;
+}
+
+body:not(.ums-theme) #main-dashboard-header.topbar {
+    border-color: rgba(142, 211, 252, 0.66);
+    background:
+        radial-gradient(circle at 88% 10%, rgba(255, 170, 116, 0.2), transparent 42%),
+        linear-gradient(130deg, rgba(10, 40, 66, 0.9), rgba(12, 50, 79, 0.84) 52%, rgba(52, 38, 59, 0.82));
+    box-shadow:
+        inset 0 1px 0 rgba(187, 229, 255, 0.18),
+        0 14px 30px rgba(4, 18, 33, 0.44);
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+}
+
+body:not(.ums-theme) .ums-top-nav {
+    padding: 0.26rem;
+    border-radius: 999px;
+    border: 1px solid rgba(138, 208, 251, 0.52);
+    background: linear-gradient(160deg, rgba(11, 44, 72, 0.78), rgba(10, 36, 58, 0.74));
+    box-shadow: inset 0 1px 0 rgba(178, 225, 255, 0.16), 0 10px 20px rgba(6, 25, 42, 0.34);
+    gap: 0.36rem;
+}
+
+body:not(.ums-theme) .ums-module-btn {
+    min-height: 42px;
+    padding: 0.46rem 0.94rem;
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #dff2ff;
+    border-color: rgba(149, 218, 255, 0.42);
+    background: linear-gradient(150deg, rgba(26, 73, 109, 0.5), rgba(14, 50, 79, 0.5));
+    text-shadow: 0 1px 0 rgba(4, 14, 24, 0.46);
+}
+
+body:not(.ums-theme) .ums-module-btn:hover {
+    border-color: rgba(182, 231, 255, 0.78);
+    background: linear-gradient(150deg, rgba(36, 92, 133, 0.62), rgba(21, 65, 101, 0.62));
+    box-shadow: 0 8px 16px rgba(6, 27, 44, 0.36);
+}
+
+body:not(.ums-theme) .ums-module-btn.active {
+    border-color: rgba(168, 230, 255, 0.96);
+    background: linear-gradient(112deg, rgba(67, 168, 247, 0.96), rgba(26, 190, 246, 0.9));
+    color: #f4fcff;
+    box-shadow:
+        0 10px 20px rgba(5, 29, 47, 0.4),
+        0 0 0 1px rgba(188, 233, 255, 0.44);
 }
 
 body.ums-theme {
@@ -4768,14 +5640,6 @@ body.ums-theme .btn-secondary:active {
 body.ums-theme .btn-ghost {
     background: #f5f5f5;
     color: #2f3238;
-}
-
-body.ums-theme .attendance-trial-controls {
-    border-top-color: #ccdae8;
-}
-
-body.ums-theme .attendance-trial-note {
-    color: #5a7691;
 }
 
 body.ums-theme .metric-value {
@@ -5397,6 +6261,19 @@ body.ums-theme .calendar-class.slot-open-window {
     #food-section .viz-grid .viz-card:last-child {
         grid-column: auto;
     }
+
+    #executive-section .admin-viz-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    #executive-section .admin-telemetry-layout {
+        grid-template-columns: 1fr;
+    }
+
+    #executive-section .admin-telemetry-stats {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: none;
+    }
 }
 
 @media (max-width: 940px) {
@@ -5480,6 +6357,15 @@ body.ums-theme .calendar-class.slot-open-window {
         grid-template-columns: 1fr 1fr;
     }
 
+    #executive-section .admin-toolbar {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    #executive-section .admin-refresh-btn {
+        grid-column: 1 / -1;
+        width: 100%;
+    }
+
     .faculty-controls {
         grid-template-columns: 1fr 1fr;
     }
@@ -5496,12 +6382,39 @@ body.ums-theme .calendar-class.slot-open-window {
         grid-template-columns: 1fr 1fr;
     }
 
+    #executive-section .admin-metric-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    #executive-section .admin-viz-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #executive-section #admin-attendance-card .admin-attendance-wrap {
+        grid-template-columns: 1fr;
+        justify-items: center;
+    }
+
+    #executive-section .admin-telemetry-layout {
+        grid-template-columns: 1fr;
+    }
+
+    #executive-section .admin-telemetry-stats {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: none;
+    }
+
     .faculty-stats-grid {
         grid-template-columns: 1fr 1fr;
     }
 
     .ops-grid {
         grid-template-columns: 1fr;
+    }
+
+    #executive-section .admin-cluster-head {
+        flex-direction: column;
+        align-items: flex-start;
     }
 
     .review-actions {
@@ -5558,6 +6471,17 @@ body.ums-theme .calendar-class.slot-open-window {
     .metric-grid,
     .viz-grid,
     .faculty-stats-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #executive-section .admin-toolbar,
+    #executive-section .admin-viz-grid,
+    #executive-section .admin-ops-grid,
+    #executive-section .admin-metric-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #executive-section .admin-telemetry-stats {
         grid-template-columns: 1fr;
     }
 
@@ -5639,6 +6563,10 @@ body.ums-theme .calendar-class.slot-open-window {
 
     .profile-modal-card .auth-actions {
         gap: 0.42rem;
+    }
+
+    .enrollment-split-grid {
+        grid-template-columns: 1fr;
     }
 
     .theme-toggle-btn {

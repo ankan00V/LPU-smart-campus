@@ -253,6 +253,34 @@ def ui():
     return {"message": "UI is not available. Ensure web/index.html exists."}
 
 
+def _ui_logo_file() -> Path:
+    return WEB_DIR / "assets" / "lpu-smart-campus-logo.png"
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    logo_file = _ui_logo_file()
+    if logo_file.exists():
+        return FileResponse(logo_file, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Favicon not found")
+
+
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+def apple_touch_icon():
+    logo_file = _ui_logo_file()
+    if logo_file.exists():
+        return FileResponse(logo_file, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Apple touch icon not found")
+
+
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+def apple_touch_icon_precomposed():
+    logo_file = _ui_logo_file()
+    if logo_file.exists():
+        return FileResponse(logo_file, media_type="image/png")
+    raise HTTPException(status_code=404, detail="Apple touch icon not found")
+
+
 @app.on_event("startup")
 def startup_event() -> None:
     requires_mongo = mongo_persistence_required()

@@ -14,7 +14,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import date
+from datetime import date, datetime
 from urllib import error, request
 
 
@@ -87,6 +87,36 @@ def choose_menu_item(menu_items: list[dict]) -> dict:
     raise RuntimeError("No active in-stock menu item found")
 
 
+def choose_slot_id(slots: list[dict], order_date: date, preferred_slot_id: int | None) -> int:
+    if preferred_slot_id is not None:
+        for row in slots:
+            if int(row.get("id") or 0) == int(preferred_slot_id):
+                return int(row["id"])
+        raise RuntimeError(f"Preferred slot_id={preferred_slot_id} not found")
+
+    if not slots:
+        raise RuntimeError("No slots found")
+
+    if order_date == date.today():
+        now_value = datetime.now().time()
+        upcoming: list[dict] = []
+        for row in slots:
+            end_raw = str(row.get("end_time") or "").strip()
+            if not end_raw:
+                continue
+            try:
+                end_time = datetime.strptime(end_raw, "%H:%M:%S").time()
+            except ValueError:
+                continue
+            if end_time > now_value:
+                upcoming.append(row)
+        if upcoming:
+            return int(upcoming[0]["id"])
+        raise RuntimeError("No upcoming slot available for current date")
+
+    return int(slots[0]["id"])
+
+
 def find_delivered_order(orders: list[dict]) -> dict | None:
     for row in orders:
         if str(row.get("status") or "").strip().lower() == "delivered":
@@ -109,6 +139,7 @@ def main() -> int:
     parser.add_argument("--lpu-lat", type=float, default=float(os.getenv("LPU_CENTER_LAT", "31.2536")))
     parser.add_argument("--lpu-lon", type=float, default=float(os.getenv("LPU_CENTER_LON", "75.7064")))
     parser.add_argument("--accuracy-m", type=float, default=float(os.getenv("LPU_GPS_ACCURACY_M", "25")))
+    parser.add_argument("--slot-id", type=int, default=None)
     parser.add_argument("--rating", type=int, default=int(os.getenv("ORDER_RATING_STARS", "5")))
     args = parser.parse_args()
 
@@ -157,7 +188,11 @@ def main() -> int:
     )
     if not isinstance(slots, list) or not slots:
         raise RuntimeError("No slots found")
-    slot_id = int(slots[0]["id"])
+    try:
+        order_date_value = date.fromisoformat(args.order_date)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid order date: {args.order_date}") from exc
+    slot_id = choose_slot_id(slots, order_date_value, args.slot_id)
     print(f"[info] shop_id={shop_id}, menu_item_id={menu_item['id']}, slot_id={slot_id}, order_date={args.order_date}")
 
     print_step("Create checkout order")
@@ -382,22 +417,12 @@ def main() -> int:
             method="PATCH",
             path=f"/food/orders/{delivered_id}/rating",
             token=args.token,
-            body={"stars": rating_stars},
+            body={"stars": rating_stars, "confirm_final": True},
             expected_statuses=(200,),
         )
         if int(rated.get("rating_stars") or 0) != rating_stars:
             raise RuntimeError(f"Rating set mismatch: {rated}")
-        unrated = api_call(
-            base_url=args.base_url,
-            method="PATCH",
-            path=f"/food/orders/{delivered_id}/rating",
-            token=args.token,
-            body={"stars": 0},
-            expected_statuses=(200,),
-        )
-        if unrated.get("rating_stars") is not None:
-            raise RuntimeError(f"Rating unset mismatch: {unrated}")
-        print(f"[info] rating_set_and_unset_ok_for_order={delivered_id}")
+        print(f"[info] rating_finalized_ok_for_order={delivered_id}")
     else:
         print("[warn] No delivered order available for rating. Provide --operator-token to force status transitions.")
 

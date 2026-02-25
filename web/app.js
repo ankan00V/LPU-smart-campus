@@ -11,6 +11,10 @@ const PASSWORD_POLICY_TEXT = 'Minimum 8 characters with letters, numbers, and a 
 const FOOD_LOCATION_MAX_STALE_MS = 120000;
 const FOOD_DELIVERY_FEE_INR = 30;
 const FOOD_PLATFORM_FEE_INR = 5;
+const FOOD_SERVICE_START_MINUTES = 10 * 60;
+const FOOD_SERVICE_END_MINUTES = 21 * 60;
+const FOOD_SERVICE_HOURS_LABEL = '10:00 AM - 9:00 PM';
+const FOOD_DEMAND_LIVE_REFRESH_MS = 10000;
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
 const FOOD_ORDER_STATUS_LABELS = {
@@ -159,6 +163,8 @@ let forgotOtpCooldownTimer = null;
 let foodPopupTimer = null;
 let foodToastTimer = null;
 let foodOrdersPulseTimer = null;
+let foodDemandLiveTimer = null;
+let foodDemandLiveBusy = false;
 let sessionIdleTimer = null;
 let sessionMaxTimer = null;
 let sessionActivityBound = false;
@@ -195,6 +201,9 @@ const state = {
     ratingBusyOrderIds: new Set(),
     deliveryConfirmBusyOrderIds: new Set(),
     recoveryBusyRefs: new Set(),
+    demandDigest: '',
+    lastDemandSyncAtMs: 0,
+    demandSyncPulseUntilMs: 0,
     orderDate: '',
     shops: [],
     menuByShop: {},
@@ -206,6 +215,8 @@ const state = {
     cartModalTab: 'cart',
     checkoutPreviewOpen: false,
     checkoutDeliveryPoint: '',
+    realtimeAvailabilitySignature: '',
+    realtimeServiceOpen: null,
     location: {
         requestedOnce: false,
         autoPromptAttempted: false,
@@ -225,6 +236,9 @@ const state = {
   resources: {
     workload: [],
     mongoStatus: null,
+  },
+  admin: {
+    telemetryHistory: [],
   },
   remedial: {
     classes: [],
@@ -299,6 +313,8 @@ const authState = {
   mode: 'login',
   otpCooldownUntilMs: 0,
   otpRequestInFlight: false,
+  otpVerifyInFlight: false,
+  registerInFlight: false,
   forgotOtpCooldownUntilMs: 0,
   forgotOtpRequestInFlight: false,
   forgotResetToken: '',
@@ -312,6 +328,15 @@ const els = {
   courseId: document.getElementById('course-id'),
   absenteesWrap: document.getElementById('absentees-wrap'),
   demandChart: document.getElementById('demand-chart'),
+  adminTelemetryChart: document.getElementById('admin-telemetry-chart'),
+  adminTelemetryAttendanceNow: document.getElementById('admin-telemetry-attendance-now'),
+  adminTelemetryAttendanceDelta: document.getElementById('admin-telemetry-attendance-delta'),
+  adminTelemetryCapacityNow: document.getElementById('admin-telemetry-capacity-now'),
+  adminTelemetryCapacityDelta: document.getElementById('admin-telemetry-capacity-delta'),
+  adminTelemetryDemandNow: document.getElementById('admin-telemetry-demand-now'),
+  adminTelemetryDemandDelta: document.getElementById('admin-telemetry-demand-delta'),
+  adminTelemetryStabilityNow: document.getElementById('admin-telemetry-stability-now'),
+  adminTelemetryStabilityNote: document.getElementById('admin-telemetry-stability-note'),
   capacityChart: document.getElementById('capacity-chart'),
   workloadChart: document.getElementById('workload-chart'),
   mongoSyncStatus: document.getElementById('mongo-sync-status'),
@@ -325,9 +350,24 @@ const els = {
   liveDateTime: document.getElementById('live-datetime'),
   attendanceDonut: document.getElementById('attendance-donut'),
   attendanceRate: document.getElementById('attendance-rate'),
+  adminHealthAttendanceValue: document.getElementById('admin-health-attendance-value'),
+  adminHealthAttendanceFill: document.getElementById('admin-health-attendance-fill'),
+  adminHealthCapacityValue: document.getElementById('admin-health-capacity-value'),
+  adminHealthCapacityFill: document.getElementById('admin-health-capacity-fill'),
+  adminHealthDemandValue: document.getElementById('admin-health-demand-value'),
+  adminHealthDemandFill: document.getElementById('admin-health-demand-fill'),
+  adminHealthWorkloadValue: document.getElementById('admin-health-workload-value'),
+  adminHealthWorkloadFill: document.getElementById('admin-health-workload-fill'),
   presentCount: document.getElementById('present-count'),
   absentCount: document.getElementById('absent-count'),
   enrolledCount: document.getElementById('enrolled-count'),
+  attendancePresentPercent: document.getElementById('attendance-present-percent'),
+  attendancePresentFill: document.getElementById('attendance-present-fill'),
+  attendanceAbsentPercent: document.getElementById('attendance-absent-percent'),
+  attendanceAbsentFill: document.getElementById('attendance-absent-fill'),
+  attendanceHealthScore: document.getElementById('attendance-health-score'),
+  attendanceHealthFill: document.getElementById('attendance-health-fill'),
+  attendanceHealthNote: document.getElementById('attendance-health-note'),
 
   authOverlay: document.getElementById('auth-overlay'),
   authModeLoginBtn: document.getElementById('auth-mode-login-btn'),
@@ -357,6 +397,7 @@ const els = {
   authPasswordStrength: document.getElementById('auth-password-strength'),
   requestOtpBtn: document.getElementById('request-otp-btn'),
   verifyOtpBtn: document.getElementById('verify-otp-btn'),
+  registerBtn: document.getElementById('register-btn'),
   forgotPasswordToggleBtn: document.getElementById('forgot-password-toggle-btn'),
   forgotPasswordPanel: document.getElementById('forgot-password-panel'),
   forgotEmail: document.getElementById('forgot-email'),
@@ -423,6 +464,7 @@ const els = {
   foodLocationStatus: document.getElementById('food-location-status'),
   foodStatusMsg: document.getElementById('food-status-msg'),
   foodDemandChartModule: document.getElementById('food-demand-chart-module'),
+  foodDemandFreshness: document.getElementById('food-demand-freshness'),
   foodPeakList: document.getElementById('food-peak-list'),
   foodOrdersPanel: document.getElementById('food-orders-panel'),
   foodOrdersPanelFreshness: document.getElementById('food-orders-panel-freshness'),
@@ -517,8 +559,6 @@ const els = {
   selectedClassLabel: document.getElementById('selected-class-label'),
   attendanceKpiSubtitle: document.getElementById('attendance-kpi-subtitle'),
   takeSelfieBtn: document.getElementById('take-selfie-btn'),
-  trialMarkBtn: document.getElementById('trial-mark-btn'),
-  trialResetBtn: document.getElementById('trial-reset-btn'),
   studentAttendanceResult: document.getElementById('student-attendance-result'),
   profilePhotoInput: document.getElementById('profile-photo-input'),
   saveProfilePhotoBtn: document.getElementById('save-profile-photo-btn'),
@@ -535,8 +575,10 @@ const els = {
   profileRegistrationNumber: document.getElementById('profile-registration-number'),
   profileRegistrationNote: document.getElementById('profile-registration-note'),
   enrollmentPhotoPreview: document.getElementById('enrollment-photo-preview'),
+  openProfilePhotoUpdateBtn: document.getElementById('open-profile-photo-update-btn'),
   enrollmentSummaryStatus: document.getElementById('enrollment-summary-status'),
   enrollmentSummaryUpdated: document.getElementById('enrollment-summary-updated'),
+  enrollmentSummaryLock: document.getElementById('enrollment-summary-lock'),
   openEnrollmentModalBtn: document.getElementById('open-enrollment-modal-btn'),
   enrollmentModal: document.getElementById('enrollment-modal'),
   enrollmentModalTitle: document.getElementById('enrollment-modal-title'),
@@ -844,6 +886,20 @@ function setOtpRequestInFlight(flag) {
   renderOtpCooldown();
 }
 
+function setOtpVerifyInFlight(flag) {
+  authState.otpVerifyInFlight = Boolean(flag);
+  renderOtpCooldown();
+}
+
+function setRegisterInFlight(flag) {
+  authState.registerInFlight = Boolean(flag);
+  if (!els.registerBtn) {
+    return;
+  }
+  els.registerBtn.disabled = authState.registerInFlight;
+  els.registerBtn.textContent = authState.registerInFlight ? 'Registering...' : 'Register Account';
+}
+
 function setForgotOtpRequestInFlight(flag) {
   authState.forgotOtpRequestInFlight = Boolean(flag);
   renderForgotOtpCooldown();
@@ -861,11 +917,13 @@ function renderOtpCooldown() {
   const remaining = getOtpCooldownRemainingSeconds();
   const cooldownActive = remaining > 0;
   const otpLoading = Boolean(authState.otpRequestInFlight);
+  const verifyLoading = Boolean(authState.otpVerifyInFlight);
   const loginMode = !isSignupMode();
   const forgotActive = isForgotPasswordPanelOpen();
   els.requestOtpBtn.disabled = otpLoading || cooldownActive || !loginMode || forgotActive;
   if (els.verifyOtpBtn) {
-    els.verifyOtpBtn.disabled = !loginMode || forgotActive;
+    els.verifyOtpBtn.disabled = !loginMode || forgotActive || verifyLoading;
+    els.verifyOtpBtn.textContent = verifyLoading ? 'Verifying...' : 'Verify OTP & Login';
   }
   if (otpLoading) {
     els.requestOtpBtn.textContent = 'Sending OTP...';
@@ -942,6 +1000,7 @@ function startForgotOtpCooldown(seconds = 30) {
 
 function openAuthOverlay(message = 'Sign in to continue.') {
   closeAccountDropdown();
+  stopFoodDemandLiveTicker();
   document.body.classList.add('auth-open');
   els.authOverlay.classList.remove('hidden');
   els.otpDebug.classList.add('hidden');
@@ -959,6 +1018,7 @@ function closeAuthOverlay() {
   els.otpDebug.classList.add('hidden');
   els.otpDebug.textContent = '';
   hideOtpPopup();
+  syncFoodDemandLiveTicker();
 }
 
 function closeAccountDropdown() {
@@ -1045,6 +1105,8 @@ function renderLiveDateTime() {
   }).format(now);
   els.liveDateTime.textContent = `${formatted} (Local Time)`;
   renderFoodFreshnessIndicators();
+  renderFoodDemandFreshnessIndicator();
+  applyFoodRealtimeAvailability({ showStatusOnTransition: true });
 }
 
 function startLiveDateTimeTicker() {
@@ -1448,6 +1510,7 @@ function setActiveModule(moduleKey, { updateHash = true } = {}) {
   }
   applyRoleUI();
   setTopNavActive(nextModule);
+  syncFoodDemandLiveTicker();
 }
 
 function updateDashboardHeroByRole() {
@@ -1665,6 +1728,26 @@ function showEnrollmentLockPopup() {
   );
 }
 
+function openEnrollmentPhotoUpdateFlow() {
+  if (authState.user?.role !== 'student') {
+    return;
+  }
+  setProfileTab('details');
+  if (!els.profilePhotoInput) {
+    return;
+  }
+  if (state.student.profilePhotoDataUrl && !state.student.profilePhotoCanUpdateNow) {
+    showProfilePhotoLockPopup();
+    return;
+  }
+  try {
+    els.profilePhotoInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    els.profilePhotoInput.click();
+  } catch (_) {
+    // File chooser may be blocked by browser policy; input remains visible for manual action.
+  }
+}
+
 function setProfileTab(tabKey = 'details') {
   const showEnrollment = String(tabKey || '').toLowerCase() === 'enrollment';
   if (els.profileTabDetailsBtn && els.profileTabEnrollmentBtn) {
@@ -1732,20 +1815,42 @@ function renderEnrollmentSummary() {
     }
   }
 
+  if (els.enrollmentSummaryLock) {
+    if (authState.user?.role !== 'student' || !state.student.enrollmentLoaded) {
+      els.enrollmentSummaryLock.textContent = '';
+    } else if (state.student.hasEnrollmentVideo && !state.student.enrollmentCanUpdateNow) {
+      const remaining = Math.max(0, Number(state.student.enrollmentLockDaysRemaining || 0));
+      els.enrollmentSummaryLock.textContent = `Locked until ${formatLockDateTime(state.student.enrollmentLockedUntil)} (${remaining} day(s) remaining).`;
+    } else if (state.student.hasEnrollmentVideo) {
+      els.enrollmentSummaryLock.textContent = 'You can re-capture enrollment video now.';
+    } else {
+      els.enrollmentSummaryLock.textContent = 'Capture once now. Next update will be locked for 14 days.';
+    }
+  }
+
   if (els.openEnrollmentModalBtn) {
     if (authState.user?.role !== 'student') {
       els.openEnrollmentModalBtn.disabled = true;
       els.openEnrollmentModalBtn.textContent = 'Enrollment Available For Students';
     } else if (!state.student.hasEnrollmentVideo) {
       els.openEnrollmentModalBtn.disabled = false;
-      els.openEnrollmentModalBtn.textContent = 'Open Enrollment Video';
+      els.openEnrollmentModalBtn.textContent = 'Capture Enrollment Video';
     } else if (!state.student.enrollmentCanUpdateNow) {
-      const remaining = Math.max(0, Number(state.student.enrollmentLockDaysRemaining || 0));
       els.openEnrollmentModalBtn.disabled = false;
-      els.openEnrollmentModalBtn.textContent = `Update Locked (${remaining}d)`;
+      els.openEnrollmentModalBtn.textContent = 'Update Enrollment Video';
     } else {
       els.openEnrollmentModalBtn.disabled = false;
       els.openEnrollmentModalBtn.textContent = 'Update Enrollment Video';
+    }
+  }
+
+  if (els.openProfilePhotoUpdateBtn) {
+    if (authState.user?.role !== 'student') {
+      els.openProfilePhotoUpdateBtn.disabled = true;
+      els.openProfilePhotoUpdateBtn.textContent = 'Photo Update (Students Only)';
+    } else {
+      els.openProfilePhotoUpdateBtn.disabled = false;
+      els.openProfilePhotoUpdateBtn.textContent = 'Update Enrollment Photo';
     }
   }
 }
@@ -2082,6 +2187,7 @@ function startSessionWatchdog() {
 
 function setSession(token, user) {
   stopFoodLocationMonitoring();
+  stopFoodDemandLiveTicker();
   authState.token = token;
   authState.user = user;
   state.ui.activeModule = defaultModuleForRole(user?.role);
@@ -2101,6 +2207,9 @@ function setSession(token, user) {
   state.food.ratingBusyOrderIds.clear();
   state.food.deliveryConfirmBusyOrderIds.clear();
   state.food.recoveryBusyRefs.clear();
+  state.food.demandDigest = '';
+  state.food.lastDemandSyncAtMs = 0;
+  state.food.demandSyncPulseUntilMs = 0;
   state.food.selectedShopId = '';
   state.food.menuByShop = {};
   state.food.cart.shopId = '';
@@ -2165,11 +2274,13 @@ function setSession(token, user) {
     stopStudentRealtimeTicker();
   }
   startModuleRealtimeTicker();
+  syncFoodDemandLiveTicker();
   startSessionWatchdog();
 }
 
 function clearSession() {
   stopFoodLocationMonitoring();
+  stopFoodDemandLiveTicker();
   authState.token = '';
   authState.user = null;
   authState.pendingEmail = '';
@@ -2238,6 +2349,9 @@ function clearSession() {
   state.food.ratingBusyOrderIds.clear();
   state.food.deliveryConfirmBusyOrderIds.clear();
   state.food.recoveryBusyRefs.clear();
+  state.food.demandDigest = '';
+  state.food.lastDemandSyncAtMs = 0;
+  state.food.demandSyncPulseUntilMs = 0;
   state.food.orderDate = '';
   state.food.shops = [];
   state.food.menuByShop = {};
@@ -2294,6 +2408,7 @@ function clearSession() {
   stopStudentRealtimeTicker();
   stopStudentTimetableStatusTicker();
   stopModuleRealtimeTicker();
+  stopFoodDemandLiveTicker();
 }
 
 async function api(path, options = {}) {
@@ -2468,6 +2583,42 @@ function renderAttendanceDonut() {
   els.presentCount.textContent = String(present);
   els.absentCount.textContent = String(absent);
   els.enrolledCount.textContent = String(enrolled);
+
+  const absentPercent = enrolled ? Math.round((absent / enrolled) * 100) : 0;
+  const healthScore = clampPercent(percent - absentPercent * 0.45);
+
+  if (els.attendancePresentPercent) {
+    els.attendancePresentPercent.textContent = `${percent}%`;
+  }
+  if (els.attendancePresentFill) {
+    els.attendancePresentFill.style.setProperty('--w', String(Math.max(5, percent)));
+    els.attendancePresentFill.dataset.state = percent >= 75 ? 'good' : (percent >= 45 ? 'mid' : 'warn');
+  }
+  if (els.attendanceAbsentPercent) {
+    els.attendanceAbsentPercent.textContent = `${absentPercent}%`;
+  }
+  if (els.attendanceAbsentFill) {
+    els.attendanceAbsentFill.style.setProperty('--w', String(Math.max(4, absentPercent)));
+    els.attendanceAbsentFill.dataset.state = absentPercent <= 20 ? 'good' : (absentPercent <= 45 ? 'mid' : 'warn');
+  }
+  if (els.attendanceHealthScore) {
+    els.attendanceHealthScore.textContent = `${Math.round(healthScore)}%`;
+  }
+  if (els.attendanceHealthFill) {
+    els.attendanceHealthFill.style.setProperty('--w', String(Math.max(5, Math.round(healthScore))));
+    els.attendanceHealthFill.dataset.state = healthScore >= 70 ? 'good' : (healthScore >= 45 ? 'mid' : 'warn');
+  }
+  if (els.attendanceHealthNote) {
+    if (!enrolled) {
+      els.attendanceHealthNote.textContent = 'Awaiting attendance records.';
+    } else if (percent >= 90) {
+      els.attendanceHealthNote.textContent = 'Attendance signal is stable and healthy.';
+    } else if (percent >= 70) {
+      els.attendanceHealthNote.textContent = 'Attendance is moderate; monitor absence clusters.';
+    } else {
+      els.attendanceHealthNote.textContent = 'Low attendance detected; intervention recommended.';
+    }
+  }
 }
 
 function renderAbsentees() {
@@ -2492,13 +2643,123 @@ function renderAbsentees() {
   }
 }
 
-function renderDemandChartIn(container) {
+function buildFoodDemandDigest(rows) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  return sourceRows
+    .map((slot) => [
+      Number(slot?.slot_id || 0),
+      Number(slot?.orders || 0),
+      Number(slot?.capacity || 0),
+      Number(slot?.utilization_percent || 0).toFixed(2),
+    ].join(':'))
+    .sort()
+    .join('|');
+}
+
+function hasFoodDemandChanged(previousRows, nextRows) {
+  return buildFoodDemandDigest(previousRows) !== buildFoodDemandDigest(nextRows);
+}
+
+function demandFreshnessLabel(syncedAtMs) {
+  const ts = Number(syncedAtMs || 0);
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return 'Live sync --';
+  }
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (deltaSeconds <= 1) {
+    return 'Live sync just now';
+  }
+  if (deltaSeconds < 60) {
+    return `Live sync ${deltaSeconds}s ago`;
+  }
+  const deltaMinutes = Math.floor(deltaSeconds / 60);
+  return `Live sync ${deltaMinutes}m ago`;
+}
+
+function markFoodDemandFreshness({ changed = false } = {}) {
+  state.food.lastDemandSyncAtMs = Date.now();
+  if (changed) {
+    state.food.demandSyncPulseUntilMs = Date.now() + 1800;
+  }
+  renderFoodDemandFreshnessIndicator();
+}
+
+function renderFoodDemandFreshnessIndicator() {
+  if (els.foodDemandFreshness) {
+    els.foodDemandFreshness.textContent = demandFreshnessLabel(state.food.lastDemandSyncAtMs);
+  }
+  if (els.foodDemandChartModule) {
+    const isPulseOn = Date.now() < Number(state.food.demandSyncPulseUntilMs || 0);
+    els.foodDemandChartModule.classList.toggle('is-live-pulse', isPulseOn);
+  }
+}
+
+function createDemandBarColumn(slot) {
+  const column = document.createElement('div');
+  column.className = 'bar-col';
+  column.dataset.slotId = String(slot?.slot_id || '');
+  column.dataset.orders = String(Number(slot?.orders || 0));
+  column.dataset.utilization = String(Number(slot?.utilization_percent || 0));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'bar-wrap';
+
+  const bar = document.createElement('div');
+  bar.className = 'bar';
+  bar.dataset.role = 'bar';
+  wrap.appendChild(bar);
+
+  const value = document.createElement('div');
+  value.className = 'bar-value';
+  value.dataset.role = 'value';
+
+  const label = document.createElement('div');
+  label.className = 'bar-label';
+  label.dataset.role = 'label';
+
+  const delta = document.createElement('div');
+  delta.className = 'bar-delta hidden';
+  delta.dataset.role = 'delta';
+
+  column.append(wrap, value, label, delta);
+  return column;
+}
+
+function triggerDemandBarPulse(column, deltaOrders) {
+  if (!column) {
+    return;
+  }
+  column.classList.remove('is-updated', 'delta-up', 'delta-down');
+  // Force animation restart for repeated live updates.
+  // eslint-disable-next-line no-unused-expressions
+  column.offsetWidth;
+  column.classList.add('is-updated');
+  if (deltaOrders > 0) {
+    column.classList.add('delta-up');
+  } else if (deltaOrders < 0) {
+    column.classList.add('delta-down');
+  }
+  if (column._demandPulseTimer) {
+    window.clearTimeout(column._demandPulseTimer);
+  }
+  column._demandPulseTimer = window.setTimeout(() => {
+    column.classList.remove('is-updated', 'delta-up', 'delta-down');
+    const deltaEl = column.querySelector('[data-role="delta"]');
+    if (deltaEl) {
+      deltaEl.classList.add('hidden');
+      deltaEl.textContent = '';
+    }
+    column._demandPulseTimer = null;
+  }, 1800);
+}
+
+function renderDemandChartIn(container, { animate = false } = {}) {
   if (!container) {
     return;
   }
-  container.innerHTML = '';
 
   if (!state.demand.length) {
+    container.innerHTML = '';
     const empty = document.createElement('div');
     empty.className = 'list-item';
     empty.textContent = 'No slot demand data for selected date.';
@@ -2506,39 +2767,80 @@ function renderDemandChartIn(container) {
     return;
   }
 
+  const existingColumns = new Map(
+    Array.from(container.querySelectorAll('.bar-col[data-slot-id]'))
+      .map((column) => [String(column.dataset.slotId || ''), column]),
+  );
+  const activeKeys = new Set();
+
   for (const slot of state.demand) {
-    const column = document.createElement('div');
-    column.className = 'bar-col';
-
-    const wrap = document.createElement('div');
-    wrap.className = 'bar-wrap';
-
-    const bar = document.createElement('div');
-    bar.className = 'bar';
-    if (slot.utilization_percent >= 80) {
-      bar.classList.add('warn');
+    const slotKey = String(slot?.slot_id || '');
+    if (!slotKey) {
+      continue;
     }
+    activeKeys.add(slotKey);
+    let column = existingColumns.get(slotKey);
+    if (!column) {
+      column = createDemandBarColumn(slot);
+    }
+
+    const previousOrders = Number(column.dataset.orders || 0);
+    const previousUtilization = Number(column.dataset.utilization || 0);
+    const nextOrders = Number(slot.orders || 0);
+    const nextUtilization = Number(slot.utilization_percent || 0);
+    const deltaOrders = nextOrders - previousOrders;
+    const utilizationChanged = Math.abs(nextUtilization - previousUtilization) >= 0.1;
+    const ordersChanged = deltaOrders !== 0;
+
+    const bar = column.querySelector('[data-role="bar"]');
+    const value = column.querySelector('[data-role="value"]');
+    const label = column.querySelector('[data-role="label"]');
+    const delta = column.querySelector('[data-role="delta"]');
+    if (!bar || !value || !label || !delta) {
+      continue;
+    }
+
+    bar.classList.toggle('warn', nextUtilization >= 80);
     bar.style.setProperty('--h', String(Math.max(6, Math.min(slot.utilization_percent, 100))));
 
-    const value = document.createElement('div');
-    value.className = 'bar-value';
     value.textContent = `${slot.orders}/${slot.capacity}`;
-
-    const label = document.createElement('div');
-    label.className = 'bar-label';
     label.textContent = `${slot.slot_label} (${slot.utilization_percent}%)`;
 
-    wrap.appendChild(bar);
-    column.appendChild(wrap);
-    column.appendChild(value);
-    column.appendChild(label);
+    if (animate && (ordersChanged || utilizationChanged)) {
+      if (deltaOrders > 0) {
+        delta.textContent = `+${deltaOrders} live`;
+      } else if (deltaOrders < 0) {
+        delta.textContent = `${deltaOrders} live`;
+      } else {
+        delta.textContent = 'Updated live';
+      }
+      delta.classList.remove('hidden');
+      triggerDemandBarPulse(column, deltaOrders);
+    }
+
+    column.dataset.orders = String(nextOrders);
+    column.dataset.utilization = String(nextUtilization);
     container.appendChild(column);
+  }
+
+  for (const [slotKey, column] of existingColumns.entries()) {
+    if (!activeKeys.has(slotKey)) {
+      if (column._demandPulseTimer) {
+        window.clearTimeout(column._demandPulseTimer);
+      }
+      column.remove();
+    }
   }
 }
 
-function renderDemandChart() {
-  renderDemandChartIn(els.demandChart);
-  renderDemandChartIn(els.foodDemandChartModule);
+function renderDemandChart(options = {}) {
+  const animate = Boolean(options?.animate);
+  const foodOnly = Boolean(options?.foodOnly);
+  if (!foodOnly) {
+    renderDemandChartIn(els.demandChart, { animate: false });
+  }
+  renderDemandChartIn(els.foodDemandChartModule, { animate });
+  renderFoodDemandFreshnessIndicator();
 }
 
 function renderCapacityChart() {
@@ -2578,6 +2880,237 @@ function renderCapacityChart() {
   }
 }
 
+function clampPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function computeAdministrativeHealthMetrics() {
+  const enrolled = Array.isArray(state.attendanceSummary) ? state.attendanceSummary.length : 0;
+  const absent = Array.isArray(state.absentees) ? state.absentees.length : 0;
+  const present = Math.max(0, enrolled - absent);
+  const attendanceHealth = enrolled ? clampPercent((present / enrolled) * 100) : 0;
+
+  const capacityRows = Array.isArray(state.capacity) ? state.capacity : [];
+  const capacityAverage = capacityRows.length
+    ? clampPercent(
+      capacityRows.reduce((sum, row) => sum + Number(row.utilization_percent || 0), 0) / capacityRows.length
+    )
+    : 0;
+  const capacityBalance = capacityRows.length
+    ? clampPercent(100 - (Math.abs(capacityAverage - 72) * 2.2))
+    : 0;
+
+  const demandRows = Array.isArray(state.demand) ? state.demand : [];
+  const demandPeak = demandRows.length
+    ? clampPercent(Math.max(...demandRows.map((slot) => Number(slot.utilization_percent || 0))))
+    : 0;
+  const demandPressure = demandRows.length ? clampPercent(100 - demandPeak) : 0;
+
+  const workloadRows = Array.isArray(state.resources?.workload) ? state.resources.workload : [];
+  const avgStudentsPerFaculty = workloadRows.length
+    ? workloadRows.reduce((sum, row) => sum + Number(row.total_enrolled_students || 0), 0) / workloadRows.length
+    : 0;
+  const workloadIndex = workloadRows.length
+    ? clampPercent(100 - Math.max(0, avgStudentsPerFaculty - 40) * 1.1)
+    : 0;
+
+  return {
+    attendanceHealth,
+    capacityBalance,
+    demandPressure,
+    workloadIndex,
+    capacityAverage,
+    demandPeak,
+  };
+}
+
+function renderAdministrativeHealthMetrics(metrics) {
+  const rows = [
+    { valueEl: els.adminHealthAttendanceValue, fillEl: els.adminHealthAttendanceFill, value: metrics.attendanceHealth },
+    { valueEl: els.adminHealthCapacityValue, fillEl: els.adminHealthCapacityFill, value: metrics.capacityBalance },
+    { valueEl: els.adminHealthDemandValue, fillEl: els.adminHealthDemandFill, value: metrics.demandPressure },
+    { valueEl: els.adminHealthWorkloadValue, fillEl: els.adminHealthWorkloadFill, value: metrics.workloadIndex },
+  ];
+
+  for (const row of rows) {
+    if (row.valueEl) {
+      row.valueEl.textContent = `${Math.round(clampPercent(row.value))}%`;
+    }
+    if (row.fillEl) {
+      const score = clampPercent(row.value);
+      row.fillEl.style.setProperty('--w', String(Math.max(4, score)));
+      row.fillEl.dataset.state = score >= 75 ? 'good' : (score >= 45 ? 'mid' : 'warn');
+    }
+  }
+}
+
+function pushAdministrativeTelemetry(metrics) {
+  const history = Array.isArray(state.admin.telemetryHistory) ? state.admin.telemetryHistory : [];
+  history.push({
+    at: Date.now(),
+    attendance: clampPercent(metrics.attendanceHealth),
+    capacity: clampPercent(metrics.capacityAverage),
+    demand: clampPercent(metrics.demandPeak),
+  });
+  state.admin.telemetryHistory = history.slice(-12);
+}
+
+function buildTelemetryPath(values, width, height, padding) {
+  if (!Array.isArray(values) || !values.length) {
+    return '';
+  }
+  if (values.length === 1) {
+    const x = width / 2;
+    const y = height - padding - (clampPercent(values[0]) / 100) * (height - padding * 2);
+    return `M ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }
+  const usableWidth = width - padding * 2;
+  const usableHeight = height - padding * 2;
+  const stepX = usableWidth / (values.length - 1);
+  return values
+    .map((value, index) => {
+      const x = padding + stepX * index;
+      const y = height - padding - (clampPercent(value) / 100) * usableHeight;
+      return `${index === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(' ');
+}
+
+function renderAdministrativeTelemetryChart() {
+  if (!els.adminTelemetryChart) {
+    return;
+  }
+  const updateTelemetryStat = (valueEl, deltaEl, value, delta) => {
+    if (valueEl) {
+      valueEl.textContent = `${Math.round(clampPercent(value))}%`;
+    }
+    if (deltaEl) {
+      const rounded = Math.round(delta || 0);
+      const sign = rounded > 0 ? '+' : '';
+      deltaEl.textContent = `Δ ${sign}${rounded}%`;
+      deltaEl.dataset.trend = rounded > 0 ? 'up' : (rounded < 0 ? 'down' : 'flat');
+    }
+  };
+
+  const rows = Array.isArray(state.admin.telemetryHistory) ? state.admin.telemetryHistory : [];
+  els.adminTelemetryChart.innerHTML = '';
+  if (rows.length < 2) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'Telemetry trend starts building after two refresh cycles.';
+    els.adminTelemetryChart.appendChild(empty);
+    updateTelemetryStat(els.adminTelemetryAttendanceNow, els.adminTelemetryAttendanceDelta, 0, 0);
+    updateTelemetryStat(els.adminTelemetryCapacityNow, els.adminTelemetryCapacityDelta, 0, 0);
+    updateTelemetryStat(els.adminTelemetryDemandNow, els.adminTelemetryDemandDelta, 0, 0);
+    if (els.adminTelemetryStabilityNow) {
+      els.adminTelemetryStabilityNow.textContent = '--';
+    }
+    if (els.adminTelemetryStabilityNote) {
+      els.adminTelemetryStabilityNote.textContent = 'Collecting trend points';
+    }
+    return;
+  }
+
+  const width = 620;
+  const height = 188;
+  const padding = 18;
+  const namespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(namespace, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.classList.add('telemetry-svg');
+
+  const guideValues = [25, 50, 75];
+  const guideGroup = document.createElementNS(namespace, 'g');
+  guideGroup.setAttribute('class', 'telemetry-guides');
+  for (const guide of guideValues) {
+    const y = height - padding - (guide / 100) * (height - padding * 2);
+    const line = document.createElementNS(namespace, 'line');
+    line.setAttribute('x1', String(padding));
+    line.setAttribute('x2', String(width - padding));
+    line.setAttribute('y1', y.toFixed(2));
+    line.setAttribute('y2', y.toFixed(2));
+    guideGroup.appendChild(line);
+  }
+  svg.appendChild(guideGroup);
+
+  const series = [
+    {
+      key: 'attendance',
+      className: 'telemetry-line-attendance',
+      values: rows.map((entry) => clampPercent(entry.attendance)),
+    },
+    {
+      key: 'capacity',
+      className: 'telemetry-line-capacity',
+      values: rows.map((entry) => clampPercent(entry.capacity)),
+    },
+    {
+      key: 'demand',
+      className: 'telemetry-line-demand',
+      values: rows.map((entry) => clampPercent(entry.demand)),
+    },
+  ];
+
+  for (const lineDef of series) {
+    const path = document.createElementNS(namespace, 'path');
+    path.setAttribute('d', buildTelemetryPath(lineDef.values, width, height, padding));
+    path.setAttribute('class', `telemetry-line ${lineDef.className}`);
+    svg.appendChild(path);
+  }
+
+  const latest = rows[rows.length - 1];
+  const latestX = width - padding;
+  const latestMarkers = [
+    { className: 'telemetry-dot-attendance', value: latest.attendance },
+    { className: 'telemetry-dot-capacity', value: latest.capacity },
+    { className: 'telemetry-dot-demand', value: latest.demand },
+  ];
+  for (const marker of latestMarkers) {
+    const y = height - padding - (clampPercent(marker.value) / 100) * (height - padding * 2);
+    const dot = document.createElementNS(namespace, 'circle');
+    dot.setAttribute('cx', latestX.toFixed(2));
+    dot.setAttribute('cy', y.toFixed(2));
+    dot.setAttribute('r', '3.8');
+    dot.setAttribute('class', `telemetry-dot ${marker.className}`);
+    svg.appendChild(dot);
+  }
+
+  const previous = rows[rows.length - 2] || latest;
+  const attendanceDelta = clampPercent(latest.attendance) - clampPercent(previous.attendance);
+  const capacityDelta = clampPercent(latest.capacity) - clampPercent(previous.capacity);
+  const demandDelta = clampPercent(latest.demand) - clampPercent(previous.demand);
+  updateTelemetryStat(els.adminTelemetryAttendanceNow, els.adminTelemetryAttendanceDelta, latest.attendance, attendanceDelta);
+  updateTelemetryStat(els.adminTelemetryCapacityNow, els.adminTelemetryCapacityDelta, latest.capacity, capacityDelta);
+  updateTelemetryStat(els.adminTelemetryDemandNow, els.adminTelemetryDemandDelta, latest.demand, demandDelta);
+
+  const recent = rows.slice(-6);
+  let movementCount = 0;
+  let movementTotal = 0;
+  for (let idx = 1; idx < recent.length; idx += 1) {
+    movementTotal += Math.abs(clampPercent(recent[idx].attendance) - clampPercent(recent[idx - 1].attendance));
+    movementTotal += Math.abs(clampPercent(recent[idx].capacity) - clampPercent(recent[idx - 1].capacity));
+    movementTotal += Math.abs(clampPercent(recent[idx].demand) - clampPercent(recent[idx - 1].demand));
+    movementCount += 3;
+  }
+  const avgMovement = movementCount ? (movementTotal / movementCount) : 0;
+  const stability = clampPercent(100 - avgMovement * 2.1);
+  if (els.adminTelemetryStabilityNow) {
+    els.adminTelemetryStabilityNow.textContent = `${Math.round(stability)}%`;
+  }
+  if (els.adminTelemetryStabilityNote) {
+    els.adminTelemetryStabilityNote.textContent = stability >= 75
+      ? 'Signal stable'
+      : (stability >= 50 ? 'Moderate drift' : 'High volatility');
+  }
+
+  els.adminTelemetryChart.appendChild(svg);
+}
+
 async function refreshOverview() {
   state.overview = await api('/resources/overview');
   updateMetrics();
@@ -2603,10 +3136,71 @@ async function refreshAttendanceData() {
   renderAttendanceDonut();
 }
 
-async function refreshDemand(orderDate = '') {
+async function refreshDemand(orderDate = '', options = {}) {
   const date = String(orderDate || els.workDate?.value || todayISO());
-  state.demand = await api(`/food/demand?order_date=${date}`);
-  renderDemandChart();
+  const previousDemand = Array.isArray(state.demand) ? state.demand : [];
+  const nextDemand = await api(`/food/demand?order_date=${date}`);
+  const changed = hasFoodDemandChanged(previousDemand, nextDemand);
+  state.demand = Array.isArray(nextDemand) ? nextDemand : [];
+  renderDemandChart({
+    animate: Boolean(options?.animate ?? changed),
+    foodOnly: Boolean(options?.foodOnly),
+  });
+  markFoodDemandFreshness({ changed });
+}
+
+function stopFoodDemandLiveTicker() {
+  if (foodDemandLiveTimer) {
+    window.clearInterval(foodDemandLiveTimer);
+    foodDemandLiveTimer = null;
+  }
+  foodDemandLiveBusy = false;
+}
+
+function shouldRunFoodDemandLiveTicker() {
+  if (!authState.user) {
+    return false;
+  }
+  if (document.body.classList.contains('auth-open')) {
+    return false;
+  }
+  return getSanitizedModuleKey(state.ui.activeModule) === 'food';
+}
+
+async function refreshFoodDemandLiveTick() {
+  if (!shouldRunFoodDemandLiveTicker() || foodDemandLiveBusy) {
+    return;
+  }
+  foodDemandLiveBusy = true;
+  try {
+    const orderDate = String(els.foodOrderDate?.value || state.food.orderDate || todayISO()).trim() || todayISO();
+    state.food.orderDate = orderDate;
+    await Promise.all([
+      refreshDemand(orderDate, { animate: true, foodOnly: true }),
+      (async () => {
+        const peaks = await api('/food/peak-times?lookback_days=14');
+        state.peakTimes = Array.isArray(peaks) ? peaks : [];
+        renderFoodPeakTimes();
+      })(),
+    ]);
+  } catch (_) {
+    // Keep UI stable on transient failures; next tick retries.
+  } finally {
+    foodDemandLiveBusy = false;
+  }
+}
+
+function syncFoodDemandLiveTicker() {
+  if (!shouldRunFoodDemandLiveTicker()) {
+    stopFoodDemandLiveTicker();
+    return;
+  }
+  if (foodDemandLiveTimer) {
+    return;
+  }
+  foodDemandLiveTimer = window.setInterval(() => {
+    void refreshFoodDemandLiveTick();
+  }, FOOD_DEMAND_LIVE_REFRESH_MS);
 }
 
 async function refreshCapacity() {
@@ -2780,6 +3374,12 @@ function resolveLegacyFoodItemId(menuItem) {
 }
 
 async function openFoodShopModal(shopId) {
+  const orderGate = getFoodRuntimeOrderGate();
+  if (!orderGate.canBrowseShops) {
+    setFoodStatus(orderGate.message, true);
+    showFoodPopup('Food Hall Closed', orderGate.message, { isError: true, autoHideMs: 2600 });
+    return;
+  }
   const shop = getShopById(shopId);
   if (!shop || !els.foodShopModal || !els.foodShopMenuList) {
     return;
@@ -2992,6 +3592,8 @@ function renderFoodShops() {
   }
   els.foodShopGrid.innerHTML = '';
   const popularShops = state.food.shops.filter((shop) => Boolean(shop.isPopular));
+  const orderGate = getFoodRuntimeOrderGate();
+  const shopsClosed = !orderGate.canBrowseShops;
 
   for (const group of FOOD_SHOP_GROUPS) {
     const isPopular = group.key === 'popular';
@@ -3021,6 +3623,11 @@ function renderFoodShops() {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = 'food-shop-card';
+      if (shopsClosed) {
+        card.classList.add('is-closed');
+        card.disabled = true;
+        card.setAttribute('aria-disabled', 'true');
+      }
       if (String(state.food.cart.shopId) === String(shop.id) || String(state.food.selectedShopId) === String(shop.id)) {
         card.classList.add('is-selected');
       }
@@ -3029,6 +3636,7 @@ function renderFoodShops() {
       card.innerHTML = `
         <div class="food-shop-cover-wrap">
           <img class="food-shop-cover" src="${escapeHtml(shop.cover || '')}" alt="${escapeHtml(shop.name)} cover" loading="lazy" referrerpolicy="no-referrer">
+          ${shopsClosed ? '<span class="food-shop-closed-badge">Closed</span>' : ''}
         </div>
         <div class="food-shop-card-body">
           <h4>${escapeHtml(shop.name)}</h4>
@@ -3036,12 +3644,15 @@ function renderFoodShops() {
             <small>${escapeHtml(shop.block)}</small>
             <span class="shop-rating-live" title="Live vendor rating from delivered orders">★ ${escapeHtml(ratingLabel)}</span>
           </div>
+          ${shopsClosed ? `<small class="food-shop-hours-note">Open daily ${FOOD_SERVICE_HOURS_LABEL}</small>` : ''}
           ${shop.isPopular ? '<span class="shop-popular">Popular</span>' : ''}
         </div>
       `;
-      card.addEventListener('click', () => {
-        void openFoodShopModal(shop.id);
-      });
+      if (!shopsClosed) {
+        card.addEventListener('click', () => {
+          void openFoodShopModal(shop.id);
+        });
+      }
       grid.appendChild(card);
     }
 
@@ -3151,6 +3762,126 @@ function getSelectedFoodSlot() {
   return state.food.slots.find((slot) => Number(slot.id) === slotId) || null;
 }
 
+function resolveFoodOrderDateValue() {
+  const selected = String(els.foodOrderDate?.value || state.food.orderDate || todayISO()).trim();
+  return selected || todayISO();
+}
+
+function clampFoodOrderDateToToday({ showNotice = false } = {}) {
+  const today = todayISO();
+  if (!els.foodOrderDate) {
+    state.food.orderDate = today;
+    return false;
+  }
+  els.foodOrderDate.min = today;
+  els.foodOrderDate.removeAttribute('max');
+  const selected = String(els.foodOrderDate.value || state.food.orderDate || today).trim() || today;
+  if (!parseISODateLocal(selected) || selected < today) {
+    els.foodOrderDate.value = today;
+    state.food.orderDate = today;
+    if (showNotice) {
+      setFoodStatus('Pickup date cannot be in the past. Reset to today.', true);
+    }
+    return true;
+  }
+  els.foodOrderDate.value = selected;
+  state.food.orderDate = selected;
+  return false;
+}
+
+function getFoodRuntimeOrderGate({ slot = null, orderDate = null, now = new Date() } = {}) {
+  const selectedDate = String(orderDate || resolveFoodOrderDateValue()).trim() || todayISO();
+  const today = todayISO();
+  const nowMinutes = (now.getHours() * 60) + now.getMinutes();
+  const dateAllowed = selectedDate === today;
+  const isToday = selectedDate === today;
+  const serviceOpenNow = nowMinutes >= FOOD_SERVICE_START_MINUTES && nowMinutes < FOOD_SERVICE_END_MINUTES;
+  const selectedSlot = slot || getSelectedFoodSlot();
+  const slotEndMinutes = selectedSlot ? toMinutes(selectedSlot.end_time) : Number.POSITIVE_INFINITY;
+  const slotElapsed = Boolean(selectedSlot && isToday && slotEndMinutes <= nowMinutes);
+
+  if (!dateAllowed) {
+    return {
+      dateAllowed,
+      serviceOpenNow,
+      slotElapsed,
+      canBrowseShops: false,
+      canOrderNow: false,
+      reason: 'date_mismatch',
+      message: `Orders are allowed only for today (${today}).`,
+    };
+  }
+  if (!serviceOpenNow) {
+    return {
+      dateAllowed,
+      serviceOpenNow,
+      slotElapsed: false,
+      canBrowseShops: false,
+      canOrderNow: false,
+      reason: 'service_closed',
+      message: `Food Hall is closed now. Ordering is open from ${FOOD_SERVICE_HOURS_LABEL}.`,
+    };
+  }
+  if (slotElapsed) {
+    return {
+      dateAllowed,
+      serviceOpenNow,
+      slotElapsed,
+      canBrowseShops: true,
+      canOrderNow: false,
+      reason: 'slot_elapsed',
+      message: 'Selected slot has already ended. Choose an upcoming slot.',
+    };
+  }
+  return {
+    dateAllowed,
+    serviceOpenNow,
+    slotElapsed: false,
+    canBrowseShops: true,
+    canOrderNow: true,
+    reason: 'open',
+    message: '',
+  };
+}
+
+function applyFoodRealtimeAvailability({ showStatusOnTransition = false } = {}) {
+  if (!authState.user || authState.user.role !== 'student') {
+    return;
+  }
+  if (getSanitizedModuleKey(state.ui.activeModule) !== 'food') {
+    return;
+  }
+  const slot = getSelectedFoodSlot();
+  const gate = getFoodRuntimeOrderGate({ slot });
+  const signature = [
+    gate.dateAllowed ? '1' : '0',
+    gate.serviceOpenNow ? '1' : '0',
+    gate.slotElapsed ? '1' : '0',
+    gate.reason,
+    String(slot?.id || 0),
+  ].join('|');
+
+  if (state.food.realtimeAvailabilitySignature === signature) {
+    return;
+  }
+
+  const previousServiceOpen = state.food.realtimeServiceOpen;
+  state.food.realtimeAvailabilitySignature = signature;
+  state.food.realtimeServiceOpen = gate.serviceOpenNow;
+  renderFoodSlotOptions();
+  renderFoodShops();
+  renderFoodCheckoutPreview();
+  syncFoodOrderActionState();
+
+  if (showStatusOnTransition && previousServiceOpen !== null && previousServiceOpen !== gate.serviceOpenNow) {
+    if (gate.serviceOpenNow) {
+      setFoodStatus('Food Hall is open now. You can place orders for today.', false);
+    } else {
+      setFoodStatus(gate.message, true);
+    }
+  }
+}
+
 function ensureFoodDeliveryPointOptions() {
   if (!els.foodDeliveryBlockSelect) {
     return;
@@ -3250,6 +3981,7 @@ function renderFoodCheckoutPreview() {
   }
 
   const slot = getSelectedFoodSlot();
+  const orderGate = getFoodRuntimeOrderGate({ slot });
   const slotText = slot
     ? `${slot.label} (${formatTime(slot.start_time)} - ${formatTime(slot.end_time)})`
     : 'No slot selected';
@@ -3263,6 +3995,10 @@ function renderFoodCheckoutPreview() {
       <div class="food-checkout-fee-row"><span>Platform fee</span><strong>${formatMoney(pricing.platformFee)}</strong></div>
       <div class="food-checkout-fee-row is-total"><span>Grand total</span><strong>${formatMoney(pricing.total)}</strong></div>
     `;
+  }
+  if (!orderGate.canOrderNow) {
+    els.foodCheckoutSummary.textContent = `${orderGate.message} • ${totalQty} item(s) • Grand total ${formatMoney(pricing.total)} • Slot: ${slotText}`;
+    return;
   }
   els.foodCheckoutSummary.textContent = `${totalQty} item(s) • Grand total ${formatMoney(pricing.total)} • Slot: ${slotText} • Delivery: ${delivery || 'Not selected'} • ${locationText}`;
 }
@@ -3294,11 +4030,24 @@ function openFoodCheckoutPreview() {
   if (!Number(els.foodSlotSelect?.value || 0)) {
     throw new Error('Select break slot before checkout.');
   }
+  const selectedSlot = getSelectedFoodSlot();
+  if (!selectedSlot) {
+    throw new Error('Selected break slot is unavailable. Refresh and retry.');
+  }
+  const orderGate = getFoodRuntimeOrderGate({ slot: selectedSlot });
+  if (!orderGate.canOrderNow) {
+    throw new Error(orderGate.message);
+  }
   ensureFoodDeliveryPointOptions();
   setFoodCheckoutPreviewOpen(true);
 }
 
 async function addMenuItemToCart(shopId, menuItem, quantity = 1, itemNote = '') {
+  const orderGate = getFoodRuntimeOrderGate();
+  if (!orderGate.canBrowseShops) {
+    showFoodPopup('Food Hall Closed', orderGate.message, { isError: true, autoHideMs: 2600 });
+    throw new Error(orderGate.message);
+  }
   const nextQty = Math.max(1, Number(quantity || 1));
   const shop = getShopById(shopId);
   const resolvedShopId = Number(shop?.apiShopId || shop?.id || 0);
@@ -3342,6 +4091,12 @@ async function updateCartItemQty(cartKey, delta) {
   }
   const previousQty = Number(item.quantity || 0);
   const changedQty = Math.max(1, Math.abs(Number(delta || 0)));
+  if (Number(delta || 0) > 0) {
+    const orderGate = getFoodRuntimeOrderGate();
+    if (!orderGate.canBrowseShops) {
+      throw new Error(orderGate.message);
+    }
+  }
   const resolvedShopId = Number(item.shopId || state.food.cart.shopId || 0);
   if (!resolvedShopId) {
     throw new Error('Unable to resolve cart shop for update.');
@@ -3446,6 +4201,8 @@ function renderFoodCart() {
     return;
   }
 
+  const orderGate = getFoodRuntimeOrderGate();
+  const canIncrementCart = orderGate.canBrowseShops;
   for (const item of cartItems) {
     const row = document.createElement('div');
     row.className = 'list-item food-cart-item';
@@ -3459,6 +4216,10 @@ function renderFoodCart() {
     plusBtn.className = 'btn';
     plusBtn.type = 'button';
     plusBtn.textContent = '+';
+    plusBtn.disabled = !canIncrementCart;
+    if (!canIncrementCart) {
+      plusBtn.title = orderGate.message;
+    }
     plusBtn.addEventListener('click', () => {
       void updateCartItemQty(item.cartKey, 1).catch((error) => {
         setFoodStatus(error.message || 'Unable to update cart.', true);
@@ -4183,6 +4944,11 @@ function renderFoodSlotOptions() {
     return;
   }
   const previous = Number(els.foodSlotSelect.value);
+  const now = new Date();
+  const nowMinutes = (now.getHours() * 60) + now.getMinutes();
+  const selectedDate = resolveFoodOrderDateValue();
+  const isTodaySelected = selectedDate === todayISO();
+  const selectableSlotIds = [];
   els.foodSlotSelect.innerHTML = '';
   if (!state.food.slots.length) {
     const option = document.createElement('option');
@@ -4198,16 +4964,36 @@ function renderFoodSlotOptions() {
     const option = document.createElement('option');
     option.value = String(slot.id);
     const baseLabel = `${slot.label} (${formatTime(slot.start_time)} - ${formatTime(slot.end_time)})`;
-    option.textContent = hint?.label ? `${baseLabel} • ${hint.label}` : baseLabel;
+    const slotEndMinutes = toMinutes(slot.end_time);
+    const slotElapsed = isTodaySelected && Number.isFinite(slotEndMinutes) && slotEndMinutes <= nowMinutes;
+    if (slotElapsed) {
+      option.disabled = true;
+      option.textContent = `${baseLabel} • Closed`;
+    } else {
+      option.textContent = hint?.label ? `${baseLabel} • ${hint.label}` : baseLabel;
+      selectableSlotIds.push(slot.id);
+    }
     els.foodSlotSelect.appendChild(option);
   }
+  if (!selectableSlotIds.length) {
+    els.foodSlotSelect.disabled = true;
+    if (els.foodSlotSelect.options.length) {
+      els.foodSlotSelect.value = String(els.foodSlotSelect.options[0].value || '');
+    }
+    els.foodSlotSelect.dataset.hint = 'none';
+    return;
+  }
   els.foodSlotSelect.disabled = false;
-  if (previous && state.food.slots.some((slot) => slot.id === previous)) {
+  if (previous && selectableSlotIds.includes(previous)) {
     els.foodSlotSelect.value = String(previous);
   } else {
-    const recommended = state.food.slots.find((slot) => state.food.slotHintsById?.[String(slot.id)]?.kind === 'recommended');
+    const recommended = state.food.slots.find(
+      (slot) => selectableSlotIds.includes(slot.id) && state.food.slotHintsById?.[String(slot.id)]?.kind === 'recommended',
+    );
     if (recommended) {
       els.foodSlotSelect.value = String(recommended.id);
+    } else {
+      els.foodSlotSelect.value = String(selectableSlotIds[0]);
     }
   }
   const selectedHint = state.food.slotHintsById?.[String(els.foodSlotSelect.value || '')] || null;
@@ -4230,17 +5016,26 @@ function parseFoodDateTime(rawValue) {
     const fromEpoch = new Date(rawValue);
     return Number.isNaN(fromEpoch.getTime()) ? null : fromEpoch;
   }
-  let normalized = String(rawValue).trim();
-  if (!normalized) {
+  const textValue = String(rawValue).trim();
+  if (!textValue) {
     return null;
   }
-  normalized = normalized.replace(' ', 'T');
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
-    normalized = `${normalized}T00:00:00`;
-  }
-  const noTimezonePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?$/;
-  if (noTimezonePattern.test(normalized)) {
-    normalized = `${normalized}Z`;
+  const normalized = textValue.replace(' ', 'T');
+  const naivePattern = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?$/;
+  const naiveMatch = normalized.match(naivePattern);
+  if (naiveMatch) {
+    const year = Number(naiveMatch[1]);
+    const month = Number(naiveMatch[2]);
+    const day = Number(naiveMatch[3]);
+    const hour = Number(naiveMatch[4] || 0);
+    const minute = Number(naiveMatch[5] || 0);
+    const second = Number(naiveMatch[6] || 0);
+    const milliRaw = String(naiveMatch[7] || '0').slice(0, 3);
+    const millisecond = Number(milliRaw.padEnd(3, '0'));
+    // Server stores food-order timestamps as UTC-naive strings.
+    // Treating naive values as UTC preserves correct real-world local display.
+    const utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond));
+    return Number.isNaN(utcDate.getTime()) ? null : utcDate;
   }
   const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
@@ -5064,25 +5859,48 @@ function renderFoodPeakTimes() {
 function syncFoodOrderActionState() {
   const canOrder = authState.user?.role === 'student' && Number(authState.user?.student_id);
   const hasCartItems = Array.isArray(state.food.cart.items) && state.food.cart.items.length > 0;
+  const selectedSlot = getSelectedFoodSlot();
   const hasSlot = Boolean(Number(els.foodSlotSelect?.value || 0));
-  const canReview = Boolean(canOrder && hasCartItems && hasSlot);
+  const orderGate = getFoodRuntimeOrderGate({ slot: selectedSlot });
+  const canReview = Boolean(canOrder && hasCartItems && hasSlot && orderGate.canOrderNow);
   const hasDeliveryPoint = Boolean(String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim());
   const locationFresh = isFoodLocationFresh();
   const locationOk = state.food.location.verified && state.food.location.allowed && locationFresh;
   const canCheckout = Boolean(canReview && state.food.checkoutPreviewOpen && hasDeliveryPoint);
+  let actionBlockMessage = '';
+  if (canOrder && hasCartItems && hasSlot && !orderGate.canOrderNow) {
+    actionBlockMessage = orderGate.message;
+  }
   if (!canReview && state.food.cartModalTab === 'review') {
     setFoodCartModalTab('cart');
   }
   if (els.foodCartCheckoutBtn) {
     els.foodCartCheckoutBtn.disabled = !canReview;
+    if (actionBlockMessage) {
+      els.foodCartCheckoutBtn.title = actionBlockMessage;
+    } else {
+      els.foodCartCheckoutBtn.removeAttribute('title');
+    }
   }
   if (els.foodCartTabReviewBtn) {
     els.foodCartTabReviewBtn.disabled = !canReview;
+    if (actionBlockMessage) {
+      els.foodCartTabReviewBtn.title = actionBlockMessage;
+    } else {
+      els.foodCartTabReviewBtn.removeAttribute('title');
+    }
   }
   if (els.foodCartPayBtn) {
     const reviewTabActive = state.food.cartModalTab === 'review';
     setHidden(els.foodCartPayBtn, !(reviewTabActive && state.food.checkoutPreviewOpen));
     els.foodCartPayBtn.disabled = !canCheckout;
+    if (!canCheckout && actionBlockMessage) {
+      els.foodCartPayBtn.title = actionBlockMessage;
+    } else if (!canCheckout && !hasDeliveryPoint && hasCartItems && hasSlot) {
+      els.foodCartPayBtn.title = 'Select delivery block before payment.';
+    } else {
+      els.foodCartPayBtn.removeAttribute('title');
+    }
   }
   if (els.foodCartPayBtn && canCheckout && !locationOk) {
     els.foodCartPayBtn.dataset.requiresLocation = 'true';
@@ -5100,13 +5918,21 @@ async function refreshFoodModule() {
     const currentDate = todayISO();
     const selectedValue = String(els.foodOrderDate.value || '').trim();
     const normalized = selectedValue && parseISODateLocal(selectedValue) ? selectedValue : '';
-    const nextDate = normalized || String(state.food.orderDate || '').trim() || currentDate;
-    els.foodOrderDate.value = nextDate;
+    let nextDate = normalized || String(state.food.orderDate || '').trim() || currentDate;
     if (authState.user.role === 'student') {
       els.foodOrderDate.min = currentDate;
+      els.foodOrderDate.removeAttribute('max');
+      if (!parseISODateLocal(nextDate) || nextDate < currentDate) {
+        nextDate = currentDate;
+      }
+    } else {
+      els.foodOrderDate.removeAttribute('min');
+      els.foodOrderDate.removeAttribute('max');
     }
+    els.foodOrderDate.value = nextDate;
+    state.food.orderDate = nextDate;
   }
-  const orderDate = String(els.foodOrderDate?.value || state.food.orderDate || todayISO());
+  const orderDate = String(els.foodOrderDate?.value || state.food.orderDate || todayISO()).trim() || todayISO();
   state.food.orderDate = orderDate;
 
   const shouldLoadCart = authState.user.role === 'student';
@@ -5194,6 +6020,7 @@ async function refreshFoodModule() {
   renderFoodOrderStatusTimeline();
   renderFoodAdminOrderOptions();
   syncFoodOrderActionState();
+  applyFoodRealtimeAvailability();
   updateFoodLocationActionState();
 
   if (els.workDate && !els.workDate.value) {
@@ -5239,7 +6066,12 @@ async function refreshFoodModule() {
     } else {
       setFoodLocationStatus('Location access is required. Delivery is allowed only inside LPU campus.', 'warn');
     }
-    setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+    const orderGate = getFoodRuntimeOrderGate({ slot: getSelectedFoodSlot(), orderDate });
+    if (!orderGate.canBrowseShops || !orderGate.canOrderNow) {
+      setFoodStatus(orderGate.message, true);
+    } else {
+      setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+    }
   }
 }
 
@@ -5462,12 +6294,20 @@ async function placeFoodOrder() {
     throw new Error('Food pre-order is available only for student accounts.');
   }
   const slotId = Number(els.foodSlotSelect?.value || 0);
-  const orderDate = String(els.foodOrderDate?.value || todayISO());
+  const orderDate = String(els.foodOrderDate?.value || todayISO()).trim() || todayISO();
+  const slot = getSelectedFoodSlot();
+  const orderGate = getFoodRuntimeOrderGate({ slot, orderDate });
   const cartItems = Array.isArray(state.food.cart.items) ? state.food.cart.items : [];
   const shop = getShopById(state.food.cart.shopId);
 
   if (!slotId) {
     throw new Error('Select break slot before checkout.');
+  }
+  if (!slot || Number(slot.id) !== slotId) {
+    throw new Error('Selected break slot is unavailable. Refresh and retry.');
+  }
+  if (!orderGate.canOrderNow) {
+    throw new Error(orderGate.message);
   }
   if (!cartItems.length || !shop) {
     throw new Error('Add menu items from one shop before checkout.');
@@ -5481,7 +6321,10 @@ async function placeFoodOrder() {
   }
   state.food.checkoutDeliveryPoint = deliveryPoint;
 
-  const locationAllowed = await verifyFoodLocationGate({ forcePrompt: false, silent: true });
+  const locationAllowed = await verifyFoodLocationGate({
+    forcePrompt: !state.food.location.verified || !isFoodLocationFresh(),
+    silent: false,
+  });
   if (!locationAllowed) {
     throw new Error(state.food.location.message || 'Delivery is allowed only inside LPU campus.');
   }
@@ -5676,6 +6519,10 @@ async function refreshAdministrativeModule() {
   }
   renderWorkloadChart();
   renderMongoStatus();
+  const healthMetrics = computeAdministrativeHealthMetrics();
+  renderAdministrativeHealthMetrics(healthMetrics);
+  pushAdministrativeTelemetry(healthMetrics);
+  renderAdministrativeTelemetryChart();
 }
 
 function renderRemedialCourseOptions() {
@@ -6617,9 +7464,6 @@ function getCalendarBounds(classes) {
 
 function updateSelectedClassState() {
   const hasProfileReady = Boolean(state.student.profilePhotoDataUrl) && Boolean(state.student.registrationNumber);
-  const trialMarkBtn = els.trialMarkBtn;
-  const trialResetBtn = els.trialResetBtn;
-  const hasTimetable = Boolean((state.student.timetable || []).length || (state.student.kpiTimetable || []).length);
   const kpi = findAttendanceManagementState();
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
   state.student.kpiScheduleId = scheduleId || null;
@@ -6636,12 +7480,6 @@ function updateSelectedClassState() {
   }
 
   els.takeSelfieBtn.disabled = !(kpi.mode === 'mark' && scheduleId && hasProfileReady);
-  if (trialMarkBtn) {
-    trialMarkBtn.disabled = !hasProfileReady;
-  }
-  if (trialResetBtn) {
-    trialResetBtn.disabled = !hasProfileReady || !hasTimetable;
-  }
 }
 
 function refreshStudentTimetableRealtimeStatus() {
@@ -7441,11 +8279,10 @@ function shouldStopLiveVerification(message = '') {
   );
 }
 
-async function submitStudentAttendanceAttempt(mode, selectedScheduleId, selfieDataUrl, selfieFrames = []) {
+async function submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames = []) {
   const payload = await buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames);
-  const endpoint = mode === 'trial' ? '/attendance/student/realtime/trial-mark' : '/attendance/realtime/mark';
   return apiWithTimeout(
-    endpoint,
+    '/attendance/realtime/mark',
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -7455,24 +8292,14 @@ async function submitStudentAttendanceAttempt(mode, selectedScheduleId, selfieDa
   );
 }
 
-async function startLiveAttendanceVerification(mode = 'official') {
-  let selectedScheduleId = null;
-  if (mode === 'official') {
-    const kpi = findAttendanceManagementState();
-    const resolvedScheduleId = Number(kpi.schedule?.schedule_id || 0);
-    if (kpi.mode !== 'mark' || !resolvedScheduleId) {
-      throw new Error('Attendance window is closed right now. Wait for the next class.');
-    }
-    selectedScheduleId = resolvedScheduleId;
-    state.student.kpiScheduleId = resolvedScheduleId;
-    state.student.selectedScheduleId = resolvedScheduleId;
-  } else {
-    const selected = ensureStudentScheduleSelection();
-    selectedScheduleId = selected?.schedule_id || null;
-    if (!selectedScheduleId) {
-      throw new Error('No class available for temporary trial verification.');
-    }
+async function startLiveAttendanceVerification() {
+  const kpi = findAttendanceManagementState();
+  const selectedScheduleId = Number(kpi.schedule?.schedule_id || 0);
+  if (kpi.mode !== 'mark' || !selectedScheduleId) {
+    throw new Error('Attendance window is closed right now. Wait for the next class.');
   }
+  state.student.kpiScheduleId = selectedScheduleId;
+  state.student.selectedScheduleId = selectedScheduleId;
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo before marking attendance.');
   }
@@ -7480,12 +8307,10 @@ async function startLiveAttendanceVerification(mode = 'official') {
     throw new Error('Live verification is already running.');
   }
 
-  setStudentResult(mode === 'trial'
-    ? 'Temporary trial live verification started...'
-    : 'Live attendance verification started...');
+  setStudentResult('Live attendance verification started...');
 
   await openCameraModal({
-    title: mode === 'trial' ? 'Temporary Trial Live Verification' : 'Live Realtime Attendance Verification',
+    title: 'Live Realtime Attendance Verification',
     facingMode: 'user',
     referencePhotoDataUrl: state.student.profilePhotoDataUrl,
     burstFrames: LIVE_VERIFICATION_BURST_FRAMES,
@@ -7508,7 +8333,7 @@ async function startLiveAttendanceVerification(mode = 'official') {
       const timeoutMsg = 'Verification took too long. Use bright front light, keep one centered face, then retry.';
       setStudentResult(timeoutMsg, {
         showRetry: true,
-        retryAction: () => startStudentSelfieFlow(mode),
+        retryAction: () => startStudentSelfieFlow(),
       });
       if (els.cameraMessage) {
         els.cameraMessage.textContent = timeoutMsg;
@@ -7534,31 +8359,21 @@ async function startLiveAttendanceVerification(mode = 'official') {
         }
       }
 
-      const response = await submitStudentAttendanceAttempt(mode, selectedScheduleId, selfieDataUrl, selfieFrames);
+      const response = await submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames);
       const status = String(response.status || '').toLowerCase();
       const confidencePct = (Number(response.verification_confidence || 0) * 100).toFixed(1);
       const verified = ['verified', 'approved', 'present'].includes(status);
 
       if (verified) {
-        const lines = mode === 'trial'
-          ? [
-              'Temporary Trial Result',
-              `Status: ${statusLabel(response.status)}`,
-              `Message: ${response.message}`,
-            ]
-          : [
-              `Status: ${statusLabel(response.status)}`,
-              `Message: ${response.message}`,
-            ];
+        const lines = [
+          `Status: ${statusLabel(response.status)}`,
+          `Message: ${response.message}`,
+        ];
         setStudentResult(lines.join('\n'));
         if (els.cameraMessage) {
           els.cameraMessage.textContent = 'Attendance verified. Closing camera...';
         }
-        if (mode === 'trial') {
-          log(`Trial attendance marked with confidence: ${confidencePct}%`);
-        } else {
-          log(`Attendance marked with confidence: ${confidencePct}%`);
-        }
+        log(`Attendance marked with confidence: ${confidencePct}%`);
         await loadStudentTimetable({ forceNetwork: true });
         await loadStudentAttendanceInsights();
         await sleep(900);
@@ -7573,30 +8388,20 @@ async function startLiveAttendanceVerification(mode = 'official') {
       } else {
         livenessFailures = 0;
       }
-      const lines = mode === 'trial'
-        ? [
-            'Temporary Trial Result',
-            `Status: ${statusLabel(response.status)}`,
-            `Message: ${response.message}`,
-          ]
-        : [
-            `Status: ${statusLabel(response.status)}`,
-            `Message: ${response.message}`,
-          ];
+      const lines = [
+        `Status: ${statusLabel(response.status)}`,
+        `Message: ${response.message}`,
+      ];
       setStudentResult(lines.join('\n'));
       if (els.cameraMessage) {
         els.cameraMessage.textContent = `${guidance} Auto retry in progress...`;
       }
-      if (mode === 'trial') {
-        log(`Trial verification retry (${attempts}/${maxAttempts})`);
-      } else {
-        log(`Live verification retry (${attempts}/${maxAttempts})`);
-      }
+      log(`Live verification retry (${attempts}/${maxAttempts})`);
       if (livenessFailures >= 3) {
         const livenessTimeoutMessage = 'Liveness check still failing. Keep front light on face, center your face, and move head slowly left/right/up/down, then retry.';
         setStudentResult(livenessTimeoutMessage, {
           showRetry: true,
-          retryAction: () => startStudentSelfieFlow(mode),
+          retryAction: () => startStudentSelfieFlow(),
         });
         if (els.cameraMessage) {
           els.cameraMessage.textContent = livenessTimeoutMessage;
@@ -7659,72 +8464,6 @@ async function markStudentAttendance(selfieDataUrl, selfieFrames = []) {
     log(`Attendance not marked (confidence: ${confidencePct}%)`);
   }
   log(`Student attendance submission: ${response.status}`);
-  await loadStudentTimetable({ forceNetwork: true });
-  await loadStudentAttendanceInsights();
-}
-
-async function markStudentTrialAttendance(selfieDataUrl, selfieFrames = []) {
-  const selected = ensureStudentScheduleSelection();
-  const selectedScheduleId = selected?.schedule_id;
-  if (!selectedScheduleId) {
-    throw new Error('No class available for temporary trial verification in this timetable view.');
-  }
-
-  if (!state.student.profilePhotoDataUrl) {
-    throw new Error('Upload profile photo before trial attendance.');
-  }
-
-  setStudentResult('Running temporary trial verification...');
-  const payload = await buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames);
-
-  const response = await api('/attendance/student/realtime/trial-mark', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
-
-  const confidencePct = (Number(response.verification_confidence || 0) * 100).toFixed(1);
-  const lines = [
-    'Temporary Trial Result',
-    `Status: ${statusLabel(response.status)}`,
-    `Message: ${response.message}`,
-  ];
-  const rejected = String(response.status || '').toLowerCase() === 'rejected';
-  setStudentResult(lines.join('\n'), {
-    showRetry: rejected,
-    retryAction: () => startStudentSelfieFlow('trial'),
-  });
-
-  const normalizedStatus = String(response.status || '').toLowerCase();
-  if (['verified', 'approved', 'present'].includes(normalizedStatus)) {
-    log(`Trial attendance marked with confidence: ${confidencePct}%`);
-  } else {
-    log(`Trial attendance not marked (confidence: ${confidencePct}%)`);
-  }
-  log(`Trial attendance check: ${response.status}`);
-  await loadStudentTimetable({ forceNetwork: true });
-  await loadStudentAttendanceInsights();
-}
-
-async function resetStudentTrialAttendance() {
-  const selected = ensureStudentScheduleSelection();
-  if (!selected) {
-    throw new Error('No class available to delete temporary trial attendance.');
-  }
-  const classDate = todayISO();
-
-  const response = await api('/attendance/student/realtime/trial-reset', {
-    method: 'POST',
-    body: JSON.stringify({
-      schedule_id: selected.schedule_id,
-      class_date: classDate,
-    }),
-  });
-
-  const lines = [
-    response.message || 'Temporary trial attendance deleted.',
-    `Deleted: ${response.deleted ? 'YES' : 'NO'}`,
-  ];
-  setStudentResult(lines.join('\n'));
   await loadStudentTimetable({ forceNetwork: true });
   await loadStudentAttendanceInsights();
 }
@@ -8398,21 +9137,14 @@ async function saveStudentEnrollmentVideo() {
   }
 }
 
-async function startStudentSelfieFlow(mode = 'official') {
-  if (mode === 'trial') {
-    ensureStudentScheduleSelection();
-    if (!state.student.selectedScheduleId) {
-      throw new Error('Select a class from timetable first.');
-    }
-  } else {
-    const kpi = findAttendanceManagementState();
-    const scheduleId = Number(kpi.schedule?.schedule_id || 0);
-    if (kpi.mode !== 'mark' || !scheduleId) {
-      throw new Error('Attendance window is closed right now. Wait for the next class.');
-    }
-    state.student.kpiScheduleId = scheduleId;
-    state.student.selectedScheduleId = scheduleId;
+async function startStudentSelfieFlow() {
+  const kpi = findAttendanceManagementState();
+  const scheduleId = Number(kpi.schedule?.schedule_id || 0);
+  if (kpi.mode !== 'mark' || !scheduleId) {
+    throw new Error('Attendance window is closed right now. Wait for the next class.');
   }
+  state.student.kpiScheduleId = scheduleId;
+  state.student.selectedScheduleId = scheduleId;
   if (!state.student.registrationNumber) {
     throw new Error('Complete profile setup with registration number first.');
   }
@@ -8422,7 +9154,7 @@ async function startStudentSelfieFlow(mode = 'official') {
   if (requiresStudentEnrollmentSetup()) {
     throw new Error('Complete one-time enrollment video before marking attendance.');
   }
-  await startLiveAttendanceVerification(mode);
+  await startLiveAttendanceVerification();
 }
 
 async function startClassroomCaptureFlow() {
@@ -8629,6 +9361,9 @@ async function resetForgotPassword() {
 }
 
 async function requestOtp() {
+  if (authState.otpRequestInFlight) {
+    return;
+  }
   const remaining = getOtpCooldownRemainingSeconds();
   if (remaining > 0) {
     showOtpPopup(
@@ -8700,6 +9435,9 @@ async function requestOtp() {
 }
 
 async function registerAccount() {
+  if (authState.registerInFlight) {
+    return;
+  }
   if (!isSignupMode()) {
     setAuthMode('signup');
     throw new Error('Switch to Signup mode to register a new account.');
@@ -8740,11 +9478,16 @@ async function registerAccount() {
     parent_email: role === 'student' ? (parentEmail || null) : null,
   };
 
-  await api('/auth/register', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    skipAuth: true,
-  });
+  setRegisterInFlight(true);
+  try {
+    await api('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      skipAuth: true,
+    });
+  } finally {
+    setRegisterInFlight(false);
+  }
 
   authState.pendingEmail = email;
   if (els.authEmail) {
@@ -8767,6 +9510,9 @@ async function registerAccount() {
 }
 
 async function verifyOtpAndLogin() {
+  if (authState.otpVerifyInFlight) {
+    return;
+  }
   const email = (els.authEmail.value.trim() || authState.pendingEmail).toLowerCase();
   const otpCode = els.authOtp.value.trim();
 
@@ -8774,11 +9520,17 @@ async function verifyOtpAndLogin() {
     throw new Error('Email and OTP code are required.');
   }
 
-  const data = await api('/auth/login/verify-otp', {
-    method: 'POST',
-    body: JSON.stringify({ email, otp_code: otpCode }),
-    skipAuth: true,
-  });
+  setOtpVerifyInFlight(true);
+  let data;
+  try {
+    data = await api('/auth/login/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otp_code: otpCode }),
+      skipAuth: true,
+    });
+  } finally {
+    setOtpVerifyInFlight(false);
+  }
 
   setSession(data.access_token, data.user);
   setForgotPasswordPanel(false);
@@ -9555,7 +10307,11 @@ function bindEvents() {
     els.foodOrderDate.addEventListener('focus', openNativeDatePicker);
     els.foodOrderDate.addEventListener('change', async () => {
       try {
-        state.food.orderDate = String(els.foodOrderDate.value || todayISO());
+        if (authState.user?.role === 'student') {
+          clampFoodOrderDateToToday({ showNotice: true });
+        } else {
+          state.food.orderDate = String(els.foodOrderDate.value || todayISO()).trim() || todayISO();
+        }
         await refreshFoodModule();
       } catch (error) {
         setFoodStatus(error.message, true);
@@ -9575,6 +10331,10 @@ function bindEvents() {
       const selectedHint = state.food.slotHintsById?.[String(els.foodSlotSelect.value || '')] || null;
       els.foodSlotSelect.dataset.hint = selectedHint?.kind || 'none';
       setFoodCheckoutPreviewOpen(false);
+      const orderGate = getFoodRuntimeOrderGate({ slot: getSelectedFoodSlot() });
+      if (!orderGate.canOrderNow) {
+        setFoodStatus(orderGate.message, true);
+      }
     });
   }
 
@@ -9887,43 +10647,6 @@ function bindEvents() {
     }
   });
 
-  if (els.trialMarkBtn) {
-    els.trialMarkBtn.addEventListener('click', async () => {
-      const button = els.trialMarkBtn;
-      button.disabled = true;
-      const original = button.textContent;
-      button.textContent = 'Opening...';
-      try {
-        await startStudentSelfieFlow('trial');
-      } catch (error) {
-        log(error.message);
-        setStudentResult(error.message);
-      } finally {
-        button.textContent = original;
-        updateSelectedClassState();
-      }
-    });
-  }
-
-  if (els.trialResetBtn) {
-    els.trialResetBtn.addEventListener('click', async () => {
-      const button = els.trialResetBtn;
-      button.disabled = true;
-      const original = button.textContent;
-      button.textContent = 'Deleting...';
-      try {
-        await resetStudentTrialAttendance();
-        log('Temporary trial attendance deleted');
-      } catch (error) {
-        log(error.message);
-        setStudentResult(error.message);
-      } finally {
-        button.textContent = original;
-        updateSelectedClassState();
-      }
-    });
-  }
-
   if (els.studentAggregateCourses) {
     els.studentAggregateCourses.addEventListener('click', (event) => {
       const target = event.target;
@@ -10055,6 +10778,12 @@ function bindEvents() {
     els.profileTabEnrollmentBtn.addEventListener('click', () => {
       setProfileTab('enrollment');
       renderEnrollmentSummary();
+    });
+  }
+
+  if (els.openProfilePhotoUpdateBtn) {
+    els.openProfilePhotoUpdateBtn.addEventListener('click', () => {
+      openEnrollmentPhotoUpdateFlow();
     });
   }
 
@@ -10275,6 +11004,7 @@ async function init() {
   renderPasswordStrengthHint(els.forgotPasswordStrength, els.forgotNewPassword?.value || '');
   renderOtpCooldown();
   renderForgotOtpCooldown();
+  setRegisterInFlight(false);
   setForgotPasswordPanel(false);
   updateAuthBadges();
   applyRoleUI();

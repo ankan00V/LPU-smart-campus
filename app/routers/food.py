@@ -26,6 +26,8 @@ router = APIRouter(prefix="/food", tags=["Food Pre-Ordering"])
 
 _order_rate_lock = Lock()
 _order_rate_buckets: dict[int, list[datetime]] = {}
+_FOOD_SERVICE_START = dt_time(10, 0)
+_FOOD_SERVICE_END = dt_time(21, 0)
 
 
 def _float_env(name: str, default: float) -> float:
@@ -160,6 +162,32 @@ def _mongo_db_or_503():
         return get_mongo_db(required=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _validate_order_time_window(*, order_date: date, slot: models.BreakSlot) -> None:
+    if slot.start_time < _FOOD_SERVICE_START or slot.end_time > _FOOD_SERVICE_END:
+        raise HTTPException(status_code=409, detail="Selected slot is not open for pickup.")
+
+    today_local = date.today()
+    if order_date != today_local:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Orders can be placed only for today ({today_local.isoformat()}).",
+        )
+
+    now_local = datetime.now()
+    current_time = now_local.time()
+    if current_time < _FOOD_SERVICE_START or current_time >= _FOOD_SERVICE_END:
+        raise HTTPException(
+            status_code=409,
+            detail="Food hall is closed now. Ordering is open from 10:00 AM to 9:00 PM.",
+        )
+
+    if slot.end_time <= current_time:
+        raise HTTPException(
+            status_code=409,
+            detail="Selected slot has already ended. Choose an upcoming slot.",
+        )
 
 
 def _require_student_id(current_user: CurrentUser) -> int:
@@ -625,7 +653,7 @@ def _record_order_audit(
         actor_id=(actor.id if actor else None),
         actor_email=(actor.email if actor else None),
         message=message,
-        payload_json=(json.dumps(payload) if payload else None),
+        payload_json=(json.dumps(payload, default=str) if payload else None),
     )
     db.add(row)
     mirror_document(
@@ -1561,8 +1589,7 @@ def create_food_order(
     slot = db.get(models.BreakSlot, payload.slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Break slot not found")
-    if slot.start_time < dt_time(10, 0) or slot.end_time > dt_time(21, 0):
-        raise HTTPException(status_code=409, detail="Selected slot is not open for pickup.")
+    _validate_order_time_window(order_date=payload.order_date, slot=slot)
 
     menu_item = None
     shop = None
@@ -1776,8 +1803,7 @@ def create_food_orders_checkout(
     slot = db.get(models.BreakSlot, payload.slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Break slot not found")
-    if slot.start_time < dt_time(10, 0) or slot.end_time > dt_time(21, 0):
-        raise HTTPException(status_code=409, detail="Selected slot is not open for pickup.")
+    _validate_order_time_window(order_date=payload.order_date, slot=slot)
 
     if idempotency_key:
         line_pattern = f"{idempotency_key}:%"
@@ -2346,6 +2372,7 @@ def create_payment_intent(
             "updated_at": payment.updated_at,
             "source": "payment-intent",
         },
+        upsert_filter={"payment_reference": reference},
     )
     return schemas.FoodPaymentIntentOut(
         payment_reference=reference,
@@ -2598,6 +2625,7 @@ async def payment_webhook(
             "event_id": event_id,
             "source": "payment-webhook",
         },
+        upsert_filter={"payment_reference": payment_reference},
     )
     return schemas.MessageResponse(message="Webhook processed")
 
@@ -2925,6 +2953,7 @@ def verify_payment(
                     "updated_at": payment.updated_at,
                     "source": "payment-verify-backfill",
                 },
+                upsert_filter={"payment_reference": payment.payment_reference},
             )
             return schemas.MessageResponse(message="Payment already verified")
         raise HTTPException(status_code=409, detail="Payment already captured")
@@ -3015,6 +3044,7 @@ def verify_payment(
             "updated_at": payment.updated_at,
             "source": "payment-verify",
         },
+        upsert_filter={"payment_reference": payment.payment_reference},
     )
     if payment_was_already_paid:
         return schemas.MessageResponse(message="Payment already verified")
@@ -3138,6 +3168,7 @@ def report_payment_failure(
                 "updated_at": payment.updated_at,
                 "source": "payment-failure-reconciled",
             },
+            upsert_filter={"payment_reference": payment.payment_reference},
         )
         return schemas.MessageResponse(message="Payment already captured on Razorpay; reconciled successfully")
 
@@ -3248,5 +3279,6 @@ def report_payment_failure(
             "updated_at": payment.updated_at,
             "source": "payment-failure",
         },
+        upsert_filter={"payment_reference": payment.payment_reference},
     )
     return schemas.MessageResponse(message="Payment failure recorded")
