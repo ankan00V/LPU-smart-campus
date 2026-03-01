@@ -1,14 +1,18 @@
 import os
 import logging
+from decimal import Decimal
 from datetime import date, datetime, time, timedelta
+from enum import Enum as PyEnum
 from pathlib import Path
 import time as pytime
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from pymongo.errors import DuplicateKeyError
+from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.orm import Session
 
 from . import models
@@ -24,11 +28,13 @@ from .mongo import (
     next_sequence,
 )
 from .routers import (
+    admin_router,
     assets_router,
     attendance_router,
     auth_router,
     food_router,
     makeup_router,
+    messages_router,
     people_router,
     resources_router,
 )
@@ -92,6 +98,43 @@ def apply_sqlite_migrations() -> None:
         if "registration_number" not in student_columns:
             connection.execute(
                 text("ALTER TABLE students ADD COLUMN registration_number TEXT")
+            )
+        if "section" not in student_columns:
+            connection.execute(
+                text("ALTER TABLE students ADD COLUMN section TEXT")
+            )
+        if "section_updated_at" not in student_columns:
+            connection.execute(
+                text("ALTER TABLE students ADD COLUMN section_updated_at DATETIME")
+            )
+
+        faculty_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(faculty)")).fetchall()
+        }
+        if "faculty_identifier" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN faculty_identifier TEXT")
+            )
+        if "section" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN section TEXT")
+            )
+        if "section_updated_at" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN section_updated_at DATETIME")
+            )
+        if "profile_photo_data_url" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN profile_photo_data_url TEXT")
+            )
+        if "profile_photo_updated_at" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN profile_photo_updated_at DATETIME")
+            )
+        if "profile_photo_locked_until" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN profile_photo_locked_until DATETIME")
             )
 
         food_menu_item_columns = {
@@ -183,6 +226,92 @@ def apply_sqlite_migrations() -> None:
             if col_name in food_payment_columns:
                 continue
             connection.execute(text(f"ALTER TABLE food_payments ADD COLUMN {col_name} {col_spec}"))
+
+        makeup_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(makeup_classes)")).fetchall()
+        }
+        makeup_column_specs = {
+            "sections_json": "TEXT DEFAULT '[]'",
+            "class_mode": "TEXT DEFAULT 'offline'",
+            "room_number": "TEXT",
+            "online_link": "TEXT",
+            "code_generated_at": "DATETIME",
+            "code_expires_at": "DATETIME",
+            "attendance_open_minutes": "INTEGER DEFAULT 15",
+            "scheduled_at": "DATETIME",
+        }
+        for col_name, col_spec in makeup_column_specs.items():
+            if col_name in makeup_columns:
+                continue
+            connection.execute(text(f"ALTER TABLE makeup_classes ADD COLUMN {col_name} {col_spec}"))
+        connection.execute(
+            text(
+                "UPDATE makeup_classes "
+                "SET sections_json = COALESCE(NULLIF(TRIM(sections_json), ''), '[\"ALL\"]') "
+                "WHERE sections_json IS NULL OR TRIM(sections_json) = ''"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE makeup_classes "
+                "SET class_mode = COALESCE(NULLIF(TRIM(class_mode), ''), 'offline') "
+                "WHERE class_mode IS NULL OR TRIM(class_mode) = ''"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE makeup_classes "
+                "SET attendance_open_minutes = COALESCE(attendance_open_minutes, 15) "
+                "WHERE attendance_open_minutes IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE makeup_classes "
+                "SET code_generated_at = COALESCE(code_generated_at, created_at), "
+                "scheduled_at = COALESCE(scheduled_at, created_at) "
+                "WHERE code_generated_at IS NULL OR scheduled_at IS NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE makeup_classes "
+                "SET code_expires_at = COALESCE(code_expires_at, datetime(class_date || ' ' || start_time, '+15 minutes')) "
+                "WHERE code_expires_at IS NULL"
+            )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_makeup_classes_class_date_start_time ON makeup_classes (class_date, start_time)")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_makeup_classes_faculty_id ON makeup_classes (faculty_id)")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_makeup_classes_code_expires_at ON makeup_classes (code_expires_at)")
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS remedial_messages ("
+                "id INTEGER PRIMARY KEY, "
+                "makeup_class_id INTEGER NOT NULL, "
+                "faculty_id INTEGER NOT NULL, "
+                "student_id INTEGER NOT NULL, "
+                "section TEXT NOT NULL, "
+                "remedial_code TEXT NOT NULL, "
+                "message TEXT NOT NULL, "
+                "created_at DATETIME NOT NULL, "
+                "read_at DATETIME, "
+                "CONSTRAINT uq_remedial_message_class_student UNIQUE (makeup_class_id, student_id)"
+                ")"
+            )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_remedial_messages_student_created ON remedial_messages (student_id, created_at)")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_remedial_messages_class_created ON remedial_messages (makeup_class_id, created_at)")
+        )
         # Backfill updated_at on older rows where column was just introduced.
         if "updated_at" in food_payment_column_specs:
             connection.execute(
@@ -197,6 +326,12 @@ def apply_sqlite_migrations() -> None:
             text(
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_students_registration_number_unique "
                 "ON students (registration_number) WHERE registration_number IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_faculty_identifier_unique "
+                "ON faculty (faculty_identifier) WHERE faculty_identifier IS NOT NULL"
             )
         )
         connection.execute(
@@ -228,7 +363,9 @@ app.include_router(people_router)
 app.include_router(attendance_router)
 app.include_router(food_router)
 app.include_router(resources_router)
+app.include_router(admin_router)
 app.include_router(makeup_router)
+app.include_router(messages_router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 if WEB_DIR.exists():
@@ -284,6 +421,12 @@ def apple_touch_icon_precomposed():
 @app.on_event("startup")
 def startup_event() -> None:
     requires_mongo = mongo_persistence_required()
+    strict_startup = (os.getenv("MONGO_STARTUP_STRICT", "true") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     max_attempts_raw = os.getenv("MONGO_STARTUP_MAX_ATTEMPTS", "6").strip()
     retry_delay_raw = os.getenv("MONGO_STARTUP_RETRY_DELAY_SECONDS", "2.0").strip()
     try:
@@ -317,18 +460,33 @@ def startup_event() -> None:
     if not ok:
         status = mongo_status()
         reason = status.get("error") or last_reason or "MongoDB connection failed"
-        if requires_mongo:
+        if requires_mongo and strict_startup:
             raise RuntimeError(f"MongoDB is required for startup but connection failed: {reason}")
         logger.warning(
-            "MongoDB unavailable at startup; running in SQL-only mode because MONGO_PERSISTENCE_REQUIRED=false. "
-            "reason=%s",
+            "MongoDB unavailable at startup; continuing with degraded mode. "
+            "reason=%s requires_mongo=%s strict_startup=%s",
             reason,
+            requires_mongo,
+            strict_startup,
         )
     else:
         seed_static_assets_to_mongo()
     db = SessionLocal()
     try:
         bootstrap_food_hall_catalog(db)
+        startup_snapshot_sync = (os.getenv("MONGO_STARTUP_SQL_SNAPSHOT_SYNC", "true") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if ok and startup_snapshot_sync:
+            sync_sql_snapshot_to_mongo(db)
+            logger.info("Startup SQL->Mongo snapshot sync completed.")
+    except Exception as exc:
+        if requires_mongo and strict_startup:
+            raise RuntimeError(f"Startup SQL->Mongo sync failed: {exc}") from exc
+        logger.warning("Startup SQL->Mongo sync skipped due to non-fatal error: %s", exc)
     finally:
         db.close()
 
@@ -395,155 +553,120 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
     if mongo_db is None:
         return
 
-    def upsert_by_id(collection: str, doc: dict) -> None:
-        mongo_db[collection].update_one({"id": doc["id"]}, {"$set": doc}, upsert=True)
+    def _normalize_value(value: Any) -> Any:
+        if isinstance(value, PyEnum):
+            return value.value
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, date):
+            return value.isoformat()
+        if isinstance(value, time):
+            return value.isoformat()
+        return value
 
-    for student in db.query(models.Student).all():
-        upsert_by_id(
-            "students",
-            {
-                "id": student.id,
-                "name": student.name,
-                "email": student.email,
-                "registration_number": student.registration_number,
-                "parent_email": student.parent_email,
-                "profile_photo_data_url": student.profile_photo_data_url,
-                "profile_photo_updated_at": student.profile_photo_updated_at,
-                "profile_photo_locked_until": student.profile_photo_locked_until,
-                "profile_face_template_json": student.profile_face_template_json,
-                "profile_face_template_updated_at": student.profile_face_template_updated_at,
-                "enrollment_video_template_json": student.enrollment_video_template_json,
-                "enrollment_video_updated_at": student.enrollment_video_updated_at,
-                "enrollment_video_locked_until": student.enrollment_video_locked_until,
-                "department": student.department,
-                "semester": student.semester,
-                "created_at": student.created_at,
-                "source": "seed-sync",
-            },
-        )
+    def _serialize_row(row: Any, *, source: str) -> dict[str, Any]:
+        mapper = sa_inspect(row.__class__)
+        payload: dict[str, Any] = {}
+        for column in mapper.columns:
+            payload[column.key] = _normalize_value(getattr(row, column.key))
+        payload["source"] = source
 
-    for faculty in db.query(models.Faculty).all():
-        upsert_by_id(
-            "faculty",
-            {
-                "id": faculty.id,
-                "name": faculty.name,
-                "email": faculty.email,
-                "department": faculty.department,
-                "created_at": faculty.created_at,
-                "source": "seed-sync",
-            },
-        )
+        table_name = getattr(row.__class__, "__tablename__", "")
+        if table_name == "food_orders":
+            payload.setdefault("order_id", payload.get("id"))
+        elif table_name == "food_shops":
+            payload.setdefault("shop_id", payload.get("id"))
+        elif table_name == "food_menu_items":
+            payload.setdefault("menu_item_id", payload.get("id"))
+        elif table_name == "food_payments":
+            payload.setdefault("payment_id", payload.get("id"))
+        elif table_name == "makeup_classes":
+            payload.setdefault("makeup_class_id", payload.get("id"))
+        return payload
 
-    for course in db.query(models.Course).all():
-        upsert_by_id(
-            "courses",
-            {
-                "id": course.id,
-                "code": course.code,
-                "title": course.title,
-                "faculty_id": course.faculty_id,
-                "source": "seed-sync",
-            },
-        )
+    def _pk_filter(row: Any, payload: dict[str, Any], *, table_name: str) -> dict[str, Any]:
+        if table_name == "food_payments" and payload.get("payment_id") is not None:
+            return {"payment_id": payload["payment_id"]}
+        mapper = sa_inspect(row.__class__)
+        criteria: dict[str, Any] = {}
+        for col in mapper.primary_key:
+            value = payload.get(col.key)
+            if value is not None:
+                criteria[col.key] = value
+        if criteria:
+            return criteria
+        if payload.get("id") is not None:
+            return {"id": payload["id"]}
+        raise RuntimeError(f"Unable to build Mongo upsert filter for {row.__class__.__name__}")
 
-    for enrollment in db.query(models.Enrollment).all():
-        upsert_by_id(
-            "enrollments",
-            {
-                "id": enrollment.id,
-                "student_id": enrollment.student_id,
-                "course_id": enrollment.course_id,
-                "created_at": enrollment.created_at,
-                "source": "seed-sync",
-            },
-        )
+    def _safe_update_one(collection_name: str, match_filter: dict[str, Any], payload: dict[str, Any]) -> None:
+        collection = mongo_db[collection_name]
+        try:
+            collection.update_one(match_filter, {"$set": payload}, upsert=True)
+            return
+        except DuplicateKeyError as exc:
+            details = getattr(exc, "details", {}) or {}
+            key_value = details.get("keyValue")
+            if not isinstance(key_value, dict) or not key_value:
+                raise
 
-    for classroom in db.query(models.Classroom).all():
-        upsert_by_id(
-            "classrooms",
-            {
-                "id": classroom.id,
-                "block": classroom.block,
-                "room_number": classroom.room_number,
-                "capacity": classroom.capacity,
-                "source": "seed-sync",
-            },
-        )
+            fallback_payload = dict(payload)
+            fallback_payload.pop("id", None)
+            result = collection.update_one(dict(key_value), {"$set": fallback_payload}, upsert=False)
+            if result.matched_count:
+                logger.warning(
+                    "Resolved startup sync duplicate key for collection=%s via filter=%s",
+                    collection_name,
+                    key_value,
+                )
+                return
+            logger.warning(
+                "Skipping unresolved startup sync duplicate key for collection=%s filter=%s",
+                collection_name,
+                key_value,
+            )
+            return
 
-    for assignment in db.query(models.CourseClassroom).all():
-        upsert_by_id(
-            "course_classrooms",
-            {
-                "id": assignment.id,
-                "course_id": assignment.course_id,
-                "classroom_id": assignment.classroom_id,
-                "source": "seed-sync",
-            },
-        )
+    sync_models = [
+        models.Student,
+        models.Faculty,
+        models.Course,
+        models.Enrollment,
+        models.Classroom,
+        models.CourseClassroom,
+        models.AttendanceRecord,
+        models.NotificationLog,
+        models.FoodItem,
+        models.FoodShop,
+        models.FoodMenuItem,
+        models.BreakSlot,
+        models.FoodOrder,
+        models.FoodPayment,
+        models.FoodOrderAudit,
+        models.MakeUpClass,
+        models.RemedialAttendance,
+        models.RemedialMessage,
+        models.FacultyMessage,
+        models.ClassSchedule,
+        models.AttendanceSubmission,
+        models.ClassroomAnalysis,
+        models.AuthOTP,
+        models.AuthOTPDelivery,
+    ]
 
-    for schedule in db.query(models.ClassSchedule).all():
-        upsert_by_id(
-            "class_schedules",
-            {
-                "id": schedule.id,
-                "course_id": schedule.course_id,
-                "faculty_id": schedule.faculty_id,
-                "weekday": schedule.weekday,
-                "start_time": str(schedule.start_time),
-                "end_time": str(schedule.end_time),
-                "classroom_label": schedule.classroom_label,
-                "is_active": schedule.is_active,
-                "created_at": schedule.created_at,
-                "source": "seed-sync",
-            },
-        )
-
-    for item in db.query(models.FoodItem).all():
-        upsert_by_id(
-            "food_items",
-            {
-                "id": item.id,
-                "name": item.name,
-                "price": item.price,
-                "is_active": item.is_active,
-                "source": "seed-sync",
-            },
-        )
-
-    for slot in db.query(models.BreakSlot).all():
-        upsert_by_id(
-            "break_slots",
-            {
-                "id": slot.id,
-                "label": slot.label,
-                "start_time": str(slot.start_time),
-                "end_time": str(slot.end_time),
-                "max_orders": slot.max_orders,
-                "source": "seed-sync",
-            },
-        )
-
-    for order in db.query(models.FoodOrder).all():
-        upsert_by_id(
-            "food_orders_snapshot",
-            {
-                "id": order.id,
-                "student_id": order.student_id,
-                "food_item_id": order.food_item_id,
-                "slot_id": order.slot_id,
-                "order_date": order.order_date.isoformat(),
-                "status": order.status.value,
-                "shop_name": order.shop_name,
-                "shop_block": order.shop_block,
-                "location_verified": bool(order.location_verified),
-                "location_latitude": order.location_latitude,
-                "location_longitude": order.location_longitude,
-                "location_accuracy_m": order.location_accuracy_m,
-                "created_at": order.created_at,
-                "source": "seed-sync",
-            },
-        )
+    for model_cls in sync_models:
+        collection_name = str(getattr(model_cls, "__tablename__", "")).strip()
+        if not collection_name:
+            continue
+        for row in db.query(model_cls).all():
+            payload = _serialize_row(row, source="startup-sql-sync")
+            _safe_update_one(
+                collection_name,
+                _pk_filter(row, payload, table_name=collection_name),
+                payload,
+            )
 
     auth_collection = mongo_db["auth_users"]
     for auth_user in db.query(models.AuthUser).all():
@@ -555,23 +678,21 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
             while auth_collection.find_one({"id": auth_id}):
                 auth_id = next_sequence("auth_users")
 
-        auth_collection.update_one(
+        _safe_update_one(
+            "auth_users",
             {"email": auth_user.email},
             {
-                "$set": {
-                    "id": auth_id,
-                    "email": auth_user.email,
-                    "password_hash": auth_user.password_hash,
-                    "role": auth_user.role.value,
-                    "student_id": auth_user.student_id,
-                    "faculty_id": auth_user.faculty_id,
-                    "is_active": auth_user.is_active,
-                    "created_at": auth_user.created_at,
-                    "last_login_at": auth_user.last_login_at,
-                    "source": "seed-sync",
-                }
+                "id": auth_id,
+                "email": auth_user.email,
+                "password_hash": auth_user.password_hash,
+                "role": auth_user.role.value,
+                "student_id": auth_user.student_id,
+                "faculty_id": auth_user.faculty_id,
+                "is_active": auth_user.is_active,
+                "created_at": auth_user.created_at,
+                "last_login_at": auth_user.last_login_at,
+                "source": "startup-sql-sync",
             },
-            upsert=True,
         )
 
 

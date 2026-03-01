@@ -61,6 +61,8 @@ class Student(Base):
     email = Column(String(120), unique=True, nullable=False, index=True)
     registration_number = Column(String(40), unique=True, nullable=True, index=True)
     parent_email = Column(String(120), nullable=True)
+    section = Column(String(80), nullable=True, index=True)
+    section_updated_at = Column(DateTime, nullable=True)
     profile_photo_data_url = Column(Text, nullable=True)
     profile_photo_updated_at = Column(DateTime, nullable=True)
     profile_photo_locked_until = Column(DateTime, nullable=True)
@@ -82,6 +84,12 @@ class Faculty(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     email = Column(String(120), unique=True, nullable=False, index=True)
+    faculty_identifier = Column(String(40), unique=True, nullable=True, index=True)
+    section = Column(String(80), nullable=True)
+    section_updated_at = Column(DateTime, nullable=True)
+    profile_photo_data_url = Column(Text, nullable=True)
+    profile_photo_updated_at = Column(DateTime, nullable=True)
+    profile_photo_locked_until = Column(DateTime, nullable=True)
     department = Column(String(100), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -313,7 +321,15 @@ class MakeUpClass(Base):
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
     topic = Column(String(200), nullable=False)
+    sections_json = Column(Text, nullable=False, default="[]")
+    class_mode = Column(String(20), nullable=False, default="offline")
+    room_number = Column(String(80), nullable=True)
+    online_link = Column(String(400), nullable=True)
     remedial_code = Column(String(16), unique=True, nullable=False, index=True)
+    code_generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    code_expires_at = Column(DateTime, nullable=False)
+    attendance_open_minutes = Column(Integer, nullable=False, default=15)
+    scheduled_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -327,6 +343,37 @@ class RemedialAttendance(Base):
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False)
     source = Column(String(50), nullable=False, default="remedial-code")
     marked_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class RemedialMessage(Base):
+    __tablename__ = "remedial_messages"
+    __table_args__ = (
+        UniqueConstraint("makeup_class_id", "student_id", name="uq_remedial_message_class_student"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    makeup_class_id = Column(Integer, ForeignKey("makeup_classes.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    section = Column(String(80), nullable=False, index=True)
+    remedial_code = Column(String(16), nullable=False, index=True)
+    message = Column(String(500), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    read_at = Column(DateTime, nullable=True)
+
+
+class FacultyMessage(Base):
+    __tablename__ = "faculty_messages"
+    __table_args__ = (UniqueConstraint("faculty_id", "student_id", "created_at", name="uq_faculty_message"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    section = Column(String(80), nullable=False, index=True)
+    message_type = Column(String(30), nullable=False, default="Announcement")
+    message = Column(String(600), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    read_at = Column(DateTime, nullable=True)
 
 
 class ClassSchedule(Base):

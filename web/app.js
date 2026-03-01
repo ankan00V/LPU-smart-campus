@@ -15,6 +15,10 @@ const FOOD_SERVICE_START_MINUTES = 10 * 60;
 const FOOD_SERVICE_END_MINUTES = 21 * 60;
 const FOOD_SERVICE_HOURS_LABEL = '10:00 AM - 9:00 PM';
 const FOOD_DEMAND_LIVE_REFRESH_MS = 10000;
+const REMEDIAL_LIVE_REFRESH_MS = 4000;
+const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
+const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
+const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
 const FOOD_ORDER_STATUS_LABELS = {
@@ -52,6 +56,20 @@ const FOOD_ORDER_PROGRESS_POINTS = {
   refund_pending: 100,
   refunded: 100,
 };
+const FOOD_DEMAND_PIE_COLORS = [
+  '#2FA8FF',
+  '#4CC9A0',
+  '#F5B14F',
+  '#6E8BFF',
+  '#FF8E6A',
+  '#37C3D6',
+  '#D18BFF',
+  '#7BB66D',
+  '#E79D5C',
+  '#4E93CF',
+  '#B0A54A',
+  '#5AB7F2',
+];
 const FOOD_POPULAR_SPOT_IDS = ['oven-express', 'kitchen-ette-block41', 'nk-food-court-bh2-6'];
 const FOOD_SHOP_GROUPS = [
   { key: 'popular', title: 'Popular Spots', subtitle: 'Most loved by students right now' },
@@ -76,7 +94,7 @@ const FOOD_DELIVERY_POINTS = [
   ['05', 'LIT Pharmacy'],
   ['06', 'LIT Architecture'],
   ['07', 'LIT Pharmacy'],
-  ['08', 'Shri Baldev Raj Mittal Hospital'],
+  ['08', 'Shri Baldev Raj Mittal Auditorium'],
   ['09', 'Girls Hostel 1'],
   ['10', 'Girls Hostel 2'],
   ['11', 'Girls Hostel 3'],
@@ -134,7 +152,7 @@ const FOOD_SHOP_DIRECTORY = [
   { id: 'telugu-vantillu', name: 'Telugu Vantillu', block: 'BH-1', group: 'bh1', cover: 'https://b.zmtcdn.com/data/pictures/4/20876424/72e4680b9c9a66c3d157c1ceac1e5ceb.jpg' },
   { id: 'campus-fusion-bh1', name: 'Campus Fusion', block: 'BH-1', group: 'bh1', cover: 'https://b.zmtcdn.com/data/pictures/chains/7/20402557/7c9fe2b6a8ae9d14736d68d1f11e18be_featured_v2.jpg' },
   { id: 'havmor-ice-cream', name: 'Havmor Ice Cream', block: 'BH-1', group: 'bh1', cover: 'https://content.jdmagicbox.com/v2/comp/delhi/l6/011pxx11.xx11.221228184909.u2l6/catalogue/-1qb99pzzka.jpg' },
-  { id: 'nk-food-court-bh2-6', name: 'NK Food Court', block: 'BH-2–6', group: 'bh2to6', cover: 'https://rajasthancab.b-cdn.net/uploads/blog/1747049704-blog-image.webp' },
+  { id: 'nk-food-court-bh2-6', name: 'NK Food Court', block: 'BH-2–6', group: 'bh2to6', cover: 'https://i.pinimg.com/736x/42/7e/a2/427ea2b8d28fbaf5efc1f6f7db47e25a.jpg' },
   { id: 'pizza-express', name: 'Pizza Express', block: 'BH-2–6', group: 'bh2to6', cover: 'https://pizzaexpress.in/wp-content/uploads/2025/02/Lulu2-1024x683.jpg' },
   { id: 'juice-world', name: 'Juice World', block: 'BH-2–6', group: 'bh2to6', cover: 'https://b.zmtcdn.com/data/pictures/9/19235239/b4e9bc5386c4242cc71516a02664d38a.jpg?fit=around%7C960:500&crop=960:500;*,*' },
   { id: 'chinese-eatery', name: 'Chinese Eatery', block: 'BH-2–6', group: 'bh2to6', cover: 'https://dynamic-media-cdn.tripadvisor.com/media/photo-o/1a/b0/43/c4/traditional-chinese-restaurant.jpg?w=1200&h=1200&s=1' },
@@ -165,6 +183,8 @@ let foodToastTimer = null;
 let foodOrdersPulseTimer = null;
 let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
+let remedialLiveTimer = null;
+let remedialLiveBusy = false;
 let sessionIdleTimer = null;
 let sessionMaxTimer = null;
 let sessionActivityBound = false;
@@ -181,6 +201,7 @@ const state = {
   attendanceSummary: [],
   peakTimes: [],
   overview: { blocks: 0, classrooms: 0, courses: 0, faculty: 0, students: 0 },
+  studentMessages: [],
   coursesById: {},
   food: {
     items: [],
@@ -204,6 +225,21 @@ const state = {
     demandDigest: '',
     lastDemandSyncAtMs: 0,
     demandSyncPulseUntilMs: 0,
+    demandSelectedSlotId: 0,
+    demandLive: {
+      windowMinutes: 2,
+      activeOrders: 0,
+      ordersLastWindow: 0,
+      statusUpdatesLastWindow: 0,
+      paymentEventsLastWindow: 0,
+      hottestSlotLabel: '',
+      hottestSlotOrders: 0,
+      pulsesBySlotId: {},
+      pulses: [],
+      syncedAtMs: 0,
+      digest: '',
+      pulseUntilMs: 0,
+    },
     orderDate: '',
     shops: [],
     menuByShop: {},
@@ -239,15 +275,32 @@ const state = {
   },
   admin: {
     telemetryHistory: [],
+    summary: null,
+    alerts: [],
+    insights: null,
+    lastUpdatedAt: null,
+    staleAfterSeconds: 60,
   },
   remedial: {
+    eligibleCourses: [],
     classes: [],
     selectedClassId: null,
     selectedClassAttendance: [],
+    selectedClassAttendanceSections: [],
+    selectedClassAttendanceAllStudents: [],
+    selectedAttendanceModalSection: '',
+    selectedAttendanceModalCourseKey: '',
+    messages: [],
+    attendanceLedger: [],
+    attendanceLedgerByCourse: {},
+    validatedClass: null,
+    markedClassId: null,
+    markedOnlineLink: '',
+    demoBypassLeadTime: false,
   },
   student: {
     weekStart: '',
-    minTimetableDate: '2026-01-21',
+    minTimetableDate: STUDENT_TIMETABLE_START_DATE,
     viewDate: '',
     timetable: [],
     kpiTimetable: [],
@@ -257,11 +310,18 @@ const state = {
     timetableRepairInFlight: false,
     kpiRefreshInFlight: false,
     selectedScheduleId: null,
+    name: '',
     registrationNumber: '',
+    section: '',
+    sectionUpdatedAt: null,
     profilePhotoDataUrl: '',
     profilePhotoLockedUntil: null,
     profilePhotoCanUpdateNow: true,
     profilePhotoLockDaysRemaining: 0,
+    sectionCanUpdateNow: true,
+    sectionLockedUntil: null,
+    sectionLockMinutesRemaining: 0,
+    sectionChangeRequiresFacultyApproval: false,
     profileLoaded: false,
     enrollmentLoaded: false,
     hasEnrollmentVideo: false,
@@ -291,6 +351,22 @@ const state = {
     selectedSubmissionIds: new Set(),
     analysisHistory: [],
     classroomPhotoDataUrl: '',
+  },
+  facultyProfile: {
+    name: '',
+    facultyIdentifier: '',
+    section: '',
+    sectionUpdatedAt: null,
+    profilePhotoDataUrl: '',
+    profilePhotoLockedUntil: null,
+    profilePhotoCanUpdateNow: true,
+    profilePhotoLockDaysRemaining: 0,
+    sectionCanUpdateNow: true,
+    sectionLockedUntil: null,
+    sectionLockMinutesRemaining: 0,
+    profileLoaded: false,
+    pendingProfilePhotoDataUrl: '',
+    profileSetupRequired: false,
   },
   camera: {
     stream: null,
@@ -388,6 +464,8 @@ const els = {
   authSendAltOtp: document.getElementById('auth-send-alt-otp'),
   authName: document.getElementById('auth-name'),
   authDepartment: document.getElementById('auth-department'),
+  authSectionWrap: document.getElementById('auth-section-wrap'),
+  authSignupSection: document.getElementById('auth-signup-section'),
   authSemesterWrap: document.getElementById('auth-semester-wrap'),
   authSemester: document.getElementById('auth-semester'),
   authParentEmailWrap: document.getElementById('auth-parent-email-wrap'),
@@ -442,6 +520,8 @@ const els = {
   modulePanels: document.querySelectorAll('.module-panel[data-module]'),
   accountSection: document.getElementById('account-section'),
   profilePrimaryEmail: document.getElementById('profile-primary-email'),
+  profileFullName: document.getElementById('profile-full-name'),
+  profileIdLabel: document.getElementById('profile-id-label'),
   profileAlternateEmail: document.getElementById('profile-alternate-email'),
   saveAlternateEmailBtn: document.getElementById('save-alternate-email-btn'),
   accountLogoutBtn: document.getElementById('account-logout-btn'),
@@ -450,6 +530,11 @@ const els = {
   executiveSection: document.getElementById('executive-section'),
   studentSection: document.getElementById('student-section'),
   facultySection: document.getElementById('faculty-section'),
+  adminLiveChip: document.getElementById('admin-live-chip'),
+  adminDataFreshnessNote: document.getElementById('admin-data-freshness-note'),
+  adminIssuesWrap: document.getElementById('admin-issues-wrap'),
+  adminProfileWrap: document.getElementById('admin-profile-wrap'),
+  adminBenchmarkWrap: document.getElementById('admin-benchmark-wrap'),
   absenteeCard: document.getElementById('absentee-card'),
   capacityCard: document.getElementById('capacity-card'),
   aiAbsentBtn: document.getElementById('ai-absent-btn'),
@@ -465,6 +550,10 @@ const els = {
   foodStatusMsg: document.getElementById('food-status-msg'),
   foodDemandChartModule: document.getElementById('food-demand-chart-module'),
   foodDemandFreshness: document.getElementById('food-demand-freshness'),
+  foodDemandLiveCompact: document.getElementById('food-demand-live-compact'),
+  foodDemandLiveCompactSummary: document.getElementById('food-demand-live-compact-summary'),
+  foodDemandLiveHotBtn: document.getElementById('food-demand-live-hot-btn'),
+  foodDemandSlotDetail: document.getElementById('food-demand-slot-detail'),
   foodPeakList: document.getElementById('food-peak-list'),
   foodOrdersPanel: document.getElementById('food-orders-panel'),
   foodOrdersPanelFreshness: document.getElementById('food-orders-panel-freshness'),
@@ -534,19 +623,47 @@ const els = {
   remedialFacultyPanel: document.getElementById('remedial-faculty-panel'),
   remedialStudentPanel: document.getElementById('remedial-student-panel'),
   remedialCourseSelect: document.getElementById('remedial-course-select'),
+  remedialCourseCodeInput: document.getElementById('remedial-course-code-input'),
+  remedialCourseTitleInput: document.getElementById('remedial-course-title-input'),
+  remedialSectionsInput: document.getElementById('remedial-sections-input'),
   remedialDate: document.getElementById('remedial-date'),
   remedialStartTime: document.getElementById('remedial-start-time'),
   remedialEndTime: document.getElementById('remedial-end-time'),
+  remedialModeSelect: document.getElementById('remedial-mode-select'),
+  remedialRoomWrap: document.getElementById('remedial-room-wrap'),
+  remedialRoomInput: document.getElementById('remedial-room-input'),
+  remedialOnlineWrap: document.getElementById('remedial-online-wrap'),
+  remedialOnlineLinkInput: document.getElementById('remedial-online-link-input'),
+  remedialDemoInstantBtn: document.getElementById('remedial-demo-instant-btn'),
   remedialTopic: document.getElementById('remedial-topic'),
+  remedialCustomMessageInput: document.getElementById('remedial-custom-message-input'),
   remedialCreateBtn: document.getElementById('remedial-create-btn'),
   remedialFacultyStatus: document.getElementById('remedial-faculty-status'),
   remedialClassesList: document.getElementById('remedial-classes-list'),
+  remedialPreviousClassesList: document.getElementById('remedial-previous-classes-list'),
   remedialClassSelect: document.getElementById('remedial-class-select'),
   remedialRefreshAttendanceBtn: document.getElementById('remedial-refresh-attendance-btn'),
   remedialAttendanceList: document.getElementById('remedial-attendance-list'),
+  remedialRefreshMessagesBtn: document.getElementById('remedial-refresh-messages-btn'),
+  remedialMessagesList: document.getElementById('remedial-messages-list'),
+  facultyMessageSections: document.getElementById('faculty-message-sections'),
+  facultyMessageType: document.getElementById('faculty-message-type'),
+  facultyMessageText: document.getElementById('faculty-message-text'),
+  facultyMessageSendBtn: document.getElementById('faculty-message-send-btn'),
+  facultyMessageStatus: document.getElementById('faculty-message-status'),
   remedialCodeInput: document.getElementById('remedial-code-input'),
+  remedialValidateBtn: document.getElementById('remedial-validate-btn'),
+  remedialCodeDetails: document.getElementById('remedial-code-details'),
+  remedialStudentAggregatePercent: document.getElementById('remedial-student-aggregate-percent'),
+  remedialStudentAttendedDelivered: document.getElementById('remedial-student-attended-delivered'),
+  remedialStudentLedgerList: document.getElementById('remedial-student-ledger-list'),
   remedialMarkBtn: document.getElementById('remedial-mark-btn'),
   remedialStudentStatus: document.getElementById('remedial-student-status'),
+  remedialAttendanceModal: document.getElementById('remedial-attendance-modal'),
+  remedialAttendanceModalTitle: document.getElementById('remedial-attendance-modal-title'),
+  remedialAttendanceModalMeta: document.getElementById('remedial-attendance-modal-meta'),
+  remedialAttendanceModalList: document.getElementById('remedial-attendance-modal-list'),
+  remedialAttendanceModalCloseBtn: document.getElementById('remedial-attendance-modal-close-btn'),
 
   weekStartDate: document.getElementById('week-start-date'),
   prevWeekBtn: document.getElementById('prev-week-btn'),
@@ -574,6 +691,10 @@ const els = {
   profileCloseBtn: document.getElementById('profile-close-btn'),
   profileRegistrationNumber: document.getElementById('profile-registration-number'),
   profileRegistrationNote: document.getElementById('profile-registration-note'),
+  profileSectionWrap: document.getElementById('profile-section-wrap'),
+  profileSectionInput: document.getElementById('profile-section-input'),
+  profileSectionNote: document.getElementById('profile-section-note'),
+  profilePhotoWrap: document.getElementById('profile-photo-wrap'),
   enrollmentPhotoPreview: document.getElementById('enrollment-photo-preview'),
   openProfilePhotoUpdateBtn: document.getElementById('open-profile-photo-update-btn'),
   enrollmentSummaryStatus: document.getElementById('enrollment-summary-status'),
@@ -594,6 +715,8 @@ const els = {
   enrollmentCloseBtn: document.getElementById('enrollment-close-btn'),
   enrollmentLogoutBtn: document.getElementById('enrollment-logout-btn'),
   selfiePreview: document.getElementById('selfie-preview'),
+  studentMessagesList: document.getElementById('student-messages-list'),
+  studentMessagesOpenRemedialBtn: document.getElementById('student-messages-open-remedial-btn'),
   studentAggregatePercent: document.getElementById('student-aggregate-percent'),
   studentAttendedDelivered: document.getElementById('student-attended-delivered'),
   studentAggregateCourses: document.getElementById('student-aggregate-courses'),
@@ -1063,11 +1186,19 @@ function getInitialTheme(userEmail = '') {
   return 'light';
 }
 
+function applyDaylightTint(now = new Date()) {
+  const hour = Number(now?.getHours?.());
+  const isWarm = Number.isFinite(hour) && hour >= 17;
+  document.body.classList.toggle('ums-daylight-warm', isWarm);
+  document.body.classList.toggle('ums-daylight-day', !isWarm);
+}
+
 function applyTheme(theme, options = {}) {
   const { persist = true, userEmail = authState.user?.email || '' } = options;
   const resolved = theme === 'light' ? 'light' : 'dark';
   state.ui.theme = resolved;
   document.body.classList.toggle('ums-theme', resolved === 'light');
+  applyDaylightTint(new Date());
   if (persist) {
     runtimeUiStore.themeByUser.set(themeStorageKey(userEmail), resolved);
   }
@@ -1104,6 +1235,7 @@ function renderLiveDateTime() {
     hour12: true,
   }).format(now);
   els.liveDateTime.textContent = `${formatted} (Local Time)`;
+  applyDaylightTint(now);
   renderFoodFreshnessIndicators();
   renderFoodDemandFreshnessIndicator();
   applyFoodRealtimeAvailability({ showStatusOnTransition: true });
@@ -1208,22 +1340,124 @@ function startModuleRealtimeTicker() {
   }, 45000);
 }
 
+function canRunRemedialLiveTicker() {
+  if (!authState.user || authState.user.role !== 'student') {
+    return false;
+  }
+  if (document.body.classList.contains('auth-open')) {
+    return false;
+  }
+  const activeModule = getSanitizedModuleKey(state.ui.activeModule);
+  return activeModule === 'attendance' || activeModule === 'remedial';
+}
+
+function stopRemedialLiveTicker() {
+  if (!remedialLiveTimer) {
+    return;
+  }
+  window.clearInterval(remedialLiveTimer);
+  remedialLiveTimer = null;
+  remedialLiveBusy = false;
+}
+
+function startRemedialLiveTicker() {
+  if (remedialLiveTimer || !canRunRemedialLiveTicker()) {
+    return;
+  }
+  remedialLiveTimer = window.setInterval(async () => {
+    if (!canRunRemedialLiveTicker() || remedialLiveBusy) {
+      return;
+    }
+    remedialLiveBusy = true;
+    try {
+      await Promise.allSettled([refreshRemedialMessages(), refreshStudentMessages()]);
+    } catch (_) {
+      // Keep silent here; user-triggered actions already log explicit errors.
+    } finally {
+      remedialLiveBusy = false;
+    }
+  }, REMEDIAL_LIVE_REFRESH_MS);
+}
+
+function syncRemedialLiveTicker() {
+  if (!canRunRemedialLiveTicker()) {
+    stopRemedialLiveTicker();
+    return;
+  }
+  startRemedialLiveTicker();
+}
+
+function getActiveProfilePhotoDataUrl() {
+  const role = authState.user?.role;
+  if (role === 'faculty') {
+    return state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl || '';
+  }
+  if (role === 'student') {
+    return state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl || '';
+  }
+  return '';
+}
+
+function normalizeProfileName(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function getActiveProfileName() {
+  const role = authState.user?.role;
+  if (role === 'faculty') {
+    return normalizeProfileName(state.facultyProfile.name || authState.user?.name || '');
+  }
+  if (role === 'student') {
+    return normalizeProfileName(state.student.name || authState.user?.name || '');
+  }
+  return normalizeProfileName(authState.user?.name || '');
+}
+
+function hasValidProfileName(value) {
+  return normalizeProfileName(value).length >= 2;
+}
+
+function getAccountIdentitySummary() {
+  const role = authState.user?.role || 'unauthenticated';
+  if (role === 'student') {
+    return {
+      label: 'Reg No',
+      value: state.student.registrationNumber || 'Not set',
+    };
+  }
+  if (role === 'faculty') {
+    return {
+      label: 'Faculty ID',
+      value: state.facultyProfile.facultyIdentifier || 'Not set',
+    };
+  }
+  if (role === 'owner') {
+    return {
+      label: 'Vendor ID',
+      value: authState.user?.id ? `OWNER-${authState.user.id}` : 'Not set',
+    };
+  }
+  return {
+    label: 'Role',
+    value: role,
+  };
+}
+
 function renderAccountMenuProfile() {
-  const photo = state.student.profilePhotoDataUrl || '';
+  const photo = getActiveProfilePhotoDataUrl();
   const email = authState.user?.email || 'guest@example.com';
-  const regNo = state.student.registrationNumber || 'Not set';
+  const displayName = getActiveProfileName() || email;
+  const identity = getAccountIdentitySummary();
 
   if (els.accountDropdownEmail) {
-    els.accountDropdownEmail.textContent = email;
+    els.accountDropdownEmail.textContent = displayName;
   }
   if (els.accountDropdownReg) {
-    const prefix = authState.user?.role === 'student' ? 'Reg No' : 'Role';
-    const value = authState.user?.role === 'student' ? regNo : (authState.user?.role || 'unauthenticated');
-    els.accountDropdownReg.textContent = `${prefix}: ${value}`;
+    els.accountDropdownReg.textContent = `${email} • ${identity.label}: ${identity.value}`;
   }
 
   if (els.accountMenuInitial) {
-    els.accountMenuInitial.textContent = email.charAt(0).toUpperCase() || 'G';
+    els.accountMenuInitial.textContent = displayName.charAt(0).toUpperCase() || 'G';
   }
 
   if (els.accountDropdownPhoto) {
@@ -1397,12 +1631,14 @@ function setAuthMode(mode) {
 
 function syncAuthRoleForm() {
   if (!isSignupMode()) {
+    setHidden(els.authSectionWrap, true);
     setHidden(els.authSemesterWrap, true);
     setHidden(els.authParentEmailWrap, true);
     return;
   }
   const role = selectedAuthRole();
   const isStudent = role === 'student';
+  setHidden(els.authSectionWrap, !isStudent);
   setHidden(els.authSemesterWrap, !isStudent);
   setHidden(els.authParentEmailWrap, !isStudent);
 }
@@ -1591,6 +1827,9 @@ function applyRoleUI() {
     stopStudentTimetableStatusTicker();
     closeAttendanceDetailsModal();
   }
+  if (!isFaculty) {
+    closeRemedialAttendanceModal();
+  }
 
   if (!authState.user) {
     setSidebarActive('dashboard');
@@ -1598,6 +1837,7 @@ function applyRoleUI() {
   updateDashboardHeroByRole();
   renderEnrollmentSummary();
   syncFoodLocationMonitoringByModule();
+  syncRemedialLiveTicker();
   updateChotuVisibility();
 }
 
@@ -1654,7 +1894,7 @@ function navigateSidebar(navKey) {
     return;
   }
 
-  if (authState.user.role === 'student' && requiresStudentProfileSetup()) {
+  if (requiresRoleProfileSetup()) {
     openProfileModal({ required: true });
     return;
   }
@@ -1708,6 +1948,27 @@ function formatLockDateTime(dateValue) {
   }
 }
 
+function formatRemainingMinutes(minutesValue) {
+  const total = Math.max(0, Number(minutesValue || 0));
+  if (!Number.isFinite(total) || total <= 0) {
+    return '0m';
+  }
+  const days = Math.floor(total / 1440);
+  const hours = Math.floor((total % 1440) / 60);
+  const minutes = total % 60;
+  const parts = [];
+  if (days > 0) {
+    parts.push(`${days}d`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || !parts.length) {
+    parts.push(`${minutes}m`);
+  }
+  return parts.join(' ');
+}
+
 function showProfilePhotoLockPopup() {
   const lockedUntil = formatLockDateTime(state.student.profilePhotoLockedUntil);
   const remaining = Math.max(0, Number(state.student.profilePhotoLockDaysRemaining || 0));
@@ -1716,6 +1977,34 @@ function showProfilePhotoLockPopup() {
     `Profile photo locked until ${lockedUntil}. Remaining: ${remaining} day(s).`,
     { tone: 'cooldown', loading: false, closable: true }
   );
+}
+
+function showFacultyProfilePhotoLockPopup() {
+  const lockedUntil = formatLockDateTime(state.facultyProfile.profilePhotoLockedUntil);
+  const remaining = Math.max(0, Number(state.facultyProfile.profilePhotoLockDaysRemaining || 0));
+  showOtpPopup(
+    'Faculty Photo Locked',
+    `Faculty profile photo locked until ${lockedUntil}. Remaining: ${remaining} day(s).`,
+    { tone: 'cooldown', loading: false, closable: true }
+  );
+}
+
+function showFacultySectionLockPopup() {
+  const lockedUntil = formatLockDateTime(state.facultyProfile.sectionLockedUntil);
+  const remaining = Math.max(0, Number(state.facultyProfile.sectionLockMinutesRemaining || 0));
+  showOtpPopup(
+    'Section Update Locked',
+    `Section can be changed again after ${lockedUntil}. Remaining: ${formatRemainingMinutes(remaining)}.`,
+    { tone: 'cooldown', loading: false, closable: true }
+  );
+}
+
+function showActiveProfilePhotoLockPopup() {
+  if (authState.user?.role === 'faculty') {
+    showFacultyProfilePhotoLockPopup();
+    return;
+  }
+  showProfilePhotoLockPopup();
 }
 
 function showEnrollmentLockPopup() {
@@ -1749,8 +2038,10 @@ function openEnrollmentPhotoUpdateFlow() {
 }
 
 function setProfileTab(tabKey = 'details') {
-  const showEnrollment = String(tabKey || '').toLowerCase() === 'enrollment';
+  const canShowEnrollment = authState.user?.role === 'student';
+  const showEnrollment = canShowEnrollment && String(tabKey || '').toLowerCase() === 'enrollment';
   if (els.profileTabDetailsBtn && els.profileTabEnrollmentBtn) {
+    setHidden(els.profileTabEnrollmentBtn, !canShowEnrollment);
     els.profileTabDetailsBtn.classList.toggle('active', !showEnrollment);
     els.profileTabDetailsBtn.setAttribute('aria-selected', showEnrollment ? 'false' : 'true');
     els.profileTabEnrollmentBtn.classList.toggle('active', showEnrollment);
@@ -1761,6 +2052,7 @@ function setProfileTab(tabKey = 'details') {
     els.profileTabDetails.classList.toggle('hidden', showEnrollment);
   }
   if (els.profileTabEnrollment) {
+    setHidden(els.profileTabEnrollment, !canShowEnrollment);
     els.profileTabEnrollment.classList.toggle('active', showEnrollment);
     els.profileTabEnrollment.classList.toggle('hidden', !showEnrollment);
   }
@@ -1859,29 +2151,54 @@ function openProfileModal({ required = false } = {}) {
   if (!els.profileModal) {
     return;
   }
-  state.student.profileSetupRequired = Boolean(required);
+  const role = authState.user?.role;
+  if (role === 'faculty') {
+    state.facultyProfile.profileSetupRequired = Boolean(required);
+  } else if (role === 'owner') {
+    state.student.profileSetupRequired = false;
+    state.facultyProfile.profileSetupRequired = false;
+  } else {
+    state.student.profileSetupRequired = Boolean(required);
+  }
   els.profileModal.classList.remove('hidden');
   if (els.profileModalTitle) {
-    els.profileModalTitle.textContent = required ? 'Complete Profile Setup' : 'Profile Settings';
+    if (role === 'faculty') {
+      els.profileModalTitle.textContent = required ? 'Complete Faculty Profile Setup' : 'Faculty Profile Settings';
+    } else if (role === 'owner') {
+      els.profileModalTitle.textContent = 'Vendor Profile';
+    } else {
+      els.profileModalTitle.textContent = required ? 'Complete Student Profile Setup' : 'Student Profile Settings';
+    }
   }
   if (els.profileModalSubtitle) {
-    els.profileModalSubtitle.textContent = required
-      ? 'Upload your profile photo and set registration number before using the portal.'
-      : 'Manage profile photo, registration number, and alternate OTP email.';
+    if (role === 'faculty') {
+      els.profileModalSubtitle.textContent = required
+        ? 'Enter full name, upload profile photo, set faculty ID, and set section before using the portal.'
+        : 'Manage faculty ID, section, profile photo, and alternate OTP email.';
+    } else if (role === 'owner') {
+      els.profileModalSubtitle.textContent = 'Vendor identity is separate and connected to your assigned shop data.';
+    } else {
+      els.profileModalSubtitle.textContent = required
+        ? 'Enter full name, upload your profile photo, set registration number, and set section before using the portal.'
+        : 'Manage profile photo, registration number, section, and alternate OTP email.';
+    }
   }
   if (els.profileCloseBtn) {
     els.profileCloseBtn.disabled = required;
     setHidden(els.profileCloseBtn, required);
   }
   setProfileTab('details');
-  renderEnrollmentSummary();
+  renderProfileSecurity();
 }
 
 function closeProfileModal() {
   if (!els.profileModal) {
     return;
   }
-  if (state.student.profileSetupRequired) {
+  if (authState.user?.role === 'faculty' && state.facultyProfile.profileSetupRequired) {
+    return;
+  }
+  if (authState.user?.role !== 'faculty' && state.student.profileSetupRequired) {
     return;
   }
   els.profileModal.classList.add('hidden');
@@ -1985,7 +2302,33 @@ function requiresStudentProfileSetup() {
   if (!state.student.profileLoaded) {
     return false;
   }
-  return !state.student.registrationNumber || !state.student.profilePhotoDataUrl;
+  return !hasValidProfileName(state.student.name || authState.user?.name || '')
+    || !state.student.registrationNumber
+    || !state.student.section
+    || !state.student.profilePhotoDataUrl;
+}
+
+function requiresFacultyProfileSetup() {
+  if (authState.user?.role !== 'faculty') {
+    return false;
+  }
+  if (!state.facultyProfile.profileLoaded) {
+    return false;
+  }
+  return !hasValidProfileName(state.facultyProfile.name || authState.user?.name || '')
+    || !state.facultyProfile.facultyIdentifier
+    || !state.facultyProfile.section
+    || !state.facultyProfile.profilePhotoDataUrl;
+}
+
+function requiresRoleProfileSetup() {
+  if (authState.user?.role === 'student') {
+    return requiresStudentProfileSetup();
+  }
+  if (authState.user?.role === 'faculty') {
+    return requiresFacultyProfileSetup();
+  }
+  return false;
 }
 
 function maybePromptProfileSetup() {
@@ -1996,6 +2339,21 @@ function maybePromptProfileSetup() {
     return;
   }
   if (!requiresStudentProfileSetup()) {
+    return;
+  }
+  const email = authState.user?.email || '';
+  if (hasSeenProfileSetupPrompt(email)) {
+    return;
+  }
+  markProfileSetupPromptSeen(email);
+  openProfileModal({ required: true });
+}
+
+function maybePromptFacultyProfileSetup() {
+  if (authState.user?.role !== 'faculty') {
+    return;
+  }
+  if (!state.facultyProfile.profileLoaded || !requiresFacultyProfileSetup()) {
     return;
   }
   const email = authState.user?.email || '';
@@ -2029,9 +2387,34 @@ function renderProfileSecurity() {
     if (els.profilePrimaryEmail) {
       els.profilePrimaryEmail.value = '';
     }
+    if (els.profileFullName) {
+      els.profileFullName.value = '';
+      els.profileFullName.disabled = false;
+    }
+    if (els.profileIdLabel) {
+      els.profileIdLabel.textContent = 'Registration Number';
+    }
     if (els.profileRegistrationNumber) {
       els.profileRegistrationNumber.value = '';
       els.profileRegistrationNumber.disabled = false;
+      els.profileRegistrationNumber.placeholder = 'e.g. R9P132A48';
+    }
+    if (els.profileRegistrationNote) {
+      els.profileRegistrationNote.textContent = 'Registration number is permanent and cannot be changed without admin permissions.';
+    }
+    if (els.profileSectionWrap) {
+      setHidden(els.profileSectionWrap, true);
+    }
+    if (els.profileSectionInput) {
+      els.profileSectionInput.value = '';
+      els.profileSectionInput.disabled = true;
+    }
+    if (els.profileSectionNote) {
+      els.profileSectionNote.textContent = '';
+      setHidden(els.profileSectionNote, true);
+    }
+    if (els.profilePhotoWrap) {
+      setHidden(els.profilePhotoWrap, false);
     }
     if (els.profileAlternateEmail) {
       els.profileAlternateEmail.value = '';
@@ -2047,8 +2430,10 @@ function renderProfileSecurity() {
     if (els.alternateEmailStatus) {
       els.alternateEmailStatus.textContent = '';
     }
+    renderProfilePhotoPreview('');
     setProfileTab('details');
     renderEnrollmentSummary();
+    renderProfileStatusByRole();
     closeAccountDropdown();
     return;
   }
@@ -2056,29 +2441,124 @@ function renderProfileSecurity() {
   if (els.profilePrimaryEmail) {
     els.profilePrimaryEmail.value = authState.user.email || '';
   }
-  const isStudent = authState.user.role === 'student';
+  const role = authState.user.role;
+  const isStudent = role === 'student';
+  const isFaculty = role === 'faculty';
+  const isOwner = role === 'owner';
+  const isProfileEditableRole = isStudent || isFaculty;
+  const normalizedActiveName = normalizeProfileName(
+    isFaculty
+      ? (state.facultyProfile.name || authState.user?.name || '')
+      : isStudent
+        ? (state.student.name || authState.user?.name || '')
+        : (authState.user?.name || '')
+  );
+  if (els.profileFullName) {
+    els.profileFullName.value = normalizedActiveName;
+    els.profileFullName.disabled = !isProfileEditableRole || hasValidProfileName(normalizedActiveName);
+  }
+  const currentIdValue = isStudent
+    ? (state.student.registrationNumber || '')
+    : isFaculty
+      ? (state.facultyProfile.facultyIdentifier || '')
+      : (authState.user?.id ? `OWNER-${authState.user.id}` : '');
+
+  if (els.profileIdLabel) {
+    els.profileIdLabel.textContent = isFaculty
+      ? 'Faculty ID'
+      : isOwner
+        ? 'Vendor ID'
+        : 'Registration Number';
+  }
   if (els.profileRegistrationNumber) {
-    els.profileRegistrationNumber.value = state.student.registrationNumber || '';
-    els.profileRegistrationNumber.disabled = !isStudent || Boolean(state.student.registrationNumber);
+    els.profileRegistrationNumber.value = currentIdValue;
+    els.profileRegistrationNumber.disabled = !isProfileEditableRole || Boolean(currentIdValue);
+    els.profileRegistrationNumber.placeholder = isFaculty
+      ? 'e.g. FAC-CSE-1024'
+      : isOwner
+        ? 'Auto-assigned from account'
+        : 'e.g. R9P132A48';
+  }
+  if (els.profileRegistrationNote) {
+    els.profileRegistrationNote.textContent = isFaculty
+      ? 'Faculty ID is permanent and cannot be changed without admin permissions.'
+      : isOwner
+        ? 'Vendor ID is mapped from your account and connected to owned shop data.'
+        : 'Registration number is permanent and cannot be changed without admin permissions.';
+  }
+  if (els.profileSectionWrap) {
+    setHidden(els.profileSectionWrap, !isFaculty && !isStudent);
+  }
+  if (els.profileSectionInput) {
+    const facultyHasSection = Boolean(state.facultyProfile.section);
+    const studentHasSection = Boolean(state.student.section);
+    if (isFaculty) {
+      els.profileSectionInput.value = state.facultyProfile.section || '';
+      els.profileSectionInput.disabled = facultyHasSection && !state.facultyProfile.sectionCanUpdateNow;
+    } else if (isStudent) {
+      els.profileSectionInput.value = state.student.section || '';
+      els.profileSectionInput.disabled = studentHasSection;
+    } else {
+      els.profileSectionInput.value = '';
+      els.profileSectionInput.disabled = true;
+    }
+  }
+  if (els.profileSectionNote) {
+    if (isFaculty) {
+      setHidden(els.profileSectionNote, false);
+      if (!state.facultyProfile.section) {
+        els.profileSectionNote.textContent = 'Section is required. After save, section can be changed every 24 hours.';
+      } else if (!state.facultyProfile.sectionCanUpdateNow) {
+        els.profileSectionNote.textContent = `Section update locked until ${formatLockDateTime(state.facultyProfile.sectionLockedUntil)} (${formatRemainingMinutes(state.facultyProfile.sectionLockMinutesRemaining)} remaining).`;
+      } else {
+        els.profileSectionNote.textContent = 'Section is set. You can update it now (next lock: 24 hours).';
+      }
+    } else if (isStudent) {
+      setHidden(els.profileSectionNote, false);
+      if (!state.student.section) {
+        els.profileSectionNote.textContent = 'Section is required. Set it once to continue. Further changes require faculty approval after 48 hours.';
+      } else if (state.student.sectionChangeRequiresFacultyApproval) {
+        els.profileSectionNote.textContent = 'Section change window is open. Ask your faculty to approve the section update.';
+      } else {
+        els.profileSectionNote.textContent = `Section is set. Self-update is disabled. Faculty can approve change after ${formatLockDateTime(state.student.sectionLockedUntil)} (${formatRemainingMinutes(state.student.sectionLockMinutesRemaining)} remaining).`;
+      }
+    } else {
+      els.profileSectionNote.textContent = '';
+      setHidden(els.profileSectionNote, true);
+    }
   }
   if (els.profileAlternateEmail) {
     els.profileAlternateEmail.value = authState.user.alternate_email || '';
     els.profileAlternateEmail.disabled = !authState.user.primary_login_verified;
   }
   if (els.profilePhotoInput) {
-    els.profilePhotoInput.disabled = !isStudent;
+    els.profilePhotoInput.disabled = !isProfileEditableRole;
   }
+  if (els.profilePhotoWrap) {
+    setHidden(els.profilePhotoWrap, !isProfileEditableRole);
+  }
+  const activePhoto = isFaculty
+    ? (state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl || '')
+    : isStudent
+      ? (state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl || '')
+      : '';
+  renderProfilePhotoPreview(activePhoto);
   if (els.saveAlternateEmailBtn) {
     els.saveAlternateEmailBtn.disabled = !authState.user.primary_login_verified;
   }
   if (els.saveProfilePhotoBtn) {
-    els.saveProfilePhotoBtn.disabled = !isStudent;
+    els.saveProfilePhotoBtn.disabled = !isProfileEditableRole;
+    setHidden(els.saveProfilePhotoBtn, !isProfileEditableRole);
   }
   if (els.authSendAltOtp) {
     els.authSendAltOtp.disabled = false;
   }
+  if (!isStudent) {
+    setProfileTab('details');
+  }
   renderAlternateEmailStatus();
   renderEnrollmentSummary();
+  renderProfileStatusByRole();
 
   if (requiresStudentProfileSetup()) {
     if (state.student.profileSetupRequired) {
@@ -2086,6 +2566,14 @@ function renderProfileSecurity() {
     }
   } else if (els.profileModal && state.student.profileSetupRequired) {
     state.student.profileSetupRequired = false;
+    els.profileModal.classList.add('hidden');
+  }
+  if (requiresFacultyProfileSetup()) {
+    if (state.facultyProfile.profileSetupRequired) {
+      openProfileModal({ required: true });
+    }
+  } else if (els.profileModal && state.facultyProfile.profileSetupRequired) {
+    state.facultyProfile.profileSetupRequired = false;
     els.profileModal.classList.add('hidden');
   }
 
@@ -2185,6 +2673,51 @@ function startSessionWatchdog() {
   scheduleMaxLogoutTimer();
 }
 
+function resetStudentProfileState() {
+  state.student.name = '';
+  state.student.registrationNumber = '';
+  state.student.section = '';
+  state.student.sectionUpdatedAt = null;
+  state.student.profilePhotoDataUrl = '';
+  state.student.profilePhotoLockedUntil = null;
+  state.student.profilePhotoCanUpdateNow = true;
+  state.student.profilePhotoLockDaysRemaining = 0;
+  state.student.sectionCanUpdateNow = true;
+  state.student.sectionLockedUntil = null;
+  state.student.sectionLockMinutesRemaining = 0;
+  state.student.sectionChangeRequiresFacultyApproval = false;
+  state.student.profileLoaded = false;
+  state.student.pendingProfilePhotoDataUrl = '';
+  state.student.profileSetupRequired = false;
+  state.student.enrollmentLoaded = false;
+  state.student.hasEnrollmentVideo = false;
+  state.student.enrollmentCanUpdateNow = true;
+  state.student.enrollmentLockedUntil = null;
+  state.student.enrollmentLockDaysRemaining = 0;
+  state.student.enrollmentUpdatedAt = null;
+  state.student.enrollmentRequired = false;
+  state.student.enrollmentFrames = [];
+  state.student.enrollmentCaptureRunning = false;
+  state.student.autoRefreshBusy = false;
+}
+
+function resetFacultyProfileState() {
+  state.facultyProfile.name = '';
+  state.facultyProfile.facultyIdentifier = '';
+  state.facultyProfile.section = '';
+  state.facultyProfile.sectionUpdatedAt = null;
+  state.facultyProfile.profilePhotoDataUrl = '';
+  state.facultyProfile.profilePhotoLockedUntil = null;
+  state.facultyProfile.profilePhotoCanUpdateNow = true;
+  state.facultyProfile.profilePhotoLockDaysRemaining = 0;
+  state.facultyProfile.sectionCanUpdateNow = true;
+  state.facultyProfile.sectionLockedUntil = null;
+  state.facultyProfile.sectionLockMinutesRemaining = 0;
+  state.facultyProfile.profileLoaded = false;
+  state.facultyProfile.pendingProfilePhotoDataUrl = '';
+  state.facultyProfile.profileSetupRequired = false;
+}
+
 function setSession(token, user) {
   stopFoodLocationMonitoring();
   stopFoodDemandLiveTicker();
@@ -2210,6 +2743,19 @@ function setSession(token, user) {
   state.food.demandDigest = '';
   state.food.lastDemandSyncAtMs = 0;
   state.food.demandSyncPulseUntilMs = 0;
+  state.food.demandSelectedSlotId = 0;
+  state.food.demandLive.windowMinutes = 2;
+  state.food.demandLive.activeOrders = 0;
+  state.food.demandLive.ordersLastWindow = 0;
+  state.food.demandLive.statusUpdatesLastWindow = 0;
+  state.food.demandLive.paymentEventsLastWindow = 0;
+  state.food.demandLive.hottestSlotLabel = '';
+  state.food.demandLive.hottestSlotOrders = 0;
+  state.food.demandLive.pulsesBySlotId = {};
+  state.food.demandLive.pulses = [];
+  state.food.demandLive.syncedAtMs = 0;
+  state.food.demandLive.digest = '';
+  state.food.demandLive.pulseUntilMs = 0;
   state.food.selectedShopId = '';
   state.food.menuByShop = {};
   state.food.cart.shopId = '';
@@ -2238,15 +2784,28 @@ function setSession(token, user) {
     els.foodOrdersPanel.classList.remove('is-sync-pulse');
   }
   renderFoodFreshnessIndicators();
+  renderFoodDemandLiveSignal({ animate: false });
   state.ui.chotuOpen = false;
+  state.remedial.eligibleCourses = [];
+  state.remedial.classes = [];
+  state.remedial.selectedClassId = null;
+  state.remedial.selectedClassAttendance = [];
+  state.remedial.selectedClassAttendanceSections = [];
+  state.remedial.selectedClassAttendanceAllStudents = [];
+  state.remedial.selectedAttendanceModalSection = '';
+  state.remedial.selectedAttendanceModalCourseKey = '';
+  state.remedial.messages = [];
+  state.remedial.attendanceLedger = [];
+  state.remedial.attendanceLedgerByCourse = {};
+  state.remedial.validatedClass = null;
+  state.remedial.markedClassId = null;
+  state.remedial.markedOnlineLink = '';
+  state.remedial.demoBypassLeadTime = false;
+  state.studentMessages = [];
+  resetStudentProfileState();
+  resetFacultyProfileState();
   if (user?.role === 'student') {
-    state.student.minTimetableDate = '2026-01-21';
-    state.student.profileLoaded = false;
-    state.student.enrollmentLoaded = false;
-    state.student.hasEnrollmentVideo = false;
-    state.student.enrollmentRequired = false;
-    state.student.enrollmentFrames = [];
-    state.student.enrollmentCaptureRunning = false;
+    state.student.minTimetableDate = STUDENT_TIMETABLE_START_DATE;
     state.student.kpiTimetable = [];
     state.student.kpiScheduleId = null;
     state.student.kpiRefreshInFlight = false;
@@ -2300,7 +2859,7 @@ function clearSession() {
   persistToken('');
   state.ui.activeModule = 'attendance';
   state.student.selectedScheduleId = null;
-  state.student.minTimetableDate = '2026-01-21';
+  state.student.minTimetableDate = STUDENT_TIMETABLE_START_DATE;
   state.student.viewDate = '';
   state.student.timetable = [];
   state.student.kpiTimetable = [];
@@ -2309,26 +2868,10 @@ function clearSession() {
   state.student.timetableRequestToken = 0;
   state.student.kpiRefreshInFlight = false;
   state.student.kpiScheduleId = null;
-  state.student.registrationNumber = '';
-  state.student.profilePhotoDataUrl = '';
-  state.student.profilePhotoLockedUntil = null;
-  state.student.profilePhotoCanUpdateNow = true;
-  state.student.profilePhotoLockDaysRemaining = 0;
-  state.student.profileLoaded = false;
-  state.student.enrollmentLoaded = false;
-  state.student.hasEnrollmentVideo = false;
-  state.student.enrollmentCanUpdateNow = true;
-  state.student.enrollmentLockedUntil = null;
-  state.student.enrollmentLockDaysRemaining = 0;
-  state.student.enrollmentUpdatedAt = null;
-  state.student.enrollmentRequired = false;
-  state.student.enrollmentFrames = [];
-  state.student.enrollmentCaptureRunning = false;
-  state.student.autoRefreshBusy = false;
+  resetStudentProfileState();
+  resetFacultyProfileState();
   state.faculty.selectedScheduleId = null;
   state.faculty.selectedSubmissionIds.clear();
-  state.student.pendingProfilePhotoDataUrl = '';
-  state.student.profileSetupRequired = false;
   state.camera.liveVerificationActive = false;
   state.camera.liveSessionToken += 1;
   state.food.items = [];
@@ -2352,6 +2895,19 @@ function clearSession() {
   state.food.demandDigest = '';
   state.food.lastDemandSyncAtMs = 0;
   state.food.demandSyncPulseUntilMs = 0;
+  state.food.demandSelectedSlotId = 0;
+  state.food.demandLive.windowMinutes = 2;
+  state.food.demandLive.activeOrders = 0;
+  state.food.demandLive.ordersLastWindow = 0;
+  state.food.demandLive.statusUpdatesLastWindow = 0;
+  state.food.demandLive.paymentEventsLastWindow = 0;
+  state.food.demandLive.hottestSlotLabel = '';
+  state.food.demandLive.hottestSlotOrders = 0;
+  state.food.demandLive.pulsesBySlotId = {};
+  state.food.demandLive.pulses = [];
+  state.food.demandLive.syncedAtMs = 0;
+  state.food.demandLive.digest = '';
+  state.food.demandLive.pulseUntilMs = 0;
   state.food.orderDate = '';
   state.food.shops = [];
   state.food.menuByShop = {};
@@ -2374,6 +2930,7 @@ function clearSession() {
     els.foodOrdersPanel.classList.remove('is-sync-pulse');
   }
   renderFoodFreshnessIndicators();
+  renderFoodDemandLiveSignal({ animate: false });
   state.food.location.monitorBusy = false;
   state.food.location.latitude = null;
   state.food.location.longitude = null;
@@ -2381,6 +2938,22 @@ function clearSession() {
   state.food.location.lastVerifiedAtMs = 0;
   state.food.location.message = '';
   state.ui.chotuOpen = false;
+  state.remedial.eligibleCourses = [];
+  state.remedial.classes = [];
+  state.remedial.selectedClassId = null;
+  state.remedial.selectedClassAttendance = [];
+  state.remedial.selectedClassAttendanceSections = [];
+  state.remedial.selectedClassAttendanceAllStudents = [];
+  state.remedial.selectedAttendanceModalSection = '';
+  state.remedial.selectedAttendanceModalCourseKey = '';
+  state.remedial.messages = [];
+  state.remedial.attendanceLedger = [];
+  state.remedial.attendanceLedgerByCourse = {};
+  state.remedial.validatedClass = null;
+  state.remedial.markedClassId = null;
+  state.remedial.markedOnlineLink = '';
+  state.remedial.demoBypassLeadTime = false;
+  state.studentMessages = [];
   updateAuthBadges();
   applyRoleUI();
   setTopNavActive('attendance');
@@ -2409,10 +2982,11 @@ function clearSession() {
   stopStudentTimetableStatusTicker();
   stopModuleRealtimeTicker();
   stopFoodDemandLiveTicker();
+  stopRemedialLiveTicker();
 }
 
 async function api(path, options = {}) {
-  const { skipAuth = false, ...requestOptions } = options;
+  const { skipAuth = false, timeoutMs = 30000, ...requestOptions } = options;
   const method = String(requestOptions.method || 'GET').toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
@@ -2423,12 +2997,34 @@ async function api(path, options = {}) {
     headers.Authorization = `Bearer ${authState.token}`;
   }
 
-  const response = await fetch(path, {
-    ...requestOptions,
-    headers,
-    credentials: requestOptions.credentials || 'same-origin',
-    cache: requestOptions.cache || (method === 'GET' || method === 'HEAD' ? 'no-store' : undefined),
-  });
+  const controller = requestOptions.signal ? null : new AbortController();
+  const signal = requestOptions.signal || controller?.signal;
+  const timeoutHandle = controller
+    ? window.setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000))
+    : null;
+
+  let response;
+  try {
+    response = await fetch(path, {
+      ...requestOptions,
+      headers,
+      signal,
+      credentials: requestOptions.credentials || 'same-origin',
+      cache: requestOptions.cache || (method === 'GET' || method === 'HEAD' ? 'no-store' : undefined),
+    });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      const seconds = Math.max(5, Math.round((Math.max(5000, Number(timeoutMs) || 30000)) / 1000));
+      const timeoutError = new Error(`Request timed out after ${seconds}s. Please retry.`);
+      timeoutError.status = 408;
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    if (timeoutHandle) {
+      window.clearTimeout(timeoutHandle);
+    }
+  }
 
   if (!response.ok) {
     let detail = `Request failed: ${response.status}`;
@@ -2538,7 +3134,7 @@ function isoDateMax(leftIso, rightIso) {
 
 function clampStudentViewDate(inputIsoDate) {
   const requested = String(inputIsoDate || todayISO());
-  const minDate = String(state.student.minTimetableDate || '2026-01-21');
+  const minDate = String(state.student.minTimetableDate || STUDENT_TIMETABLE_START_DATE);
   return isoDateMax(requested, minDate);
 }
 
@@ -2573,9 +3169,20 @@ function renderAttendanceDonut() {
   if (!els.attendanceDonut) {
     return;
   }
-  const enrolled = state.attendanceSummary.length;
-  const absent = state.absentees.length;
-  const present = Math.max(enrolled - absent, 0);
+  const summary = state.admin?.summary || null;
+  const hasLiveSummary = summary
+    && Number.isFinite(Number(summary.active_today))
+    && Number.isFinite(Number(summary.present_today))
+    && Number.isFinite(Number(summary.absent_today));
+  const enrolled = hasLiveSummary
+    ? Math.max(0, Number(summary.active_today || 0))
+    : (Array.isArray(state.attendanceSummary) ? state.attendanceSummary.length : 0);
+  const absent = hasLiveSummary
+    ? Math.max(0, Number(summary.absent_today || 0))
+    : (Array.isArray(state.absentees) ? state.absentees.length : 0);
+  const present = hasLiveSummary
+    ? Math.max(0, Number(summary.present_today || 0))
+    : Math.max(enrolled - absent, 0);
   const percent = enrolled ? Math.round((present / enrolled) * 100) : 0;
 
   els.attendanceDonut.style.background = `conic-gradient(var(--good) 0% ${percent}%, rgba(140, 181, 218, 0.18) ${percent}% 100%)`;
@@ -2611,6 +3218,9 @@ function renderAttendanceDonut() {
   if (els.attendanceHealthNote) {
     if (!enrolled) {
       els.attendanceHealthNote.textContent = 'Awaiting attendance records.';
+    } else if (hasLiveSummary && Number.isFinite(Number(summary.data_quality_score))) {
+      const quality = Math.round(Number(summary.data_quality_score || 0));
+      els.attendanceHealthNote.textContent = `Live feed quality ${quality}% • refreshed from backend telemetry`;
     } else if (percent >= 90) {
       els.attendanceHealthNote.textContent = 'Attendance signal is stable and healthy.';
     } else if (percent >= 70) {
@@ -2660,6 +3270,386 @@ function hasFoodDemandChanged(previousRows, nextRows) {
   return buildFoodDemandDigest(previousRows) !== buildFoodDemandDigest(nextRows);
 }
 
+function buildFoodDemandLiveDigest(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+  const pulses = Array.isArray(payload.pulses) ? payload.pulses : [];
+  const pulseDigest = pulses
+    .map((pulse) => [
+      Number(pulse?.slot_id || 0),
+      Number(pulse?.event_count || 0),
+      Number(pulse?.created_count || 0),
+      Number(pulse?.status_count || 0),
+      Number(pulse?.payment_count || 0),
+    ].join(':'))
+    .sort()
+    .join('|');
+  return [
+    Number(payload?.window_minutes || 0),
+    Number(payload?.active_orders || 0),
+    Number(payload?.orders_last_window || 0),
+    Number(payload?.status_updates_last_window || 0),
+    Number(payload?.payment_events_last_window || 0),
+    String(payload?.hottest_slot_label || ''),
+    Number(payload?.hottest_slot_orders || 0),
+    pulseDigest,
+  ].join('~');
+}
+
+function normalizeFoodDemandLivePayload(payload) {
+  const source = (payload && typeof payload === 'object') ? payload : {};
+  const rawPulses = Array.isArray(source.pulses) ? source.pulses : [];
+  const pulses = rawPulses
+    .map((pulse) => ({
+      slot_id: Number(pulse?.slot_id || 0),
+      slot_label: String(pulse?.slot_label || '').trim(),
+      event_count: Math.max(0, Number(pulse?.event_count || 0)),
+      created_count: Math.max(0, Number(pulse?.created_count || 0)),
+      status_count: Math.max(0, Number(pulse?.status_count || 0)),
+      payment_count: Math.max(0, Number(pulse?.payment_count || 0)),
+    }))
+    .filter((pulse) => pulse.slot_id > 0 && pulse.event_count > 0)
+    .sort((a, b) => b.event_count - a.event_count);
+
+  const pulsesBySlotId = {};
+  for (const pulse of pulses) {
+    pulsesBySlotId[String(pulse.slot_id)] = pulse;
+  }
+
+  const syncedAtMs = Date.parse(String(source.synced_at || ''));
+  return {
+    windowMinutes: Math.max(1, Math.min(15, Number(source.window_minutes || 2))),
+    activeOrders: Math.max(0, Number(source.active_orders || 0)),
+    ordersLastWindow: Math.max(0, Number(source.orders_last_window || 0)),
+    statusUpdatesLastWindow: Math.max(0, Number(source.status_updates_last_window || 0)),
+    paymentEventsLastWindow: Math.max(0, Number(source.payment_events_last_window || 0)),
+    hottestSlotLabel: String(source.hottest_slot_label || '').trim(),
+    hottestSlotOrders: Math.max(0, Number(source.hottest_slot_orders || 0)),
+    pulsesBySlotId,
+    pulses,
+    syncedAtMs: Number.isFinite(syncedAtMs) ? syncedAtMs : Date.now(),
+    digest: buildFoodDemandLiveDigest(source),
+  };
+}
+
+function pulseFoodDemandLiveNode(element, className = 'is-live-updated', durationMs = 1100) {
+  if (!element) {
+    return;
+  }
+  element.classList.remove(className);
+  // Restart animation when updates land frequently.
+  // eslint-disable-next-line no-unused-expressions
+  element.offsetWidth;
+  element.classList.add(className);
+  if (element._pulseClassTimer) {
+    window.clearTimeout(element._pulseClassTimer);
+  }
+  element._pulseClassTimer = window.setTimeout(() => {
+    element.classList.remove(className);
+    element._pulseClassTimer = null;
+  }, durationMs);
+}
+
+function parseSlotLabelStartMinutes(label) {
+  const match = String(label || '').match(/(\d{1,2}):(\d{2})/);
+  if (!match) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function getFoodDemandRowsInDisplayOrder() {
+  const rows = Array.isArray(state.demand) ? state.demand : [];
+  if (!rows.length) {
+    return [];
+  }
+  const demandBySlotId = new Map(rows.map((row) => [Number(row?.slot_id || 0), row]));
+  const slots = Array.isArray(state.food.slots) ? state.food.slots : [];
+  if (slots.length) {
+    const orderedSlots = [...slots].sort((a, b) => {
+      const aMinutes = toMinutes(a?.start_time || '');
+      const bMinutes = toMinutes(b?.start_time || '');
+      return aMinutes - bMinutes;
+    });
+    return orderedSlots.map((slot) => {
+      const slotId = Number(slot?.id || 0);
+      const demandRow = demandBySlotId.get(slotId) || {};
+      const capacity = Number(demandRow?.capacity || slot?.max_orders || 0);
+      const orders = Math.max(0, Number(demandRow?.orders || 0));
+      const utilization = capacity > 0 ? (orders / capacity) * 100 : Number(demandRow?.utilization_percent || 0);
+      return {
+        slot_id: slotId,
+        slot_label: String(demandRow?.slot_label || slot?.label || `Slot #${slotId}`),
+        orders,
+        capacity,
+        utilization_percent: Math.round(Math.max(0, Math.min(100, utilization)) * 100) / 100,
+      };
+    });
+  }
+  return [...rows].sort((a, b) => parseSlotLabelStartMinutes(a?.slot_label) - parseSlotLabelStartMinutes(b?.slot_label));
+}
+
+function resolveFoodDemandSelectedSlotId(rows) {
+  const availableRows = Array.isArray(rows) ? rows : [];
+  const activeSet = new Set(availableRows.map((row) => Number(row?.slot_id || 0)).filter((slotId) => slotId > 0));
+  let selectedId = Number(state.food.demandSelectedSlotId || 0);
+  if (selectedId > 0 && activeSet.has(selectedId)) {
+    return selectedId;
+  }
+  const hottestId = Number(state.food.demandLive?.pulses?.[0]?.slot_id || 0);
+  if (hottestId > 0 && activeSet.has(hottestId)) {
+    state.food.demandSelectedSlotId = hottestId;
+    return hottestId;
+  }
+  const firstBusy = availableRows.find((row) => Number(row?.orders || 0) > 0);
+  selectedId = Number(firstBusy?.slot_id || availableRows[0]?.slot_id || 0);
+  state.food.demandSelectedSlotId = selectedId;
+  return selectedId;
+}
+
+function foodDemandColorBySlot(slotId, fallbackIndex = 0) {
+  const palette = FOOD_DEMAND_PIE_COLORS;
+  if (!Array.isArray(palette) || !palette.length) {
+    return '#2FA8FF';
+  }
+  const numeric = Number(slotId || 0);
+  const index = Number.isFinite(numeric) && numeric > 0
+    ? numeric % palette.length
+    : Math.max(0, Number(fallbackIndex || 0)) % palette.length;
+  return palette[index];
+}
+
+function foodDemandPolarPoint(cx, cy, radius, angleDeg) {
+  const radians = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(radians),
+    y: cy + radius * Math.sin(radians),
+  };
+}
+
+function buildFoodDemandDonutPath(cx, cy, outerRadius, innerRadius, startDeg, endDeg) {
+  const start = foodDemandPolarPoint(cx, cy, outerRadius, startDeg);
+  const end = foodDemandPolarPoint(cx, cy, outerRadius, endDeg);
+  const innerEnd = foodDemandPolarPoint(cx, cy, innerRadius, endDeg);
+  const innerStart = foodDemandPolarPoint(cx, cy, innerRadius, startDeg);
+  const largeArcFlag = endDeg - startDeg > 180 ? 1 : 0;
+  return [
+    `M ${start.x.toFixed(3)} ${start.y.toFixed(3)}`,
+    `A ${outerRadius} ${outerRadius} 0 ${largeArcFlag} 1 ${end.x.toFixed(3)} ${end.y.toFixed(3)}`,
+    `L ${innerEnd.x.toFixed(3)} ${innerEnd.y.toFixed(3)}`,
+    `A ${innerRadius} ${innerRadius} 0 ${largeArcFlag} 0 ${innerStart.x.toFixed(3)} ${innerStart.y.toFixed(3)}`,
+    'Z',
+  ].join(' ');
+}
+
+function renderFoodDemandSlotDetail(rows, { animate = false } = {}) {
+  if (!els.foodDemandSlotDetail) {
+    return;
+  }
+  const selectedId = resolveFoodDemandSelectedSlotId(rows);
+  const selectedRow = Array.isArray(rows)
+    ? rows.find((row) => Number(row?.slot_id || 0) === selectedId)
+    : null;
+  if (!selectedRow) {
+    els.foodDemandSlotDetail.textContent = 'No slot demand data for selected date.';
+    return;
+  }
+  const livePulse = state.food?.demandLive?.pulsesBySlotId?.[String(selectedId)] || null;
+  const liveEvents = Math.max(0, Number(livePulse?.event_count || 0));
+  const createdEvents = Math.max(0, Number(livePulse?.created_count || 0));
+  const statusEvents = Math.max(0, Number(livePulse?.status_count || 0));
+  const paymentEvents = Math.max(0, Number(livePulse?.payment_count || 0));
+  const windowMinutes = Math.max(1, Number(state.food?.demandLive?.windowMinutes || 2));
+  const utilization = Math.max(0, Number(selectedRow?.utilization_percent || 0));
+  const totalOrders = Math.max(0, rows.reduce((sum, row) => sum + Math.max(0, Number(row?.orders || 0)), 0));
+  const sharePercent = totalOrders > 0
+    ? (Math.max(0, Number(selectedRow?.orders || 0)) / totalOrders) * 100
+    : 0;
+  els.foodDemandSlotDetail.innerHTML = `
+    <strong>${escapeHtml(String(selectedRow.slot_label || '--'))}</strong>
+    <span>${Number(selectedRow.orders || 0)}/${Number(selectedRow.capacity || 0)} orders • ${utilization.toFixed(0)}% utilization • ${sharePercent.toFixed(1)}% share</span>
+    <span>${liveEvents} live event(s) in last ${windowMinutes}m • New ${createdEvents} • Status ${statusEvents} • Payment ${paymentEvents}</span>
+  `;
+  if (animate && liveEvents > 0) {
+    pulseFoodDemandLiveNode(els.foodDemandSlotDetail);
+  }
+}
+
+function renderFoodDemandMinimalChart({ animate = false } = {}) {
+  if (!els.foodDemandChartModule) {
+    return;
+  }
+  const rows = getFoodDemandRowsInDisplayOrder();
+  els.foodDemandChartModule.innerHTML = '';
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-item';
+    empty.textContent = 'No slot demand data for selected date.';
+    els.foodDemandChartModule.appendChild(empty);
+    if (els.foodDemandSlotDetail) {
+      els.foodDemandSlotDetail.textContent = 'No slot selected yet.';
+    }
+    return;
+  }
+
+  const selectedId = resolveFoodDemandSelectedSlotId(rows);
+  const layout = document.createElement('div');
+  layout.className = 'food-demand-pie-layout';
+  const chartWrap = document.createElement('div');
+  chartWrap.className = 'food-demand-pie-wrap';
+  const legend = document.createElement('div');
+  legend.className = 'food-demand-pie-legend';
+  const namespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(namespace, 'svg');
+  svg.setAttribute('viewBox', '0 0 240 240');
+  svg.setAttribute('class', 'food-demand-pie-svg');
+
+  const backgroundRing = document.createElementNS(namespace, 'circle');
+  backgroundRing.setAttribute('cx', '120');
+  backgroundRing.setAttribute('cy', '120');
+  backgroundRing.setAttribute('r', '86');
+  backgroundRing.setAttribute('fill', 'none');
+  backgroundRing.setAttribute('class', 'food-demand-pie-base');
+  svg.appendChild(backgroundRing);
+
+  const allPieRows = rows
+    .map((row, index) => ({ ...row, _index: index }))
+    .filter((row) => Number(row?.slot_id || 0) > 0);
+  const ordersTotal = Math.max(0, allPieRows.reduce((sum, row) => sum + Math.max(0, Number(row?.orders || 0)), 0));
+  const pieRows = ordersTotal > 0
+    ? allPieRows.filter((row) => Math.max(0, Number(row?.orders || 0)) > 0)
+    : allPieRows;
+  const weightTotal = ordersTotal > 0
+    ? ordersTotal
+    : Math.max(1, pieRows.length);
+
+  let cursorDeg = 0;
+  for (const row of pieRows) {
+    const slotId = Number(row?.slot_id || 0);
+    const orders = Math.max(0, Number(row?.orders || 0));
+    const livePulse = state.food?.demandLive?.pulsesBySlotId?.[String(slotId)] || null;
+    const liveEvents = Math.max(0, Number(livePulse?.event_count || 0));
+    const weight = ordersTotal > 0 ? orders : 1;
+    const sweep = (weight / weightTotal) * 360;
+    const startDeg = cursorDeg;
+    const endDeg = cursorDeg + sweep;
+    cursorDeg = endDeg;
+
+    const segment = document.createElementNS(namespace, 'path');
+    segment.setAttribute(
+      'd',
+      buildFoodDemandDonutPath(120, 120, 86, 54, startDeg, endDeg),
+    );
+    segment.setAttribute('class', 'food-demand-pie-segment');
+    segment.setAttribute('fill', foodDemandColorBySlot(slotId, row._index));
+    segment.dataset.slotId = String(slotId);
+    if (slotId === selectedId) {
+      segment.classList.add('is-active');
+    }
+    if (liveEvents > 0) {
+      segment.classList.add('is-live');
+    }
+    const slotLabel = String(row?.slot_label || `Slot #${slotId}`);
+    const utilization = Math.max(0, Math.min(100, Number(row?.utilization_percent || 0)));
+    segment.setAttribute(
+      'aria-label',
+      `${slotLabel}: ${orders}/${Number(row?.capacity || 0)} orders (${utilization.toFixed(0)}%), ${liveEvents} live events`,
+    );
+    segment.style.setProperty('--live-intensity', String(Math.max(0, Math.min(100, liveEvents * 20))));
+    segment.addEventListener('click', () => {
+      state.food.demandSelectedSlotId = slotId;
+      renderFoodDemandMinimalChart({ animate: false });
+      renderFoodDemandSlotDetail(rows, { animate: false });
+    });
+    svg.appendChild(segment);
+  }
+
+  const selectedRow = rows.find((row) => Number(row?.slot_id || 0) === selectedId) || rows[0];
+  const selectedOrders = Math.max(0, Number(selectedRow?.orders || 0));
+  const selectedShare = ordersTotal > 0 ? ((selectedOrders / ordersTotal) * 100) : 0;
+  const center = document.createElement('div');
+  center.className = 'food-demand-pie-center';
+  center.style.setProperty('--selected-color', foodDemandColorBySlot(selectedId, 0));
+  center.innerHTML = `
+    <small>${escapeHtml(String(selectedRow?.slot_label || '--'))}</small>
+    <strong>${selectedOrders}</strong>
+    <span>${selectedShare.toFixed(1)}% share</span>
+  `;
+
+  chartWrap.append(svg, center);
+  layout.appendChild(chartWrap);
+
+  for (const row of pieRows) {
+    const slotId = Number(row?.slot_id || 0);
+    const orders = Math.max(0, Number(row?.orders || 0));
+    const capacity = Math.max(0, Number(row?.capacity || 0));
+    const utilization = Math.max(0, Math.min(100, Number(row?.utilization_percent || 0)));
+    const livePulse = state.food?.demandLive?.pulsesBySlotId?.[String(slotId)] || null;
+    const liveEvents = Math.max(0, Number(livePulse?.event_count || 0));
+    const legendBtn = document.createElement('button');
+    legendBtn.type = 'button';
+    legendBtn.className = 'food-demand-legend-item';
+    legendBtn.style.setProperty('--slot-color', foodDemandColorBySlot(slotId, Number(row?._index || 0)));
+    if (slotId === selectedId) {
+      legendBtn.classList.add('is-active');
+    }
+    if (liveEvents > 0) {
+      legendBtn.classList.add('is-live');
+    }
+    legendBtn.innerHTML = `
+      <span class="food-demand-legend-dot" aria-hidden="true"></span>
+      <span class="food-demand-legend-main">${escapeHtml(String(row?.slot_label || `Slot #${slotId}`))}</span>
+      <span class="food-demand-legend-meta">${orders}/${capacity} • ${utilization.toFixed(0)}%</span>
+    `;
+    legendBtn.title = `${orders} orders • ${liveEvents} live events`;
+    legendBtn.addEventListener('click', () => {
+      state.food.demandSelectedSlotId = slotId;
+      renderFoodDemandMinimalChart({ animate: false });
+      renderFoodDemandSlotDetail(rows, { animate: false });
+    });
+    if (animate && liveEvents > 0) {
+      pulseFoodDemandLiveNode(legendBtn);
+    }
+    legend.appendChild(legendBtn);
+  }
+
+  layout.appendChild(legend);
+  els.foodDemandChartModule.appendChild(layout);
+  renderFoodDemandSlotDetail(rows, { animate });
+}
+
+function renderFoodDemandLiveSignal({ animate = false } = {}) {
+  if (!els.foodDemandLiveCompactSummary) {
+    return;
+  }
+  const live = state.food.demandLive || {};
+  const windowMinutes = Math.max(1, Number(live.windowMinutes || 2));
+  const created = Math.max(0, Number(live.ordersLastWindow || 0));
+  const status = Math.max(0, Number(live.statusUpdatesLastWindow || 0));
+  const payments = Math.max(0, Number(live.paymentEventsLastWindow || 0));
+  const active = Math.max(0, Number(live.activeOrders || 0));
+  const totalEvents = created + status + payments;
+  const hottestText = live.hottestSlotLabel
+    ? `${live.hottestSlotLabel} (${Number(live.hottestSlotOrders || 0)})`
+    : '--';
+  els.foodDemandLiveCompactSummary.textContent = `Active ${active} • Events ${totalEvents} in ${windowMinutes}m • Hot ${hottestText}`;
+  if (els.foodDemandLiveCompact) {
+    els.foodDemandLiveCompact.classList.toggle('is-live-active', totalEvents > 0);
+  }
+  if (els.foodDemandLiveHotBtn) {
+    const hotSlotId = Number(live?.pulses?.[0]?.slot_id || 0);
+    els.foodDemandLiveHotBtn.disabled = hotSlotId <= 0;
+    els.foodDemandLiveHotBtn.textContent = hotSlotId > 0 ? 'Focus hottest' : 'No hotspot';
+  }
+  if (animate) {
+    pulseFoodDemandLiveNode(els.foodDemandLiveCompactSummary);
+    if (els.foodDemandLiveCompact) {
+      pulseFoodDemandLiveNode(els.foodDemandLiveCompact);
+    }
+  }
+}
+
 function demandFreshnessLabel(syncedAtMs) {
   const ts = Number(syncedAtMs || 0);
   if (!Number.isFinite(ts) || ts <= 0) {
@@ -2700,6 +3690,12 @@ function createDemandBarColumn(slot) {
   column.dataset.slotId = String(slot?.slot_id || '');
   column.dataset.orders = String(Number(slot?.orders || 0));
   column.dataset.utilization = String(Number(slot?.utilization_percent || 0));
+  column.dataset.liveEvents = '0';
+
+  const activity = document.createElement('div');
+  activity.className = 'bar-activity is-idle';
+  activity.dataset.role = 'activity';
+  activity.textContent = 'idle';
 
   const wrap = document.createElement('div');
   wrap.className = 'bar-wrap';
@@ -2721,7 +3717,7 @@ function createDemandBarColumn(slot) {
   delta.className = 'bar-delta hidden';
   delta.dataset.role = 'delta';
 
-  column.append(wrap, value, label, delta);
+  column.append(activity, wrap, value, label, delta);
   return column;
 }
 
@@ -2751,6 +3747,24 @@ function triggerDemandBarPulse(column, deltaOrders) {
     }
     column._demandPulseTimer = null;
   }, 1800);
+}
+
+function triggerDemandLiveBurst(column) {
+  if (!column) {
+    return;
+  }
+  column.classList.remove('is-live-burst');
+  // Force animation restart for frequent live activity bursts.
+  // eslint-disable-next-line no-unused-expressions
+  column.offsetWidth;
+  column.classList.add('is-live-burst');
+  if (column._demandLiveBurstTimer) {
+    window.clearTimeout(column._demandLiveBurstTimer);
+  }
+  column._demandLiveBurstTimer = window.setTimeout(() => {
+    column.classList.remove('is-live-burst');
+    column._demandLiveBurstTimer = null;
+  }, 1300);
 }
 
 function renderDemandChartIn(container, { animate = false } = {}) {
@@ -2796,7 +3810,8 @@ function renderDemandChartIn(container, { animate = false } = {}) {
     const value = column.querySelector('[data-role="value"]');
     const label = column.querySelector('[data-role="label"]');
     const delta = column.querySelector('[data-role="delta"]');
-    if (!bar || !value || !label || !delta) {
+    const activity = column.querySelector('[data-role="activity"]');
+    if (!bar || !value || !label || !delta || !activity) {
       continue;
     }
 
@@ -2818,6 +3833,20 @@ function renderDemandChartIn(container, { animate = false } = {}) {
       triggerDemandBarPulse(column, deltaOrders);
     }
 
+    const livePulse = state.food?.demandLive?.pulsesBySlotId?.[slotKey] || null;
+    const previousLiveEvents = Number(column.dataset.liveEvents || 0);
+    const nextLiveEvents = Math.max(0, Number(livePulse?.event_count || 0));
+    const liveEventsChanged = previousLiveEvents !== nextLiveEvents;
+    column.dataset.liveEvents = String(nextLiveEvents);
+    column.style.setProperty('--live-intensity', String(Math.max(0, Math.min(100, nextLiveEvents * 18))));
+    column.classList.toggle('is-live-hot', nextLiveEvents > 0);
+    activity.classList.toggle('is-idle', nextLiveEvents <= 0);
+    activity.textContent = nextLiveEvents > 0 ? `${nextLiveEvents} live evt` : 'idle';
+    if (animate && liveEventsChanged) {
+      triggerDemandLiveBurst(column);
+      pulseFoodDemandLiveNode(activity, 'is-live-updated', 900);
+    }
+
     column.dataset.orders = String(nextOrders);
     column.dataset.utilization = String(nextUtilization);
     container.appendChild(column);
@@ -2827,6 +3856,9 @@ function renderDemandChartIn(container, { animate = false } = {}) {
     if (!activeKeys.has(slotKey)) {
       if (column._demandPulseTimer) {
         window.clearTimeout(column._demandPulseTimer);
+      }
+      if (column._demandLiveBurstTimer) {
+        window.clearTimeout(column._demandLiveBurstTimer);
       }
       column.remove();
     }
@@ -2839,7 +3871,7 @@ function renderDemandChart(options = {}) {
   if (!foodOnly) {
     renderDemandChartIn(els.demandChart, { animate: false });
   }
-  renderDemandChartIn(els.foodDemandChartModule, { animate });
+  renderFoodDemandMinimalChart({ animate });
   renderFoodDemandFreshnessIndicator();
 }
 
@@ -2861,17 +3893,20 @@ function renderCapacityChart() {
   for (const item of topRows) {
     const row = document.createElement('div');
     row.className = 'hbar-row';
+    const courseCode = String(item?.course_code || item?.primary_course_code || '--');
+    const classroomLabel = String(item?.classroom || item?.classroom_label || '--');
+    const utilizationPercent = Number(item?.utilization_percent || 0);
 
     const meta = document.createElement('div');
     meta.className = 'hbar-meta';
-    meta.innerHTML = `<span>${item.course_code} • ${item.classroom}</span><span>${item.utilization_percent}%</span>`;
+    meta.innerHTML = `<span>${escapeHtml(courseCode)} • ${escapeHtml(classroomLabel)}</span><span>${Math.round(utilizationPercent)}%</span>`;
 
     const track = document.createElement('div');
     track.className = 'hbar-track';
 
     const fill = document.createElement('div');
     fill.className = 'hbar-fill';
-    fill.style.setProperty('--w', String(Math.max(3, Math.min(item.utilization_percent, 100))));
+    fill.style.setProperty('--w', String(Math.max(3, Math.min(utilizationPercent, 100))));
 
     track.appendChild(fill);
     row.appendChild(meta);
@@ -2889,18 +3924,32 @@ function clampPercent(value) {
 }
 
 function computeAdministrativeHealthMetrics() {
-  const enrolled = Array.isArray(state.attendanceSummary) ? state.attendanceSummary.length : 0;
-  const absent = Array.isArray(state.absentees) ? state.absentees.length : 0;
-  const present = Math.max(0, enrolled - absent);
-  const attendanceHealth = enrolled ? clampPercent((present / enrolled) * 100) : 0;
+  const summary = state.admin?.summary || null;
+  const hasSummary = Boolean(summary && typeof summary === 'object');
+  const enrolled = hasSummary
+    ? Math.max(0, Number(summary.active_today || 0))
+    : (Array.isArray(state.attendanceSummary) ? state.attendanceSummary.length : 0);
+  const absent = hasSummary
+    ? Math.max(0, Number(summary.absent_today || 0))
+    : (Array.isArray(state.absentees) ? state.absentees.length : 0);
+  const present = hasSummary
+    ? Math.max(0, Number(summary.present_today || 0))
+    : Math.max(0, enrolled - absent);
+  const attendanceHealth = hasSummary
+    ? clampPercent(Number(summary.attendance_rate_today || 0))
+    : (enrolled ? clampPercent((present / enrolled) * 100) : 0);
 
   const capacityRows = Array.isArray(state.capacity) ? state.capacity : [];
-  const capacityAverage = capacityRows.length
+  const fallbackCapacityAverage = capacityRows.length
     ? clampPercent(
       capacityRows.reduce((sum, row) => sum + Number(row.utilization_percent || 0), 0) / capacityRows.length
     )
     : 0;
-  const capacityBalance = capacityRows.length
+  const capacityAverage = hasSummary
+    ? clampPercent(Number(summary.capacity_utilization_percent || 0))
+    : fallbackCapacityAverage;
+  const hasCapacitySignal = capacityRows.length > 0 || Number.isFinite(Number(summary?.capacity_utilization_percent));
+  const capacityBalance = hasCapacitySignal
     ? clampPercent(100 - (Math.abs(capacityAverage - 72) * 2.2))
     : 0;
 
@@ -2914,9 +3963,15 @@ function computeAdministrativeHealthMetrics() {
   const avgStudentsPerFaculty = workloadRows.length
     ? workloadRows.reduce((sum, row) => sum + Number(row.total_enrolled_students || 0), 0) / workloadRows.length
     : 0;
-  const workloadIndex = workloadRows.length
+  const fallbackWorkloadIndex = workloadRows.length
     ? clampPercent(100 - Math.max(0, avgStudentsPerFaculty - 40) * 1.1)
     : 0;
+  const workloadDistribution = hasSummary
+    ? clampPercent(Number(summary.workload_distribution_percent || 0))
+    : null;
+  const workloadIndex = Number.isFinite(workloadDistribution)
+    ? clampPercent(100 - Math.abs(Number(workloadDistribution) - 85) * 1.4)
+    : fallbackWorkloadIndex;
 
   return {
     attendanceHealth,
@@ -3112,8 +4167,319 @@ function renderAdministrativeTelemetryChart() {
 }
 
 async function refreshOverview() {
-  state.overview = await api('/resources/overview');
+  await refreshAdminLive({
+    workDate: els.workDate?.value || todayISO(),
+    mode: 'enrollment',
+  });
+  if (!state.admin?.insights) {
+    await refreshAdminInsights({
+      workDate: els.workDate?.value || todayISO(),
+      mode: 'enrollment',
+    });
+  } else {
+    renderAdminInsights();
+  }
+}
+
+function adminTimestampLabel(rawValue, fallbackText = '--') {
+  const parsed = parseFoodDateTime(rawValue);
+  if (!parsed) {
+    return fallbackText;
+  }
+  return parsed.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function adminFreshnessLabel(lastUpdatedAtRaw) {
+  const parsed = parseFoodDateTime(lastUpdatedAtRaw);
+  if (!parsed) {
+    return 'Freshness: --';
+  }
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 1000));
+  if (deltaSeconds <= 1) {
+    return 'Freshness: just now';
+  }
+  if (deltaSeconds < 60) {
+    return `Freshness: ${deltaSeconds}s ago`;
+  }
+  const deltaMinutes = Math.floor(deltaSeconds / 60);
+  if (deltaMinutes < 60) {
+    return `Freshness: ${deltaMinutes}m ago`;
+  }
+  const deltaHours = Math.floor(deltaMinutes / 60);
+  return `Freshness: ${deltaHours}h ago`;
+}
+
+function renderAdminLiveIndicator() {
+  const summary = state.admin?.summary || null;
+  const updatedAtRaw = state.admin?.lastUpdatedAt || summary?.last_updated_at || null;
+  const staleAfterSeconds = Math.max(20, Number(state.admin?.staleAfterSeconds || summary?.stale_after_seconds || 60));
+  const parsed = parseFoodDateTime(updatedAtRaw);
+  const ageMs = parsed ? Math.max(0, Date.now() - parsed.getTime()) : Number.POSITIVE_INFINITY;
+  const stale = !Number.isFinite(ageMs) || ageMs > staleAfterSeconds * 1000;
+
+  if (els.adminLiveChip) {
+    els.adminLiveChip.textContent = stale ? 'Stale Telemetry' : 'Live Telemetry';
+    els.adminLiveChip.classList.toggle('is-stale', stale);
+    els.adminLiveChip.classList.toggle('is-fresh', !stale);
+    if (parsed) {
+      els.adminLiveChip.title = `Last updated ${adminTimestampLabel(updatedAtRaw)}`;
+    }
+  }
+  if (els.adminDataFreshnessNote) {
+    const freshness = adminFreshnessLabel(updatedAtRaw);
+    const staleSuffix = stale ? ` • stale>${staleAfterSeconds}s` : '';
+    els.adminDataFreshnessNote.textContent = `${freshness}${staleSuffix}`;
+  }
+}
+
+function renderAdminIssues() {
+  if (!els.adminIssuesWrap) {
+    return;
+  }
+  els.adminIssuesWrap.innerHTML = '';
+  const sourceAlerts = Array.isArray(state.admin?.alerts) ? state.admin.alerts : [];
+  const sourceIssues = Array.isArray(state.admin?.summary?.top_issues) ? state.admin.summary.top_issues : [];
+  const rows = sourceAlerts.length ? sourceAlerts : sourceIssues;
+
+  if (!rows.length) {
+    const row = document.createElement('div');
+    row.className = 'list-item good admin-issue-item';
+    row.innerHTML = `
+      <span class="admin-issue-message">No high-priority issues detected.</span>
+      <span class="admin-issue-meta">System healthy • auto-monitoring active</span>
+    `;
+    els.adminIssuesWrap.appendChild(row);
+    return;
+  }
+
+  for (const item of rows.slice(0, 12)) {
+    const severity = String(item?.severity || 'medium').toLowerCase();
+    const typeLabel = asTitleCase(String(item?.issue_type || 'issue').replaceAll('_', ' '));
+    const message = String(item?.message || 'Issue detected');
+    const context = item?.context && typeof item.context === 'object' ? item.context : null;
+    const room = context?.room_label ? ` • ${context.room_label}` : '';
+    const weekday = Number.isFinite(Number(context?.weekday)) ? ` • D${Number(context.weekday)}` : '';
+    const toneClass = severity === 'high' ? 'warn' : (severity === 'low' ? 'good' : '');
+    const row = document.createElement('div');
+    row.className = `list-item admin-issue-item ${toneClass}`.trim();
+    row.innerHTML = `
+      <span class="admin-issue-message">${escapeHtml(message)}</span>
+      <span class="admin-issue-meta">${escapeHtml(typeLabel)} • ${escapeHtml(severity.toUpperCase())}${escapeHtml(room)}${escapeHtml(weekday)}</span>
+    `;
+    els.adminIssuesWrap.appendChild(row);
+  }
+}
+
+function formatCount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return '0';
+  }
+  return Math.round(parsed).toLocaleString('en-IN');
+}
+
+function buildAdminInsightBarRows(items, labelKey, valueKey, maxValue = 100) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) {
+    return '<div class="list-item">No baseline data available.</div>';
+  }
+  return source.map((item) => {
+    const label = escapeHtml(String(item?.[labelKey] || '--'));
+    const numericValue = Number(item?.[valueKey] || 0);
+    const width = clampPercent((numericValue / Math.max(1, Number(maxValue) || 100)) * 100);
+    const valueLabel = `${formatCount(numericValue)}${valueKey.includes('percent') ? '%' : ''}`;
+    return `
+      <div class="admin-insight-bar-row">
+        <div class="admin-insight-bar-head">
+          <span>${label}</span>
+          <strong>${escapeHtml(valueLabel)}</strong>
+        </div>
+        <div class="admin-insight-bar-track"><span class="admin-insight-bar-fill" style="--w:${width}"></span></div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderAdminInsights() {
+  const profileWrap = els.adminProfileWrap;
+  const benchmarkWrap = els.adminBenchmarkWrap;
+  if (!profileWrap || !benchmarkWrap) {
+    return;
+  }
+
+  const insights = state.admin?.insights;
+  const profile = (insights && typeof insights.profile === 'object') ? insights.profile : null;
+  const summary = state.admin?.summary || {};
+  if (!profile) {
+    profileWrap.innerHTML = '<div class="list-item">Administrative planning profile is loading...</div>';
+    benchmarkWrap.innerHTML = '<div class="list-item">Live benchmark overlay is loading...</div>';
+    return;
+  }
+
+  const activeStudents = profile.active_students || {};
+  const discipline = Array.isArray(profile.discipline_distribution) ? profile.discipline_distribution : [];
+  const years = Array.isArray(profile.year_distribution) ? profile.year_distribution : [];
+  const residency = Array.isArray(profile.residency_split) ? profile.residency_split : [];
+  const origin = Array.isArray(profile.origin_split) ? profile.origin_split : [];
+  const highlights = Array.isArray(insights?.highlights) ? insights.highlights : [];
+
+  const maxDisciplineShare = Math.max(
+    1,
+    ...discipline.map((item) => Number(item?.share_percent || 0)),
+  );
+  const topYear = years[0] || {};
+  const hostel = residency.find((row) => String(row?.category || '').toLowerCase().includes('hostel')) || {};
+  const international = origin.find((row) => String(row?.category || '').toLowerCase().includes('international')) || {};
+
+  profileWrap.innerHTML = `
+    <div class="admin-insight-kpi-row">
+      <div class="admin-insight-kpi">
+        <span>Modeled Active Students</span>
+        <strong>${formatCount(activeStudents.estimated || 0)}</strong>
+        <small>Range ${formatCount(activeStudents.min || 0)}-${formatCount(activeStudents.max || 0)}</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>Largest Intake Layer</span>
+        <strong>${escapeHtml(String(topYear.year || '--'))}</strong>
+        <small>${formatCount(topYear.students || 0)} students</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>Residential Mix</span>
+        <strong>${formatCount(hostel.share_percent || 0)}%</strong>
+        <small>${formatCount(hostel.students || 0)} hostelers</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>International Mix</span>
+        <strong>${formatCount(international.share_percent || 0)}%</strong>
+        <small>${formatCount(international.students || 0)} students</small>
+      </div>
+    </div>
+    <div class="admin-insight-block">
+      <h4>Discipline Distribution Model</h4>
+      ${buildAdminInsightBarRows(discipline.slice(0, 8), 'discipline', 'share_percent', maxDisciplineShare)}
+    </div>
+    <div class="admin-insight-block">
+      <h4>Decision Notes</h4>
+      <div class="admin-insight-note-list">
+        ${(highlights.length ? highlights.slice(0, 4) : ['No model notes available yet.']).map((line) => (
+          `<div class="list-item">${escapeHtml(String(line || ''))}</div>`
+        )).join('')}
+      </div>
+    </div>
+  `;
+
+  const utilizationModel = profile.classroom_utilization_model || {};
+  const slotModels = Array.isArray(utilizationModel.time_slots) ? utilizationModel.time_slots : [];
+  const peakSlot = slotModels.reduce((acc, item) => {
+    const util = Number(item?.utilization_percent || 0);
+    if (util > Number(acc?.utilization_percent || 0)) {
+      return item;
+    }
+    return acc;
+  }, { slot: '--', utilization_percent: 0 });
+  const placementRate = Number(profile?.placement_model?.overall?.placement_rate_percent || 0);
+  const shuttleDaily = Number(profile?.mobility_model?.daily_shuttle_riders || 0);
+  const libraryPeak = Number(profile?.library_model?.peak_late_night_occupancy || 0);
+
+  const liveCapacity = clampPercent(Number(summary?.capacity_utilization_percent || 0));
+  const liveAttendance = clampPercent(Number(summary?.attendance_rate_today || 0));
+  const liveWorkload = clampPercent(Number(summary?.workload_distribution_percent || 0));
+  const peakTarget = clampPercent(Number(peakSlot?.utilization_percent || 0));
+  const attendanceTarget = 85;
+  const workloadTarget = 85;
+
+  benchmarkWrap.innerHTML = `
+    <div class="admin-insight-kpi-row">
+      <div class="admin-insight-kpi">
+        <span>Capacity vs Peak Target</span>
+        <strong>${liveCapacity}%</strong>
+        <small>${escapeHtml(String(peakSlot?.slot || '--'))} model target ${peakTarget}%</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>Attendance vs Target</span>
+        <strong>${liveAttendance}%</strong>
+        <small>Target ${attendanceTarget}%</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>Workload vs Target</span>
+        <strong>${liveWorkload}%</strong>
+        <small>Target ${workloadTarget}%</small>
+      </div>
+      <div class="admin-insight-kpi">
+        <span>Placement Baseline</span>
+        <strong>${formatCount(placementRate)}%</strong>
+        <small>Final-year benchmark model</small>
+      </div>
+    </div>
+    <div class="admin-insight-block">
+      <h4>Peak Slot Utilization Model</h4>
+      ${buildAdminInsightBarRows(slotModels.slice(0, 9), 'slot', 'utilization_percent', 100)}
+    </div>
+    <div class="admin-insight-block">
+      <h4>Mobility + Library Load Baseline</h4>
+      <div class="admin-insight-note-list">
+        <div class="list-item">Daily shuttle riders model: ${formatCount(shuttleDaily)} students.</div>
+        <div class="list-item">Library daily usage model: ${escapeHtml(String(profile?.library_model?.daily_usage_range || '--'))}.</div>
+        <div class="list-item">Library late-night peak model: ${formatCount(libraryPeak)} students.</div>
+        <div class="list-item">Exam surge model: +${formatCount(profile?.library_model?.exam_surge_midsem_percent || 0)}% midsems, +${formatCount(profile?.library_model?.exam_surge_endterm_percent || 0)}% endterms.</div>
+      </div>
+    </div>
+  `;
+}
+
+async function refreshAdminInsights(options = {}) {
+  const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
+  const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
+  const payload = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`);
+  state.admin.insights = payload && typeof payload === 'object' ? payload : null;
+  renderAdminInsights();
+  return payload;
+}
+
+function applyAdminLivePayload(payload) {
+  const summary = (payload && typeof payload.summary === 'object') ? payload.summary : {};
+  state.admin.summary = summary;
+  state.admin.alerts = Array.isArray(payload?.alerts) ? payload.alerts : [];
+  state.admin.lastUpdatedAt = payload?.last_updated_at || summary?.last_updated_at || null;
+  state.admin.staleAfterSeconds = Math.max(
+    20,
+    Number(payload?.stale_after_seconds || summary?.stale_after_seconds || 60)
+  );
+
+  state.overview = {
+    blocks: Number(summary?.blocks || 0),
+    classrooms: Number(summary?.classrooms || 0),
+    courses: Number(summary?.courses || 0),
+    faculty: Number(summary?.faculty || 0),
+    students: Number(summary?.students || 0),
+  };
+  state.capacity = Array.isArray(payload?.capacity) ? payload.capacity : [];
+  state.resources.workload = Array.isArray(payload?.workload) ? payload.workload : [];
+  state.resources.mongoStatus = summary?.mongo_status || null;
+
   updateMetrics();
+  renderCapacityChart();
+  renderWorkloadChart();
+  renderMongoStatus();
+  renderAttendanceDonut();
+  renderAdminIssues();
+  renderAdminLiveIndicator();
+  renderAdminInsights();
+}
+
+async function refreshAdminLive(options = {}) {
+  const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
+  const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
+  const payload = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`);
+  applyAdminLivePayload(payload || {});
+  return payload;
 }
 
 async function refreshAttendanceData() {
@@ -3149,6 +4515,24 @@ async function refreshDemand(orderDate = '', options = {}) {
   markFoodDemandFreshness({ changed });
 }
 
+async function refreshFoodDemandLiveSignal(orderDate = '', options = {}) {
+  const date = String(orderDate || els.foodOrderDate?.value || state.food.orderDate || todayISO()).trim() || todayISO();
+  const payload = await api(`/food/demand/live?order_date=${date}&window_minutes=2`);
+  const normalized = normalizeFoodDemandLivePayload(payload);
+  const previousDigest = String(state.food.demandLive?.digest || '').trim();
+  const hasChanged = Boolean(previousDigest) && previousDigest !== normalized.digest;
+  state.food.demandLive = {
+    ...state.food.demandLive,
+    ...normalized,
+  };
+  if (hasChanged) {
+    state.food.demandLive.pulseUntilMs = Date.now() + 1500;
+  }
+  const shouldAnimate = Boolean(options?.animate ?? hasChanged);
+  renderFoodDemandLiveSignal({ animate: shouldAnimate });
+  renderDemandChart({ animate: shouldAnimate, foodOnly: true });
+}
+
 function stopFoodDemandLiveTicker() {
   if (foodDemandLiveTimer) {
     window.clearInterval(foodDemandLiveTimer);
@@ -3177,6 +4561,7 @@ async function refreshFoodDemandLiveTick() {
     state.food.orderDate = orderDate;
     await Promise.all([
       refreshDemand(orderDate, { animate: true, foodOnly: true }),
+      refreshFoodDemandLiveSignal(orderDate, { animate: true }).catch(() => null),
       (async () => {
         const peaks = await api('/food/peak-times?lookback_days=14');
         state.peakTimes = Array.isArray(peaks) ? peaks : [];
@@ -3204,7 +4589,8 @@ function syncFoodDemandLiveTicker() {
 }
 
 async function refreshCapacity() {
-  state.capacity = await api('/resources/capacity-utilization');
+  const workDate = String(els.workDate?.value || todayISO()).trim() || todayISO();
+  state.capacity = await api(`/admin/capacity?work_date=${encodeURIComponent(workDate)}&mode=enrollment`);
   renderCapacityChart();
 }
 
@@ -4464,6 +5850,14 @@ function setRemedialStudentStatus(message, isError = false) {
   }
   els.remedialStudentStatus.textContent = String(message || '');
   els.remedialStudentStatus.classList.toggle('error-text', Boolean(isError));
+}
+
+function setFacultyMessageStatus(message, isError = false) {
+  if (!els.facultyMessageStatus) {
+    return;
+  }
+  els.facultyMessageStatus.textContent = String(message || '');
+  els.facultyMessageStatus.classList.toggle('error-text', Boolean(isError));
 }
 
 function geolocationErrorText(error) {
@@ -6026,7 +7420,10 @@ async function refreshFoodModule() {
   if (els.workDate && !els.workDate.value) {
     els.workDate.value = orderDate;
   }
-  await refreshDemand(orderDate);
+  await Promise.all([
+    refreshDemand(orderDate),
+    refreshFoodDemandLiveSignal(orderDate, { animate: false }).catch(() => null),
+  ]);
 
   if (authState.user.role === 'student' && (!state.food.shops.length || !state.food.slots.length)) {
     setFoodStatus('Shops or pickup slots are not configured yet. Please contact faculty/admin.', true);
@@ -6500,53 +7897,47 @@ async function refreshAdministrativeModule() {
   if (els.workDate && !els.workDate.value) {
     els.workDate.value = todayISO();
   }
+  const workDate = String(els.workDate?.value || todayISO()).trim() || todayISO();
   await Promise.all([
-    refreshOverview(),
-    refreshCapacity(),
-    refreshDemand(els.workDate?.value || todayISO()),
+    refreshAdminLive({ workDate, mode: 'enrollment' }),
+    refreshAdminInsights({ workDate, mode: 'enrollment' }),
+    refreshDemand(workDate),
     refreshAttendanceData(),
   ]);
-  if (authState.user.role === 'faculty' || authState.user.role === 'admin') {
-    const [workload, mongoStatus] = await Promise.all([
-      api('/resources/workload-distribution'),
-      api('/resources/mongo/status'),
-    ]);
-    state.resources.workload = Array.isArray(workload) ? workload : [];
-    state.resources.mongoStatus = mongoStatus || null;
-  } else {
-    state.resources.workload = [];
-    state.resources.mongoStatus = null;
-  }
-  renderWorkloadChart();
-  renderMongoStatus();
   const healthMetrics = computeAdministrativeHealthMetrics();
   renderAdministrativeHealthMetrics(healthMetrics);
   pushAdministrativeTelemetry(healthMetrics);
   renderAdministrativeTelemetryChart();
+  renderAdminLiveIndicator();
+  renderAdminIssues();
 }
 
 function renderRemedialCourseOptions() {
   if (!els.remedialCourseSelect) {
     return;
   }
+  const previous = String(els.remedialCourseSelect.value || '').trim();
   const role = authState.user?.role;
-  const facultyId = Number(authState.user?.faculty_id || 0);
-  const courses = Object.values(state.coursesById || {}).filter((course) => {
-    if (role === 'faculty') {
-      return Number(course.faculty_id || 0) === facultyId;
-    }
-    return true;
-  });
+  const courses = role === 'faculty'
+    ? (Array.isArray(state.remedial.eligibleCourses) ? state.remedial.eligibleCourses : [])
+    : Object.values(state.coursesById || {});
 
   els.remedialCourseSelect.innerHTML = '';
   if (!courses.length) {
     const option = document.createElement('option');
     option.value = '';
-    option.textContent = 'No eligible courses';
+    option.textContent = role === 'faculty'
+      ? 'No assigned subjects. Enter manual course code + name.'
+      : 'No eligible courses';
     els.remedialCourseSelect.appendChild(option);
     els.remedialCourseSelect.disabled = true;
     return;
   }
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = 'Select assigned course (optional)';
+  els.remedialCourseSelect.appendChild(placeholder);
 
   for (const course of courses) {
     const option = document.createElement('option');
@@ -6555,6 +7946,223 @@ function renderRemedialCourseOptions() {
     els.remedialCourseSelect.appendChild(option);
   }
   els.remedialCourseSelect.disabled = false;
+  if (previous && courses.some((course) => String(course.id) === previous)) {
+    els.remedialCourseSelect.value = previous;
+    return;
+  }
+  els.remedialCourseSelect.value = '';
+}
+
+async function loadRemedialEligibleCourses() {
+  if (!authState.user || authState.user.role !== 'faculty') {
+    state.remedial.eligibleCourses = [];
+    return;
+  }
+  const rows = await api('/makeup/faculty/eligible-courses');
+  state.remedial.eligibleCourses = Array.isArray(rows) ? rows : [];
+}
+
+function normalizeRemedialSections(rawValue) {
+  const tokens = String(rawValue || '')
+    .split(',')
+    .map((token) => token.trim().toUpperCase().replace(/\s+/g, ''))
+    .filter(Boolean);
+  return [...new Set(tokens)];
+}
+
+function normalizeRemedialCourseCode(rawValue) {
+  return String(rawValue || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .slice(0, 20);
+}
+
+function normalizeRemedialCourseTitle(rawValue) {
+  return String(rawValue || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 150);
+}
+
+function syncRemedialManualCourseFromSelect() {
+  if (!els.remedialCourseSelect || !els.remedialCourseCodeInput || !els.remedialCourseTitleInput) {
+    return;
+  }
+  const selectedCourseId = Number(els.remedialCourseSelect.value || 0);
+  if (!selectedCourseId) {
+    return;
+  }
+  const role = authState.user?.role;
+  const sourceCourses = role === 'faculty'
+    ? (Array.isArray(state.remedial.eligibleCourses) ? state.remedial.eligibleCourses : [])
+    : Object.values(state.coursesById || {});
+  const selected = sourceCourses.find((course) => Number(course.id) === selectedCourseId);
+  if (!selected) {
+    return;
+  }
+  if (!String(els.remedialCourseCodeInput.value || '').trim()) {
+    els.remedialCourseCodeInput.value = normalizeRemedialCourseCode(selected.code || '');
+  }
+  if (!String(els.remedialCourseTitleInput.value || '').trim()) {
+    els.remedialCourseTitleInput.value = normalizeRemedialCourseTitle(selected.title || '');
+  }
+}
+
+function remedialModeLabel(entry) {
+  const mode = String(entry?.class_mode || 'offline').toLowerCase();
+  if (mode === 'online') {
+    return `Online • ${REMEDIAL_DEFAULT_ONLINE_LINK}`;
+  }
+  const room = String(entry?.room_number || '').trim() || 'Room TBA';
+  return `Offline • Room ${room}`;
+}
+
+function normalizedRemedialOnlineLink(rawLink) {
+  const link = String(rawLink || '').trim();
+  if (!link) {
+    return REMEDIAL_DEFAULT_ONLINE_LINK;
+  }
+  if (/^https?:\/\/myclass\.lpu\.in\/?/i.test(link)) {
+    return link.endsWith('/') ? link : `${link}/`;
+  }
+  return REMEDIAL_DEFAULT_ONLINE_LINK;
+}
+
+function remedialCourseDisplay(entry) {
+  const code = String(entry?.course_code || '').trim();
+  const title = String(entry?.course_title || '').trim();
+  if (code && title) {
+    return `${code} - ${title}`;
+  }
+  if (code) {
+    return code;
+  }
+  const courseId = Number(entry?.course_id || 0);
+  if (courseId > 0) {
+    return getCourseLabel(courseId);
+  }
+  return 'Remedial Class';
+}
+
+function remedialSectionsLabel(value) {
+  if (Array.isArray(value) && value.length) {
+    return value
+      .map((section) => String(section || '').trim().toUpperCase())
+      .filter(Boolean)
+      .join(', ');
+  }
+  const fallback = String(value || '').trim().toUpperCase();
+  return fallback || '--';
+}
+
+function parseApiDateTime(value) {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+function isRemedialRejectWindowOpen(entry) {
+  if (!entry || typeof entry !== 'object') {
+    return false;
+  }
+  if (typeof entry.can_reject === 'boolean') {
+    return entry.can_reject;
+  }
+  const scheduledAt = parseApiDateTime(entry.scheduled_at);
+  if (!scheduledAt) {
+    return false;
+  }
+  return (Date.now() - scheduledAt.getTime()) <= REMEDIAL_REJECT_WINDOW_MS;
+}
+
+function parseTimeStringToParts(rawValue) {
+  const match = String(rawValue || '').trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) {
+    return null;
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] || 0);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || !Number.isInteger(second)) {
+    return null;
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    return null;
+  }
+  return { hour, minute, second };
+}
+
+function remedialClassWindow(entry) {
+  const classDate = String(entry?.class_date || '').trim();
+  if (!classDate) {
+    return null;
+  }
+  const parts = classDate.split('-').map((value) => Number(value));
+  if (parts.length !== 3 || parts.some((value) => Number.isNaN(value))) {
+    return null;
+  }
+  const [year, month, day] = parts;
+  const startParts = parseTimeStringToParts(entry?.start_time);
+  const endParts = parseTimeStringToParts(entry?.end_time);
+  if (!startParts || !endParts) {
+    return null;
+  }
+  const startAt = new Date(year, month - 1, day, startParts.hour, startParts.minute, startParts.second, 0);
+  const endAt = new Date(year, month - 1, day, endParts.hour, endParts.minute, endParts.second, 0);
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+    return null;
+  }
+  if (endAt.getTime() <= startAt.getTime()) {
+    endAt.setDate(endAt.getDate() + 1);
+  }
+  return { startAt, endAt };
+}
+
+function isRemedialClassPrevious(entry, nowDate = new Date()) {
+  const window = remedialClassWindow(entry);
+  if (!window) {
+    return false;
+  }
+  return nowDate.getTime() > window.endAt.getTime();
+}
+
+function remedialClassSortTimestamp(entry, kind = 'start') {
+  const window = remedialClassWindow(entry);
+  if (!window) {
+    return kind === 'end' ? 0 : Number.MAX_SAFE_INTEGER;
+  }
+  return kind === 'end' ? window.endAt.getTime() : window.startAt.getTime();
+}
+
+function applyRemedialModeVisibility() {
+  const mode = String(els.remedialModeSelect?.value || 'offline').toLowerCase();
+  const isOnline = mode === 'online';
+  setHidden(els.remedialRoomWrap, isOnline);
+  setHidden(els.remedialOnlineWrap, !isOnline);
+  if (els.remedialOnlineLinkInput) {
+    els.remedialOnlineLinkInput.readOnly = isOnline;
+    if (isOnline) {
+      els.remedialOnlineLinkInput.value = REMEDIAL_DEFAULT_ONLINE_LINK;
+    }
+  }
+}
+
+function renderRemedialDemoToggle() {
+  if (!els.remedialDemoInstantBtn) {
+    return;
+  }
+  const enabled = Boolean(state.remedial.demoBypassLeadTime);
+  els.remedialDemoInstantBtn.dataset.active = enabled ? 'true' : 'false';
+  els.remedialDemoInstantBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+  els.remedialDemoInstantBtn.textContent = enabled
+    ? 'Demo: Instant Scheduling ON'
+    : 'Demo: Instant Scheduling OFF';
 }
 
 function renderRemedialClassesList() {
@@ -6562,21 +8170,117 @@ function renderRemedialClassesList() {
     return;
   }
   els.remedialClassesList.innerHTML = '';
+  if (els.remedialPreviousClassesList) {
+    els.remedialPreviousClassesList.innerHTML = '';
+  }
   if (!state.remedial.classes.length) {
     const row = document.createElement('div');
     row.className = 'list-item';
-    row.textContent = 'No remedial classes scheduled yet.';
+    row.textContent = 'No active/upcoming remedial classes.';
     els.remedialClassesList.appendChild(row);
+    if (els.remedialPreviousClassesList) {
+      const previousRow = document.createElement('div');
+      previousRow.className = 'list-item';
+      previousRow.textContent = 'Completed classes will appear here automatically.';
+      els.remedialPreviousClassesList.appendChild(previousRow);
+    }
     return;
   }
+  const nowDate = new Date();
+  const scheduledClasses = [];
+  const previousClasses = [];
   for (const entry of state.remedial.classes) {
+    if (isRemedialClassPrevious(entry, nowDate)) {
+      previousClasses.push(entry);
+    } else {
+      scheduledClasses.push(entry);
+    }
+  }
+  scheduledClasses.sort((a, b) => remedialClassSortTimestamp(a, 'start') - remedialClassSortTimestamp(b, 'start'));
+  previousClasses.sort((a, b) => remedialClassSortTimestamp(b, 'end') - remedialClassSortTimestamp(a, 'end'));
+
+  const renderRow = (entry, { previous = false } = {}) => {
+    const row = document.createElement('div');
+    const isActive = Boolean(entry.is_active ?? true);
+    const canRejectByRole = authState.user?.role === 'faculty';
+    const rejectWindowOpen = isRemedialRejectWindowOpen(entry);
+    const rejectEnabled = isActive && canRejectByRole && rejectWindowOpen;
+    const rejectButtonLabel = !isActive
+      ? 'Rejected'
+      : (rejectWindowOpen ? 'Reject Class' : 'Reject Window Closed');
+    const rejectButtonTitle = rejectWindowOpen
+      ? 'Reject this remedial class'
+      : 'Reject available only within 30 minutes of scheduling';
+    row.className = `remedial-card remedial-class-card ${isActive ? 'is-active' : 'is-inactive'}`;
+    const sections = remedialSectionsLabel(entry.sections);
+    const dateText = entry.class_date
+      ? parseISODateLocal(entry.class_date).toLocaleDateString('en-GB')
+      : '--';
+    const code = String(entry.remedial_code || '').trim().toUpperCase() || '--';
+    const topic = String(entry.topic || '').trim() || 'Remedial Session';
+    const classMode = remedialModeLabel(entry);
+    const statusLabel = previous
+      ? (isActive ? 'Completed' : 'Rejected')
+      : (isActive ? 'Active' : 'Rejected');
+    const statusClass = previous
+      ? (isActive ? 'remedial-chip-complete' : 'remedial-chip-muted')
+      : (isActive ? 'remedial-chip-live' : 'remedial-chip-muted');
+    const actionsHtml = previous
+      ? ''
+      : `
+          <div class="remedial-card-actions">
+            <button type="button" class="btn btn-primary" data-remedial-send-code="${entry.id}" ${isActive ? '' : 'disabled'}>Send Code to Section(s)</button>
+            ${canRejectByRole
+    ? `<button type="button" class="btn btn-ghost" data-remedial-cancel="${entry.id}" title="${escapeHtml(rejectButtonTitle)}" ${rejectEnabled ? '' : 'disabled'}>${escapeHtml(rejectButtonLabel)}</button>`
+    : ''}
+          </div>
+        `;
+    row.innerHTML = `
+      <div class="remedial-card-grid">
+        <div class="remedial-card-primary">
+          <p class="remedial-card-title">${escapeHtml(remedialCourseDisplay(entry))}</p>
+          <p class="remedial-card-subtitle">${escapeHtml(topic)}</p>
+          <div class="remedial-card-meta-row">
+            <span class="remedial-meta-badge">${escapeHtml(dateText)}</span>
+            <span class="remedial-meta-badge">${escapeHtml(formatTime(entry.start_time))}-${escapeHtml(formatTime(entry.end_time))}</span>
+            <span class="remedial-meta-badge">${escapeHtml(classMode)}</span>
+            <span class="remedial-meta-badge">Sections ${escapeHtml(sections)}</span>
+          </div>
+        </div>
+        <div class="remedial-card-secondary">
+          <div class="remedial-badge-group">
+            <span class="remedial-chip remedial-chip-code">Code ${escapeHtml(code)}</span>
+            <span class="remedial-chip ${statusClass}">${statusLabel}</span>
+          </div>
+          ${actionsHtml}
+        </div>
+      </div>
+    `;
+    return row;
+  };
+
+  if (!scheduledClasses.length) {
     const row = document.createElement('div');
     row.className = 'list-item';
-    row.innerHTML = `
-      <span>${escapeHtml(getCourseLabel(entry.course_id))} • ${escapeHtml(String(entry.topic || 'Remedial Session'))}</span>
-      <span>${escapeHtml(parseISODateLocal(entry.class_date).toLocaleDateString('en-GB'))} • ${escapeHtml(formatTime(entry.start_time))}-${escapeHtml(formatTime(entry.end_time))} • CODE ${escapeHtml(entry.remedial_code)}</span>
-    `;
+    row.textContent = 'No active/upcoming remedial classes.';
     els.remedialClassesList.appendChild(row);
+  } else {
+    for (const entry of scheduledClasses) {
+      els.remedialClassesList.appendChild(renderRow(entry, { previous: false }));
+    }
+  }
+
+  if (els.remedialPreviousClassesList) {
+    if (!previousClasses.length) {
+      const row = document.createElement('div');
+      row.className = 'list-item';
+      row.textContent = 'Completed classes will appear here automatically.';
+      els.remedialPreviousClassesList.appendChild(row);
+    } else {
+      for (const entry of previousClasses) {
+        els.remedialPreviousClassesList.appendChild(renderRow(entry, { previous: true }));
+      }
+    }
   }
 }
 
@@ -6598,7 +8302,7 @@ function renderRemedialClassSelect() {
   for (const entry of state.remedial.classes) {
     const option = document.createElement('option');
     option.value = String(entry.id);
-    option.textContent = `${parseISODateLocal(entry.class_date).toLocaleDateString('en-GB')} • ${getCourseLabel(entry.course_id)} • ${entry.remedial_code}`;
+    option.textContent = `${parseISODateLocal(entry.class_date).toLocaleDateString('en-GB')} • ${remedialCourseDisplay(entry)} • ${entry.remedial_code}`;
     els.remedialClassSelect.appendChild(option);
   }
   els.remedialClassSelect.disabled = false;
@@ -6608,28 +8312,511 @@ function renderRemedialClassSelect() {
   state.remedial.selectedClassId = Number(els.remedialClassSelect.value || 0) || null;
 }
 
+function closeRemedialAttendanceModal() {
+  state.remedial.selectedAttendanceModalSection = '';
+  state.remedial.selectedAttendanceModalCourseKey = '';
+  if (els.remedialAttendanceModal) {
+    els.remedialAttendanceModal.classList.add('hidden');
+  }
+}
+
+function selectedRemedialClassEntry() {
+  const classId = Number(state.remedial.selectedClassId || 0);
+  if (!classId) {
+    return null;
+  }
+  return (state.remedial.classes || []).find((entry) => Number(entry.id) === classId) || null;
+}
+
+function openRemedialAttendanceSectionModal(sectionToken) {
+  if (
+    !els.remedialAttendanceModal
+    || !els.remedialAttendanceModalTitle
+    || !els.remedialAttendanceModalMeta
+    || !els.remedialAttendanceModalList
+  ) {
+    return;
+  }
+
+  const safeSection = String(sectionToken || '').trim().toUpperCase();
+  if (!safeSection) {
+    return;
+  }
+  const sectionRows = Array.isArray(state.remedial.selectedClassAttendanceSections)
+    ? state.remedial.selectedClassAttendanceSections
+    : [];
+  const summary = sectionRows.find((row) => String(row?.section || '').trim().toUpperCase() === safeSection);
+  if (!summary) {
+    return;
+  }
+
+  const classEntry = selectedRemedialClassEntry();
+  const titleCourse = classEntry ? remedialCourseDisplay(classEntry) : 'Remedial Class';
+  const totalStudents = Number(summary.total_students || 0);
+  const markedStudents = Number(summary.marked_students || 0);
+  const notMarkedStudents = Number(summary.not_marked_students || 0);
+  const classDateText = classEntry?.class_date
+    ? parseISODateLocal(classEntry.class_date).toLocaleDateString('en-GB')
+    : '--';
+  const classTimeText = classEntry
+    ? `${formatTime(classEntry.start_time)}-${formatTime(classEntry.end_time)}`
+    : '';
+
+  els.remedialAttendanceModalTitle.textContent = `${safeSection} • ${titleCourse}`;
+  els.remedialAttendanceModalMeta.textContent =
+    `${classDateText} ${classTimeText} | Marked ${markedStudents}/${totalStudents} | Not Marked ${notMarkedStudents}`;
+
+  const students = Array.isArray(summary.students) ? [...summary.students] : [];
+  students.sort((left, right) => String(left.student_name || '').localeCompare(String(right.student_name || '')));
+  const marked = students.filter((student) => Boolean(student.marked));
+  const notMarked = students.filter((student) => !student.marked);
+
+  const renderGroup = ({ title, rows, markedGroup }) => {
+    if (!rows.length) {
+      const emptyText = markedGroup
+        ? 'No students have marked attendance yet.'
+        : 'Everyone in this section has already marked attendance.';
+      return `
+        <section class="remedial-attendance-modal-group">
+          <h4>${escapeHtml(title)}</h4>
+          <div class="remedial-attendance-modal-empty">${escapeHtml(emptyText)}</div>
+        </section>
+      `;
+    }
+
+    const rowsMarkup = rows
+      .map((student) => {
+        const displayName = String(student.student_name || '').trim() || `Student #${student.student_id}`;
+        const displayMarkedAt = student.marked_at ? new Date(student.marked_at).toLocaleString() : 'Not marked yet';
+        const sourceText = student.source ? asTitleCase(String(student.source).replaceAll('-', ' ')) : 'Pending';
+        const statusClass = markedGroup ? 'present' : 'absent';
+        const detailLine = markedGroup
+          ? `${displayMarkedAt} • ${sourceText}`
+          : 'Attendance pending';
+        const statusText = markedGroup ? 'Marked' : 'Not Marked';
+        return `
+          <article class="attendance-detail-row ${statusClass}">
+            <div class="attendance-detail-main">
+              <strong>${escapeHtml(displayName)}</strong>
+              <small>${escapeHtml(detailLine)}</small>
+            </div>
+            <span class="attendance-detail-status ${statusClass}">${escapeHtml(statusText)}</span>
+          </article>
+        `;
+      })
+      .join('');
+
+    return `
+      <section class="remedial-attendance-modal-group">
+        <h4>${escapeHtml(title)}</h4>
+        <div class="remedial-attendance-modal-group-list">${rowsMarkup}</div>
+      </section>
+    `;
+  };
+
+  els.remedialAttendanceModalList.innerHTML = [
+    renderGroup({ title: `Marked (${marked.length})`, rows: marked, markedGroup: true }),
+    renderGroup({ title: `Not Marked (${notMarked.length})`, rows: notMarked, markedGroup: false }),
+  ].join('');
+
+  state.remedial.selectedAttendanceModalSection = safeSection;
+  state.remedial.selectedAttendanceModalCourseKey = '';
+  els.remedialAttendanceModal.classList.remove('hidden');
+}
+
 function renderRemedialAttendanceList() {
   if (!els.remedialAttendanceList) {
     return;
   }
   els.remedialAttendanceList.innerHTML = '';
-  const rows = Array.isArray(state.remedial.selectedClassAttendance) ? state.remedial.selectedClassAttendance : [];
-  if (!rows.length) {
+  const sectionRows = Array.isArray(state.remedial.selectedClassAttendanceSections)
+    ? state.remedial.selectedClassAttendanceSections
+    : [];
+  if (!sectionRows.length) {
     const row = document.createElement('div');
     row.className = 'list-item';
-    row.textContent = 'No remedial attendance entries for selected class.';
+    row.textContent = 'No attendance data for selected class sections.';
     els.remedialAttendanceList.appendChild(row);
     return;
   }
-  for (const student of rows) {
-    const row = document.createElement('div');
-    row.className = 'list-item good';
-    const markedAt = student.marked_at ? new Date(student.marked_at).toLocaleString() : '--';
+
+  const totalStudents = Number(state.remedial.selectedClassAttendanceAllStudents.length || 0);
+  const markedStudents = Number(state.remedial.selectedClassAttendance.length || 0);
+  const summary = document.createElement('div');
+  summary.className = 'remedial-attendance-overview';
+  summary.innerHTML = `
+    <span>Total Students: <strong>${totalStudents}</strong></span>
+    <span>Marked: <strong>${markedStudents}</strong></span>
+    <span>Not Marked: <strong>${Math.max(0, totalStudents - markedStudents)}</strong></span>
+  `;
+  els.remedialAttendanceList.appendChild(summary);
+
+  for (const section of sectionRows) {
+    const sectionName = String(section.section || '').trim().toUpperCase() || '--';
+    const total = Number(section.total_students || 0);
+    const marked = Number(section.marked_students || 0);
+    const notMarked = Number(section.not_marked_students || 0);
+    const percent = total > 0 ? Math.round((marked / total) * 100) : 0;
+
+    const row = document.createElement('article');
+    row.className = 'remedial-section-item';
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.dataset.remedialSection = sectionName;
+    row.setAttribute('aria-label', `Open ${sectionName} attendance details`);
     row.innerHTML = `
-      <span>${escapeHtml(student.student_name || `Student #${student.student_id}`)}</span>
-      <span>${escapeHtml(markedAt)} • ${escapeHtml(asTitleCase(student.source))}</span>
+      <div class="remedial-section-head">
+        <p class="remedial-section-title">${escapeHtml(sectionName)}</p>
+        <span class="remedial-section-pill">${escapeHtml(`${marked}/${total} marked`)}</span>
+      </div>
+      <div class="remedial-section-meta">
+        <span>Not marked: <strong>${notMarked}</strong></span>
+        <span>Coverage: <strong>${percent}%</strong></span>
+      </div>
+      <div class="remedial-section-progress" aria-hidden="true">
+        <span style="width:${Math.max(0, Math.min(100, percent))}%"></span>
+      </div>
     `;
     els.remedialAttendanceList.appendChild(row);
+  }
+}
+
+function renderRemedialCodeDetails() {
+  if (!els.remedialCodeDetails) {
+    return;
+  }
+  els.remedialCodeDetails.innerHTML = '';
+  const details = state.remedial.validatedClass;
+  if (!details) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = 'Validate remedial code to view class details and attendance window.';
+    els.remedialCodeDetails.appendChild(row);
+    return;
+  }
+
+  const row = document.createElement('div');
+  row.className = `list-item ${details.attendance_window_open ? 'good' : 'warn'}`;
+  const windowMinutes = getAttendanceWindowMinutes(details);
+  const isOnlineClass = String(details.class_mode || '').toLowerCase() === 'online';
+  const onlineLink = normalizedRemedialOnlineLink(details.online_link);
+  const modeText = isOnlineClass
+    ? `Online • ${onlineLink}`
+    : `Offline • Room ${details.room_number || 'TBA'}`;
+  const detailsClassId = Number(details.class_id || 0);
+  const showProceedBtn = isOnlineClass
+    && detailsClassId > 0
+    && Number(state.remedial.markedClassId || 0) === detailsClassId
+    && Boolean(String(state.remedial.markedOnlineLink || '').trim());
+  row.innerHTML = `
+    <span>${escapeHtml(details.course_code || '--')} • ${escapeHtml(details.course_title || 'Remedial Class')}</span>
+    <span>${escapeHtml(parseISODateLocal(details.class_date).toLocaleDateString('en-GB'))} • ${escapeHtml(formatTime(details.start_time))}-${escapeHtml(formatTime(details.end_time))} • ${escapeHtml(modeText)}</span>
+    <span>${details.attendance_window_open ? `Attendance window is open (first ${windowMinutes} minutes).` : `Attendance window currently closed (opens only in first ${windowMinutes} minutes).`}</span>
+    ${showProceedBtn ? `<div class="inline-controls"><button type="button" class="btn btn-primary" data-remedial-open-online-link="${escapeHtml(state.remedial.markedOnlineLink)}">Proceed to MyClass</button></div>` : ''}
+  `;
+  els.remedialCodeDetails.appendChild(row);
+}
+
+function renderRemedialMessagesList() {
+  if (!els.remedialMessagesList) {
+    return;
+  }
+  els.remedialMessagesList.innerHTML = '';
+  const messagesRaw = Array.isArray(state.remedial.messages) ? state.remedial.messages : [];
+  const messages = messagesRaw.filter((message) => {
+    if (!message?.class_date || !message?.start_time || !message?.end_time) {
+      return true;
+    }
+    return !isRemedialClassPrevious(message);
+  });
+  if (!messages.length) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = 'No active remedial classes right now.';
+    els.remedialMessagesList.appendChild(row);
+    return;
+  }
+
+  for (const message of messages) {
+    const row = document.createElement('div');
+    row.className = 'remedial-card remedial-message-card';
+    const dateText = message.class_date
+      ? parseISODateLocal(message.class_date).toLocaleDateString('en-GB')
+      : '--';
+    const code = String(message.remedial_code || '').trim().toUpperCase();
+    const hasCode = Boolean(code);
+    const windowMinutes = getAttendanceWindowMinutes(message);
+    const attendanceNote = `Attendance open for first ${windowMinutes} minutes.`;
+    row.innerHTML = `
+      <div class="remedial-card-grid">
+        <div class="remedial-card-primary">
+          <p class="remedial-card-title">${escapeHtml(remedialCourseDisplay(message))}</p>
+          <div class="remedial-card-meta-row">
+            <span class="remedial-meta-badge">${escapeHtml(dateText)}</span>
+            <span class="remedial-meta-badge">${escapeHtml(formatTime(message.start_time))}-${escapeHtml(formatTime(message.end_time))}</span>
+            <span class="remedial-meta-badge">${escapeHtml(remedialModeLabel(message))}</span>
+          </div>
+          <p class="remedial-card-message">${escapeHtml(attendanceNote)}</p>
+        </div>
+        <div class="remedial-card-secondary">
+          <div class="remedial-badge-group">
+            <span class="remedial-chip remedial-chip-code">Code ${escapeHtml(code || '--')}</span>
+          </div>
+          <div class="remedial-card-actions">
+            <button type="button" class="btn btn-primary" data-remedial-use-code="${escapeHtml(code)}" ${hasCode ? '' : 'disabled'}>Use Code ${escapeHtml(code || '--')}</button>
+          </div>
+        </div>
+      </div>
+    `;
+    els.remedialMessagesList.appendChild(row);
+  }
+}
+
+function renderStudentMessagesCenter() {
+  if (!els.studentMessagesList) {
+    return;
+  }
+  els.studentMessagesList.innerHTML = '';
+  if (!authState.user || authState.user.role !== 'student') {
+    return;
+  }
+
+  const messagesRaw = Array.isArray(state.studentMessages) ? state.studentMessages : [];
+  const messages = messagesRaw
+    .filter((message) => {
+      const hasCode = Boolean(String(message?.remedial_code || '').trim());
+      if (!hasCode || !message?.class_date || !message?.start_time || !message?.end_time) {
+        return true;
+      }
+      return !isRemedialClassPrevious(message);
+    })
+    .slice(0, 5);
+  if (!messages.length) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = 'No new faculty messages for your section.';
+    els.studentMessagesList.appendChild(row);
+    return;
+  }
+
+  for (const message of messages) {
+    const row = document.createElement('div');
+    row.className = 'list-item student-message-item';
+    const dateText = message.class_date
+      ? parseISODateLocal(message.class_date).toLocaleDateString('en-GB')
+      : '--';
+    const facultyName = String(message.faculty_name || '').trim() || 'Your faculty';
+    const summaryDate = message.class_date === todayISO() ? 'today' : `on ${dateText}`;
+    const messageType = String(message.message_type || 'Announcement').trim();
+    const hasCode = Boolean(String(message.remedial_code || '').trim());
+    const summary = `${facultyName} shared an update ${summaryDate}.`;
+    const bodyLine = hasCode
+      ? `${remedialCourseDisplay(message)} • ${formatTime(message.start_time)}-${formatTime(message.end_time)} • ${remedialModeLabel(message)}`
+      : String(message.message || '').trim();
+    row.innerHTML = `
+      <span>${escapeHtml(summary)}</span>
+      <span>${escapeHtml(bodyLine || '')}</span>
+      <div class="inline-controls">
+        <span class="status-pill neutral">${escapeHtml(messageType)}</span>
+        ${hasCode ? '<button type="button" class="btn btn-ghost" data-student-open-remedial="1">View Details</button>' : ''}
+      </div>
+    `;
+    els.studentMessagesList.appendChild(row);
+  }
+}
+
+function normalizeRemedialAttendanceStatus(row) {
+  const statusRaw = String(row?.status || '').trim().toLowerCase();
+  if (statusRaw === 'present' || statusRaw === 'absent') {
+    return statusRaw;
+  }
+  return row?.marked_at ? 'present' : 'absent';
+}
+
+function remedialAttendanceSortMs(row) {
+  const markedAtMs = Date.parse(row?.marked_at || '');
+  if (Number.isFinite(markedAtMs) && markedAtMs > 0) {
+    return markedAtMs;
+  }
+  const classDate = String(row?.class_date || '').trim();
+  const startTimeRaw = String(row?.start_time || '').trim();
+  if (!classDate || !startTimeRaw) {
+    return 0;
+  }
+  const [hhRaw, mmRaw, ssRaw] = startTimeRaw.split(':');
+  const hh = String(Number(hhRaw || 0)).padStart(2, '0');
+  const mm = String(Number(mmRaw || 0)).padStart(2, '0');
+  const ss = String(Number(ssRaw || 0)).padStart(2, '0');
+  const classStartMs = Date.parse(`${classDate}T${hh}:${mm}:${ss}`);
+  return Number.isFinite(classStartMs) ? classStartMs : 0;
+}
+
+function indexRemedialAttendanceByCourse(rows = []) {
+  const grouped = {};
+  for (const rawEntry of rows) {
+    const status = normalizeRemedialAttendanceStatus(rawEntry);
+    if (status !== 'present' && status !== 'absent') {
+      continue;
+    }
+    const entry = { ...rawEntry, status };
+    const courseKey = attendanceCourseKey(entry.course_code, entry.course_title);
+    if (!grouped[courseKey]) {
+      grouped[courseKey] = {
+        course_code: String(entry.course_code || '').trim() || '--',
+        course_title: String(entry.course_title || '').trim() || 'Untitled Course',
+        rows: [],
+      };
+    }
+    grouped[courseKey].rows.push(entry);
+  }
+  for (const key of Object.keys(grouped)) {
+    grouped[key].rows.sort((left, right) => remedialAttendanceSortMs(right) - remedialAttendanceSortMs(left));
+  }
+  return grouped;
+}
+
+function openRemedialStudentAttendanceModal(courseKey) {
+  if (
+    !els.remedialAttendanceModal
+    || !els.remedialAttendanceModalTitle
+    || !els.remedialAttendanceModalMeta
+    || !els.remedialAttendanceModalList
+  ) {
+    return;
+  }
+  const safeCourseKey = String(courseKey || '').trim();
+  if (!safeCourseKey) {
+    return;
+  }
+
+  const grouped = state.remedial.attendanceLedgerByCourse || {};
+  const group = grouped[safeCourseKey];
+  if (!group || !Array.isArray(group.rows) || !group.rows.length) {
+    return;
+  }
+
+  const rows = [...group.rows];
+  const deliveredCount = rows.length;
+  const attendedCount = rows.filter((row) => row.status === 'present').length;
+  const attendancePercent = deliveredCount > 0 ? (attendedCount / deliveredCount) * 100 : 0;
+  els.remedialAttendanceModalTitle.textContent = `${group.course_code} - ${group.course_title}`;
+  els.remedialAttendanceModalMeta.textContent =
+    `Attendance ${attendancePercent.toFixed(1)}% | Present/Delivered: ${attendedCount}/${deliveredCount}`;
+
+  const rowsMarkup = rows
+    .map((row) => {
+      const isPresent = row.status === 'present';
+      const statusClass = isPresent ? 'present' : 'absent';
+      const statusText = isPresent ? 'Present' : 'Absent';
+      const classDate = row.class_date ? parseISODateLocal(row.class_date).toLocaleDateString('en-GB') : '--';
+      const timeRange = `${formatTime24(row.start_time)}-${formatTime24(row.end_time)}`;
+      const detailParts = [timeRange, remedialModeLabel(row)];
+      if (isPresent && row.marked_at) {
+        detailParts.push(`Marked ${new Date(row.marked_at).toLocaleString()}`);
+      }
+      return `
+        <article class="attendance-detail-row ${statusClass}">
+          <div class="attendance-detail-main">
+            <strong>${escapeHtml(classDate)}</strong>
+            <small>${escapeHtml(detailParts.join(' • '))}</small>
+          </div>
+          <span class="attendance-detail-status ${statusClass}">${escapeHtml(statusText)}</span>
+        </article>
+      `;
+    })
+    .join('');
+
+  els.remedialAttendanceModalList.innerHTML =
+    rowsMarkup || '<div class="list-item">No class records found for this subject.</div>';
+
+  state.remedial.selectedAttendanceModalSection = '';
+  state.remedial.selectedAttendanceModalCourseKey = safeCourseKey;
+  els.remedialAttendanceModal.classList.remove('hidden');
+}
+
+function renderRemedialStudentLedgerList() {
+  if (!els.remedialStudentLedgerList) {
+    return;
+  }
+  els.remedialStudentLedgerList.innerHTML = '';
+
+  const sourceRows = Array.isArray(state.remedial.attendanceLedger) ? state.remedial.attendanceLedger : [];
+  const groupedByCourse = indexRemedialAttendanceByCourse(sourceRows);
+  state.remedial.attendanceLedgerByCourse = groupedByCourse;
+  const courseKeys = Object.keys(groupedByCourse);
+
+  let deliveredTotal = 0;
+  let attendedTotal = 0;
+  for (const courseKey of courseKeys) {
+    const rows = groupedByCourse[courseKey].rows;
+    deliveredTotal += rows.length;
+    attendedTotal += rows.filter((row) => row.status === 'present').length;
+  }
+  const aggregatePercent = deliveredTotal > 0 ? (attendedTotal / deliveredTotal) * 100 : 0;
+  if (els.remedialStudentAggregatePercent) {
+    els.remedialStudentAggregatePercent.textContent = `${aggregatePercent.toFixed(1)}%`;
+  }
+  if (els.remedialStudentAttendedDelivered) {
+    els.remedialStudentAttendedDelivered.textContent = `${attendedTotal} / ${deliveredTotal}`;
+  }
+
+  if (!deliveredTotal) {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = 'No remedial attendance records yet.';
+    els.remedialStudentLedgerList.appendChild(row);
+    if (state.remedial.selectedAttendanceModalCourseKey) {
+      closeRemedialAttendanceModal();
+    }
+    return;
+  }
+
+  const cards = courseKeys
+    .map((courseKey) => {
+      const group = groupedByCourse[courseKey];
+      const rows = group.rows;
+      const latest = rows[0] || {};
+      const latestDate = latest.class_date ? parseISODateLocal(latest.class_date).toLocaleDateString('en-GB') : 'N/A';
+      const latestTime = `${formatTime24(latest.start_time)}-${formatTime24(latest.end_time)}`;
+      const latestStatus = latest.status === 'present' ? 'Present' : 'Absent';
+      const attendedCount = rows.filter((row) => row.status === 'present').length;
+      const deliveredCount = rows.length;
+      const percent = deliveredCount > 0 ? (attendedCount / deliveredCount) * 100 : 0;
+      const tone = percent >= 75 ? 'good' : percent >= 50 ? 'mid' : 'low';
+      const recordLabel = deliveredCount === 1 ? '1 class record' : `${deliveredCount} class records`;
+
+      return {
+        latestAtMs: remedialAttendanceSortMs(latest),
+        markup: `
+          <article
+            class="course-aggregate-item course-clickable ${tone}"
+            role="button"
+            tabindex="0"
+            data-remedial-course-key="${escapeHtml(courseKey)}"
+            aria-label="Open remedial attendance details for ${escapeHtml(group.course_code)}"
+          >
+            <div class="course-aggregate-head">
+              <h4>${escapeHtml(group.course_code)} - ${escapeHtml(group.course_title)}</h4>
+              <span class="course-percent-badge ${tone}">${percent.toFixed(1)}%</span>
+            </div>
+            <p>${escapeHtml(`Last Class: ${latestDate} | ${latestTime} | ${latestStatus}`)}</p>
+            <p>Attended/Delivered: ${attendedCount} / ${deliveredCount}</p>
+            <p class="course-card-hint">${escapeHtml(recordLabel)} • Click to view</p>
+          </article>
+        `,
+      };
+    })
+    .sort((left, right) => right.latestAtMs - left.latestAtMs);
+
+  els.remedialStudentLedgerList.innerHTML = cards.map((card) => card.markup).join('');
+
+  if (state.remedial.selectedAttendanceModalCourseKey) {
+    const selectedCourseKey = String(state.remedial.selectedAttendanceModalCourseKey || '');
+    if (groupedByCourse[selectedCourseKey]) {
+      openRemedialStudentAttendanceModal(selectedCourseKey);
+    } else {
+      closeRemedialAttendanceModal();
+    }
   }
 }
 
@@ -6637,6 +8824,9 @@ async function refreshRemedialClasses() {
   if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     state.remedial.classes = [];
     state.remedial.selectedClassAttendance = [];
+    state.remedial.selectedClassAttendanceSections = [];
+    state.remedial.selectedClassAttendanceAllStudents = [];
+    closeRemedialAttendanceModal();
     renderRemedialClassesList();
     renderRemedialClassSelect();
     renderRemedialAttendanceList();
@@ -6648,16 +8838,59 @@ async function refreshRemedialClasses() {
   renderRemedialClassSelect();
 }
 
+async function refreshRemedialMessages() {
+  if (!authState.user || authState.user.role !== 'student') {
+    state.remedial.messages = [];
+    renderRemedialMessagesList();
+    return;
+  }
+  const rows = await api('/makeup/messages?limit=80');
+  state.remedial.messages = Array.isArray(rows) ? rows : [];
+  renderRemedialMessagesList();
+}
+
+async function refreshRemedialAttendanceLedger() {
+  if (!authState.user || authState.user.role !== 'student') {
+    state.remedial.attendanceLedger = [];
+    renderRemedialStudentLedgerList();
+    return;
+  }
+  const rows = await api('/makeup/attendance/history?limit=80');
+  state.remedial.attendanceLedger = Array.isArray(rows) ? rows : [];
+  renderRemedialStudentLedgerList();
+}
+
+async function refreshStudentMessages() {
+  if (!authState.user || authState.user.role !== 'student') {
+    state.studentMessages = [];
+    renderStudentMessagesCenter();
+    return;
+  }
+  const rows = await api('/messages?limit=60');
+  state.studentMessages = Array.isArray(rows) ? rows : [];
+  renderStudentMessagesCenter();
+}
+
 async function refreshRemedialAttendanceForClass(classId = null) {
   const targetClassId = Number(classId || state.remedial.selectedClassId || els.remedialClassSelect?.value || 0);
   if (!targetClassId) {
     state.remedial.selectedClassAttendance = [];
+    state.remedial.selectedClassAttendanceSections = [];
+    state.remedial.selectedClassAttendanceAllStudents = [];
+    closeRemedialAttendanceModal();
     renderRemedialAttendanceList();
     return;
   }
   state.remedial.selectedClassId = targetClassId;
   const payload = await api(`/makeup/classes/${targetClassId}/attendance`);
   state.remedial.selectedClassAttendance = Array.isArray(payload?.students) ? payload.students : [];
+  state.remedial.selectedClassAttendanceSections = Array.isArray(payload?.section_summaries)
+    ? payload.section_summaries
+    : [];
+  state.remedial.selectedClassAttendanceAllStudents = Array.isArray(payload?.all_students)
+    ? payload.all_students
+    : [];
+  closeRemedialAttendanceModal();
   renderRemedialAttendanceList();
 }
 
@@ -6668,9 +8901,21 @@ async function refreshRemedialModule() {
   if (!Object.keys(state.coursesById).length) {
     await loadCoursesMap();
   }
+  if (authState.user.role === 'faculty') {
+    await loadRemedialEligibleCourses();
+  } else {
+    state.remedial.eligibleCourses = [];
+    state.remedial.demoBypassLeadTime = false;
+  }
   renderRemedialCourseOptions();
+  applyRemedialModeVisibility();
+  renderRemedialDemoToggle();
   if (authState.user.role === 'student') {
-    setRemedialStudentStatus('Enter remedial code to mark make-up attendance.');
+    await refreshRemedialMessages();
+    await refreshRemedialAttendanceLedger();
+    await refreshStudentMessages();
+    renderRemedialCodeDetails();
+    setRemedialStudentStatus('Use code from Messages, validate, then mark attendance in first 15 minutes.');
     return;
   }
   await refreshRemedialClasses();
@@ -6678,41 +8923,346 @@ async function refreshRemedialModule() {
     await refreshRemedialAttendanceForClass(state.remedial.selectedClassId);
   } else {
     state.remedial.selectedClassAttendance = [];
+    state.remedial.selectedClassAttendanceSections = [];
+    state.remedial.selectedClassAttendanceAllStudents = [];
+    closeRemedialAttendanceModal();
     renderRemedialAttendanceList();
   }
 }
 
+async function sendRemedialCodeToSections(classId) {
+  const targetClassId = Number(classId || 0);
+  if (!targetClassId) {
+    throw new Error('Select a valid remedial class first.');
+  }
+  const customMessage = String(els.remedialCustomMessageInput?.value || '').trim();
+  const payload = await api(`/makeup/classes/${targetClassId}/send-message`, {
+    method: 'POST',
+    body: JSON.stringify({
+      custom_message: customMessage || null,
+    }),
+  });
+  setRemedialFacultyStatus(String(payload?.message || 'Code message sent to selected sections.'));
+  log(`Remedial code broadcast sent for class #${targetClassId}`);
+  await refreshRemedialClasses();
+}
+
+async function sendFacultyBroadcastMessage() {
+  if (!authState.user || authState.user.role !== 'faculty') {
+    throw new Error('Only faculty can send broadcast messages.');
+  }
+  const sections = normalizeRemedialSections(els.facultyMessageSections?.value);
+  const messageType = String(els.facultyMessageType?.value || 'Announcement').trim();
+  const messageText = String(els.facultyMessageText?.value || '').trim();
+  if (!sections.length || !messageText) {
+    throw new Error('Enter section(s) and a message to send.');
+  }
+  const payload = await api('/messages/send', {
+    method: 'POST',
+    body: JSON.stringify({
+      sections,
+      message_type: messageType,
+      message: messageText,
+    }),
+  });
+  setFacultyMessageStatus(String(payload?.message || 'Message sent.'));
+  log(`Faculty message sent (${messageType})`);
+  if (els.facultyMessageText) {
+    els.facultyMessageText.value = '';
+  }
+  await refreshStudentMessages();
+}
+
+async function cancelRemedialClass(classId) {
+  const targetClassId = Number(classId || 0);
+  if (!targetClassId) {
+    throw new Error('Select a valid remedial class first.');
+  }
+  const confirmed = window.confirm('Reject this remedial class? Students will stop seeing it.');
+  if (!confirmed) {
+    return;
+  }
+  const payload = await api(`/makeup/classes/${targetClassId}/cancel`, { method: 'POST' });
+  setRemedialFacultyStatus(`Remedial class ${payload.remedial_code} rejected.`);
+  log(`Remedial class rejected (#${targetClassId})`);
+  await refreshRemedialModule();
+}
+
 async function createRemedialClass() {
-  if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
-    throw new Error('Only faculty/admin can schedule remedial classes.');
+  if (!authState.user || authState.user.role !== 'faculty') {
+    throw new Error('Only faculty can schedule remedial classes from this panel.');
   }
   const courseId = Number(els.remedialCourseSelect?.value || 0);
+  const manualCourseCode = normalizeRemedialCourseCode(els.remedialCourseCodeInput?.value);
+  const manualCourseTitle = normalizeRemedialCourseTitle(els.remedialCourseTitleInput?.value);
+  const useManualCourse = !courseId;
   const facultyId = Number(authState.user.faculty_id || 0);
   const classDate = String(els.remedialDate?.value || '').trim();
   const startTime = String(els.remedialStartTime?.value || '').trim();
   const endTime = String(els.remedialEndTime?.value || '').trim();
   const topic = String(els.remedialTopic?.value || '').trim();
-  if (!courseId || !facultyId || !classDate || !startTime || !endTime || !topic) {
-    throw new Error('Select course/date/time and enter topic to create remedial class.');
+  const sections = normalizeRemedialSections(els.remedialSectionsInput?.value);
+  const classMode = String(els.remedialModeSelect?.value || 'offline').toLowerCase();
+  const roomNumber = String(els.remedialRoomInput?.value || '').trim();
+  let onlineLink = normalizedRemedialOnlineLink(els.remedialOnlineLinkInput?.value);
+  if (!facultyId || !classDate || !startTime || !endTime || !topic || !sections.length) {
+    throw new Error('Select date/time, enter section(s) and topic to schedule remedial class.');
+  }
+  if (useManualCourse && (!manualCourseCode || !manualCourseTitle)) {
+    throw new Error('Select assigned course, or enter both manual course code and course name.');
+  }
+  if (classMode === 'online') {
+    onlineLink = REMEDIAL_DEFAULT_ONLINE_LINK;
+    if (els.remedialOnlineLinkInput) {
+      els.remedialOnlineLinkInput.value = onlineLink;
+    }
+  }
+  if (classMode === 'offline' && !roomNumber) {
+    throw new Error('Offline remedial class requires a room number.');
   }
 
   const payload = await api('/makeup/classes', {
     method: 'POST',
     body: JSON.stringify({
-      course_id: courseId,
+      course_id: courseId || null,
+      course_code: useManualCourse ? manualCourseCode : null,
+      course_title: useManualCourse ? manualCourseTitle : null,
       faculty_id: facultyId,
       class_date: classDate,
       start_time: startTime,
       end_time: endTime,
       topic,
+      sections,
+      class_mode: classMode,
+      room_number: classMode === 'offline' ? roomNumber : null,
+      online_link: classMode === 'online' ? onlineLink : null,
+      demo_bypass_lead_time: Boolean(state.remedial.demoBypassLeadTime),
     }),
   });
-  setRemedialFacultyStatus(`Remedial class scheduled. Generated code: ${payload.remedial_code}`);
+  setRemedialFacultyStatus(`Remedial class scheduled. Generated code: ${payload.remedial_code}. Click "Send Code to Section(s)" to notify students.`);
   log(`Remedial class created (${payload.remedial_code})`);
+  await loadCoursesMap();
   if (els.remedialTopic) {
     els.remedialTopic.value = '';
   }
+  if (els.remedialSectionsInput) {
+    els.remedialSectionsInput.value = '';
+  }
+  if (els.remedialRoomInput) {
+    els.remedialRoomInput.value = '';
+  }
+  if (els.remedialOnlineLinkInput) {
+    els.remedialOnlineLinkInput.value = '';
+  }
   await refreshRemedialModule();
+}
+
+async function validateRemedialCode() {
+  if (!authState.user || authState.user.role !== 'student') {
+    throw new Error('Only students can validate remedial code.');
+  }
+  const remedialCode = String(els.remedialCodeInput?.value || '').trim().toUpperCase();
+  if (!remedialCode) {
+    throw new Error('Enter remedial code to validate.');
+  }
+  const payload = await api('/makeup/code/validate', {
+    method: 'POST',
+    body: JSON.stringify({ remedial_code: remedialCode }),
+  });
+  state.remedial.validatedClass = payload || null;
+  const classId = Number(payload?.class_id || 0);
+  if (!classId || classId !== Number(state.remedial.markedClassId || 0)) {
+    state.remedial.markedClassId = null;
+    state.remedial.markedOnlineLink = '';
+  }
+  renderRemedialCodeDetails();
+  setRemedialStudentStatus(String(payload?.message || 'Code validated successfully.'));
+  log(`Remedial code validated (${remedialCode})`);
+  await Promise.allSettled([
+    loadStudentTimetable({ forceNetwork: true }),
+    refreshRemedialMessages(),
+    refreshStudentMessages(),
+  ]);
+  return payload;
+}
+
+async function applyRemedialCodeFromMessage(remedialCode) {
+  const code = String(remedialCode || '').trim().toUpperCase();
+  if (!code) {
+    throw new Error('Invalid remedial code in message.');
+  }
+  if (els.remedialCodeInput) {
+    els.remedialCodeInput.value = code;
+  }
+  await validateRemedialCode();
+}
+
+function resolveRemedialClassLabel(details = null, remedialCode = '') {
+  const resolvedCode = String(details?.course_code || '').trim();
+  const resolvedTitle = String(details?.course_title || '').trim();
+  if (resolvedCode && resolvedTitle) {
+    return `${resolvedCode} - ${resolvedTitle}`;
+  }
+  const normalizedCode = String(remedialCode || '').trim().toUpperCase();
+  const matched = (Array.isArray(state.remedial.messages) ? state.remedial.messages : []).find((row) => {
+    const rowCode = String(row?.remedial_code || '').trim().toUpperCase();
+    return normalizedCode && rowCode === normalizedCode;
+  });
+  if (matched?.course_code && matched?.course_title) {
+    return `${matched.course_code} - ${matched.course_title}`;
+  }
+  const classId = Number(details?.class_id || 0);
+  if (classId > 0) {
+    return `Remedial Class #${classId}`;
+  }
+  if (normalizedCode) {
+    return `Remedial Class (${normalizedCode})`;
+  }
+  return 'Remedial Class';
+}
+
+async function buildRemedialVerificationPayload(remedialCode, studentId, selfieDataUrl, selfieFrames = []) {
+  const payload = {
+    remedial_code: String(remedialCode || '').trim().toUpperCase(),
+    student_id: Number(studentId || 0),
+    selfie_photo_data_url: selfieDataUrl,
+  };
+  if (Array.isArray(selfieFrames) && selfieFrames.length) {
+    payload.selfie_frames_data_urls = selfieFrames;
+  }
+
+  if (!USE_CLIENT_AI_FACE_ASSIST || !state.student.profilePhotoDataUrl) {
+    return payload;
+  }
+
+  try {
+    const verdict = await Promise.race([
+      compareFacesWithAI(state.student.profilePhotoDataUrl, selfieDataUrl),
+      new Promise((resolve) => {
+        window.setTimeout(() => resolve(null), 1200);
+      }),
+    ]);
+    if (verdict) {
+      payload.ai_match = verdict.match;
+      payload.ai_confidence = verdict.confidence;
+      payload.ai_reason = verdict.reason;
+      payload.ai_model = verdict.model;
+    }
+  } catch (error) {
+    log(`Client AI verification unavailable for remedial, using server OpenCV fallback: ${error.message}`);
+  }
+
+  return payload;
+}
+
+async function submitRemedialAttendanceAttempt(remedialCode, studentId, selfieDataUrl, selfieFrames = []) {
+  const payload = await buildRemedialVerificationPayload(remedialCode, studentId, selfieDataUrl, selfieFrames);
+  return apiWithTimeout(
+    '/makeup/attendance/mark',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+    ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS,
+    'Verification request timed out. Retrying automatically...'
+  );
+}
+
+async function startRemedialLiveAttendanceVerification({ remedialCode, studentId, details }) {
+  if (state.camera.liveVerificationActive) {
+    throw new Error('Live verification is already running.');
+  }
+  const classLabel = resolveRemedialClassLabel(details, remedialCode);
+
+  await openCameraModal({
+    title: 'Remedial Facial Attendance Verification',
+    facingMode: 'user',
+    referencePhotoDataUrl: state.student.profilePhotoDataUrl,
+    burstFrames: LIVE_VERIFICATION_BURST_FRAMES,
+    captureEnabled: false,
+    messageOverride: 'OpenCV face verification running for remedial class. Keep one face centered and move head slightly left/right/up/down.',
+  });
+
+  const sessionToken = state.camera.liveSessionToken;
+  state.camera.liveVerificationActive = true;
+
+  let attempts = 0;
+  const maxAttempts = LIVE_VERIFICATION_MAX_ATTEMPTS;
+  while (
+    state.camera.liveVerificationActive
+    && state.camera.stream
+    && sessionToken === state.camera.liveSessionToken
+  ) {
+    if (attempts >= maxAttempts) {
+      const timeoutMsg = 'Verification took too long. Improve front lighting, keep one centered face, then retry.';
+      if (els.cameraMessage) {
+        els.cameraMessage.textContent = timeoutMsg;
+      }
+      setRemedialStudentStatus(timeoutMsg, true);
+      break;
+    }
+    attempts += 1;
+    try {
+      if (els.cameraMessage) {
+        els.cameraMessage.textContent = `Analyzing live frames... attempt ${attempts}/${maxAttempts}`;
+      }
+      const selfieFrames = await captureBurstFramesFromCamera(
+        LIVE_VERIFICATION_BURST_FRAMES,
+        LIVE_VERIFICATION_BURST_INTERVAL_MS,
+        0.9
+      );
+      const selfieDataUrl = selfieFrames[0];
+      if (selfieDataUrl) {
+        state.student.selfieDataUrl = selfieDataUrl;
+      }
+
+      const response = await submitRemedialAttendanceAttempt(remedialCode, studentId, selfieDataUrl, selfieFrames);
+      const rawMessage = String(response?.message || '').trim();
+      const alreadyMarked = rawMessage.toLowerCase().includes('already marked');
+      const detailMessage = alreadyMarked
+        ? `Attendance already marked for ${classLabel}.`
+        : `Attendance successfully marked for ${classLabel}.`;
+      if (els.cameraMessage) {
+        els.cameraMessage.textContent = 'Attendance verified. Closing camera...';
+      }
+
+      const responseMode = String(response?.class_mode || details?.class_mode || '').toLowerCase();
+      const isOnlineClass = responseMode === 'online';
+      const classId = Number(details?.class_id || response?.makeup_class_id || 0);
+      if (isOnlineClass && classId > 0) {
+        state.remedial.markedClassId = classId;
+        state.remedial.markedOnlineLink = normalizedRemedialOnlineLink(response?.online_link || details?.online_link);
+      } else {
+        state.remedial.markedClassId = null;
+        state.remedial.markedOnlineLink = '';
+      }
+
+      setRemedialStudentStatus(detailMessage);
+      renderRemedialCodeDetails();
+      log(detailMessage);
+      await sleep(850);
+      closeCameraModal();
+      return response;
+    } catch (error) {
+      const message = String(error?.message || 'Live verification attempt failed.');
+      if (els.cameraMessage) {
+        els.cameraMessage.textContent = `${deriveLiveGuidance(message)} Auto retry in progress...`;
+      }
+      if (shouldStopLiveVerification(message)) {
+        if (els.cameraMessage) {
+          els.cameraMessage.textContent = `Verification stopped: ${message}`;
+        }
+        setRemedialStudentStatus(message, true);
+        break;
+      }
+      await sleep(650);
+    }
+  }
+
+  if (state.camera.stream && sessionToken === state.camera.liveSessionToken) {
+    closeCameraModal();
+  }
+  throw new Error('Remedial facial verification was not completed. Please retry.');
 }
 
 async function markRemedialAttendance() {
@@ -6724,15 +9274,38 @@ async function markRemedialAttendance() {
   if (!studentId || !remedialCode) {
     throw new Error('Enter remedial code before submitting.');
   }
-  const payload = await api('/makeup/attendance/mark', {
-    method: 'POST',
-    body: JSON.stringify({
-      remedial_code: remedialCode,
-      student_id: studentId,
-    }),
+
+  if (!state.student.profilePhotoDataUrl) {
+    throw new Error('Upload profile photo first. It is required for facial attendance.');
+  }
+  if (requiresStudentEnrollmentSetup()) {
+    throw new Error('Complete one-time enrollment video before marking attendance.');
+  }
+
+  let validated = state.remedial.validatedClass;
+  if (
+    !validated
+    || !validated.valid
+    || Number(validated.class_id || 0) <= 0
+    || String(remedialCode) !== String(els.remedialCodeInput?.value || '').trim().toUpperCase()
+  ) {
+    validated = await validateRemedialCode();
+  }
+  if (!validated?.attendance_window_open) {
+    throw new Error('Attendance window currently closed for this remedial class.');
+  }
+
+  await startRemedialLiveAttendanceVerification({
+    remedialCode,
+    studentId,
+    details: validated,
   });
-  setRemedialStudentStatus(String(payload?.message || 'Remedial attendance marked.'));
-  log(`Remedial attendance marked using code ${remedialCode}`);
+  await Promise.allSettled([
+    loadStudentTimetable({ forceNetwork: true }),
+    loadStudentAttendanceInsights(),
+    refreshRemedialMessages(),
+    refreshRemedialAttendanceLedger(),
+  ]);
 }
 
 async function refreshActiveModuleData() {
@@ -6756,6 +9329,7 @@ async function refreshActiveModuleData() {
     await refreshStudentKpiTimetable({ forceNetwork: true });
     await loadStudentTimetable({ forceNetwork: true });
     await loadStudentAttendanceInsights();
+    await refreshStudentMessages();
   }
   if (authState.user.role === 'faculty') {
     await loadFacultySchedules();
@@ -7036,6 +9610,14 @@ function parseClassDateTimeLocal(classDateRaw, rawTime) {
   return new Date(year, month - 1, day, hour, minute, 0, 0);
 }
 
+function getAttendanceWindowMinutes(item) {
+  const raw = Number(item?.attendance_window_minutes || 0);
+  if (Number.isFinite(raw) && raw > 0) {
+    return Math.min(90, Math.max(1, Math.round(raw)));
+  }
+  return 10;
+}
+
 function getSlotClass(item) {
   const status = resolveTimetableKpi(item);
   if (status.key === 'present') {
@@ -7070,7 +9652,8 @@ function resolveTimetableKpi(item, nowArg = new Date()) {
     return { key: 'upcoming', label: 'Upcoming' };
   }
 
-  const windowEnd = new Date(classStart.getTime() + (10 * 60 * 1000));
+  const windowMinutes = getAttendanceWindowMinutes(item);
+  const windowEnd = new Date(classStart.getTime() + (windowMinutes * 60 * 1000));
 
   if (now < classStart) {
     return { key: 'upcoming', label: 'Upcoming' };
@@ -7081,6 +9664,9 @@ function resolveTimetableKpi(item, nowArg = new Date()) {
   }
 
   if (now <= windowEnd) {
+    if (String(item.class_kind || 'regular').toLowerCase() === 'remedial') {
+      return { key: 'mark', label: 'Use Remedial Code' };
+    }
     return { key: 'mark', label: 'Mark Attendance' };
   }
 
@@ -7117,7 +9703,7 @@ function findAttendanceManagementState(nowArg = new Date()) {
         item,
         start,
         end,
-        windowEnd: new Date(start.getTime() + (10 * 60 * 1000)),
+        windowEnd: new Date(start.getTime() + (getAttendanceWindowMinutes(item) * 60 * 1000)),
       };
     })
     .filter(Boolean)
@@ -7135,10 +9721,11 @@ function findAttendanceManagementState(nowArg = new Date()) {
   const openNow = timeline.find((slot) => now >= slot.start && now <= slot.windowEnd);
   if (openNow) {
     const selected = openNow.item;
+    const isRemedial = String(selected.class_kind || 'regular').toLowerCase() === 'remedial';
     return {
       mode: 'mark',
       schedule: selected,
-      headline: `Mark Attendance | ${selected.course_code}`,
+      headline: `${isRemedial ? 'Remedial Attendance' : 'Mark Attendance'} | ${selected.course_code}`,
       subtitle: `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | ${selected.course_code} | ${selected.classroom_label || 'Room TBA'}`,
     };
   }
@@ -7162,7 +9749,91 @@ function findAttendanceManagementState(nowArg = new Date()) {
   };
 }
 
-function renderStudentProfilePreview(photoDataUrl) {
+function isRemedialAttendanceWindow(kpi = null) {
+  const resolved = kpi || findAttendanceManagementState();
+  const scheduleId = Number(resolved?.schedule?.schedule_id || 0);
+  const classKind = String(resolved?.schedule?.class_kind || 'regular').toLowerCase();
+  return resolved?.mode === 'mark' && scheduleId > 0 && classKind === 'remedial';
+}
+
+function normalizeTimeForMatch(value = '') {
+  const token = String(value || '').trim();
+  if (!token) {
+    return '';
+  }
+  if (token.length >= 5) {
+    return token.slice(0, 5);
+  }
+  return token;
+}
+
+function findMatchingRemedialMessageForSchedule(schedule = null) {
+  if (!schedule) {
+    return null;
+  }
+  const messages = Array.isArray(state.remedial.messages) ? state.remedial.messages : [];
+  const candidates = messages.filter((row) => String(row?.remedial_code || '').trim());
+  if (!candidates.length) {
+    return null;
+  }
+
+  const targetCourse = String(schedule.course_code || '').trim().toUpperCase();
+  const targetDate = String(schedule.class_date || '').trim();
+  const targetStart = normalizeTimeForMatch(schedule.start_time);
+
+  return (
+    candidates.find((row) => (
+      String(row?.course_code || '').trim().toUpperCase() === targetCourse
+      && String(row?.class_date || '').trim() === targetDate
+      && normalizeTimeForMatch(row?.start_time) === targetStart
+    ))
+    || candidates.find((row) => (
+      String(row?.course_code || '').trim().toUpperCase() === targetCourse
+      && String(row?.class_date || '').trim() === targetDate
+    ))
+    || candidates.find((row) => String(row?.course_code || '').trim().toUpperCase() === targetCourse)
+    || candidates[0]
+    || null
+  );
+}
+
+async function openRemedialFromAttendance(kpi = null) {
+  if (!authState.user || authState.user.role !== 'student') {
+    throw new Error('Only students can access remedial attendance.');
+  }
+  const resolved = kpi || findAttendanceManagementState();
+  setActiveModule('remedial', { updateHash: true });
+  try {
+    await refreshActiveModuleData();
+  } catch (error) {
+    log(error.message || 'Failed to refresh remedial module');
+  }
+
+  const matched = findMatchingRemedialMessageForSchedule(resolved?.schedule || null);
+  const matchedCode = String(matched?.remedial_code || '').trim().toUpperCase();
+  if (!matchedCode) {
+    setRemedialStudentStatus('Opened Remedial module. Use code from Messages, validate, then mark attendance in first 15 minutes.');
+    return;
+  }
+
+  try {
+    await applyRemedialCodeFromMessage(matchedCode);
+    setRemedialStudentStatus(`Code ${matchedCode} loaded from Messages. If window is open, tap "Mark Attendance".`);
+  } catch (error) {
+    setRemedialStudentStatus(`Code ${matchedCode} found, but validation failed: ${error.message}`, true);
+  }
+}
+
+async function handleStudentMarkAttendanceAction() {
+  const kpi = findAttendanceManagementState();
+  if (isRemedialAttendanceWindow(kpi)) {
+    await openRemedialFromAttendance(kpi);
+    return;
+  }
+  await startStudentSelfieFlow();
+}
+
+function renderProfilePhotoPreview(photoDataUrl) {
   if (!els.profilePhotoPreview) {
     return;
   }
@@ -7174,29 +9845,82 @@ function renderStudentProfilePreview(photoDataUrl) {
   els.profilePhotoPreview.classList.remove('hidden');
 }
 
+function renderStudentProfilePreview(photoDataUrl) {
+  renderProfilePhotoPreview(photoDataUrl);
+}
+
+function renderFacultyProfilePreview(photoDataUrl) {
+  renderProfilePhotoPreview(photoDataUrl);
+}
+
 function updateProfileSaveState() {
   if (!els.saveProfilePhotoBtn) {
     return;
   }
-  if (authState.user?.role !== 'student') {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
     els.saveProfilePhotoBtn.disabled = true;
     return;
   }
 
-  const draftRegistration = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-  const hasRegistration = Boolean(state.student.registrationNumber || draftRegistration);
-  const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
-  const hasNewReg = Boolean(draftRegistration) && draftRegistration !== (state.student.registrationNumber || '');
-  const hasNewPhoto = Boolean(state.student.pendingProfilePhotoDataUrl)
-    && state.student.pendingProfilePhotoDataUrl !== (state.student.profilePhotoDataUrl || '');
-  const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
+  if (role === 'student') {
+    const draftName = normalizeProfileName(els.profileFullName?.value || '');
+    const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
+    const hasName = hasValidProfileName(existingName || draftName);
+    const draftRegistration = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+    const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+    const existingSection = state.student.section || '';
+    const hasRegistration = Boolean(state.student.registrationNumber || draftRegistration);
+    const hasSection = Boolean(existingSection || draftSection);
+    const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
+    const hasNewName = hasValidProfileName(draftName) && draftName !== existingName;
+    const hasNewReg = Boolean(draftRegistration) && draftRegistration !== (state.student.registrationNumber || '');
+    const hasNewSection = Boolean(draftSection) && draftSection !== existingSection;
+    const hasNewPhoto = Boolean(state.student.pendingProfilePhotoDataUrl)
+      && state.student.pendingProfilePhotoDataUrl !== (state.student.profilePhotoDataUrl || '');
+    const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
 
-  if (setupRequired) {
-    els.saveProfilePhotoBtn.disabled = !(hasRegistration && hasPhoto);
+    if (setupRequired) {
+      els.saveProfilePhotoBtn.disabled = !(hasName && hasRegistration && hasSection && hasPhoto);
+      return;
+    }
+
+    if (existingSection && hasNewSection) {
+      els.saveProfilePhotoBtn.disabled = true;
+      return;
+    }
+
+    els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewReg || hasNewPhoto || (!existingSection && hasNewSection));
     return;
   }
 
-  els.saveProfilePhotoBtn.disabled = !(hasNewReg || hasNewPhoto);
+  const draftName = normalizeProfileName(els.profileFullName?.value || '');
+  const existingName = normalizeProfileName(state.facultyProfile.name || authState.user?.name || '');
+  const hasName = hasValidProfileName(existingName || draftName);
+  const draftFacultyId = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const existingFacultyId = state.facultyProfile.facultyIdentifier || '';
+  const existingSection = (state.facultyProfile.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  const hasFacultyId = Boolean(existingFacultyId || draftFacultyId);
+  const hasSection = Boolean(existingSection || draftSection);
+  const hasPhoto = Boolean(state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl);
+  const hasNewName = hasValidProfileName(draftName) && draftName !== existingName;
+  const hasNewFacultyId = Boolean(draftFacultyId) && draftFacultyId !== existingFacultyId;
+  const hasNewSection = Boolean(draftSection) && draftSection !== existingSection;
+  const hasNewPhoto = Boolean(state.facultyProfile.pendingProfilePhotoDataUrl)
+    && state.facultyProfile.pendingProfilePhotoDataUrl !== (state.facultyProfile.profilePhotoDataUrl || '');
+  const sectionLocked = Boolean(existingSection) && !state.facultyProfile.sectionCanUpdateNow;
+  const setupRequired = state.facultyProfile.profileSetupRequired || requiresFacultyProfileSetup();
+
+  if (setupRequired) {
+    els.saveProfilePhotoBtn.disabled = !(hasName && hasFacultyId && hasSection && hasPhoto);
+    return;
+  }
+  if (sectionLocked && hasNewSection) {
+    els.saveProfilePhotoBtn.disabled = true;
+    return;
+  }
+  els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewFacultyId || hasNewSection || hasNewPhoto);
 }
 
 function renderStudentProfileStatus() {
@@ -7204,12 +9928,28 @@ function renderStudentProfileStatus() {
     return;
   }
 
+  const draftName = normalizeProfileName(els.profileFullName?.value || '');
+  const hasName = hasValidProfileName(state.student.name || authState.user?.name || draftName);
   const draftRegistration = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const existingSection = state.student.section || '';
   const hasRegistration = Boolean(state.student.registrationNumber || draftRegistration);
+  const hasSection = Boolean(existingSection || draftSection);
   const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
+  const sectionEditAttempt = Boolean(existingSection) && Boolean(draftSection) && draftSection !== existingSection;
 
-  if (!hasRegistration && !hasPhoto) {
-    els.profileStatus.textContent = 'Registration number and profile photo are required before continuing.';
+  if (!hasName && !hasRegistration && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Full name, registration number, section, and profile photo are required before continuing.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasName) {
+    els.profileStatus.textContent = 'Full name is required and can only be set once from profile setup.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasRegistration && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Registration number, section, and profile photo are required before continuing.';
     updateProfileSaveState();
     return;
   }
@@ -7218,8 +9958,22 @@ function renderStudentProfileStatus() {
     updateProfileSaveState();
     return;
   }
+  if (!hasSection) {
+    els.profileStatus.textContent = 'Section is required before continuing.';
+    updateProfileSaveState();
+    return;
+  }
   if (!hasPhoto) {
     els.profileStatus.textContent = 'Profile photo is mandatory. Upload once to enable facial attendance.';
+    updateProfileSaveState();
+    return;
+  }
+  if (sectionEditAttempt) {
+    if (state.student.sectionChangeRequiresFacultyApproval) {
+      els.profileStatus.textContent = 'Section change requires faculty approval. Ask your faculty to approve the update.';
+    } else {
+      els.profileStatus.textContent = `Section change request window opens after ${formatLockDateTime(state.student.sectionLockedUntil)} (${formatRemainingMinutes(state.student.sectionLockMinutesRemaining)} remaining).`;
+    }
     updateProfileSaveState();
     return;
   }
@@ -7230,6 +9984,88 @@ function renderStudentProfileStatus() {
     els.profileStatus.textContent = 'Profile photo verified. Update is temporarily locked for security.';
   }
   updateProfileSaveState();
+}
+
+function renderFacultyProfileStatus() {
+  if (!els.profileStatus) {
+    return;
+  }
+
+  const draftName = normalizeProfileName(els.profileFullName?.value || '');
+  const hasName = hasValidProfileName(state.facultyProfile.name || authState.user?.name || draftName);
+  const draftFacultyId = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const hasFacultyId = Boolean(state.facultyProfile.facultyIdentifier || draftFacultyId);
+  const hasSection = Boolean(state.facultyProfile.section || draftSection);
+  const hasPhoto = Boolean(state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl);
+
+  if (!hasName && !hasFacultyId && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Full name, faculty ID, section, and profile photo are required before continuing.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasName) {
+    els.profileStatus.textContent = 'Full name is required and can only be set once from profile setup.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasFacultyId && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Faculty ID, section, and profile photo are required before continuing.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasFacultyId) {
+    els.profileStatus.textContent = 'Faculty ID is required and becomes permanent after save.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasSection) {
+    els.profileStatus.textContent = 'Section is required and can be updated every 24 hours after save.';
+    updateProfileSaveState();
+    return;
+  }
+  if (!hasPhoto) {
+    els.profileStatus.textContent = 'Profile photo is mandatory for faculty verification.';
+    updateProfileSaveState();
+    return;
+  }
+
+  if (!state.facultyProfile.sectionCanUpdateNow) {
+    els.profileStatus.textContent = `Section update locked. Try again in ${formatRemainingMinutes(state.facultyProfile.sectionLockMinutesRemaining)}.`;
+    updateProfileSaveState();
+    return;
+  }
+  if (state.facultyProfile.profilePhotoCanUpdateNow) {
+    els.profileStatus.textContent = 'Faculty profile verified. Photo can be updated now (next lock: 14 days).';
+  } else {
+    els.profileStatus.textContent = 'Faculty profile verified. Photo update is temporarily locked for security.';
+  }
+  updateProfileSaveState();
+}
+
+function renderOwnerProfileStatus() {
+  if (!els.profileStatus) {
+    return;
+  }
+  const linkedShops = Array.isArray(state.food.shops) ? state.food.shops.length : 0;
+  if (linkedShops > 0) {
+    els.profileStatus.textContent = `Vendor profile linked to ${linkedShops} shop(s). Orders and shop controls stay scoped to your account.`;
+  } else {
+    els.profileStatus.textContent = 'Vendor profile is active. No shop assigned yet. Ask admin to map a shop to this vendor account.';
+  }
+  updateProfileSaveState();
+}
+
+function renderProfileStatusByRole() {
+  if (authState.user?.role === 'faculty') {
+    renderFacultyProfileStatus();
+    return;
+  }
+  if (authState.user?.role === 'owner') {
+    renderOwnerProfileStatus();
+    return;
+  }
+  renderStudentProfileStatus();
 }
 
 function resolveFoodPaymentError(error, fallback = 'Payment checkout failed. Please retry.') {
@@ -7278,16 +10114,26 @@ async function loadStudentProfilePhoto() {
   }
 
   const data = await api('/attendance/student/profile');
+  state.student.name = normalizeProfileName(data.name || '');
+  if (state.student.name) {
+    authState.user.name = state.student.name;
+  }
   state.student.registrationNumber = data.registration_number || '';
+  state.student.section = (data.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  state.student.sectionUpdatedAt = data.section_updated_at || null;
   state.student.profilePhotoDataUrl = data.photo_data_url || '';
   state.student.profilePhotoCanUpdateNow = Boolean(data.can_update_photo_now);
   state.student.profilePhotoLockedUntil = data.photo_locked_until || null;
   state.student.profilePhotoLockDaysRemaining = Number(data.photo_lock_days_remaining || 0);
+  state.student.sectionCanUpdateNow = Boolean(data.can_update_section_now);
+  state.student.sectionLockedUntil = data.section_locked_until || null;
+  state.student.sectionLockMinutesRemaining = Number(data.section_lock_minutes_remaining || 0);
+  state.student.sectionChangeRequiresFacultyApproval = Boolean(data.section_change_requires_faculty_approval);
   state.student.profileLoaded = true;
   state.student.pendingProfilePhotoDataUrl = '';
 
   renderStudentProfilePreview(state.student.profilePhotoDataUrl);
-  renderStudentProfileStatus();
+  renderProfileStatusByRole();
   renderEnrollmentSummary();
   renderProfileSecurity();
   maybePromptProfileSetup();
@@ -7317,19 +10163,192 @@ async function loadStudentEnrollmentStatus() {
   renderEnrollmentSummary();
 }
 
+async function loadFacultyProfile() {
+  if (authState.user?.role !== 'faculty') {
+    return;
+  }
+
+  const data = await api('/attendance/faculty/profile');
+  state.facultyProfile.name = normalizeProfileName(data.name || '');
+  if (state.facultyProfile.name) {
+    authState.user.name = state.facultyProfile.name;
+  }
+  state.facultyProfile.facultyIdentifier = data.faculty_identifier || '';
+  state.facultyProfile.section = (data.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  state.facultyProfile.sectionUpdatedAt = data.section_updated_at || null;
+  state.facultyProfile.profilePhotoDataUrl = data.photo_data_url || '';
+  state.facultyProfile.profilePhotoCanUpdateNow = Boolean(data.can_update_photo_now);
+  state.facultyProfile.profilePhotoLockedUntil = data.photo_locked_until || null;
+  state.facultyProfile.profilePhotoLockDaysRemaining = Number(data.photo_lock_days_remaining || 0);
+  state.facultyProfile.sectionCanUpdateNow = Boolean(data.can_update_section_now);
+  state.facultyProfile.sectionLockedUntil = data.section_locked_until || null;
+  state.facultyProfile.sectionLockMinutesRemaining = Number(data.section_lock_minutes_remaining || 0);
+  state.facultyProfile.pendingProfilePhotoDataUrl = '';
+  state.facultyProfile.profileLoaded = true;
+
+  renderFacultyProfilePreview(state.facultyProfile.profilePhotoDataUrl);
+  renderProfileStatusByRole();
+  renderProfileSecurity();
+  maybePromptFacultyProfileSetup();
+}
+
+async function saveFacultyProfile() {
+  const profileName = normalizeProfileName(els.profileFullName?.value || '');
+  const existingName = normalizeProfileName(state.facultyProfile.name || authState.user?.name || '');
+  const facultyIdentifier = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const section = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const existingFacultyIdentifier = state.facultyProfile.facultyIdentifier || '';
+  const existingSection = (state.facultyProfile.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  const nextPhotoDataUrl = state.facultyProfile.pendingProfilePhotoDataUrl || '';
+  const hasNameAfterSave = hasValidProfileName(existingName || profileName);
+  const hasNewName = hasValidProfileName(profileName) && profileName !== existingName;
+  const hasNewFacultyIdentifier = Boolean(facultyIdentifier) && facultyIdentifier !== existingFacultyIdentifier;
+  const hasNewSection = Boolean(section) && section !== existingSection;
+  const hasNewPhoto = Boolean(nextPhotoDataUrl) && nextPhotoDataUrl !== state.facultyProfile.profilePhotoDataUrl;
+  const setupRequired = state.facultyProfile.profileSetupRequired || requiresFacultyProfileSetup();
+  const hasFacultyIdentifierAfterSave = Boolean(existingFacultyIdentifier || facultyIdentifier);
+  const hasSectionAfterSave = Boolean(existingSection || section);
+  const hasPhotoAfterSave = Boolean(state.facultyProfile.profilePhotoDataUrl || nextPhotoDataUrl);
+
+  if (setupRequired) {
+    if (!hasNameAfterSave) {
+      throw new Error('Enter your full name before saving profile.');
+    }
+    if (!hasFacultyIdentifierAfterSave) {
+      throw new Error('Enter your faculty ID before saving profile.');
+    }
+    if (!hasSectionAfterSave) {
+      throw new Error('Enter section before saving profile.');
+    }
+    if (!hasPhotoAfterSave) {
+      throw new Error('Upload profile photo before saving profile.');
+    }
+  }
+
+  if (hasNewFacultyIdentifier && !existingFacultyIdentifier) {
+    const confirmed = window.confirm(
+      "Faculty ID is permanent and can't be changed without admin permissions later. Continue?"
+    );
+    if (!confirmed) {
+      throw new Error('Faculty ID confirmation is required.');
+    }
+  }
+
+  if (hasNewSection && existingSection && !state.facultyProfile.sectionCanUpdateNow) {
+    showFacultySectionLockPopup();
+    throw new Error(
+      `Section is locked until ${formatLockDateTime(state.facultyProfile.sectionLockedUntil)} (${formatRemainingMinutes(state.facultyProfile.sectionLockMinutesRemaining)} remaining).`
+    );
+  }
+
+  const payload = {};
+  if (hasNewName || (!existingName && hasValidProfileName(profileName))) {
+    payload.name = profileName;
+  }
+  if (hasNewFacultyIdentifier || (!existingFacultyIdentifier && facultyIdentifier)) {
+    payload.faculty_identifier = facultyIdentifier;
+  }
+  if (hasNewSection || (!existingSection && section)) {
+    payload.section = section;
+  }
+  if (hasNewPhoto || (!state.facultyProfile.profilePhotoDataUrl && nextPhotoDataUrl)) {
+    payload.photo_data_url = nextPhotoDataUrl;
+  }
+
+  if (
+    payload.photo_data_url
+    && state.facultyProfile.profilePhotoDataUrl
+    && !state.facultyProfile.profilePhotoCanUpdateNow
+  ) {
+    showFacultyProfilePhotoLockPopup();
+    throw new Error(
+      `Faculty profile photo locked until ${formatLockDateTime(state.facultyProfile.profilePhotoLockedUntil)}.`
+    );
+  }
+
+  if (!Object.keys(payload).length) {
+    if (setupRequired) {
+      throw new Error('Add faculty ID, section, and profile photo before continuing.');
+    }
+    throw new Error('No profile changes to save.');
+  }
+
+  const originalButtonText = els.saveProfilePhotoBtn?.textContent || 'Save Profile';
+  if (els.saveProfilePhotoBtn) {
+    els.saveProfilePhotoBtn.disabled = true;
+    els.saveProfilePhotoBtn.textContent = 'Saving...';
+  }
+
+  let saved;
+  try {
+    saved = await api('/attendance/faculty/profile', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  } finally {
+    if (els.saveProfilePhotoBtn) {
+      els.saveProfilePhotoBtn.textContent = originalButtonText;
+    }
+    updateProfileSaveState();
+  }
+
+  state.facultyProfile.facultyIdentifier = saved.faculty_identifier || state.facultyProfile.facultyIdentifier;
+  state.facultyProfile.name = normalizeProfileName(saved.name || state.facultyProfile.name || existingName);
+  authState.user.name = state.facultyProfile.name || authState.user.name;
+  state.facultyProfile.section = (saved.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  state.facultyProfile.sectionUpdatedAt = saved.section_updated_at || null;
+  state.facultyProfile.profilePhotoDataUrl = saved.photo_data_url || '';
+  state.facultyProfile.profilePhotoCanUpdateNow = Boolean(saved.can_update_photo_now);
+  state.facultyProfile.profilePhotoLockedUntil = saved.photo_locked_until || null;
+  state.facultyProfile.profilePhotoLockDaysRemaining = Number(saved.photo_lock_days_remaining || 0);
+  state.facultyProfile.sectionCanUpdateNow = Boolean(saved.can_update_section_now);
+  state.facultyProfile.sectionLockedUntil = saved.section_locked_until || null;
+  state.facultyProfile.sectionLockMinutesRemaining = Number(saved.section_lock_minutes_remaining || 0);
+  state.facultyProfile.pendingProfilePhotoDataUrl = '';
+  if (els.profilePhotoInput) {
+    els.profilePhotoInput.value = '';
+  }
+
+  renderFacultyProfilePreview(state.facultyProfile.profilePhotoDataUrl);
+  renderProfileStatusByRole();
+  renderProfileSecurity();
+  if (!requiresFacultyProfileSetup()) {
+    if (els.profileStatus) {
+      els.profileStatus.textContent = 'Faculty profile saved successfully.';
+    }
+    state.facultyProfile.profileSetupRequired = false;
+    closeProfileModal();
+  }
+  log('Faculty profile updated');
+}
+
 async function saveStudentProfilePhoto() {
+  const profileName = normalizeProfileName(els.profileFullName?.value || '');
+  const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
   const registrationNumber = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
+  const section = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const existingRegistration = state.student.registrationNumber || '';
+  const existingSection = state.student.section || '';
   const hasNewReg = Boolean(registrationNumber) && registrationNumber !== existingRegistration;
+  const hasNewSection = Boolean(section) && section !== existingSection;
   const nextPhotoDataUrl = state.student.pendingProfilePhotoDataUrl || '';
   const hasNewPhoto = Boolean(nextPhotoDataUrl) && nextPhotoDataUrl !== state.student.profilePhotoDataUrl;
+  const hasNewName = hasValidProfileName(profileName) && profileName !== existingName;
   const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
+  const hasNameAfterSave = hasValidProfileName(existingName || profileName);
   const hasRegistrationAfterSave = Boolean(existingRegistration || registrationNumber);
+  const hasSectionAfterSave = Boolean(existingSection || section);
   const hasPhotoAfterSave = Boolean(state.student.profilePhotoDataUrl || nextPhotoDataUrl);
 
   if (setupRequired) {
+    if (!hasNameAfterSave) {
+      throw new Error('Enter your full name before saving profile.');
+    }
     if (!hasRegistrationAfterSave) {
       throw new Error('Enter your registration number before saving profile.');
+    }
+    if (!hasSectionAfterSave) {
+      throw new Error('Enter your section before saving profile.');
     }
     if (!hasPhotoAfterSave) {
       throw new Error('Upload profile photo before saving profile.');
@@ -7344,10 +10363,24 @@ async function saveStudentProfilePhoto() {
       throw new Error('Registration number confirmation is required.');
     }
   }
+  if (hasNewSection && existingSection) {
+    if (state.student.sectionChangeRequiresFacultyApproval) {
+      throw new Error('Section change requires faculty approval. Ask your faculty to approve the update.');
+    }
+    throw new Error(
+      `Section change is locked until ${formatLockDateTime(state.student.sectionLockedUntil)} (${formatRemainingMinutes(state.student.sectionLockMinutesRemaining)} remaining).`
+    );
+  }
 
   const payload = {};
+  if (hasNewName || (!existingName && hasValidProfileName(profileName))) {
+    payload.name = profileName;
+  }
   if (hasNewReg || (!existingRegistration && registrationNumber)) {
     payload.registration_number = registrationNumber;
+  }
+  if (hasNewSection || (!existingSection && section)) {
+    payload.section = section;
   }
   if (hasNewPhoto || (!state.student.profilePhotoDataUrl && nextPhotoDataUrl)) {
     payload.photo_data_url = nextPhotoDataUrl;
@@ -7366,7 +10399,7 @@ async function saveStudentProfilePhoto() {
 
   if (!Object.keys(payload).length) {
     if (setupRequired) {
-      throw new Error('Add registration number and profile photo before continuing.');
+      throw new Error('Add registration number, section, and profile photo before continuing.');
     }
     throw new Error('No profile changes to save.');
   }
@@ -7391,16 +10424,24 @@ async function saveStudentProfilePhoto() {
   }
 
   state.student.registrationNumber = saved.registration_number || state.student.registrationNumber;
+  state.student.name = normalizeProfileName(saved.name || state.student.name || existingName);
+  authState.user.name = state.student.name || authState.user.name;
+  state.student.section = (saved.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  state.student.sectionUpdatedAt = saved.section_updated_at || null;
   state.student.profilePhotoDataUrl = saved.photo_data_url || '';
   state.student.profilePhotoCanUpdateNow = Boolean(saved.can_update_photo_now);
   state.student.profilePhotoLockedUntil = saved.photo_locked_until || null;
   state.student.profilePhotoLockDaysRemaining = Number(saved.photo_lock_days_remaining || 0);
+  state.student.sectionCanUpdateNow = Boolean(saved.can_update_section_now);
+  state.student.sectionLockedUntil = saved.section_locked_until || null;
+  state.student.sectionLockMinutesRemaining = Number(saved.section_lock_minutes_remaining || 0);
+  state.student.sectionChangeRequiresFacultyApproval = Boolean(saved.section_change_requires_faculty_approval);
   state.student.pendingProfilePhotoDataUrl = '';
   if (els.profilePhotoInput) {
     els.profilePhotoInput.value = '';
   }
   renderStudentProfilePreview(state.student.profilePhotoDataUrl);
-  renderStudentProfileStatus();
+  renderProfileStatusByRole();
   renderEnrollmentSummary();
   renderProfileSecurity();
   if (state.student.timetable.length) {
@@ -7463,9 +10504,10 @@ function getCalendarBounds(classes) {
 }
 
 function updateSelectedClassState() {
-  const hasProfileReady = Boolean(state.student.profilePhotoDataUrl) && Boolean(state.student.registrationNumber);
+  const hasProfileReady = Boolean(state.student.profilePhotoDataUrl) && Boolean(state.student.registrationNumber) && Boolean(state.student.section);
   const kpi = findAttendanceManagementState();
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
+  const remedialWindowOpen = isRemedialAttendanceWindow(kpi);
   state.student.kpiScheduleId = scheduleId || null;
 
   if (els.selectedClassLabel) {
@@ -7474,12 +10516,25 @@ function updateSelectedClassState() {
   if (els.attendanceKpiSubtitle) {
     if (!hasProfileReady) {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Complete profile setup to enable official marking.`;
+    } else if (kpi.mode === 'mark' && String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
+      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Use Remedial module with faculty code (15-minute window).`;
     } else {
       els.attendanceKpiSubtitle.textContent = kpi.subtitle;
     }
   }
 
-  els.takeSelfieBtn.disabled = !(kpi.mode === 'mark' && scheduleId && hasProfileReady);
+  const isRegularMarkable = (
+    kpi.mode === 'mark'
+    && scheduleId
+    && hasProfileReady
+    && String(kpi.schedule?.class_kind || 'regular').toLowerCase() !== 'remedial'
+  );
+  if (els.takeSelfieBtn) {
+    els.takeSelfieBtn.textContent = remedialWindowOpen
+      ? 'Open Remedial Module'
+      : 'Open Camera & Mark Attendance';
+    els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen);
+  }
 }
 
 function refreshStudentTimetableRealtimeStatus() {
@@ -7737,7 +10792,7 @@ function renderTimetableViewInfo() {
   const weekEndRaw = shiftISODate(weekStartRaw, 6);
   const weekStartText = parseISODateLocal(weekStartRaw).toLocaleDateString();
   const weekEndText = parseISODateLocal(weekEndRaw).toLocaleDateString();
-  const minWeekStartRaw = weekStartISO(String(state.student.minTimetableDate || '2026-01-21'));
+  const minWeekStartRaw = weekStartISO(String(state.student.minTimetableDate || STUDENT_TIMETABLE_START_DATE));
   els.timetableViewInfo.textContent = `Week ${weekStartText} - ${weekEndText}`;
 
   if (els.prevWeekBtn) {
@@ -7829,7 +10884,7 @@ function prefetchAdjacentStudentWeeks(weekStart) {
   if (!weekStart) {
     return;
   }
-  const minWeekStart = weekStartISO(state.student.minTimetableDate || '2026-01-21');
+  const minWeekStart = weekStartISO(state.student.minTimetableDate || STUDENT_TIMETABLE_START_DATE);
   const prevWeek = shiftISODate(weekStart, -7);
   if (prevWeek >= minWeekStart) {
     void prefetchStudentTimetableWeek(prevWeek);
@@ -8297,6 +11352,9 @@ async function startLiveAttendanceVerification() {
   const selectedScheduleId = Number(kpi.schedule?.schedule_id || 0);
   if (kpi.mode !== 'mark' || !selectedScheduleId) {
     throw new Error('Attendance window is closed right now. Wait for the next class.');
+  }
+  if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
+    throw new Error('This is a remedial class. Open Remedial module, validate the faculty code, then mark attendance there.');
   }
   state.student.kpiScheduleId = selectedScheduleId;
   state.student.selectedScheduleId = selectedScheduleId;
@@ -9143,6 +12201,9 @@ async function startStudentSelfieFlow() {
   if (kpi.mode !== 'mark' || !scheduleId) {
     throw new Error('Attendance window is closed right now. Wait for the next class.');
   }
+  if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
+    throw new Error('Remedial attendance is code-based. Open Remedial module and use faculty code within first 15 minutes.');
+  }
   state.student.kpiScheduleId = scheduleId;
   state.student.selectedScheduleId = scheduleId;
   if (!state.student.registrationNumber) {
@@ -9257,6 +12318,7 @@ async function requestForgotPasswordOtp() {
   try {
     const data = await api('/auth/password/request-otp', {
       method: 'POST',
+      timeoutMs: 20000,
       body: JSON.stringify({
         email,
         registration_number: registrationNumber,
@@ -9394,6 +12456,7 @@ async function requestOtp() {
   try {
     const data = await api('/auth/login/request-otp', {
       method: 'POST',
+      timeoutMs: 20000,
       body: JSON.stringify({
         email,
         password,
@@ -9448,6 +12511,7 @@ async function registerAccount() {
   const password = els.authSignupPassword?.value || '';
   const name = els.authName.value.trim();
   const department = els.authDepartment.value.trim();
+  const section = (els.authSignupSection?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const semesterValue = els.authSemester.value.trim();
   const parentEmail = els.authParentEmail.value.trim();
 
@@ -9463,6 +12527,9 @@ async function registerAccount() {
     if (!email.endsWith('@gmail.com')) {
       throw new Error('Email must end with @gmail.com');
     }
+    if (!section) {
+      throw new Error('Section is required for student registration.');
+    }
     if (!semesterValue) {
       throw new Error('Semester is required for student registration.');
     }
@@ -9474,6 +12541,7 @@ async function registerAccount() {
     role,
     name,
     department,
+    section: role === 'student' ? section : null,
     semester: role === 'student' ? Number(semesterValue) : null,
     parent_email: role === 'student' ? (parentEmail || null) : null,
   };
@@ -9498,6 +12566,9 @@ async function registerAccount() {
   }
   if (els.authSignupPassword) {
     els.authSignupPassword.value = '';
+  }
+  if (els.authSignupSection) {
+    els.authSignupSection.value = '';
   }
   els.otpDebug.classList.add('hidden');
   els.otpDebug.textContent = '';
@@ -9550,6 +12621,8 @@ async function restoreSession() {
   try {
     const user = await api('/auth/me', { skipAuth: !authState.token });
     authState.user = user;
+    resetStudentProfileState();
+    resetFacultyProfileState();
     state.ui.activeModule = defaultModuleForRole(user?.role);
     if (authState.user?.role === 'student') {
       state.student.profileLoaded = false;
@@ -9756,6 +12829,7 @@ async function refreshAll() {
       () => refreshStudentKpiTimetable({ forceNetwork: true }),
       () => loadStudentTimetable({ forceNetwork: true }),
       () => loadStudentAttendanceInsights(),
+      () => refreshRemedialMessages(),
     ];
 
     for (const step of studentSteps) {
@@ -9784,32 +12858,22 @@ async function refreshAll() {
     return;
   } else {
     const tasks = [];
-    tasks.push(refreshOverview());
+    tasks.push(refreshAdminLive({
+      workDate: els.workDate?.value || todayISO(),
+      mode: 'enrollment',
+    }));
+    if (!state.admin?.insights) {
+      tasks.push(refreshAdminInsights({
+        workDate: els.workDate?.value || todayISO(),
+        mode: 'enrollment',
+      }));
+    }
     tasks.push(refreshAttendanceData());
     tasks.push(refreshDemand());
-    tasks.push(refreshCapacity());
 
     if (role === 'faculty') {
+      tasks.push(loadFacultyProfile());
       tasks.push(loadFacultySchedules());
-    }
-    if (role === 'faculty' || role === 'admin') {
-      tasks.push(
-        api('/resources/workload-distribution').then((rows) => {
-          state.resources.workload = Array.isArray(rows) ? rows : [];
-          renderWorkloadChart();
-        })
-      );
-      tasks.push(
-        api('/resources/mongo/status').then((payload) => {
-          state.resources.mongoStatus = payload || null;
-          renderMongoStatus();
-        })
-      );
-    } else {
-      state.resources.workload = [];
-      state.resources.mongoStatus = null;
-      renderWorkloadChart();
-      renderMongoStatus();
     }
 
     const results = await Promise.allSettled(tasks);
@@ -10045,7 +13109,7 @@ function bindEvents() {
         openAuthOverlay('Sign in to access modules.');
         return;
       }
-      if (authState.user.role === 'student' && requiresStudentProfileSetup()) {
+      if (requiresRoleProfileSetup()) {
         openProfileModal({ required: true });
         return;
       }
@@ -10067,7 +13131,7 @@ function bindEvents() {
     if (!authState.user) {
       return;
     }
-    if (authState.user.role === 'student' && requiresStudentProfileSetup()) {
+    if (requiresRoleProfileSetup()) {
       openProfileModal({ required: true });
       return;
     }
@@ -10126,7 +13190,7 @@ function bindEvents() {
   if (els.viewProfileBtn) {
     els.viewProfileBtn.addEventListener('click', () => {
       closeAccountDropdown();
-      openProfileModal({ required: requiresStudentProfileSetup() });
+      openProfileModal({ required: requiresRoleProfileSetup() });
     });
   }
 
@@ -10262,7 +13326,7 @@ function bindEvents() {
     els.prevWeekBtn.addEventListener('click', async () => {
       try {
         const current = els.weekStartDate.value || state.student.viewDate || todayISO();
-        const minDate = state.student.minTimetableDate || '2026-01-21';
+        const minDate = state.student.minTimetableDate || STUDENT_TIMETABLE_START_DATE;
         const candidate = shiftISODate(current, -7);
         const clamped = clampStudentViewDate(candidate);
         if (clamped === current && weekStartISO(current) <= weekStartISO(minDate)) {
@@ -10349,6 +13413,18 @@ function bindEvents() {
     els.foodOrdersTabPrevious.addEventListener('click', () => {
       state.food.ordersTab = 'previous';
       renderFoodOrders();
+    });
+  }
+
+  if (els.foodDemandLiveHotBtn) {
+    els.foodDemandLiveHotBtn.addEventListener('click', () => {
+      const hotSlotId = Number(state.food?.demandLive?.pulses?.[0]?.slot_id || 0);
+      if (hotSlotId <= 0) {
+        return;
+      }
+      state.food.demandSelectedSlotId = hotSlotId;
+      renderFoodDemandMinimalChart({ animate: true });
+      showFoodToast('Hot Slot Focused', 'Showing the highest live activity slot right now.', { autoHideMs: 1400 });
     });
   }
 
@@ -10569,6 +13645,38 @@ function bindEvents() {
     });
   }
 
+  if (els.remedialModeSelect) {
+    els.remedialModeSelect.addEventListener('change', () => {
+      applyRemedialModeVisibility();
+    });
+  }
+
+  if (els.remedialDemoInstantBtn) {
+    els.remedialDemoInstantBtn.addEventListener('click', () => {
+      state.remedial.demoBypassLeadTime = !state.remedial.demoBypassLeadTime;
+      renderRemedialDemoToggle();
+      if (state.remedial.demoBypassLeadTime) {
+        setRemedialFacultyStatus('Demo instant scheduling enabled. 1-hour lead-time check is bypassed.');
+        log('Demo instant scheduling enabled for remedial module');
+      } else {
+        setRemedialFacultyStatus('Demo instant scheduling disabled. 1-hour lead-time rule is active.');
+        log('Demo instant scheduling disabled for remedial module');
+      }
+    });
+  }
+
+  if (els.remedialCourseCodeInput) {
+    els.remedialCourseCodeInput.addEventListener('input', () => {
+      els.remedialCourseCodeInput.value = normalizeRemedialCourseCode(els.remedialCourseCodeInput.value);
+    });
+  }
+
+  if (els.remedialCourseSelect) {
+    els.remedialCourseSelect.addEventListener('change', () => {
+      syncRemedialManualCourseFromSelect();
+    });
+  }
+
   if (els.remedialClassSelect) {
     els.remedialClassSelect.addEventListener('change', async () => {
       try {
@@ -10577,6 +13685,54 @@ function bindEvents() {
       } catch (error) {
         setRemedialFacultyStatus(error.message, true);
         log(error.message);
+      }
+    });
+  }
+
+  if (els.remedialClassesList) {
+    els.remedialClassesList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const sendBtn = target.closest('[data-remedial-send-code]');
+      if (sendBtn instanceof HTMLElement) {
+        const classId = Number(sendBtn.dataset.remedialSendCode || '0');
+        if (!classId) {
+          return;
+        }
+        const original = sendBtn.textContent || 'Send Code to Section(s)';
+        sendBtn.disabled = true;
+        sendBtn.textContent = 'Sending...';
+        try {
+          await sendRemedialCodeToSections(classId);
+        } catch (error) {
+          setRemedialFacultyStatus(error.message, true);
+          log(error.message);
+        } finally {
+          sendBtn.disabled = false;
+          sendBtn.textContent = original;
+        }
+        return;
+      }
+      const rejectBtn = target.closest('[data-remedial-cancel]');
+      if (rejectBtn instanceof HTMLElement) {
+        const classId = Number(rejectBtn.dataset.remedialCancel || '0');
+        if (!classId) {
+          return;
+        }
+        const original = rejectBtn.textContent || 'Reject Class';
+        rejectBtn.disabled = true;
+        rejectBtn.textContent = 'Rejecting...';
+        try {
+          await cancelRemedialClass(classId);
+        } catch (error) {
+          setRemedialFacultyStatus(error.message, true);
+          log(error.message);
+        } finally {
+          rejectBtn.disabled = false;
+          rejectBtn.textContent = original;
+        }
       }
     });
   }
@@ -10593,13 +13749,261 @@ function bindEvents() {
     });
   }
 
+  if (els.remedialAttendanceList) {
+    els.remedialAttendanceList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const sectionCard = target.closest('[data-remedial-section]');
+      if (!(sectionCard instanceof HTMLElement)) {
+        return;
+      }
+      const sectionToken = String(sectionCard.dataset.remedialSection || '').trim().toUpperCase();
+      if (!sectionToken) {
+        return;
+      }
+      openRemedialAttendanceSectionModal(sectionToken);
+    });
+
+    els.remedialAttendanceList.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const sectionCard = target.closest('[data-remedial-section]');
+      if (!(sectionCard instanceof HTMLElement)) {
+        return;
+      }
+      event.preventDefault();
+      const sectionToken = String(sectionCard.dataset.remedialSection || '').trim().toUpperCase();
+      if (!sectionToken) {
+        return;
+      }
+      openRemedialAttendanceSectionModal(sectionToken);
+    });
+  }
+
+  if (els.remedialRefreshMessagesBtn) {
+    els.remedialRefreshMessagesBtn.addEventListener('click', async () => {
+      try {
+        await Promise.allSettled([
+          refreshRemedialMessages(),
+          refreshRemedialAttendanceLedger(),
+        ]);
+        setRemedialStudentStatus('Remedial feed refreshed.');
+      } catch (error) {
+        setRemedialStudentStatus(error.message, true);
+        log(error.message);
+      }
+    });
+  }
+
+  if (els.remedialValidateBtn) {
+    els.remedialValidateBtn.addEventListener('click', async () => {
+      try {
+        await validateRemedialCode();
+      } catch (error) {
+        setRemedialStudentStatus(error.message, true);
+        log(error.message);
+      }
+    });
+  }
+
+  if (els.remedialMessagesList) {
+    els.remedialMessagesList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const button = target.closest('[data-remedial-use-code]');
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      const code = String(button.dataset.remedialUseCode || '').trim().toUpperCase();
+      if (!code) {
+        return;
+      }
+      const original = button.textContent || `Use Code ${code}`;
+      button.disabled = true;
+      button.textContent = 'Validating...';
+      try {
+        await applyRemedialCodeFromMessage(code);
+      } catch (error) {
+        setRemedialStudentStatus(error.message, true);
+        log(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+  }
+
+  if (els.remedialStudentLedgerList) {
+    els.remedialStudentLedgerList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const card = target.closest('.course-clickable[data-remedial-course-key]');
+      if (!(card instanceof HTMLElement)) {
+        return;
+      }
+      const courseKey = String(card.dataset.remedialCourseKey || '');
+      if (!courseKey) {
+        return;
+      }
+      openRemedialStudentAttendanceModal(courseKey);
+    });
+
+    els.remedialStudentLedgerList.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const card = target.closest('.course-clickable[data-remedial-course-key]');
+      if (!(card instanceof HTMLElement)) {
+        return;
+      }
+      event.preventDefault();
+      const courseKey = String(card.dataset.remedialCourseKey || '');
+      if (!courseKey) {
+        return;
+      }
+      openRemedialStudentAttendanceModal(courseKey);
+    });
+  }
+
+  if (els.facultyMessageSendBtn) {
+    els.facultyMessageSendBtn.addEventListener('click', async () => {
+      const button = els.facultyMessageSendBtn;
+      const original = button.textContent || 'Send Message';
+      button.disabled = true;
+      button.textContent = 'Sending...';
+      setFacultyMessageStatus('');
+      try {
+        await sendFacultyBroadcastMessage();
+      } catch (error) {
+        setFacultyMessageStatus(error.message, true);
+        log(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+  }
+
+  if (els.remedialCodeDetails) {
+    els.remedialCodeDetails.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const button = target.closest('[data-remedial-open-online-link]');
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      const link = normalizedRemedialOnlineLink(button.dataset.remedialOpenOnlineLink || '');
+      window.location.href = link;
+    });
+  }
+
+  if (els.studentMessagesOpenRemedialBtn) {
+    els.studentMessagesOpenRemedialBtn.addEventListener('click', async () => {
+      if (!authState.user) {
+        return;
+      }
+      setActiveModule('remedial', { updateHash: true });
+      try {
+        await refreshActiveModuleData();
+      } catch (error) {
+        log(error.message);
+      }
+    });
+  }
+
+  if (els.studentMessagesList) {
+    els.studentMessagesList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const openBtn = target.closest('[data-student-open-remedial]');
+      if (openBtn instanceof HTMLElement) {
+        setActiveModule('remedial', { updateHash: true });
+        try {
+          await refreshActiveModuleData();
+        } catch (error) {
+          log(error.message);
+        }
+        return;
+      }
+      const button = target.closest('[data-student-use-remedial-code]');
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      const code = String(button.dataset.studentUseRemedialCode || '').trim().toUpperCase();
+      if (!code) {
+        return;
+      }
+      const original = button.textContent || `Use Code ${code}`;
+      button.disabled = true;
+      button.textContent = 'Opening...';
+      try {
+        setActiveModule('remedial', { updateHash: true });
+        await refreshActiveModuleData();
+        await applyRemedialCodeFromMessage(code);
+      } catch (error) {
+        setRemedialStudentStatus(error.message, true);
+        log(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+  }
+
+  if (els.remedialCodeInput) {
+    els.remedialCodeInput.addEventListener('input', () => {
+      els.remedialCodeInput.value = String(els.remedialCodeInput.value || '').toUpperCase().replace(/\s+/g, '');
+      state.remedial.validatedClass = null;
+      state.remedial.markedClassId = null;
+      state.remedial.markedOnlineLink = '';
+      renderRemedialCodeDetails();
+    });
+    els.remedialCodeInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await validateRemedialCode();
+      } catch (error) {
+        setRemedialStudentStatus(error.message, true);
+        log(error.message);
+      }
+    });
+  }
+
   if (els.remedialMarkBtn) {
     els.remedialMarkBtn.addEventListener('click', async () => {
+      const originalText = els.remedialMarkBtn.textContent || 'Mark Attendance';
+      els.remedialMarkBtn.disabled = true;
+      els.remedialMarkBtn.textContent = 'Verifying...';
       try {
         await markRemedialAttendance();
       } catch (error) {
         setRemedialStudentStatus(error.message, true);
         log(error.message);
+      } finally {
+        els.remedialMarkBtn.disabled = false;
+        els.remedialMarkBtn.textContent = originalText;
       }
     });
   }
@@ -10630,7 +14034,7 @@ function bindEvents() {
 
     if (event.shiftKey) {
       try {
-        await startStudentSelfieFlow();
+        await handleStudentMarkAttendanceAction();
       } catch (error) {
         log(error.message);
         setStudentResult(error.message);
@@ -10640,7 +14044,7 @@ function bindEvents() {
 
   els.takeSelfieBtn.addEventListener('click', async () => {
     try {
-      await startStudentSelfieFlow();
+      await handleStudentMarkAttendanceAction();
     } catch (error) {
       log(error.message);
       setStudentResult(error.message);
@@ -10699,6 +14103,20 @@ function bindEvents() {
     });
   }
 
+  if (els.remedialAttendanceModalCloseBtn) {
+    els.remedialAttendanceModalCloseBtn.addEventListener('click', () => {
+      closeRemedialAttendanceModal();
+    });
+  }
+
+  if (els.remedialAttendanceModal) {
+    els.remedialAttendanceModal.addEventListener('click', (event) => {
+      if (event.target === els.remedialAttendanceModal) {
+        closeRemedialAttendanceModal();
+      }
+    });
+  }
+
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') {
       return;
@@ -10707,36 +14125,67 @@ function bindEvents() {
       setForgotPasswordPanel(false);
       return;
     }
-    if (!els.attendanceDetailsModal || els.attendanceDetailsModal.classList.contains('hidden')) {
+    if (els.remedialAttendanceModal && !els.remedialAttendanceModal.classList.contains('hidden')) {
+      closeRemedialAttendanceModal();
       return;
     }
-    closeAttendanceDetailsModal();
+    if (els.attendanceDetailsModal && !els.attendanceDetailsModal.classList.contains('hidden')) {
+      closeAttendanceDetailsModal();
+    }
   });
 
   els.profilePhotoInput.addEventListener('change', async () => {
+    const role = authState.user?.role;
+    if (role !== 'student' && role !== 'faculty') {
+      els.profilePhotoInput.value = '';
+      return;
+    }
     const file = els.profilePhotoInput.files?.[0];
     if (!file) {
-      state.student.pendingProfilePhotoDataUrl = '';
-      renderStudentProfileStatus();
-      renderEnrollmentSummary();
+      if (role === 'faculty') {
+        state.facultyProfile.pendingProfilePhotoDataUrl = '';
+      } else {
+        state.student.pendingProfilePhotoDataUrl = '';
+      }
+      renderProfileStatusByRole();
+      if (role === 'student') {
+        renderEnrollmentSummary();
+      }
       return;
     }
 
-    if (state.student.profilePhotoDataUrl && !state.student.profilePhotoCanUpdateNow) {
-      state.student.pendingProfilePhotoDataUrl = '';
+    const hasExistingPhoto = role === 'faculty'
+      ? Boolean(state.facultyProfile.profilePhotoDataUrl)
+      : Boolean(state.student.profilePhotoDataUrl);
+    const canUpdateNow = role === 'faculty'
+      ? state.facultyProfile.profilePhotoCanUpdateNow
+      : state.student.profilePhotoCanUpdateNow;
+    if (hasExistingPhoto && !canUpdateNow) {
+      if (role === 'faculty') {
+        state.facultyProfile.pendingProfilePhotoDataUrl = '';
+      } else {
+        state.student.pendingProfilePhotoDataUrl = '';
+      }
       els.profilePhotoInput.value = '';
-      showProfilePhotoLockPopup();
-      renderStudentProfileStatus();
-      renderEnrollmentSummary();
+      showActiveProfilePhotoLockPopup();
+      renderProfileStatusByRole();
+      if (role === 'student') {
+        renderEnrollmentSummary();
+      }
       return;
     }
 
     try {
       const dataUrl = await fileToDataUrl(file);
-      state.student.pendingProfilePhotoDataUrl = dataUrl;
-      renderStudentProfilePreview(dataUrl);
-      renderEnrollmentSummary();
-      renderStudentProfileStatus();
+      if (role === 'faculty') {
+        state.facultyProfile.pendingProfilePhotoDataUrl = dataUrl;
+        renderFacultyProfilePreview(dataUrl);
+      } else {
+        state.student.pendingProfilePhotoDataUrl = dataUrl;
+        renderStudentProfilePreview(dataUrl);
+        renderEnrollmentSummary();
+      }
+      renderProfileStatusByRole();
       if (els.profileStatus) {
         els.profileStatus.textContent = 'Photo selected. Click Save Profile to complete setup.';
       }
@@ -10747,7 +14196,13 @@ function bindEvents() {
 
   els.saveProfilePhotoBtn.addEventListener('click', async () => {
     try {
-      await saveStudentProfilePhoto();
+      if (authState.user?.role === 'faculty') {
+        await saveFacultyProfile();
+      } else if (authState.user?.role === 'student') {
+        await saveStudentProfilePhoto();
+      } else {
+        return;
+      }
     } catch (error) {
       const message = String(error?.message || 'Failed to save profile.');
       log(message);
@@ -10844,7 +14299,22 @@ function bindEvents() {
     els.profileRegistrationNumber.addEventListener('input', () => {
       const raw = els.profileRegistrationNumber.value || '';
       els.profileRegistrationNumber.value = raw.toUpperCase().replace(/\s+/g, '');
-      renderStudentProfileStatus();
+      renderProfileStatusByRole();
+    });
+  }
+
+  if (els.profileFullName) {
+    els.profileFullName.addEventListener('input', () => {
+      els.profileFullName.value = normalizeProfileName(els.profileFullName.value || '');
+      renderProfileStatusByRole();
+    });
+  }
+
+  if (els.profileSectionInput) {
+    els.profileSectionInput.addEventListener('input', () => {
+      const raw = els.profileSectionInput.value || '';
+      els.profileSectionInput.value = raw.toUpperCase().replace(/\s+/g, '');
+      renderProfileStatusByRole();
     });
   }
 

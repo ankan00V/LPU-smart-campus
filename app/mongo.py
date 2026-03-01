@@ -29,6 +29,10 @@ def _mongo_uri() -> str:
     return (os.getenv("MONGO_URI") or os.getenv("MONGODB_URI") or "").strip()
 
 
+def _mongo_uri_fallback() -> str:
+    return (os.getenv("MONGO_URI_FALLBACK") or os.getenv("MONGODB_URI_FALLBACK") or "").strip()
+
+
 def _mongo_db_name() -> str:
     return (
         os.getenv("MONGO_DB_NAME")
@@ -40,6 +44,7 @@ def _mongo_db_name() -> str:
 def _ensure_indexes(db) -> None:
     db["students"].create_index([("id", ASCENDING)], unique=True)
     db["students"].create_index([("email", ASCENDING)], unique=True)
+    db["students"].create_index([("section", ASCENDING), ("department", ASCENDING)])
     student_indexes = {idx["name"]: idx for idx in db["students"].list_indexes()}
     reg_idx = student_indexes.get("registration_number_1")
     if reg_idx and not reg_idx.get("partialFilterExpression"):
@@ -52,6 +57,11 @@ def _ensure_indexes(db) -> None:
 
     db["faculty"].create_index([("id", ASCENDING)], unique=True)
     db["faculty"].create_index([("email", ASCENDING)], unique=True)
+    db["faculty"].create_index(
+        [("faculty_identifier", ASCENDING)],
+        unique=True,
+        partialFilterExpression={"faculty_identifier": {"$type": "string"}},
+    )
 
     db["courses"].create_index([("id", ASCENDING)], unique=True)
     db["courses"].create_index([("code", ASCENDING)], unique=True)
@@ -64,6 +74,25 @@ def _ensure_indexes(db) -> None:
 
     db["course_classrooms"].create_index([("id", ASCENDING)], unique=True)
     db["course_classrooms"].create_index([("course_id", ASCENDING)], unique=True)
+    db["course_classrooms"].create_index([("classroom_id", ASCENDING)])
+
+    db["blocks"].create_index([("block", ASCENDING)], unique=True)
+    db["blocks"].create_index([("updated_at", ASCENDING)])
+
+    db["timetable"].create_index([("schedule_id", ASCENDING)], unique=True)
+    db["timetable"].create_index([("weekday", ASCENDING), ("start_time", ASCENDING)])
+    db["timetable"].create_index([("faculty_id", ASCENDING), ("weekday", ASCENDING), ("start_time", ASCENDING)])
+    db["timetable"].create_index([("classroom_id", ASCENDING), ("weekday", ASCENDING), ("start_time", ASCENDING)])
+
+    db["admin_summary_snapshots"].create_index([("created_at", ASCENDING)])
+    db["admin_summary_snapshots"].create_index([("work_date", ASCENDING), ("created_at", ASCENDING)])
+    db["admin_alerts"].create_index([("id", ASCENDING)], unique=True)
+    db["admin_alerts"].create_index([("issue_type", ASCENDING), ("severity", ASCENDING)])
+    db["admin_alerts"].create_index([("updated_at", ASCENDING)])
+    db["admin_audit_logs"].create_index([("created_at", ASCENDING)])
+    db["admin_audit_logs"].create_index([("action", ASCENDING), ("created_at", ASCENDING)])
+    db["resource_allocations"].create_index([("course_id", ASCENDING)], unique=True)
+    db["resource_allocations"].create_index([("classroom_id", ASCENDING)])
 
     db["attendance_records"].create_index([("id", ASCENDING)], unique=True)
     db["attendance_records"].create_index(
@@ -123,12 +152,25 @@ def _ensure_indexes(db) -> None:
 
     db["makeup_classes"].create_index([("id", ASCENDING)], unique=True)
     db["makeup_classes"].create_index([("remedial_code", ASCENDING)], unique=True)
+    db["makeup_classes"].create_index([("class_date", ASCENDING), ("start_time", ASCENDING)])
+    db["makeup_classes"].create_index([("faculty_id", ASCENDING), ("class_date", ASCENDING)])
+    db["makeup_classes"].create_index([("code_expires_at", ASCENDING)])
+    db["makeup_classes"].create_index([("sections", ASCENDING)])
 
     db["remedial_attendance"].create_index([("id", ASCENDING)], unique=True)
     db["remedial_attendance"].create_index(
         [("makeup_class_id", ASCENDING), ("student_id", ASCENDING)],
         unique=True,
     )
+    db["remedial_attendance"].create_index([("student_id", ASCENDING), ("marked_at", ASCENDING)])
+
+    db["remedial_messages"].create_index([("id", ASCENDING)], unique=True)
+    db["remedial_messages"].create_index(
+        [("makeup_class_id", ASCENDING), ("student_id", ASCENDING)],
+        unique=True,
+    )
+    db["remedial_messages"].create_index([("student_id", ASCENDING), ("created_at", ASCENDING)])
+    db["remedial_messages"].create_index([("section", ASCENDING), ("created_at", ASCENDING)])
 
     db["class_schedules"].create_index([("id", ASCENDING)], unique=True)
     db["class_schedules"].create_index(
@@ -224,7 +266,14 @@ def init_mongo(force: bool = False) -> bool:
     global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt
 
     uri = _mongo_uri()
-    if not uri:
+    fallback_uri = _mongo_uri_fallback()
+    uri_candidates: list[str] = []
+    if uri:
+        uri_candidates.append(uri)
+    if fallback_uri and fallback_uri not in uri_candidates:
+        uri_candidates.append(fallback_uri)
+
+    if not uri_candidates:
         _mongo_client = None
         _mongo_db = None
         _mongo_error = "MONGODB_URI is not configured"
@@ -240,44 +289,48 @@ def init_mongo(force: bool = False) -> bool:
         return False
     _last_init_attempt = now
 
-    try:
-        mongo_kwargs: dict[str, Any] = {
-            # Atlas SRV resolution + replica discovery can intermittently exceed 5s.
-            "serverSelectionTimeoutMS": _int_env("MONGO_SERVER_SELECTION_TIMEOUT_MS", 15000, minimum=1000),
-            "connectTimeoutMS": _int_env("MONGO_CONNECT_TIMEOUT_MS", 10000, minimum=1000),
-            "socketTimeoutMS": _int_env("MONGO_SOCKET_TIMEOUT_MS", 20000, minimum=1000),
-            "tls": True,
-        }
+    mongo_kwargs: dict[str, Any] = {
+        # Atlas SRV resolution + replica discovery can intermittently exceed 5s.
+        "serverSelectionTimeoutMS": _int_env("MONGO_SERVER_SELECTION_TIMEOUT_MS", 15000, minimum=1000),
+        "connectTimeoutMS": _int_env("MONGO_CONNECT_TIMEOUT_MS", 10000, minimum=1000),
+        "socketTimeoutMS": _int_env("MONGO_SOCKET_TIMEOUT_MS", 20000, minimum=1000),
+        "tls": True,
+    }
 
-        ca_file = (os.getenv("MONGO_TLS_CA_FILE") or "").strip()
-        if not ca_file:
-            try:
-                import certifi  # type: ignore
-                ca_file = certifi.where()
-            except Exception:
-                ca_file = ""
-        if ca_file:
-            mongo_kwargs["tlsCAFile"] = ca_file
+    ca_file = (os.getenv("MONGO_TLS_CA_FILE") or "").strip()
+    if not ca_file:
+        try:
+            import certifi  # type: ignore
+            ca_file = certifi.where()
+        except Exception:
+            ca_file = ""
+    if ca_file:
+        mongo_kwargs["tlsCAFile"] = ca_file
 
-        if _bool_env("MONGO_TLS_DISABLE_OCSP_ENDPOINT_CHECK", default=False):
-            mongo_kwargs["tlsDisableOCSPEndpointCheck"] = True
-        if _bool_env("MONGO_TLS_ALLOW_INVALID_CERTIFICATES", default=False):
-            mongo_kwargs["tlsAllowInvalidCertificates"] = True
-        if _bool_env("MONGO_TLS_ALLOW_INVALID_HOSTNAMES", default=False):
-            mongo_kwargs["tlsAllowInvalidHostnames"] = True
+    if _bool_env("MONGO_TLS_DISABLE_OCSP_ENDPOINT_CHECK", default=False):
+        mongo_kwargs["tlsDisableOCSPEndpointCheck"] = True
+    if _bool_env("MONGO_TLS_ALLOW_INVALID_CERTIFICATES", default=False):
+        mongo_kwargs["tlsAllowInvalidCertificates"] = True
+    if _bool_env("MONGO_TLS_ALLOW_INVALID_HOSTNAMES", default=False):
+        mongo_kwargs["tlsAllowInvalidHostnames"] = True
 
-        client = MongoClient(uri, **mongo_kwargs)
-        client.admin.command("ping")
-        _mongo_client = client
-        _mongo_db = client[_mongo_db_name()]
-        _ensure_indexes(_mongo_db)
-        _mongo_error = None
-        return True
-    except PyMongoError as exc:
-        _mongo_client = None
-        _mongo_db = None
-        _mongo_error = str(exc)
-        return False
+    errors: list[str] = []
+    for idx, candidate_uri in enumerate(uri_candidates):
+        try:
+            client = MongoClient(candidate_uri, **mongo_kwargs)
+            client.admin.command("ping")
+            _mongo_client = client
+            _mongo_db = client[_mongo_db_name()]
+            _ensure_indexes(_mongo_db)
+            _mongo_error = None
+            return True
+        except PyMongoError as exc:
+            errors.append(f"candidate[{idx + 1}] failed: {exc}")
+
+    _mongo_client = None
+    _mongo_db = None
+    _mongo_error = " | ".join(errors) if errors else "MongoDB connection failed"
+    return False
 
 
 def close_mongo() -> None:
@@ -344,12 +397,29 @@ def mirror_document(
 
 def next_sequence(name: str) -> int:
     db = get_mongo_db(required=True)
-    row = db["counters"].find_one_and_update(
-        {"_id": name},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
+    try:
+        row = db["counters"].find_one_and_update(
+            {"_id": name},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except PyMongoError as exc:
+        # Atlas failover windows can temporarily drop the writable primary.
+        # Force one immediate reconnect attempt before failing.
+        if not init_mongo(force=True):
+            raise RuntimeError(_mongo_error or str(exc)) from exc
+        db = get_mongo_db(required=True)
+        try:
+            row = db["counters"].find_one_and_update(
+                {"_id": name},
+                {"$inc": {"seq": 1}},
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+        except PyMongoError as retry_exc:
+            raise RuntimeError(str(retry_exc)) from retry_exc
+
     seq = row.get("seq") if row else None
     return int(seq or 1)
 

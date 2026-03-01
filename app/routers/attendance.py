@@ -7,6 +7,7 @@ import re
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pymongo.errors import DuplicateKeyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -30,12 +31,23 @@ ENROLLMENT_VIDEO_LOCK_MESSAGE = "Enrollment video can only be updated once every
 REGISTRATION_IMMUTABLE_MESSAGE = (
     "Registration number is permanent and can't be changed without admin permissions."
 )
+FACULTY_PHOTO_LOCK_DAYS = 14
+FACULTY_PHOTO_LOCK_MESSAGE = "Faculty profile photo can only be changed once every 14 days. Please try again later."
+FACULTY_SECTION_LOCK_MINUTES = 24 * 60
+STUDENT_SECTION_LOCK_MINUTES = 48 * 60
+FACULTY_ID_IMMUTABLE_MESSAGE = (
+    "Faculty ID is permanent and can't be changed without admin permissions."
+)
+PROFILE_NAME_IMMUTABLE_MESSAGE = (
+    "Full name can be set once from profile setup and then changed only by admin."
+)
 FACE_MATCH_PASS_THRESHOLD = max(
     0.80,
     min(0.99, float(os.getenv("FACE_MATCH_PASS_THRESHOLD", "0.80"))),
 )
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
-ACADEMIC_START_DATE_DEFAULT = "2026-01-21"
+ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
+STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
 
 
 def _academic_start_date() -> date:
@@ -68,6 +80,42 @@ def _client_ai_verdict(payload: schemas.RealtimeAttendanceMarkRequest) -> dict |
 
 def _week_start_for(target_date: date) -> date:
     return target_date - timedelta(days=target_date.weekday())
+
+
+def _parse_remedial_sections(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: list[str] = []
+    for item in parsed:
+        token = re.sub(r"\s+", "", str(item or "").strip().upper())
+        if token:
+            out.append(token)
+    return out
+
+
+def _normalize_section_token(raw_value: str | None) -> str:
+    token = re.sub(r"\s+", "", str(raw_value or "").strip().upper())
+    if not token:
+        raise HTTPException(status_code=400, detail="section cannot be empty")
+    if len(token) > 80 or not STUDENT_SECTION_PATTERN.fullmatch(token):
+        raise HTTPException(
+            status_code=400,
+            detail="section can contain only letters, numbers, slash, hyphen, and underscore",
+        )
+    return token
+
+
+def _faculty_allowed_sections(raw_value: str | None) -> set[str]:
+    if not raw_value:
+        return set()
+    tokens = re.split(r"[,\s]+", str(raw_value).strip().upper())
+    return {token for token in tokens if token}
 
 
 def _class_datetime_bounds(schedule: models.ClassSchedule, class_date: date) -> tuple[datetime, datetime]:
@@ -116,6 +164,10 @@ def _window_flags(
     return is_open, is_active, is_ended
 
 
+def _time_ranges_overlap(left_start: time, left_end: time, right_start: time, right_end: time) -> bool:
+    return left_start < right_end and right_start < left_end
+
+
 def _normalize_registration_number(value: str) -> str:
     normalized = re.sub(r"\s+", "", value.strip().upper())
     if len(normalized) < 3:
@@ -125,6 +177,15 @@ def _normalize_registration_number(value: str) -> str:
             status_code=400,
             detail="registration_number can contain only letters, numbers, slash, and hyphen",
         )
+    return normalized
+
+
+def _normalize_person_name(value: str) -> str:
+    normalized = re.sub(r"\s+", " ", str(value or "").strip())
+    if len(normalized) < 2:
+        raise HTTPException(status_code=400, detail="name must be at least 2 characters")
+    if len(normalized) > 100:
+        raise HTTPException(status_code=400, detail="name cannot exceed 100 characters")
     return normalized
 
 
@@ -145,6 +206,8 @@ def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
             "enrollment_video_template_json": student.enrollment_video_template_json,
             "enrollment_video_updated_at": student.enrollment_video_updated_at,
             "enrollment_video_locked_until": student.enrollment_video_locked_until,
+            "section": student.section,
+            "section_updated_at": student.section_updated_at,
             "department": student.department,
             "semester": student.semester,
             "created_at": student.created_at,
@@ -153,14 +216,38 @@ def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
     )
 
 
+def _sync_faculty_to_mongo(faculty: models.Faculty, *, source: str) -> None:
+    _upsert_mongo_by_id(
+        "faculty",
+        faculty.id,
+        {
+            "name": faculty.name,
+            "email": faculty.email,
+            "faculty_identifier": faculty.faculty_identifier,
+            "section": faculty.section,
+            "section_updated_at": faculty.section_updated_at,
+            "profile_photo_data_url": faculty.profile_photo_data_url,
+            "profile_photo_updated_at": faculty.profile_photo_updated_at,
+            "profile_photo_locked_until": faculty.profile_photo_locked_until,
+            "department": faculty.department,
+            "created_at": faculty.created_at,
+            "source": source,
+        },
+    )
+
+
 def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
+    section_change_window_open, section_locked_until, section_lock_minutes_remaining = _student_section_lock_state(student)
+    has_section = bool(re.sub(r"\s+", "", str(student.section or "").strip()))
     return schemas.StudentProfileOut(
         student_id=student.id,
         name=student.name,
         email=student.email,
         registration_number=student.registration_number,
         parent_email=student.parent_email,
+        section=student.section,
+        section_updated_at=student.section_updated_at,
         department=student.department,
         semester=student.semester,
         has_profile_photo=bool(student.profile_photo_data_url),
@@ -168,6 +255,10 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
         can_update_photo_now=can_update_now,
         photo_locked_until=locked_until,
         photo_lock_days_remaining=lock_days_remaining,
+        can_update_section_now=not has_section,
+        section_locked_until=section_locked_until,
+        section_lock_minutes_remaining=section_lock_minutes_remaining,
+        section_change_requires_faculty_approval=has_section and section_change_window_open,
     )
 
 
@@ -193,6 +284,15 @@ def _apply_student_profile_update(
     photo_changed = False
     now_dt = datetime.utcnow()
 
+    if payload.name is not None:
+        incoming_name = _normalize_person_name(payload.name)
+        existing_name = re.sub(r"\s+", " ", (student.name or "").strip())
+        if existing_name and incoming_name.casefold() != existing_name.casefold():
+            raise HTTPException(status_code=403, detail=PROFILE_NAME_IMMUTABLE_MESSAGE)
+        if not existing_name:
+            student.name = incoming_name
+            changed = True
+
     if payload.registration_number is not None:
         registration_number = _normalize_registration_number(payload.registration_number)
         existing_registration = (student.registration_number or "").strip().upper()
@@ -200,6 +300,31 @@ def _apply_student_profile_update(
             raise HTTPException(status_code=403, detail=REGISTRATION_IMMUTABLE_MESSAGE)
         if not existing_registration:
             student.registration_number = registration_number
+            changed = True
+
+    if payload.section is not None:
+        incoming_section = _normalize_section_token(payload.section)
+        existing_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+        if incoming_section != existing_section:
+            section_change_window_open, _, section_lock_minutes_remaining = _student_section_lock_state(student, now_dt)
+            if existing_section and not section_change_window_open:
+                raise HTTPException(
+                    status_code=423,
+                    detail=(
+                        "Section can be changed only once every 48 hours. "
+                        f"Try again in {section_lock_minutes_remaining} minute(s)."
+                    ),
+                )
+            if existing_section and section_change_window_open:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Section change requires faculty permission after 48 hours. "
+                        "Ask your section faculty to approve the update."
+                    ),
+                )
+            student.section = incoming_section
+            student.section_updated_at = now_dt
             changed = True
 
     if payload.photo_data_url is not None:
@@ -220,6 +345,158 @@ def _apply_student_profile_update(
             student.profile_photo_data_url = incoming_photo
             student.profile_photo_updated_at = now_dt
             student.profile_photo_locked_until = now_dt + timedelta(days=PROFILE_PHOTO_LOCK_DAYS)
+            changed = True
+            photo_changed = True
+
+    return changed, photo_changed
+
+
+def _normalize_faculty_identifier(value: str) -> str:
+    normalized = re.sub(r"\s+", "", value.strip().upper())
+    if len(normalized) < 3:
+        raise HTTPException(status_code=400, detail="faculty_identifier must be at least 3 characters")
+    if not re.fullmatch(r"[A-Z0-9/-]+", normalized):
+        raise HTTPException(
+            status_code=400,
+            detail="faculty_identifier can contain only letters, numbers, slash, and hyphen",
+        )
+    return normalized
+
+
+def _faculty_photo_lock_state(
+    faculty: models.Faculty,
+    now_dt: datetime | None = None,
+) -> tuple[bool, datetime | None, int]:
+    now_dt = now_dt or datetime.utcnow()
+    locked_until = faculty.profile_photo_locked_until
+    if not locked_until or now_dt >= locked_until:
+        return True, locked_until, 0
+    remaining_days = math.ceil((locked_until - now_dt).total_seconds() / 86400)
+    return False, locked_until, max(0, remaining_days)
+
+
+def _faculty_section_lock_state(
+    faculty: models.Faculty,
+    now_dt: datetime | None = None,
+) -> tuple[bool, datetime | None, int]:
+    now_dt = now_dt or datetime.utcnow()
+    if not faculty.section or not faculty.section_updated_at:
+        return True, None, 0
+    locked_until = faculty.section_updated_at + timedelta(minutes=FACULTY_SECTION_LOCK_MINUTES)
+    if now_dt >= locked_until:
+        return True, locked_until, 0
+    remaining_minutes = math.ceil((locked_until - now_dt).total_seconds() / 60)
+    return False, locked_until, max(0, remaining_minutes)
+
+
+def _student_section_lock_state(
+    student: models.Student,
+    now_dt: datetime | None = None,
+) -> tuple[bool, datetime | None, int]:
+    now_dt = now_dt or datetime.utcnow()
+    if not student.section or not student.section_updated_at:
+        return True, None, 0
+    locked_until = student.section_updated_at + timedelta(minutes=STUDENT_SECTION_LOCK_MINUTES)
+    if now_dt >= locked_until:
+        return True, locked_until, 0
+    remaining_minutes = math.ceil((locked_until - now_dt).total_seconds() / 60)
+    return False, locked_until, max(0, remaining_minutes)
+
+
+def _faculty_profile_out(faculty: models.Faculty) -> schemas.FacultyProfileOut:
+    can_update_photo_now, photo_locked_until, photo_lock_days_remaining = _faculty_photo_lock_state(faculty)
+    can_update_section_now, section_locked_until, section_lock_minutes_remaining = _faculty_section_lock_state(faculty)
+    return schemas.FacultyProfileOut(
+        faculty_id=faculty.id,
+        name=faculty.name,
+        email=faculty.email,
+        department=faculty.department,
+        faculty_identifier=faculty.faculty_identifier,
+        section=faculty.section,
+        section_updated_at=faculty.section_updated_at,
+        has_profile_photo=bool(faculty.profile_photo_data_url),
+        photo_data_url=faculty.profile_photo_data_url,
+        can_update_photo_now=can_update_photo_now,
+        photo_locked_until=photo_locked_until,
+        photo_lock_days_remaining=photo_lock_days_remaining,
+        can_update_section_now=can_update_section_now,
+        section_locked_until=section_locked_until,
+        section_lock_minutes_remaining=section_lock_minutes_remaining,
+    )
+
+
+def _apply_faculty_profile_update(
+    faculty: models.Faculty,
+    payload: schemas.FacultyProfileUpdateRequest,
+    *,
+    db: Session,
+) -> tuple[bool, bool]:
+    changed = False
+    photo_changed = False
+    now_dt = datetime.utcnow()
+
+    if payload.name is not None:
+        incoming_name = _normalize_person_name(payload.name)
+        existing_name = re.sub(r"\s+", " ", (faculty.name or "").strip())
+        if existing_name and incoming_name.casefold() != existing_name.casefold():
+            raise HTTPException(status_code=403, detail=PROFILE_NAME_IMMUTABLE_MESSAGE)
+        if not existing_name:
+            faculty.name = incoming_name
+            changed = True
+
+    if payload.faculty_identifier is not None:
+        faculty_identifier = _normalize_faculty_identifier(payload.faculty_identifier)
+        existing_faculty_identifier = (faculty.faculty_identifier or "").strip().upper()
+        if existing_faculty_identifier and faculty_identifier != existing_faculty_identifier:
+            raise HTTPException(status_code=403, detail=FACULTY_ID_IMMUTABLE_MESSAGE)
+        if not existing_faculty_identifier:
+            conflict = (
+                db.query(models.Faculty)
+                .filter(
+                    models.Faculty.faculty_identifier == faculty_identifier,
+                    models.Faculty.id != faculty.id,
+                )
+                .first()
+            )
+            if conflict:
+                raise HTTPException(status_code=409, detail="Faculty ID already exists")
+            faculty.faculty_identifier = faculty_identifier
+            changed = True
+
+    if payload.section is not None:
+        incoming_section = _normalize_section_token(payload.section)
+        existing_section = re.sub(r"\s+", "", str(faculty.section or "").strip().upper())
+        if incoming_section != existing_section:
+            can_update_section_now, _, section_lock_minutes_remaining = _faculty_section_lock_state(faculty, now_dt)
+            if existing_section and not can_update_section_now:
+                raise HTTPException(
+                    status_code=423,
+                    detail=(
+                        "Section can only be changed once every 24 hours. "
+                        f"Try again in {section_lock_minutes_remaining} minute(s)."
+                    ),
+                )
+            faculty.section = incoming_section
+            faculty.section_updated_at = now_dt
+            changed = True
+
+    if payload.photo_data_url is not None:
+        incoming_photo = payload.photo_data_url.strip()
+        if not incoming_photo.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="photo_data_url must be an image data URL")
+
+        can_update_photo_now, _, _ = _faculty_photo_lock_state(faculty, now_dt)
+        existing_photo = (faculty.profile_photo_data_url or "").strip()
+        if existing_photo and incoming_photo != existing_photo and not can_update_photo_now:
+            raise HTTPException(status_code=423, detail=FACULTY_PHOTO_LOCK_MESSAGE)
+
+        if incoming_photo != existing_photo:
+            if existing_photo:
+                faculty.profile_photo_data_url = None
+                db.flush()
+            faculty.profile_photo_data_url = incoming_photo
+            faculty.profile_photo_updated_at = now_dt
+            faculty.profile_photo_locked_until = now_dt + timedelta(days=FACULTY_PHOTO_LOCK_DAYS)
             changed = True
             photo_changed = True
 
@@ -295,7 +572,35 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     body = dict(payload)
     body["id"] = doc_id
-    mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    try:
+        mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    except DuplicateKeyError as exc:
+        details = getattr(exc, "details", {}) or {}
+        key_value = details.get("keyValue")
+        if not isinstance(key_value, dict) or not key_value:
+            raise
+
+        # If a secondary unique key (for example course_id) collides, refresh the
+        # existing document by that key and keep its current id.
+        conflict_filter = dict(key_value)
+        fallback_body = dict(body)
+        fallback_body.pop("id", None)
+        result = mongo_db[collection].update_one(conflict_filter, {"$set": fallback_body}, upsert=False)
+        if result.matched_count:
+            logger.warning(
+                "Resolved duplicate-key upsert for collection=%s id=%s via filter=%s",
+                collection,
+                doc_id,
+                conflict_filter,
+            )
+            return
+        logger.warning(
+            "Skipping unresolved duplicate-key upsert for collection=%s id=%s filter=%s",
+            collection,
+            doc_id,
+            conflict_filter,
+        )
+        return
 
 
 def _upsert_present_attendance(
@@ -393,9 +698,18 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
         "classrooms": 0,
         "schedules": 0,
         "enrollments": 0,
+        "updated_courses": 0,
+        "updated_assignments": 0,
+        "updated_schedules": 0,
+        "deactivated_schedules": 0,
+        "removed_enrollments": 0,
+        "purged_attendance_records": 0,
+        "purged_attendance_submissions": 0,
         "total_classes": len(DEFAULT_TIMETABLE_BLUEPRINT),
     }
     default_course_ids: set[int] = set()
+    desired_schedule_slots: set[tuple[int, int, time]] = set()
+    allowed_weekdays_by_course: dict[int, set[int]] = {}
 
     for item in DEFAULT_TIMETABLE_BLUEPRINT:
         faculty = db.query(models.Faculty).filter(models.Faculty.email == item["faculty_email"]).first()
@@ -414,6 +728,12 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             {
                 "name": faculty.name,
                 "email": faculty.email,
+                "faculty_identifier": faculty.faculty_identifier,
+                "section": faculty.section,
+                "section_updated_at": faculty.section_updated_at,
+                "profile_photo_data_url": faculty.profile_photo_data_url,
+                "profile_photo_updated_at": faculty.profile_photo_updated_at,
+                "profile_photo_locked_until": faculty.profile_photo_locked_until,
                 "department": faculty.department,
                 "created_at": faculty.created_at,
                 "source": "default-timetable-loader",
@@ -431,8 +751,15 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             db.flush()
             created["courses"] += 1
         else:
-            course.title = item["course_title"]
-            course.faculty_id = faculty.id
+            course_changed = False
+            if course.title != item["course_title"]:
+                course.title = item["course_title"]
+                course_changed = True
+            if course.faculty_id != faculty.id:
+                course.faculty_id = faculty.id
+                course_changed = True
+            if course_changed:
+                created["updated_courses"] += 1
         _upsert_mongo_by_id(
             "courses",
             course.id,
@@ -483,7 +810,9 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             db.add(assignment)
             db.flush()
         else:
-            assignment.classroom_id = classroom.id
+            if assignment.classroom_id != classroom.id:
+                assignment.classroom_id = classroom.id
+                created["updated_assignments"] += 1
         _upsert_mongo_by_id(
             "course_classrooms",
             assignment.id,
@@ -519,10 +848,21 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             db.flush()
             created["schedules"] += 1
         else:
-            schedule.faculty_id = faculty.id
-            schedule.end_time = end_t
-            schedule.classroom_label = item["classroom_label"]
-            schedule.is_active = True
+            schedule_changed = False
+            if schedule.faculty_id != faculty.id:
+                schedule.faculty_id = faculty.id
+                schedule_changed = True
+            if schedule.end_time != end_t:
+                schedule.end_time = end_t
+                schedule_changed = True
+            if (schedule.classroom_label or "") != item["classroom_label"]:
+                schedule.classroom_label = item["classroom_label"]
+                schedule_changed = True
+            if not schedule.is_active:
+                schedule.is_active = True
+                schedule_changed = True
+            if schedule_changed:
+                created["updated_schedules"] += 1
         _upsert_mongo_by_id(
             "class_schedules",
             schedule.id,
@@ -538,6 +878,8 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
                 "source": "default-timetable-loader",
             },
         )
+        desired_schedule_slots.add((course.id, item["weekday"], start_t))
+        allowed_weekdays_by_course.setdefault(course.id, set()).add(item["weekday"])
 
         enrollment = (
             db.query(models.Enrollment)
@@ -563,22 +905,166 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             },
         )
 
+    mongo_db = get_mongo_db()
+
+    stale_schedule_ids: list[int] = []
+    if default_course_ids:
+        all_default_schedules = (
+            db.query(models.ClassSchedule)
+            .filter(models.ClassSchedule.course_id.in_(sorted(default_course_ids)))
+            .all()
+        )
+        for schedule in all_default_schedules:
+            signature = (schedule.course_id, schedule.weekday, schedule.start_time)
+            if signature in desired_schedule_slots:
+                continue
+            stale_schedule_ids.append(schedule.id)
+            if schedule.is_active:
+                schedule.is_active = False
+                created["deactivated_schedules"] += 1
+                _upsert_mongo_by_id(
+                    "class_schedules",
+                    schedule.id,
+                    {
+                        "course_id": schedule.course_id,
+                        "faculty_id": schedule.faculty_id,
+                        "weekday": schedule.weekday,
+                        "start_time": str(schedule.start_time),
+                        "end_time": str(schedule.end_time),
+                        "classroom_label": schedule.classroom_label,
+                        "is_active": False,
+                        "created_at": schedule.created_at,
+                        "source": "default-timetable-loader",
+                    },
+                )
+
+    if created["deactivated_schedules"] > 0:
+        reset_record_count = (
+            db.query(models.AttendanceRecord)
+            .filter(models.AttendanceRecord.student_id == student.id)
+            .delete(synchronize_session=False)
+        )
+        reset_submission_count = (
+            db.query(models.AttendanceSubmission)
+            .filter(models.AttendanceSubmission.student_id == student.id)
+            .delete(synchronize_session=False)
+        )
+        created["purged_attendance_records"] += int(reset_record_count or 0)
+        created["purged_attendance_submissions"] += int(reset_submission_count or 0)
+        if mongo_db is not None:
+            mongo_db["attendance_records"].delete_many({"student_id": student.id})
+            mongo_db["attendance_submissions"].delete_many({"student_id": student.id})
+    elif stale_schedule_ids:
+        stale_submission_count = (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == student.id,
+                models.AttendanceSubmission.schedule_id.in_(stale_schedule_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        created["purged_attendance_submissions"] += int(stale_submission_count or 0)
+        if mongo_db is not None:
+            mongo_db["attendance_submissions"].delete_many(
+                {
+                    "student_id": student.id,
+                    "schedule_id": {"$in": stale_schedule_ids},
+                }
+            )
+
     stale_enrollments = (
         db.query(models.Enrollment)
         .filter(models.Enrollment.student_id == student.id)
         .filter(~models.Enrollment.course_id.in_(default_course_ids))
         .all()
     )
+    stale_course_ids: list[int] = []
     for stale in stale_enrollments:
+        stale_course_ids.append(stale.course_id)
         db.delete(stale)
-        mongo_db = get_mongo_db()
+    created["removed_enrollments"] += len(stale_enrollments)
+    if stale_course_ids:
+        stale_course_ids = sorted(set(stale_course_ids))
+        stale_record_count = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == student.id,
+                models.AttendanceRecord.course_id.in_(stale_course_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        stale_submission_count = (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == student.id,
+                models.AttendanceSubmission.course_id.in_(stale_course_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+        created["purged_attendance_records"] += int(stale_record_count or 0)
+        created["purged_attendance_submissions"] += int(stale_submission_count or 0)
+
         if mongo_db is not None:
             mongo_db["enrollments"].delete_many(
                 {
                     "student_id": student.id,
-                    "course_id": stale.course_id,
+                    "course_id": {"$in": stale_course_ids},
                 }
             )
+            mongo_db["attendance_records"].delete_many(
+                {
+                    "student_id": student.id,
+                    "course_id": {"$in": stale_course_ids},
+                }
+            )
+            mongo_db["attendance_submissions"].delete_many(
+                {
+                    "student_id": student.id,
+                    "course_id": {"$in": stale_course_ids},
+                }
+            )
+
+    if default_course_ids:
+        default_course_ids_sorted = sorted(default_course_ids)
+        candidate_records = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == student.id,
+                models.AttendanceRecord.course_id.in_(default_course_ids_sorted),
+            )
+            .all()
+        )
+        mismatched_record_ids: list[int] = []
+        for record in candidate_records:
+            allowed_weekdays = allowed_weekdays_by_course.get(record.course_id, set())
+            if allowed_weekdays and record.attendance_date.weekday() not in allowed_weekdays:
+                mismatched_record_ids.append(record.id)
+                db.delete(record)
+
+        if mismatched_record_ids:
+            created["purged_attendance_records"] += len(mismatched_record_ids)
+            if mongo_db is not None:
+                mongo_db["attendance_records"].delete_many({"id": {"$in": mismatched_record_ids}})
+
+        candidate_submissions = (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == student.id,
+                models.AttendanceSubmission.course_id.in_(default_course_ids_sorted),
+            )
+            .all()
+        )
+        mismatched_submission_ids: list[int] = []
+        for submission in candidate_submissions:
+            allowed_weekdays = allowed_weekdays_by_course.get(submission.course_id, set())
+            if allowed_weekdays and submission.class_date.weekday() not in allowed_weekdays:
+                mismatched_submission_ids.append(submission.id)
+                db.delete(submission)
+
+        if mismatched_submission_ids:
+            created["purged_attendance_submissions"] += len(mismatched_submission_ids)
+            if mongo_db is not None:
+                mongo_db["attendance_submissions"].delete_many({"id": {"$in": mismatched_submission_ids}})
 
     return created
 
@@ -615,7 +1101,82 @@ def create_schedule(
     if existing:
         raise HTTPException(status_code=409, detail="Schedule already exists for this course and start time")
 
-    schedule = models.ClassSchedule(**payload.model_dump())
+    assignment = (
+        db.query(models.CourseClassroom)
+        .filter(models.CourseClassroom.course_id == payload.course_id)
+        .first()
+    )
+    if not assignment:
+        raise HTTPException(
+            status_code=400,
+            detail="Linking engine check failed: assign a classroom to this course before scheduling",
+        )
+
+    classroom = db.get(models.Classroom, assignment.classroom_id)
+    classroom_label = payload.classroom_label or (
+        f"{classroom.block}-{classroom.room_number}" if classroom else None
+    )
+
+    weekday_schedules = (
+        db.query(models.ClassSchedule)
+        .filter(
+            models.ClassSchedule.is_active.is_(True),
+            models.ClassSchedule.weekday == payload.weekday,
+        )
+        .all()
+    )
+    room_by_course = {
+        int(row.course_id): int(row.classroom_id)
+        for row in db.query(models.CourseClassroom).all()
+    }
+    for row in weekday_schedules:
+        if not _time_ranges_overlap(payload.start_time, payload.end_time, row.start_time, row.end_time):
+            continue
+
+        if int(row.faculty_id) == int(payload.faculty_id):
+            mirror_document(
+                "admin_audit_logs",
+                {
+                    "action": "schedule_create_rejected",
+                    "reason": "faculty_time_overlap",
+                    "payload": payload.model_dump(mode="json"),
+                    "conflict_with_schedule_id": int(row.id),
+                    "created_at": datetime.utcnow(),
+                    "source": "attendance.create_schedule",
+                    "actor_user_id": current_user.id,
+                    "actor_role": current_user.role.value,
+                },
+                required=False,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Linking engine check failed: faculty has overlapping class (schedule {row.id})",
+            )
+
+        existing_room_id = room_by_course.get(int(row.course_id))
+        new_room_id = int(assignment.classroom_id)
+        if existing_room_id and existing_room_id == new_room_id:
+            mirror_document(
+                "admin_audit_logs",
+                {
+                    "action": "schedule_create_rejected",
+                    "reason": "classroom_time_overlap",
+                    "payload": payload.model_dump(mode="json"),
+                    "conflict_with_schedule_id": int(row.id),
+                    "classroom_id": int(new_room_id),
+                    "created_at": datetime.utcnow(),
+                    "source": "attendance.create_schedule",
+                    "actor_user_id": current_user.id,
+                    "actor_role": current_user.role.value,
+                },
+                required=False,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Linking engine check failed: classroom has overlapping class (schedule {row.id})",
+            )
+
+    schedule = models.ClassSchedule(**(payload.model_dump() | {"classroom_label": classroom_label}))
     db.add(schedule)
     db.commit()
     db.refresh(schedule)
@@ -634,6 +1195,38 @@ def create_schedule(
             "source": "api",
             "created_at": schedule.created_at,
         },
+    )
+    mirror_document(
+        "resource_allocations",
+        {
+            "course_id": int(payload.course_id),
+            "classroom_id": int(assignment.classroom_id),
+            "classroom_label": classroom_label,
+            "faculty_id": int(payload.faculty_id),
+            "updated_at": datetime.utcnow(),
+            "source": "attendance.create_schedule",
+        },
+        upsert_filter={"course_id": int(payload.course_id)},
+        required=False,
+    )
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": "schedule_created",
+            "schedule_id": int(schedule.id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "classroom_id": int(assignment.classroom_id),
+            "classroom_label": classroom_label,
+            "weekday": int(schedule.weekday),
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "created_at": datetime.utcnow(),
+            "source": "attendance.create_schedule",
+            "actor_user_id": current_user.id,
+            "actor_role": current_user.role.value,
+        },
+        required=False,
     )
 
     return schedule
@@ -709,6 +1302,153 @@ def load_default_student_timetable(
     )
 
 
+@router.get("/faculty/profile", response_model=schemas.FacultyProfileOut)
+def get_faculty_profile(
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.FACULTY)),
+):
+    if not current_user.faculty_id:
+        raise HTTPException(status_code=403, detail="Faculty account is not linked correctly")
+
+    faculty = db.get(models.Faculty, current_user.faculty_id)
+    if not faculty:
+        raise HTTPException(status_code=404, detail="Faculty not found")
+
+    return _faculty_profile_out(faculty)
+
+
+@router.put("/faculty/profile", response_model=schemas.FacultyProfileOut)
+def update_faculty_profile(
+    payload: schemas.FacultyProfileUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.FACULTY)),
+):
+    if not current_user.faculty_id:
+        raise HTTPException(status_code=403, detail="Faculty account is not linked correctly")
+
+    faculty = db.get(models.Faculty, current_user.faculty_id)
+    if not faculty:
+        raise HTTPException(status_code=404, detail="Faculty not found")
+
+    if (
+        payload.name is None
+        and payload.faculty_identifier is None
+        and payload.section is None
+        and payload.photo_data_url is None
+    ):
+        raise HTTPException(status_code=400, detail="Provide name, faculty_identifier, section, and/or photo_data_url")
+
+    changed, _ = _apply_faculty_profile_update(faculty, payload, db=db)
+    if changed:
+        db.commit()
+    else:
+        db.flush()
+
+    _sync_faculty_to_mongo(faculty, source="faculty-profile-update")
+
+    try:
+        mongo_db = get_mongo_db(required=True)
+        mongo_db["auth_users"].update_one(
+            {"id": int(current_user.id)},
+            {"$set": {"name": faculty.name}},
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    mirror_document(
+        "faculty_profiles",
+        {
+            "faculty_id": faculty.id,
+            "name": faculty.name,
+            "faculty_identifier": faculty.faculty_identifier,
+            "section": faculty.section,
+            "section_updated_at": faculty.section_updated_at,
+            "profile_photo_fingerprint": _photo_fingerprint(faculty.profile_photo_data_url),
+            "profile_photo_size": len(faculty.profile_photo_data_url or ""),
+            "profile_photo_updated_at": faculty.profile_photo_updated_at,
+            "profile_photo_locked_until": faculty.profile_photo_locked_until,
+            "source": "faculty-portal",
+            "updated_at": datetime.utcnow(),
+        },
+        upsert_filter={"faculty_id": faculty.id},
+    )
+
+    return _faculty_profile_out(faculty)
+
+
+@router.put("/faculty/students/{student_id}/section", response_model=schemas.StudentProfileOut)
+def faculty_update_student_section(
+    student_id: int,
+    payload: schemas.FacultyStudentSectionUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    student = db.get(models.Student, student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    target_section = _normalize_section_token(payload.section)
+    current_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    if target_section == current_section:
+        return _student_profile_out(student)
+
+    now_dt = datetime.utcnow()
+    can_change_section_now, _, section_lock_minutes_remaining = _student_section_lock_state(student, now_dt)
+    if current_section and not can_change_section_now:
+        raise HTTPException(
+            status_code=423,
+            detail=(
+                "Student section can be changed only once every 48 hours. "
+                f"Try again in {section_lock_minutes_remaining} minute(s)."
+            ),
+        )
+
+    if current_user.role == models.UserRole.FACULTY:
+        if not current_user.faculty_id:
+            raise HTTPException(status_code=403, detail="Faculty account is not linked correctly")
+        faculty = db.get(models.Faculty, current_user.faculty_id)
+        if not faculty:
+            raise HTTPException(status_code=404, detail="Faculty not found")
+        allowed_sections = _faculty_allowed_sections(faculty.section)
+        if not allowed_sections:
+            raise HTTPException(
+                status_code=403,
+                detail="Set your faculty section before approving student section updates.",
+            )
+        if target_section not in allowed_sections:
+            raise HTTPException(
+                status_code=403,
+                detail="Faculty can update students only to their own section scope.",
+            )
+        if current_section and current_section not in allowed_sections:
+            raise HTTPException(
+                status_code=403,
+                detail="Faculty can approve updates only for students in their section scope.",
+            )
+
+    student.section = target_section
+    student.section_updated_at = now_dt
+    db.commit()
+
+    _sync_student_to_mongo(student, source="faculty-approved-section-update")
+    mirror_document(
+        "student_section_updates",
+        {
+            "student_id": student.id,
+            "student_email": student.email,
+            "previous_section": current_section or None,
+            "new_section": target_section,
+            "updated_at": now_dt,
+            "approved_by_user_id": current_user.id,
+            "approved_by_faculty_id": current_user.faculty_id,
+            "source": "faculty-approval",
+        },
+        upsert_filter={"student_id": student.id},
+    )
+
+    return _student_profile_out(student)
+
+
 @router.get("/student/profile-photo", response_model=schemas.StudentProfilePhotoOut)
 def get_student_profile_photo(
     db: Session = Depends(get_db),
@@ -752,8 +1492,13 @@ def update_student_profile(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    if payload.registration_number is None and payload.photo_data_url is None:
-        raise HTTPException(status_code=400, detail="Provide registration_number and/or photo_data_url")
+    if (
+        payload.name is None
+        and payload.registration_number is None
+        and payload.photo_data_url is None
+        and payload.section is None
+    ):
+        raise HTTPException(status_code=400, detail="Provide name, registration_number, section, and/or photo_data_url")
 
     changed, photo_changed = _apply_student_profile_update(student, payload, db=db)
     if photo_changed:
@@ -766,10 +1511,20 @@ def update_student_profile(
 
     _sync_student_to_mongo(student, source="student-profile-update")
 
+    try:
+        mongo_db = get_mongo_db(required=True)
+        mongo_db["auth_users"].update_one(
+            {"id": int(current_user.id)},
+            {"$set": {"name": student.name}},
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     mirror_document(
         "student_profile_faces",
         {
             "student_id": student.id,
+            "name": student.name,
             "registration_number": student.registration_number,
             "profile_photo_fingerprint": _photo_fingerprint(student.profile_photo_data_url),
             "profile_photo_size": len(student.profile_photo_data_url or ""),
@@ -833,6 +1588,76 @@ def update_student_profile_photo(
     return _student_photo_out(student)
 
 
+@router.put("/student/enrollment-video", response_model=schemas.StudentEnrollmentVideoOut)
+def update_student_enrollment_video(
+    payload: schemas.StudentEnrollmentVideoRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    student = db.get(models.Student, current_user.student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    if not student.registration_number or not student.profile_photo_data_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Complete profile setup (registration number + face photo) before enrollment video",
+        )
+
+    now_dt = datetime.utcnow()
+    can_update_now, locked_until, lock_days_remaining = _enrollment_lock_state(student, now_dt)
+    if student.enrollment_video_template_json and not can_update_now:
+        raise HTTPException(status_code=423, detail=ENROLLMENT_VIDEO_LOCK_MESSAGE)
+
+    if len(payload.frames_data_urls) < 8:
+        raise HTTPException(status_code=400, detail="At least 8 frames are required for enrollment")
+
+    template = build_enrollment_template_from_frames(payload.frames_data_urls)
+    valid_frames = int(template.get("valid_frames", 0))
+    if valid_frames < 8:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient valid enrollment frames ({valid_frames}/8). Ensure one clear face with slight head movement.",
+        )
+
+    student.enrollment_video_template_json = json.dumps(template)
+    student.enrollment_video_updated_at = now_dt
+    student.enrollment_video_locked_until = now_dt + timedelta(days=ENROLLMENT_VIDEO_LOCK_DAYS)
+
+    db.commit()
+
+    _sync_student_to_mongo(student, source="student-enrollment-video")
+
+    mirror_document(
+        "student_enrollment_videos",
+        {
+            "student_id": student.id,
+            "valid_frames": valid_frames,
+            "total_frames_received": len(payload.frames_data_urls),
+            "enrollment_template_fingerprint": _photo_fingerprint(student.enrollment_video_template_json),
+            "enrollment_video_updated_at": student.enrollment_video_updated_at,
+            "enrollment_video_locked_until": student.enrollment_video_locked_until,
+            "source": "student-portal",
+            "updated_at": datetime.utcnow(),
+        },
+        upsert_filter={"student_id": student.id},
+    )
+
+    return schemas.StudentEnrollmentVideoOut(
+        has_enrollment_video=True,
+        can_update_now=False,
+        locked_until=student.enrollment_video_locked_until,
+        lock_days_remaining=math.ceil((student.enrollment_video_locked_until - now_dt).total_seconds() / 86400),
+        enrollment_updated_at=student.enrollment_video_updated_at,
+        message="Enrollment video captured successfully",
+        valid_frames_used=valid_frames,
+        total_frames_received=len(payload.frames_data_urls),
+    )
+
+
 @router.get("/student/enrollment-status", response_model=schemas.StudentEnrollmentStatusOut)
 def get_student_enrollment_status(
     db: Session = Depends(get_db),
@@ -840,74 +1665,18 @@ def get_student_enrollment_status(
 ):
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
     student = db.get(models.Student, current_user.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
-    return _student_enrollment_status_out(student)
 
-
-@router.put("/student/enrollment-video", response_model=schemas.StudentEnrollmentVideoOut)
-def upsert_student_enrollment_video(
-    payload: schemas.StudentEnrollmentVideoRequest,
-    db: Session = Depends(get_db),
-    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
-):
-    if not current_user.student_id:
-        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
-    student = db.get(models.Student, current_user.student_id)
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-    if not student.registration_number or not student.profile_photo_data_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Complete profile setup (registration number + face photo) before enrollment video",
-        )
-
-    can_update_now, _, lock_days_remaining = _enrollment_lock_state(student)
-    if student.enrollment_video_template_json and not can_update_now:
-        raise HTTPException(
-            status_code=423,
-            detail=f"Enrollment video can only be updated after {lock_days_remaining} day(s).",
-        )
-
-    now_dt = datetime.utcnow()
-    try:
-        template = build_enrollment_template_from_frames(payload.frames_data_urls)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    student.enrollment_video_template_json = json.dumps(template)
-    student.enrollment_video_updated_at = now_dt
-    student.enrollment_video_locked_until = now_dt + timedelta(days=ENROLLMENT_VIDEO_LOCK_DAYS)
-    db.commit()
-
-    _sync_student_to_mongo(student, source="student-enrollment-video-update")
-
-    quality = template.get("quality", {}) if isinstance(template, dict) else {}
-    valid_frames_used = int(quality.get("valid_frames_used", 0) or 0)
-    total_frames_received = int(quality.get("frames_received", len(payload.frames_data_urls)) or len(payload.frames_data_urls))
-    mirror_document(
-        "student_enrollment_videos",
-        {
-            "student_id": student.id,
-            "registration_number": student.registration_number,
-            "enrollment_template_fingerprint": _photo_fingerprint(student.enrollment_video_template_json),
-            "enrollment_updated_at": student.enrollment_video_updated_at,
-            "enrollment_locked_until": student.enrollment_video_locked_until,
-            "valid_frames_used": valid_frames_used,
-            "total_frames_received": total_frames_received,
-            "source": "student-portal-enrollment-video",
-            "updated_at": datetime.utcnow(),
-        },
-        upsert_filter={"student_id": student.id},
-    )
-
-    status_out = _student_enrollment_status_out(student)
-    return schemas.StudentEnrollmentVideoOut(
-        message="Enrollment video saved successfully",
-        valid_frames_used=valid_frames_used,
-        total_frames_received=total_frames_received,
-        **status_out.model_dump(),
+    can_update_now, locked_until, lock_days_remaining = _enrollment_lock_state(student)
+    return schemas.StudentEnrollmentStatusOut(
+        has_enrollment_video=bool(student.enrollment_video_template_json),
+        can_update_now=can_update_now,
+        locked_until=locked_until,
+        lock_days_remaining=lock_days_remaining,
+        enrollment_updated_at=student.enrollment_video_updated_at,
     )
 
 
@@ -925,10 +1694,10 @@ def get_student_weekly_timetable(
         raise HTTPException(status_code=404, detail="Student not found")
 
     created = _ensure_default_timetable_for_student(db, student)
-    if any(
-        created[key]
-        for key in ("faculty", "courses", "classrooms", "schedules", "enrollments")
-    ):
+    has_default_timetable_changes = any(
+        value for key, value in created.items() if key != "total_classes"
+    )
+    if has_default_timetable_changes:
         db.commit()
     else:
         db.flush()
@@ -938,6 +1707,7 @@ def get_student_weekly_timetable(
     min_week_start = _week_start_for(academic_start)
     requested_week_start = _week_start_for(week_start or today)
     current_week_start = max(requested_week_start, min_week_start)
+    current_week_end = current_week_start + timedelta(days=6)
 
     enrollments = (
         db.query(models.Enrollment)
@@ -945,22 +1715,17 @@ def get_student_weekly_timetable(
         .all()
     )
     course_ids = [item.course_id for item in enrollments]
-    if not course_ids:
-        return schemas.WeeklyTimetableOut(
-            week_start=current_week_start,
-            min_navigable_date=academic_start,
-            classes=[],
+    schedules: list[models.ClassSchedule] = []
+    if course_ids:
+        schedules = (
+            db.query(models.ClassSchedule)
+            .filter(
+                models.ClassSchedule.is_active.is_(True),
+                models.ClassSchedule.course_id.in_(course_ids),
+            )
+            .order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc())
+            .all()
         )
-
-    schedules = (
-        db.query(models.ClassSchedule)
-        .filter(
-            models.ClassSchedule.is_active.is_(True),
-            models.ClassSchedule.course_id.in_(course_ids),
-        )
-        .order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc())
-        .all()
-    )
 
     now_dt = datetime.now()
     result: list[schemas.TimetableClassOut] = []
@@ -1008,6 +1773,100 @@ def get_student_weekly_timetable(
             )
         )
 
+    student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    targeted_remedial_class_ids = {
+        int(row[0])
+        for row in (
+            db.query(models.RemedialMessage.makeup_class_id)
+            .filter(models.RemedialMessage.student_id == current_user.student_id)
+            .distinct()
+            .all()
+        )
+        if row and row[0]
+    }
+    remedial_query = db.query(models.MakeUpClass).filter(
+        models.MakeUpClass.is_active.is_(True),
+        models.MakeUpClass.class_date >= current_week_start,
+        models.MakeUpClass.class_date <= current_week_end,
+    )
+    if targeted_remedial_class_ids:
+        remedial_query = remedial_query.filter(models.MakeUpClass.id.in_(sorted(targeted_remedial_class_ids)))
+        remedial_classes = (
+            remedial_query
+            .order_by(models.MakeUpClass.class_date.asc(), models.MakeUpClass.start_time.asc())
+            .all()
+        )
+    else:
+        remedial_classes = []
+
+    for remedial in remedial_classes:
+        sections = set(_parse_remedial_sections(remedial.sections_json))
+        if sections:
+            if not student_section:
+                continue
+            if student_section not in sections:
+                continue
+
+        course = db.get(models.Course, remedial.course_id)
+        if not course:
+            continue
+
+        class_start = datetime.combine(remedial.class_date, remedial.start_time)
+        class_end = datetime.combine(remedial.class_date, remedial.end_time)
+        window_minutes = max(1, int(remedial.attendance_open_minutes or 15))
+        window_end = class_start + timedelta(minutes=window_minutes)
+        is_open_now = class_start <= now_dt <= window_end
+        is_active_now = class_start <= now_dt <= class_end
+        is_ended_now = now_dt > class_end
+
+        marked = (
+            db.query(models.RemedialAttendance.id)
+            .filter(
+                models.RemedialAttendance.makeup_class_id == remedial.id,
+                models.RemedialAttendance.student_id == current_user.student_id,
+            )
+            .first()
+            is not None
+        )
+
+        if (remedial.class_mode or "offline") == "online":
+            classroom_label = "MyClass Platform | Online"
+        else:
+            room = (remedial.room_number or "Room TBA").strip() or "Room TBA"
+            classroom_label = f"{room} | Offline"
+
+        result.append(
+            schemas.TimetableClassOut(
+                schedule_id=-int(remedial.id),
+                course_id=remedial.course_id,
+                course_code=course.code,
+                course_title=f"{course.title} (Remedial)",
+                weekday=remedial.class_date.weekday(),
+                start_time=remedial.start_time,
+                end_time=remedial.end_time,
+                classroom_label=classroom_label,
+                class_date=remedial.class_date,
+                is_open_now=is_open_now,
+                is_active_now=is_active_now,
+                is_ended_now=is_ended_now,
+                attendance_status="present" if marked else ("absent" if now_dt > window_end else None),
+                class_kind="remedial",
+                attendance_window_minutes=window_minutes,
+                remedial_class_id=remedial.id,
+                remedial_code_required=True,
+            )
+        )
+
+    result.sort(
+        key=lambda item: (
+            item.class_date,
+            item.start_time,
+            item.course_code,
+            item.class_kind,
+            item.schedule_id,
+        )
+    )
+
     return schemas.WeeklyTimetableOut(
         week_start=current_week_start,
         min_navigable_date=academic_start,
@@ -1024,12 +1883,16 @@ def get_student_attendance_history(
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
+    academic_start = _academic_start_date()
+    today = date.today()
     fetch_limit = min(365, max(limit * 3, 80))
     submissions = (
         db.query(models.AttendanceSubmission)
         .filter(
             models.AttendanceSubmission.student_id == current_user.student_id,
             models.AttendanceSubmission.status.in_(_CREDITED_SUBMISSION_STATUSES),
+            models.AttendanceSubmission.class_date >= academic_start,
+            models.AttendanceSubmission.class_date <= today,
         )
         .order_by(
             models.AttendanceSubmission.class_date.desc(),
@@ -1043,7 +1906,11 @@ def get_student_attendance_history(
     submission_course_day_keys = {(item.course_id, item.class_date) for item in submissions}
     records = (
         db.query(models.AttendanceRecord)
-        .filter(models.AttendanceRecord.student_id == current_user.student_id)
+        .filter(
+            models.AttendanceRecord.student_id == current_user.student_id,
+            models.AttendanceRecord.attendance_date >= academic_start,
+            models.AttendanceRecord.attendance_date <= today,
+        )
         .order_by(models.AttendanceRecord.attendance_date.desc(), models.AttendanceRecord.id.desc())
         .limit(fetch_limit)
         .all()
@@ -1165,12 +2032,17 @@ def get_student_attendance_aggregate(
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
+    academic_start = _academic_start_date()
+    now_dt = datetime.now()
+    today = now_dt.date()
+
     enrollments = (
         db.query(models.Enrollment)
         .filter(models.Enrollment.student_id == current_user.student_id)
         .all()
     )
-    if not enrollments:
+    course_ids = sorted({item.course_id for item in enrollments})
+    if not course_ids:
         return schemas.StudentAttendanceAggregateOut(
             aggregate_percent=0.0,
             attended_total=0,
@@ -1178,11 +2050,7 @@ def get_student_attendance_aggregate(
             courses=[],
         )
 
-    course_ids = [item.course_id for item in enrollments]
     courses = {row.id: row for row in db.query(models.Course).filter(models.Course.id.in_(course_ids)).all()}
-    academic_start = _academic_start_date()
-    now_dt = datetime.now()
-    today = now_dt.date()
 
     faculty_ids = sorted({course.faculty_id for course in courses.values()})
     faculties = {row.id: row for row in db.query(models.Faculty).filter(models.Faculty.id.in_(faculty_ids)).all()}
@@ -1256,26 +2124,26 @@ def get_student_attendance_aggregate(
     attended_total = 0
     delivered_total = 0
 
-    for enrollment in enrollments:
-        course = courses.get(enrollment.course_id)
+    for course_id in course_ids:
+        course = courses.get(course_id)
         if not course:
             continue
 
         delivered_by_schedule = sum(
             _count_delivered_occurrences(schedule, from_date=academic_start, now_dt=now_dt)
-            for schedule in schedules_by_course.get(course.id, [])
+            for schedule in schedules_by_course.get(course_id, [])
         )
-        delivered_by_submissions = len(delivered_submission_keys.get(course.id, set()))
-        delivered_by_records = len(delivered_record_dates.get(course.id, set()))
+        delivered_by_submissions = len(delivered_submission_keys.get(course_id, set()))
+        delivered_by_records = len(delivered_record_dates.get(course_id, set()))
         delivered = max(delivered_by_schedule, delivered_by_submissions, delivered_by_records)
 
         attended = (
-            len(credited_submission_keys.get(course.id, set()))
-            + attended_record_fallback_counts.get(course.id, 0)
+            len(credited_submission_keys.get(course_id, set()))
+            + attended_record_fallback_counts.get(course_id, 0)
         )
         if delivered > 0 and attended > delivered:
             attended = delivered
-        last_attended = last_attended_map.get(course.id)
+        last_attended = last_attended_map.get(course_id)
 
         percent = round((attended / delivered) * 100, 2) if delivered else 0.0
         attended_total += attended

@@ -6,9 +6,9 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-    <link rel="stylesheet" href="/web/styles.css?v=20260225c">
+    <link rel="stylesheet" href="/web/styles.css?v=20260301h">
     <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <script src="/web/app.js?v=20260225c" defer></script>
+    <script src="/web/app.js?v=20260301h" defer></script>
 </head>
 <body>
     <div class="scene" id="scene">
@@ -99,6 +99,10 @@
                 <label class="field">
                     <span>Department</span>
                     <input id="auth-department" type="text" placeholder="CSE">
+                </label>
+                <label id="auth-section-wrap" class="field">
+                    <span>Section (student only)</span>
+                    <input id="auth-signup-section" type="text" placeholder="e.g. P132">
                 </label>
                 <label id="auth-semester-wrap" class="field">
                     <span>Semester (student only)</span>
@@ -234,7 +238,7 @@
                         <h3>Administrative Operations Hub</h3>
                         <small>Live command center for campus resources, attendance, and demand monitoring.</small>
                     </div>
-                    <span class="chip chip-live admin-live-chip">Live Telemetry</span>
+                    <span id="admin-live-chip" class="chip chip-live admin-live-chip">Live Telemetry</span>
                 </div>
                 <section class="admin-toolbar" aria-label="Administrative controls">
                     <label class="field admin-toolbar-field">
@@ -448,11 +452,42 @@
             </section>
 
             <div class="admin-cluster-head">
+                <h4>Institutional Model Overlay</h4>
+                <small>LPU planning dataset overlaid with live backend telemetry.</small>
+            </div>
+
+            <section class="ops-grid admin-insights-grid">
+                <article id="admin-profile-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Campus Profile Snapshot</h3>
+                        <small>Enrollment, residency, origin and discipline mix</small>
+                    </div>
+                    <div id="admin-profile-wrap" class="list-wrap"></div>
+                </article>
+
+                <article id="admin-benchmark-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Operational Benchmarks</h3>
+                        <small>Live vs utilization, placement, mobility and library models</small>
+                    </div>
+                    <div id="admin-benchmark-wrap" class="list-wrap"></div>
+                </article>
+            </section>
+
+            <div class="admin-cluster-head">
                 <h4>Intervention & Actions</h4>
                 <small>Operational watchlists and AI-assisted planning actions.</small>
             </div>
 
             <section class="ops-grid admin-ops-grid">
+                <article id="admin-issues-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Top Issues</h3>
+                        <small id="admin-data-freshness-note">Freshness: --</small>
+                    </div>
+                    <div id="admin-issues-wrap" class="list-wrap"></div>
+                </article>
+
                 <article id="absentee-card" class="ops-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>Absentee Watchlist</h3>
@@ -507,6 +542,14 @@
                     <img id="selfie-preview" class="photo-preview hidden" alt="Latest selfie capture">
                 </div>
                 <div id="student-attendance-result" class="ai-output compact" aria-live="polite">Attendance result will appear here.</div>
+            </article>
+
+            <article id="student-messages-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Messages</h3>
+                    <small>Real-time faculty announcements and updates for your section</small>
+                </div>
+                <div id="student-messages-list" class="list-wrap"></div>
             </article>
 
             <article id="student-ledger-card" class="ops-card glass tilt" data-tilt>
@@ -705,7 +748,12 @@
                             <span id="food-demand-freshness" class="food-freshness-indicator">Live sync --</span>
                         </small>
                     </div>
-                    <div id="food-demand-chart-module" class="bar-chart" aria-label="Food demand chart"></div>
+                    <div id="food-demand-live-compact" class="food-demand-live-compact" aria-live="polite">
+                        <span id="food-demand-live-compact-summary">Live feed initializing...</span>
+                        <button id="food-demand-live-hot-btn" class="btn food-demand-hot-btn" type="button">Focus hottest</button>
+                    </div>
+                    <div id="food-demand-chart-module" class="food-demand-minimal" aria-label="Food demand chart"></div>
+                    <div id="food-demand-slot-detail" class="food-demand-slot-detail" aria-live="polite">No slot selected yet.</div>
                 </article>
                 <article class="viz-card glass tilt" data-tilt>
                     <div class="panel-head">
@@ -776,55 +824,188 @@
             <article id="remedial-faculty-panel" class="ops-card glass tilt hidden" data-tilt>
                 <div class="panel-head">
                     <h3>Make-Up Class Scheduler</h3>
-                    <small>Create remedial sessions and generate secure attendance codes</small>
+                    <small>Schedule remedial sessions, generate codes, and notify sections in real time.</small>
                 </div>
-                <div class="inline-controls remedial-form-grid">
-                    <label class="field">
-                        <span>Course</span>
-                        <select id="remedial-course-select"></select>
-                    </label>
-                    <label class="field">
-                        <span>Class Date</span>
-                        <input id="remedial-date" type="date">
-                    </label>
-                    <label class="field">
-                        <span>Start Time</span>
-                        <input id="remedial-start-time" type="time">
-                    </label>
-                    <label class="field">
-                        <span>End Time</span>
-                        <input id="remedial-end-time" type="time">
-                    </label>
-                    <label class="field">
-                        <span>Topic</span>
-                        <input id="remedial-topic" type="text" placeholder="Pointers revision + Q&A">
-                    </label>
-                    <button id="remedial-create-btn" class="btn btn-primary" type="button">Schedule + Generate Code</button>
+                <div class="remedial-faculty-layout">
+                    <div class="remedial-faculty-column remedial-faculty-column-main">
+                        <div class="remedial-faculty-card remedial-form-card">
+                            <div class="remedial-card-head">
+                                <div>
+                                    <h4>Schedule Remedial Class</h4>
+                                    <p>Set class basics, timing, and delivery mode.</p>
+                                </div>
+                                <div class="remedial-demo-controls">
+                                    <button id="remedial-demo-instant-btn" class="btn btn-ghost remedial-demo-btn" type="button" aria-pressed="false">Demo: Instant Scheduling OFF</button>
+                                    <small>For live demo only. Enables immediate scheduling without the 1-hour lead-time rule.</small>
+                                </div>
+                            </div>
+                            <div class="remedial-form-grid">
+                                <label class="field">
+                                    <span>Course</span>
+                                    <select id="remedial-course-select"></select>
+                                </label>
+                                <label class="field">
+                                    <span>Course Code (Manual)</span>
+                                    <input id="remedial-course-code-input" type="text" placeholder="e.g. CSE301">
+                                </label>
+                                <label class="field">
+                                    <span>Course Name (Manual)</span>
+                                    <input id="remedial-course-title-input" type="text" placeholder="e.g. Data Structures">
+                                </label>
+                                <label class="field">
+                                    <span>Section(s)</span>
+                                    <input id="remedial-sections-input" type="text" placeholder="e.g. P132, P133">
+                                </label>
+                                <label class="field">
+                                    <span>Class Date</span>
+                                    <input id="remedial-date" type="date">
+                                </label>
+                                <label class="field">
+                                    <span>Start Time</span>
+                                    <input id="remedial-start-time" type="time">
+                                </label>
+                                <label class="field">
+                                    <span>End Time</span>
+                                    <input id="remedial-end-time" type="time">
+                                </label>
+                                <label class="field">
+                                    <span>Mode</span>
+                                    <select id="remedial-mode-select">
+                                        <option value="offline">Offline (Room)</option>
+                                        <option value="online">Online (MyClass)</option>
+                                    </select>
+                                </label>
+                                <label id="remedial-room-wrap" class="field">
+                                    <span>Room Number</span>
+                                    <input id="remedial-room-input" type="text" placeholder="e.g. 25-301">
+                                </label>
+                                <label id="remedial-online-wrap" class="field hidden">
+                                    <span>Online Link</span>
+                                    <input id="remedial-online-link-input" type="url" placeholder="https://myclass.lpu.in/">
+                                </label>
+                                <label class="field">
+                                    <span>Topic</span>
+                                    <input id="remedial-topic" type="text" placeholder="Pointers revision + Q&A">
+                                </label>
+                                <label class="field remedial-custom-message-field">
+                                    <span>Message Template (optional)</span>
+                                    <input id="remedial-custom-message-input" type="text" placeholder="Bring assignment notebook. Use this code to unlock remedial attendance.">
+                                </label>
+                            </div>
+                            <div class="remedial-form-actions">
+                                <p class="helper-text">Use dropdown if available, or enter manual course code + name.</p>
+                                <button id="remedial-create-btn" class="btn btn-primary" type="button">Schedule + Generate Code</button>
+                            </div>
+                            <p id="remedial-faculty-status" class="helper-text">Create a class to generate remedial code.</p>
+                        </div>
+
+                        <div class="remedial-faculty-card remedial-previous-card">
+                            <div class="remedial-card-head compact">
+                                <div>
+                                    <h4>Previous Classes</h4>
+                                    <p>Classes automatically move here after the end time.</p>
+                                </div>
+                            </div>
+                            <div id="remedial-previous-classes-list" class="list-wrap"></div>
+                        </div>
+                    </div>
+
+                    <div class="remedial-faculty-column remedial-faculty-column-side">
+                        <div class="remedial-faculty-card remedial-classes-card">
+                            <div class="remedial-card-head compact">
+                                <div>
+                                    <h4>Scheduled Classes</h4>
+                                    <p>Send codes or reject classes from here.</p>
+                                </div>
+                            </div>
+                            <div id="remedial-classes-list" class="list-wrap"></div>
+                        </div>
+
+                        <div class="remedial-faculty-card remedial-attendance-card">
+                            <div class="remedial-card-head compact">
+                                <div>
+                                    <h4>Remedial Attendance</h4>
+                                    <p>Review attendance by class in real time.</p>
+                                </div>
+                            </div>
+                            <div class="inline-controls remedial-attendance-controls">
+                                <label class="field">
+                                    <span>View Attendance For</span>
+                                    <select id="remedial-class-select"></select>
+                                </label>
+                                <button id="remedial-refresh-attendance-btn" class="btn" type="button">Load Attendance</button>
+                            </div>
+                            <div id="remedial-attendance-list" class="list-wrap"></div>
+                        </div>
+
+                        <div class="remedial-faculty-card remedial-message-card">
+                            <div class="remedial-card-head compact">
+                                <div>
+                                    <h4>Faculty Messages</h4>
+                                    <p>Send announcements to your section(s).</p>
+                                </div>
+                            </div>
+                            <div class="inline-controls remedial-message-form-row">
+                                <label class="field">
+                                    <span>Section(s)</span>
+                                    <input id="faculty-message-sections" type="text" placeholder="e.g. P132, P133">
+                                </label>
+                                <label class="field">
+                                    <span>Message Type</span>
+                                    <select id="faculty-message-type">
+                                        <option value="Announcement">Announcement</option>
+                                        <option value="General">General</option>
+                                        <option value="Remedial">Remedial</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <label class="field">
+                                <span>Message</span>
+                                <input id="faculty-message-text" type="text" placeholder="Share an update for your students">
+                            </label>
+                            <div class="inline-controls remedial-message-actions">
+                                <button id="faculty-message-send-btn" class="btn btn-primary" type="button">Send Message</button>
+                                <span id="faculty-message-status" class="helper-text"></span>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <p id="remedial-faculty-status" class="helper-text">Create a class to generate remedial code.</p>
-                <div id="remedial-classes-list" class="list-wrap"></div>
-                <div class="inline-controls remedial-attendance-controls">
-                    <label class="field">
-                        <span>View Attendance For</span>
-                        <select id="remedial-class-select"></select>
-                    </label>
-                    <button id="remedial-refresh-attendance-btn" class="btn" type="button">Load Attendance</button>
-                </div>
-                <div id="remedial-attendance-list" class="list-wrap"></div>
             </article>
 
             <article id="remedial-student-panel" class="ops-card glass tilt hidden" data-tilt>
                 <div class="panel-head">
-                    <h3>Mark Remedial Attendance</h3>
-                    <small>Enter faculty-provided remedial code</small>
+                    <h3>Remedial Messages & Attendance</h3>
+                    <small>Receive section-targeted faculty code, validate, then mark attendance</small>
                 </div>
+                <div class="inline-controls remedial-message-controls">
+                    <button id="remedial-refresh-messages-btn" class="btn" type="button">Refresh Messages</button>
+                </div>
+                <div id="remedial-messages-list" class="list-wrap"></div>
                 <div class="inline-controls">
                     <label class="field">
                         <span>Remedial Code</span>
                         <input id="remedial-code-input" type="text" placeholder="AB12CD34" maxlength="16">
                     </label>
+                    <button id="remedial-validate-btn" class="btn" type="button">Validate Code</button>
                     <button id="remedial-mark-btn" class="btn btn-primary" type="button">Mark Attendance</button>
                 </div>
+                <div id="remedial-code-details" class="list-wrap"></div>
+                <div class="panel-head remedial-student-ledger-head">
+                    <h3>Remedial Attendance Ledger</h3>
+                    <small>Only remedial class attendance appears here.</small>
+                </div>
+                <section class="student-aggregate-panel remedial-student-aggregate-panel">
+                    <div class="aggregate-chip">
+                        <span>Aggregate Attendance</span>
+                        <strong id="remedial-student-aggregate-percent">0.0%</strong>
+                    </div>
+                    <div class="aggregate-chip">
+                        <span>Attended / Delivered</span>
+                        <strong id="remedial-student-attended-delivered">0 / 0</strong>
+                    </div>
+                </section>
+                <p class="helper-text remedial-student-ledger-note">Click a subject to view class-wise present/absent status with date and time.</p>
+                <div id="remedial-student-ledger-list" class="list-wrap remedial-student-ledger-list"></div>
                 <p id="remedial-student-status" class="helper-text">Enter code exactly as shared by faculty.</p>
             </article>
         </section>
@@ -879,17 +1060,26 @@
                     <input id="profile-primary-email" type="email" disabled>
                 </label>
                 <label class="field">
-                    <span>Registration Number</span>
+                    <span>Full Name</span>
+                    <input id="profile-full-name" type="text" placeholder="Enter your full name">
+                </label>
+                <label class="field">
+                    <span id="profile-id-label">Registration Number</span>
                     <input id="profile-registration-number" type="text" placeholder="e.g. R9P132A48">
                 </label>
                 <p id="profile-registration-note" class="helper-text">
                     Registration number is permanent and cannot be changed without admin permissions.
                 </p>
+                <label id="profile-section-wrap" class="field hidden">
+                    <span>Section</span>
+                    <input id="profile-section-input" type="text" placeholder="e.g. CSE-A1">
+                </label>
+                <p id="profile-section-note" class="helper-text hidden"></p>
                 <label class="field">
                     <span>Alternate Gmail (optional)</span>
                     <input id="profile-alternate-email" type="email" placeholder="you@gmail.com">
                 </label>
-                <label class="field">
+                <label id="profile-photo-wrap" class="field">
                     <span>Upload profile photo</span>
                     <input id="profile-photo-input" type="file" accept="image/*">
                 </label>
@@ -971,6 +1161,19 @@
             <div id="attendance-details-list" class="attendance-details-list"></div>
             <div class="auth-actions">
                 <button id="attendance-details-close-btn" class="btn btn-primary" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="remedial-attendance-modal" class="camera-modal hidden">
+        <div class="camera-card glass attendance-details-card remedial-attendance-modal-card">
+            <div class="panel-head">
+                <h3 id="remedial-attendance-modal-title">Section Attendance</h3>
+                <small id="remedial-attendance-modal-meta">Marked vs not marked students</small>
+            </div>
+            <div id="remedial-attendance-modal-list" class="attendance-details-list remedial-attendance-modal-list"></div>
+            <div class="auth-actions">
+                <button id="remedial-attendance-modal-close-btn" class="btn btn-primary" type="button">Close</button>
             </div>
         </div>
     </section>

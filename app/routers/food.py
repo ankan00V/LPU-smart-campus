@@ -164,6 +164,151 @@ def _mongo_db_or_503():
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+def _mongo_read_preferred() -> bool:
+    raw = (os.getenv("MONGO_READ_PREFERRED", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _coerce_mongo_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _coerce_mongo_date(value) -> date | None:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    dt_value = _coerce_mongo_datetime(value)
+    if dt_value is not None:
+        return dt_value.date()
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _mongo_order_to_schema(doc: dict[str, Any]) -> schemas.FoodOrderOut | None:
+    order_id_raw = doc.get("order_id", doc.get("id"))
+    student_id_raw = doc.get("student_id")
+    food_item_id_raw = doc.get("food_item_id")
+    slot_id_raw = doc.get("slot_id")
+    order_date = _coerce_mongo_date(doc.get("order_date"))
+    if order_id_raw is None or student_id_raw is None or food_item_id_raw is None or slot_id_raw is None or not order_date:
+        return None
+
+    status_raw = str(doc.get("status") or models.FoodOrderStatus.PLACED.value).strip().lower()
+    try:
+        status_value = models.FoodOrderStatus(status_raw)
+    except ValueError:
+        status_value = models.FoodOrderStatus.PLACED
+
+    return schemas.FoodOrderOut(
+        id=int(order_id_raw),
+        student_id=int(student_id_raw),
+        shop_id=(int(doc["shop_id"]) if doc.get("shop_id") is not None else None),
+        menu_item_id=(int(doc["menu_item_id"]) if doc.get("menu_item_id") is not None else None),
+        food_item_id=int(food_item_id_raw),
+        slot_id=int(slot_id_raw),
+        order_date=order_date,
+        quantity=int(doc.get("quantity") or 1),
+        unit_price=float(doc.get("unit_price") or 0.0),
+        total_price=float(doc.get("total_price") or 0.0),
+        status=status_value,
+        shop_name=(str(doc.get("shop_name")).strip() if doc.get("shop_name") else None),
+        shop_block=(str(doc.get("shop_block")).strip() if doc.get("shop_block") else None),
+        idempotency_key=(str(doc.get("idempotency_key")).strip() if doc.get("idempotency_key") else None),
+        payment_status=str(doc.get("payment_status") or "pending"),
+        payment_provider=(str(doc.get("payment_provider")).strip() if doc.get("payment_provider") else None),
+        payment_reference=(str(doc.get("payment_reference")).strip() if doc.get("payment_reference") else None),
+        status_note=(str(doc.get("status_note")).strip() if doc.get("status_note") else None),
+        assigned_runner=(str(doc.get("assigned_runner")).strip() if doc.get("assigned_runner") else None),
+        pickup_point=(str(doc.get("pickup_point")).strip() if doc.get("pickup_point") else None),
+        delivery_eta_minutes=(int(doc["delivery_eta_minutes"]) if doc.get("delivery_eta_minutes") is not None else None),
+        estimated_ready_at=_coerce_mongo_datetime(doc.get("estimated_ready_at")),
+        location_verified=bool(doc.get("location_verified")),
+        location_latitude=(float(doc["location_latitude"]) if doc.get("location_latitude") is not None else None),
+        location_longitude=(float(doc["location_longitude"]) if doc.get("location_longitude") is not None else None),
+        location_accuracy_m=(float(doc["location_accuracy_m"]) if doc.get("location_accuracy_m") is not None else None),
+        last_location_verified_at=_coerce_mongo_datetime(doc.get("last_location_verified_at")),
+        verified_at=_coerce_mongo_datetime(doc.get("verified_at")),
+        preparing_at=_coerce_mongo_datetime(doc.get("preparing_at")),
+        out_for_delivery_at=_coerce_mongo_datetime(doc.get("out_for_delivery_at")),
+        delivered_at=_coerce_mongo_datetime(doc.get("delivered_at")),
+        cancelled_at=_coerce_mongo_datetime(doc.get("cancelled_at")),
+        cancel_reason=(str(doc.get("cancel_reason")).strip() if doc.get("cancel_reason") else None),
+        rating_stars=(int(doc["rating_stars"]) if doc.get("rating_stars") is not None else None),
+        rating_comment=(str(doc.get("rating_comment")).strip() if doc.get("rating_comment") else None),
+        rated_at=_coerce_mongo_datetime(doc.get("rated_at")),
+        rating_locked_at=_coerce_mongo_datetime(doc.get("rating_locked_at")),
+        last_status_updated_at=_coerce_mongo_datetime(doc.get("last_status_updated_at")),
+    )
+
+
+def _list_orders_from_mongo(
+    *,
+    order_date: date | None,
+    limit: int | None,
+    current_user: CurrentUser,
+):
+    if not _mongo_read_preferred():
+        return None
+    mongo_db = get_mongo_db(required=False)
+    if mongo_db is None:
+        return None
+
+    if current_user.role == models.UserRole.FACULTY:
+        return []
+
+    query_filter: dict[str, Any] = {}
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        query_filter["student_id"] = int(current_user.student_id)
+    elif current_user.role == models.UserRole.OWNER:
+        shop_docs = list(
+            mongo_db["food_shops"].find(
+                {"owner_user_id": int(current_user.id)},
+                {"shop_id": 1, "id": 1},
+            )
+        )
+        shop_ids = sorted(
+            {
+                int(doc.get("shop_id") or doc.get("id"))
+                for doc in shop_docs
+                if doc.get("shop_id") is not None or doc.get("id") is not None
+            }
+        )
+        if not shop_ids:
+            return []
+        query_filter["shop_id"] = {"$in": shop_ids}
+
+    if order_date:
+        query_filter["order_date"] = {"$in": [order_date.isoformat(), order_date]}
+
+    cursor = mongo_db["food_orders"].find(query_filter).sort([("created_at", -1), ("order_id", -1)])
+    if limit:
+        cursor = cursor.limit(int(limit))
+    docs = list(cursor)
+
+    rows: list[schemas.FoodOrderOut] = []
+    for doc in docs:
+        parsed = _mongo_order_to_schema(doc)
+        if parsed is not None:
+            rows.append(parsed)
+    return rows
+
+
 def _validate_order_time_window(*, order_date: date, slot: models.BreakSlot) -> None:
     if slot.start_time < _FOOD_SERVICE_START or slot.end_time > _FOOD_SERVICE_END:
         raise HTTPException(status_code=409, detail="Selected slot is not open for pickup.")
@@ -831,6 +976,19 @@ def _order_visible_to_owner_filter(query, db: Session, owner_user_id: int):
         (models.FoodOrder.shop_id.in_(shop_ids) if shop_ids else text("0 = 1"))
         | (models.FoodOrder.shop_name.in_(shop_names) if shop_names else text("0 = 1"))
     )
+
+
+def _scope_order_query_for_user(query, db: Session, current_user: CurrentUser):
+    if current_user.role == models.UserRole.ADMIN:
+        return query
+    if current_user.role == models.UserRole.OWNER:
+        return _order_visible_to_owner_filter(query, db, current_user.id)
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        return query.filter(models.FoodOrder.student_id == current_user.student_id)
+    # Faculty users can monitor aggregated metrics but must not see per-user order rows.
+    return query.filter(text("1 = 0"))
 
 
 def _query_food_slots(db: Session) -> list[models.BreakSlot]:
@@ -2004,16 +2162,15 @@ def list_orders(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
+    mongo_rows = _list_orders_from_mongo(order_date=order_date, limit=limit, current_user=current_user)
+    if mongo_rows is not None:
+        return mongo_rows
+
     query = db.query(models.FoodOrder)
     if order_date:
         query = query.filter(models.FoodOrder.order_date == order_date)
 
-    if current_user.role == models.UserRole.STUDENT:
-        if not current_user.student_id:
-            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
-        query = query.filter(models.FoodOrder.student_id == current_user.student_id)
-    elif current_user.role == models.UserRole.OWNER:
-        query = _order_visible_to_owner_filter(query, db, current_user.id)
+    query = _scope_order_query_for_user(query, db, current_user)
 
     query = query.order_by(models.FoodOrder.created_at.desc())
     if limit:
@@ -2238,8 +2395,11 @@ def list_order_audit(
     order = db.get(models.FoodOrder, order_id)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    if current_user.role == models.UserRole.STUDENT and order.student_id != current_user.student_id:
-        raise HTTPException(status_code=403, detail="Cannot view audit for another student's order")
+    if current_user.role == models.UserRole.FACULTY:
+        raise HTTPException(status_code=403, detail="Faculty accounts cannot view per-order audit logs")
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id or order.student_id != current_user.student_id:
+            raise HTTPException(status_code=403, detail="Cannot view audit for another student's order")
     if current_user.role == models.UserRole.OWNER:
         shop = db.get(models.FoodShop, order.shop_id) if order.shop_id else None
         if not shop or shop.owner_user_id != current_user.id:
@@ -2665,6 +2825,145 @@ def get_slot_demand(
         )
 
     return sorted(response, key=lambda x: x.orders, reverse=True)
+
+
+@router.get("/demand/live", response_model=schemas.SlotDemandLiveOut)
+def get_slot_demand_live_signal(
+    order_date: date = Query(...),
+    window_minutes: int = Query(default=2, ge=1, le=15),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(
+        require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
+    ),
+):
+    slots = _query_food_slots(db)
+    slot_label_by_id = {int(slot.id): str(slot.label) for slot in slots}
+
+    base_order_query = db.query(models.FoodOrder).filter(models.FoodOrder.order_date == order_date)
+    if current_user.role == models.UserRole.OWNER:
+        base_order_query = _order_visible_to_owner_filter(base_order_query, db, current_user.id)
+
+    active_orders = (
+        base_order_query
+        .filter(
+            ~models.FoodOrder.status.in_(
+                [
+                    models.FoodOrderStatus.CANCELLED,
+                    models.FoodOrderStatus.REJECTED,
+                    models.FoodOrderStatus.DELIVERED,
+                    models.FoodOrderStatus.COLLECTED,
+                    models.FoodOrderStatus.REFUNDED,
+                ]
+            )
+        )
+        .count()
+    )
+
+    slot_count_rows = (
+        base_order_query
+        .with_entities(
+            models.FoodOrder.slot_id.label("slot_id"),
+            func.count(models.FoodOrder.id).label("order_count"),
+        )
+        .filter(
+            models.FoodOrder.status != models.FoodOrderStatus.CANCELLED,
+            models.FoodOrder.status != models.FoodOrderStatus.REJECTED,
+        )
+        .group_by(models.FoodOrder.slot_id)
+        .all()
+    )
+
+    hottest_slot_label: str | None = None
+    hottest_slot_orders = 0
+    if slot_count_rows:
+        hottest_row = max(slot_count_rows, key=lambda row: int(row.order_count or 0))
+        hottest_slot_orders = int(hottest_row.order_count or 0)
+        hottest_slot_id = int(hottest_row.slot_id or 0)
+        if hottest_slot_id:
+            hottest_slot_label = slot_label_by_id.get(hottest_slot_id, f"Slot #{hottest_slot_id}")
+
+    window_start = datetime.utcnow() - timedelta(minutes=window_minutes)
+    audit_query = (
+        db.query(
+            models.FoodOrder.slot_id.label("slot_id"),
+            models.FoodOrderAudit.event_type.label("event_type"),
+            func.count(models.FoodOrderAudit.id).label("event_count"),
+        )
+        .join(models.FoodOrder, models.FoodOrder.id == models.FoodOrderAudit.order_id)
+        .filter(
+            models.FoodOrder.order_date == order_date,
+            models.FoodOrderAudit.created_at >= window_start,
+        )
+    )
+    if current_user.role == models.UserRole.OWNER:
+        audit_query = _order_visible_to_owner_filter(audit_query, db, current_user.id)
+    audit_rows = audit_query.group_by(models.FoodOrder.slot_id, models.FoodOrderAudit.event_type).all()
+
+    orders_last_window = 0
+    status_updates_last_window = 0
+    payment_events_last_window = 0
+    pulse_bucket_by_slot: dict[int, dict[str, int]] = {}
+
+    for row in audit_rows:
+        slot_id = int(row.slot_id or 0)
+        if slot_id <= 0:
+            continue
+        count = int(row.event_count or 0)
+        if count <= 0:
+            continue
+
+        bucket = pulse_bucket_by_slot.setdefault(
+            slot_id,
+            {
+                "event_count": 0,
+                "created_count": 0,
+                "status_count": 0,
+                "payment_count": 0,
+            },
+        )
+        bucket["event_count"] += count
+
+        event_type = str(row.event_type or "").strip().lower()
+        if event_type == "order_created":
+            bucket["created_count"] += count
+            orders_last_window += count
+        elif event_type.startswith("payment_"):
+            bucket["payment_count"] += count
+            payment_events_last_window += count
+        else:
+            bucket["status_count"] += count
+            status_updates_last_window += count
+
+    pulses: list[schemas.SlotDemandLivePulse] = []
+    sorted_pulses = sorted(
+        pulse_bucket_by_slot.items(),
+        key=lambda pair: (-int(pair[1]["event_count"]), slot_label_by_id.get(pair[0], f"Slot #{pair[0]}")),
+    )
+    for slot_id, bucket in sorted_pulses:
+        slot_label = slot_label_by_id.get(slot_id, f"Slot #{slot_id}")
+        pulses.append(
+            schemas.SlotDemandLivePulse(
+                slot_id=slot_id,
+                slot_label=slot_label,
+                event_count=int(bucket["event_count"]),
+                created_count=int(bucket["created_count"]),
+                status_count=int(bucket["status_count"]),
+                payment_count=int(bucket["payment_count"]),
+            )
+        )
+
+    return schemas.SlotDemandLiveOut(
+        order_date=order_date,
+        window_minutes=window_minutes,
+        synced_at=datetime.utcnow(),
+        active_orders=int(active_orders or 0),
+        orders_last_window=int(orders_last_window),
+        status_updates_last_window=int(status_updates_last_window),
+        payment_events_last_window=int(payment_events_last_window),
+        hottest_slot_label=hottest_slot_label,
+        hottest_slot_orders=int(hottest_slot_orders),
+        pulses=pulses,
+    )
 
 
 @router.get("/peak-times", response_model=list[schemas.PeakTimePrediction])

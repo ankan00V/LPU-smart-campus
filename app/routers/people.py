@@ -1,6 +1,8 @@
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pymongo.errors import DuplicateKeyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -9,6 +11,7 @@ from ..database import get_db
 from ..mongo import get_mongo_db
 
 router = APIRouter(prefix="/core", tags=["Core Setup"])
+logger = logging.getLogger(__name__)
 
 
 def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
@@ -18,7 +21,25 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     body = dict(payload)
     body["id"] = doc_id
-    mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    try:
+        mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    except DuplicateKeyError as exc:
+        details = getattr(exc, "details", {}) or {}
+        key_value = details.get("keyValue")
+        if not isinstance(key_value, dict) or not key_value:
+            raise
+        fallback_body = dict(body)
+        fallback_body.pop("id", None)
+        result = mongo_db[collection].update_one(dict(key_value), {"$set": fallback_body}, upsert=False)
+        if result.matched_count:
+            return
+        logger.warning(
+            "Skipping unresolved duplicate-key upsert for collection=%s id=%s filter=%s",
+            collection,
+            doc_id,
+            key_value,
+        )
+        return
 
 
 @router.post("/students", response_model=schemas.StudentOut, status_code=status.HTTP_201_CREATED)
@@ -85,6 +106,12 @@ def create_faculty(
         {
             "name": faculty.name,
             "email": faculty.email,
+            "faculty_identifier": faculty.faculty_identifier,
+            "section": faculty.section,
+            "section_updated_at": faculty.section_updated_at,
+            "profile_photo_data_url": faculty.profile_photo_data_url,
+            "profile_photo_updated_at": faculty.profile_photo_updated_at,
+            "profile_photo_locked_until": faculty.profile_photo_locked_until,
             "department": faculty.department,
             "created_at": faculty.created_at,
             "source": "core-api",

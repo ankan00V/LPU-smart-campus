@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -5,7 +7,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth_utils import require_roles
 from ..database import get_db
-from ..mongo import mongo_status
+from ..mongo import get_mongo_db, mongo_status
 
 router = APIRouter(prefix="/resources", tags=["Campus Resources & Estimation"])
 
@@ -106,3 +108,66 @@ def get_mongo_status(
     _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
     return mongo_status()
+
+
+@router.get("/mongo/consistency")
+def get_mongo_consistency(
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    mongo_db = get_mongo_db(required=False)
+    checks: list[tuple[str, type]] = [
+        ("students", models.Student),
+        ("faculty", models.Faculty),
+        ("courses", models.Course),
+        ("enrollments", models.Enrollment),
+        ("classrooms", models.Classroom),
+        ("course_classrooms", models.CourseClassroom),
+        ("attendance_records", models.AttendanceRecord),
+        ("notification_logs", models.NotificationLog),
+        ("food_items", models.FoodItem),
+        ("food_shops", models.FoodShop),
+        ("food_menu_items", models.FoodMenuItem),
+        ("break_slots", models.BreakSlot),
+        ("food_orders", models.FoodOrder),
+        ("food_payments", models.FoodPayment),
+        ("food_order_audit", models.FoodOrderAudit),
+        ("makeup_classes", models.MakeUpClass),
+        ("remedial_messages", models.RemedialMessage),
+        ("remedial_attendance", models.RemedialAttendance),
+        ("class_schedules", models.ClassSchedule),
+        ("attendance_submissions", models.AttendanceSubmission),
+        ("classroom_analyses", models.ClassroomAnalysis),
+        ("auth_users", models.AuthUser),
+        ("auth_otps", models.AuthOTP),
+        ("auth_otp_delivery", models.AuthOTPDelivery),
+    ]
+
+    rows: list[dict] = []
+    mismatches = 0
+    for collection_name, model_cls in checks:
+        sql_count = int(db.query(model_cls).count())
+        mongo_count = (
+            int(mongo_db[collection_name].count_documents({}))
+            if mongo_db is not None
+            else 0
+        )
+        in_sync = (mongo_db is not None) and (sql_count == mongo_count)
+        if not in_sync:
+            mismatches += 1
+        rows.append(
+            {
+                "collection": collection_name,
+                "sql_count": sql_count,
+                "mongo_count": mongo_count,
+                "in_sync": in_sync,
+                "delta": mongo_count - sql_count,
+            }
+        )
+
+    return {
+        "generated_at": datetime.utcnow(),
+        "mongo": mongo_status(),
+        "mismatches": mismatches,
+        "checks": rows,
+    }
