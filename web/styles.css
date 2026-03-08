@@ -2306,6 +2306,12 @@ body.ums-theme #executive-section .donut-core {
     gap: 0.48rem;
 }
 
+.admin-recovery-delivery-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 0.48rem;
+}
+
 .admin-recovery-stat {
     border-radius: 12px;
     border: 1px solid rgba(173, 215, 244, 0.24);
@@ -2334,6 +2340,169 @@ body.ums-theme #executive-section .donut-core {
 
 .admin-recovery-list .recovery-plan-card {
     gap: 0.65rem;
+}
+
+.admin-recovery-delivery-list {
+    display: grid;
+    gap: 0.55rem;
+}
+
+.admin-recovery-delivery-row {
+    border-radius: 12px;
+    border: 1px solid rgba(173, 215, 244, 0.24);
+    background: rgba(18, 47, 71, 0.46);
+    padding: 0.58rem 0.62rem;
+    display: grid;
+    gap: 0.32rem;
+}
+
+.admin-recovery-delivery-row.failed {
+    border-left: 4px solid rgba(255, 133, 133, 0.74);
+    background: rgba(88, 26, 34, 0.34);
+}
+
+.admin-recovery-delivery-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.admin-recovery-delivery-title {
+    margin: 0;
+    font-size: 0.83rem;
+    color: #edf8ff;
+}
+
+.admin-recovery-delivery-subtitle {
+    margin: 0.12rem 0 0;
+    font-size: 0.75rem;
+    color: #b9d7ea;
+}
+
+.admin-recovery-delivery-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.admin-recovery-delivery-meta small {
+    color: #a8c9e3;
+    font-size: 0.72rem;
+}
+
+.admin-recovery-delivery-status {
+    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    border: 1px solid rgba(173, 215, 244, 0.28);
+    background: rgba(13, 36, 56, 0.48);
+    color: #dfefff;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.admin-recovery-delivery-status.failed {
+    border-color: rgba(255, 152, 152, 0.58);
+    background: rgba(127, 30, 40, 0.32);
+    color: #ffe4e4;
+}
+
+.admin-recovery-delivery-error {
+    margin: 0;
+    font-size: 0.77rem;
+    line-height: 1.5;
+    color: #ffd0d0;
+}
+
+.admin-saarthi-toolbar {
+    align-items: center;
+}
+
+.admin-saarthi-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.8rem;
+    margin-top: 1rem;
+}
+
+.admin-saarthi-stat {
+    border-radius: 16px;
+    border: 1px solid rgba(18, 32, 59, 0.08);
+    background: rgba(255, 255, 255, 0.72);
+    padding: 0.85rem 0.95rem;
+}
+
+.admin-saarthi-stat span {
+    display: block;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(34, 48, 74, 0.62);
+}
+
+.admin-saarthi-stat strong {
+    display: block;
+    margin-top: 0.35rem;
+    font-size: 1.3rem;
+    color: #10213d;
+}
+
+.admin-saarthi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.admin-saarthi-panel {
+    border-radius: 18px;
+    border: 1px solid rgba(18, 32, 59, 0.08);
+    background: rgba(255, 255, 255, 0.7);
+    padding: 1rem;
+}
+
+.admin-saarthi-row + .admin-saarthi-row {
+    margin-top: 0.85rem;
+}
+
+.admin-saarthi-row-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    font-weight: 700;
+    color: #10213d;
+}
+
+.admin-saarthi-row-meta {
+    margin-top: 0.25rem;
+    font-size: 0.86rem;
+    color: rgba(16, 33, 61, 0.66);
+}
+
+.admin-saarthi-row-track {
+    margin-top: 0.45rem;
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(16, 33, 61, 0.08);
+    overflow: hidden;
+}
+
+.admin-saarthi-row-fill {
+    display: block;
+    height: 100%;
+    width: calc(var(--w, 0) * 1%);
+    border-radius: inherit;
+    background: linear-gradient(90deg, #0c8a6a 0%, #0f5c8d 100%);
+}
+
+@media (max-width: 1100px) {
+    .admin-saarthi-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .recovery-empty {
@@ -8980,6 +9149,102 @@ body.ums-theme {
     line-height: 1.2;
 }
 
+.admin-identity-artifacts {
+    display: grid;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.admin-identity-artifact-link {
+    display: grid;
+    gap: 0.15rem;
+    padding: 0.68rem 0.8rem;
+    border-radius: 12px;
+    border: 1px solid rgba(150, 204, 244, 0.24);
+    background: rgba(255, 255, 255, 0.04);
+    text-decoration: none;
+    color: #d8edff;
+}
+
+.admin-identity-artifact-link strong {
+    font-size: 0.8rem;
+    text-transform: capitalize;
+}
+
+.admin-identity-artifact-link span {
+    font-size: 0.74rem;
+    color: #9fc0df;
+}
+
+.admin-identity-graph-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-top: 0.65rem;
+}
+
+.admin-identity-graph-summary span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28rem;
+    padding: 0.26rem 0.56rem;
+    border-radius: 999px;
+    border: 1px solid rgba(150, 204, 244, 0.26);
+    background: rgba(255, 255, 255, 0.04);
+    color: #cfe6ff;
+    font-size: 0.74rem;
+}
+
+.admin-identity-graph-shell {
+    margin-top: 0.8rem;
+    border-radius: 16px;
+    border: 1px solid rgba(150, 204, 244, 0.22);
+    background:
+        radial-gradient(circle at top, rgba(66, 131, 208, 0.12), transparent 48%),
+        rgba(4, 20, 38, 0.72);
+    padding: 0.35rem;
+    overflow: hidden;
+}
+
+.admin-identity-graph-canvas {
+    display: block;
+    width: 100%;
+    min-height: 280px;
+}
+
+.admin-identity-graph-empty {
+    fill: #8ca8c3;
+    font-size: 15px;
+}
+
+.admin-identity-graph-edge line {
+    stroke: rgba(149, 202, 242, 0.34);
+    stroke-width: 1.5;
+}
+
+.admin-identity-graph-edge text {
+    fill: #8ca8c3;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.admin-identity-graph-node rect {
+    stroke-width: 1.2;
+}
+
+.admin-identity-graph-node-label {
+    font-size: 11.5px;
+    font-weight: 700;
+}
+
+.admin-identity-graph-node-subtitle {
+    font-size: 9px;
+    opacity: 0.9;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
 body.ums-theme .admin-identity-case-meta {
     color: #58708a;
 }
@@ -8993,6 +9258,38 @@ body.ums-theme .admin-identity-case-checks span {
     border-color: #cad7e6;
     background: #eef4fb;
     color: #44607d;
+}
+
+body.ums-theme .admin-identity-artifact-link {
+    border-color: #cad7e6;
+    background: #f4f8fc;
+    color: #22394f;
+}
+
+body.ums-theme .admin-identity-artifact-link span {
+    color: #58708a;
+}
+
+body.ums-theme .admin-identity-graph-summary span {
+    border-color: #cad7e6;
+    background: #eef4fb;
+    color: #44607d;
+}
+
+body.ums-theme .admin-identity-graph-shell {
+    border-color: #cad7e6;
+    background:
+        radial-gradient(circle at top, rgba(72, 156, 221, 0.14), transparent 48%),
+        #f6faff;
+}
+
+body.ums-theme .admin-identity-graph-empty,
+body.ums-theme .admin-identity-graph-edge text {
+    fill: #5b738c;
+}
+
+body.ums-theme .admin-identity-graph-edge line {
+    stroke: rgba(114, 151, 187, 0.42);
 }
 
 .ums-sidebar {
@@ -10690,6 +10987,16 @@ body.ums-theme .admin-recovery-stat {
     border-color: #d4dde7;
 }
 
+body.ums-theme .admin-recovery-delivery-row {
+    background: #ffffff;
+    border-color: #d4dde7;
+}
+
+body.ums-theme .admin-recovery-delivery-row.failed {
+    background: #fff2f2;
+    border-color: #e0b2b5;
+}
+
 body.ums-theme .admin-recovery-stat strong {
     color: #26313d;
 }
@@ -10697,6 +11004,31 @@ body.ums-theme .admin-recovery-stat strong {
 body.ums-theme .admin-recovery-stat.critical {
     background: #fff1f1;
     border-color: #e0b2b5;
+}
+
+body.ums-theme .admin-recovery-delivery-title {
+    color: #26313d;
+}
+
+body.ums-theme .admin-recovery-delivery-subtitle,
+body.ums-theme .admin-recovery-delivery-meta small {
+    color: #4f5d6b;
+}
+
+body.ums-theme .admin-recovery-delivery-status {
+    border-color: #d4dde7;
+    background: #edf4fb;
+    color: #2e4f6d;
+}
+
+body.ums-theme .admin-recovery-delivery-status.failed {
+    background: #ffe1e1;
+    border-color: #d46b72;
+    color: #8c1f28;
+}
+
+body.ums-theme .admin-recovery-delivery-error {
+    color: #8c1f28;
 }
 
 body.ums-theme .attendance-detail-row {

@@ -20,7 +20,7 @@ const STUDENT_LIVE_REFRESH_MS = 60000;
 const REMEDIAL_LIVE_REFRESH_MS = 30000;
 const SUPPORT_DESK_LIVE_REFRESH_MS = 30000;
 const REALTIME_TOPICS = 'attendance,messages,rms,food,remedial,admin,identity,identity_shield';
-const ROUTE_SPLIT_ASSET_VERSION = '20260308b';
+const ROUTE_SPLIT_ASSET_VERSION = '20260308d';
 const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
 const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
 const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
@@ -255,9 +255,15 @@ const state = {
     summary: null,
     alerts: [],
     insights: null,
+    saarthiOverview: null,
+    saarthiExportBusy: false,
     identityCases: [],
+    identityGraph: null,
     recoveryPlans: [],
     recoveryIncludeResolved: false,
+    recoveryDeliverySummary: null,
+    recoveryDeliveryAttempts: [],
+    recoveryDeliveryLastUpdatedAt: null,
     recoveryLastUpdatedAt: null,
     lastUpdatedAt: null,
     staleAfterSeconds: 60,
@@ -587,10 +593,21 @@ const els = {
   adminRecoveryRecomputeAllBtn: document.getElementById('admin-recovery-recompute-all-btn'),
   adminRecoveryStatus: document.getElementById('admin-recovery-status'),
   adminRecoverySummary: document.getElementById('admin-recovery-summary'),
+  adminRecoveryDeliverySummary: document.getElementById('admin-recovery-delivery-summary'),
+  adminRecoveryDeliveryList: document.getElementById('admin-recovery-delivery-list'),
   adminRecoveryList: document.getElementById('admin-recovery-list'),
   adminLiveChip: document.getElementById('admin-live-chip'),
   adminDataFreshnessNote: document.getElementById('admin-data-freshness-note'),
   adminIssuesWrap: document.getElementById('admin-issues-wrap'),
+  adminSaarthiCard: document.getElementById('admin-saarthi-card'),
+  adminSaarthiRefreshBtn: document.getElementById('admin-saarthi-refresh-btn'),
+  adminSaarthiExportBtn: document.getElementById('admin-saarthi-export-btn'),
+  adminSaarthiStatus: document.getElementById('admin-saarthi-status'),
+  adminSaarthiSummary: document.getElementById('admin-saarthi-summary'),
+  adminSaarthiWindow: document.getElementById('admin-saarthi-window'),
+  adminSaarthiDepartments: document.getElementById('admin-saarthi-departments'),
+  adminSaarthiAlerts: document.getElementById('admin-saarthi-alerts'),
+  adminSaarthiCompleted: document.getElementById('admin-saarthi-completed'),
   adminProfileWrap: document.getElementById('admin-profile-wrap'),
   adminBenchmarkWrap: document.getElementById('admin-benchmark-wrap'),
   absenteeCard: document.getElementById('absentee-card'),
@@ -888,6 +905,24 @@ const els = {
   adminIdentityRefreshBtn: document.getElementById('admin-identity-refresh-btn'),
   adminIdentityStatus: document.getElementById('admin-identity-status'),
   adminIdentityCasesWrap: document.getElementById('admin-identity-cases-wrap'),
+  adminApplicantEmail: document.getElementById('admin-applicant-email'),
+  adminApplicantRole: document.getElementById('admin-applicant-role'),
+  adminApplicantRegistration: document.getElementById('admin-applicant-registration'),
+  adminApplicantParentEmail: document.getElementById('admin-applicant-parent-email'),
+  adminApplicantDocumentScore: document.getElementById('admin-applicant-document-score'),
+  adminApplicantFaceScore: document.getElementById('admin-applicant-face-score'),
+  adminApplicantDocumentFile: document.getElementById('admin-applicant-document-file'),
+  adminApplicantVideoFile: document.getElementById('admin-applicant-video-file'),
+  adminApplicantLiveness: document.getElementById('admin-applicant-liveness'),
+  adminApplicantFlags: document.getElementById('admin-applicant-flags'),
+  adminApplicantScreenBtn: document.getElementById('admin-applicant-screen-btn'),
+  adminApplicantStatus: document.getElementById('admin-applicant-status'),
+  adminIdentityGraphScope: document.getElementById('admin-identity-graph-scope'),
+  adminIdentityGraphQuery: document.getElementById('admin-identity-graph-query'),
+  adminIdentityGraphBtn: document.getElementById('admin-identity-graph-btn'),
+  adminIdentityGraphStatus: document.getElementById('admin-identity-graph-status'),
+  adminIdentityGraphSummary: document.getElementById('admin-identity-graph-summary'),
+  adminIdentityGraphCanvas: document.getElementById('admin-identity-graph-canvas'),
   adminCopilotAuditSearch: document.getElementById('admin-copilot-audit-search'),
   adminCopilotAuditIntent: document.getElementById('admin-copilot-audit-intent'),
   adminCopilotAuditOutcome: document.getElementById('admin-copilot-audit-outcome'),
@@ -4931,6 +4966,8 @@ function setSession(token, user) {
   state.admin.summary = null;
   state.admin.alerts = [];
   state.admin.insights = null;
+  state.admin.saarthiOverview = null;
+  state.admin.saarthiExportBusy = false;
   state.admin.identityCases = [];
   state.admin.lastUpdatedAt = null;
   state.admin.staleAfterSeconds = 60;
@@ -4945,6 +4982,8 @@ function setSession(token, user) {
   }
   setAdminSearchStatus('Use registration number or faculty identifier for exact production lookup.');
   setAdminGradeStatus('Grade changes are audit logged and can be fetched by registration number.');
+  setAdminSaarthiStatus('Saarthi observability will load for admin.', false, 'neutral');
+  renderAdminSaarthiOverview();
   if (els.rmsThreadAction) {
     els.rmsThreadAction.value = state.rms.threadAction;
   }
@@ -5333,6 +5372,19 @@ async function apiWithTimeout(path, options = {}, timeoutMs = 9000, timeoutMessa
   } finally {
     window.clearTimeout(timerId);
   }
+}
+
+function downloadJsonFile(filename, payload) {
+  const safeName = String(filename || 'export.json').trim() || 'export.json';
+  const blob = new Blob([JSON.stringify(payload ?? {}, null, 2)], { type: 'application/json' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = safeName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 500);
 }
 
 function parseISODateLocal(inputDate = new Date()) {
@@ -6554,6 +6606,153 @@ function renderAdminLiveIndicator() {
   }
 }
 
+function setAdminSaarthiStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminSaarthiStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminSaarthiStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function renderAdminSaarthiOverview() {
+  if (!els.adminSaarthiCard) {
+    return;
+  }
+  const isAdmin = authState.user?.role === 'admin';
+  setHidden(els.adminSaarthiCard, !isAdmin);
+  if (!isAdmin) {
+    return;
+  }
+
+  const overview = state.admin?.saarthiOverview && typeof state.admin.saarthiOverview === 'object'
+    ? state.admin.saarthiOverview
+    : null;
+
+  if (els.adminSaarthiExportBtn) {
+    els.adminSaarthiExportBtn.disabled = Boolean(state.admin?.saarthiExportBusy) || !overview;
+    els.adminSaarthiExportBtn.textContent = state.admin?.saarthiExportBusy ? 'Exporting...' : 'Export Weekly Audit';
+  }
+
+  if (els.adminSaarthiWindow) {
+    if (overview?.week_start_date && overview?.mandatory_date) {
+      const weekStart = parseISODateLocal(overview.week_start_date).toLocaleDateString([], {
+        month: 'short',
+        day: 'numeric',
+      });
+      const mandatory = parseISODateLocal(overview.mandatory_date).toLocaleDateString([], {
+        month: 'short',
+        day: 'numeric',
+      });
+      els.adminSaarthiWindow.textContent = `Week ${weekStart} • Sunday ${mandatory}`;
+    } else {
+      els.adminSaarthiWindow.textContent = 'Week --';
+    }
+  }
+
+  if (!overview) {
+    setAdminSaarthiStatus('Saarthi observability is loading.', false, 'loading');
+    if (els.adminSaarthiSummary) {
+      els.adminSaarthiSummary.innerHTML = '<div class="admin-saarthi-stat"><span>Status</span><strong>Loading</strong></div>';
+    }
+    if (els.adminSaarthiDepartments) {
+      els.adminSaarthiDepartments.innerHTML = '<div class="list-item">Department completion data is loading...</div>';
+    }
+    if (els.adminSaarthiAlerts) {
+      els.adminSaarthiAlerts.innerHTML = '<div class="list-item">Missed-Sunday alerts will appear here.</div>';
+    }
+    if (els.adminSaarthiCompleted) {
+      els.adminSaarthiCompleted.innerHTML = '<div class="list-item">Recent completions will appear here.</div>';
+    }
+    return;
+  }
+
+  const missed = Number(overview.missed_students || 0);
+  const dueToday = Number(overview.due_today_students || 0);
+  const completionRate = Number(overview.completion_rate_percent || 0);
+  const summaryMessage = missed > 0
+    ? `${missed} student(s) missed the mandatory Saarthi Sunday for ${overview.mandatory_date}.`
+    : (dueToday > 0
+      ? `${dueToday} student(s) still need to complete today's mandatory Saarthi Sunday.`
+      : `Weekly Saarthi completion is at ${completionRate.toFixed(1)}%.`);
+  setAdminSaarthiStatus(
+    summaryMessage,
+    false,
+    missed > 0 ? 'error' : (dueToday > 0 ? 'loading' : 'success'),
+  );
+
+  if (els.adminSaarthiSummary) {
+    const summaryStats = [
+      ['Total Students', formatCount(overview.total_students || 0)],
+      ['Completed', formatCount(overview.completed_students || 0)],
+      ['Missed', formatCount(missed)],
+      ['Due Today', formatCount(dueToday)],
+      ['Engaged', formatCount(overview.engaged_students || 0)],
+      ['Attendance Hours', `${Number(overview.total_attendance_hours || 0).toFixed(1)}h`],
+    ];
+    els.adminSaarthiSummary.innerHTML = summaryStats.map(([label, value]) => `
+      <div class="admin-saarthi-stat">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+    `).join('');
+  }
+
+  if (els.adminSaarthiDepartments) {
+    const departments = Array.isArray(overview.departments) ? overview.departments : [];
+    if (!departments.length) {
+      els.adminSaarthiDepartments.innerHTML = '<div class="list-item">No department rows available for this week.</div>';
+    } else {
+      els.adminSaarthiDepartments.innerHTML = departments.map((row) => {
+        const rate = clampPercent(Number(row?.completion_rate_percent || 0));
+        const missedLabel = Number(row?.missed_students || 0) > 0
+          ? ` • ${formatCount(row?.missed_students || 0)} missed`
+          : '';
+        return `
+          <div class="admin-saarthi-row">
+            <div class="admin-saarthi-row-head">
+              <span>${escapeHtml(String(row?.department || 'Unknown'))}</span>
+              <strong>${escapeHtml(`${rate.toFixed(1)}%`)}</strong>
+            </div>
+            <div class="admin-saarthi-row-meta">
+              ${escapeHtml(`${formatCount(row?.completed_students || 0)}/${formatCount(row?.total_students || 0)} complete • ${formatCount(row?.engaged_students || 0)} engaged${missedLabel}`)}
+            </div>
+            <div class="admin-saarthi-row-track"><span class="admin-saarthi-row-fill" style="--w:${rate}"></span></div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  if (els.adminSaarthiAlerts) {
+    const alerts = Array.isArray(overview.missed_alerts) ? overview.missed_alerts : [];
+    if (!alerts.length) {
+      els.adminSaarthiAlerts.innerHTML = '<div class="list-item good admin-issue-item">No missed-Sunday alerts for this week.</div>';
+    } else {
+      els.adminSaarthiAlerts.innerHTML = alerts.map((alert) => `
+        <div class="list-item warn admin-issue-item">
+          <span class="admin-issue-message">${escapeHtml(String(alert?.message || 'Missed Sunday alert'))}</span>
+          <span class="admin-issue-meta">${escapeHtml(String(alert?.context?.department || 'Unknown department'))} • ${escapeHtml(String(alert?.context?.section || 'No section'))}</span>
+        </div>
+      `).join('');
+    }
+  }
+
+  if (els.adminSaarthiCompleted) {
+    const rows = Array.isArray(overview.recent_completed) ? overview.recent_completed : [];
+    if (!rows.length) {
+      els.adminSaarthiCompleted.innerHTML = '<div class="list-item">No Sunday completions recorded yet for this week.</div>';
+    } else {
+      els.adminSaarthiCompleted.innerHTML = rows.map((row) => `
+        <div class="list-item">
+          <span class="admin-issue-message">${escapeHtml(String(row?.name || 'Student'))} • ${escapeHtml(String(row?.registration_number || `ID ${row?.student_id || ''}`))}</span>
+          <span class="admin-issue-meta">${escapeHtml(String(row?.department || 'Unknown'))} • ${escapeHtml(adminTimestampLabel(row?.attendance_awarded_on || row?.last_message_at || ''))}</span>
+        </div>
+      `).join('');
+    }
+  }
+}
+
 function renderAdminIssues() {
   if (!els.adminIssuesWrap) {
     return;
@@ -6758,6 +6957,49 @@ async function refreshAdminInsights(options = {}) {
   return payload;
 }
 
+async function refreshAdminSaarthiOverview(options = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    state.admin.saarthiOverview = null;
+    renderAdminSaarthiOverview();
+    return null;
+  }
+  const referenceDate = String(options?.referenceDate || els.workDate?.value || todayISO()).trim() || todayISO();
+  if (!options?.silent) {
+    setAdminSaarthiStatus('Refreshing Saarthi weekly command deck...', false, 'loading');
+  }
+  const payload = await api(`/admin/saarthi/overview?reference_date=${encodeURIComponent(referenceDate)}`);
+  state.admin.saarthiOverview = payload && typeof payload === 'object' ? payload : null;
+  renderAdminSaarthiOverview();
+  return payload;
+}
+
+async function exportAdminSaarthiAudit(options = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can export Saarthi audit bundles.');
+  }
+  const referenceDate = String(options?.referenceDate || els.workDate?.value || todayISO()).trim() || todayISO();
+  state.admin.saarthiExportBusy = true;
+  renderAdminSaarthiOverview();
+  setAdminSaarthiStatus('Preparing Saarthi transcript audit export...', false, 'loading');
+  try {
+    const payload = await api(
+      `/admin/saarthi/export?reference_date=${encodeURIComponent(referenceDate)}&include_messages=true`,
+      { timeoutMs: 60000 }
+    );
+    const fileName = String(payload?.file_name || `saarthi-audit-${referenceDate}.json`).trim() || `saarthi-audit-${referenceDate}.json`;
+    downloadJsonFile(fileName, payload || {});
+    setAdminSaarthiStatus(
+      `Export ready: ${Number(payload?.record_count || 0)} student audit record(s), checksum ${String(payload?.checksum_sha256 || '').slice(0, 12)}...`,
+      false,
+      'success',
+    );
+    return payload;
+  } finally {
+    state.admin.saarthiExportBusy = false;
+    renderAdminSaarthiOverview();
+  }
+}
+
 async function refreshAdminRecoveryPlans(options = {}) {
   const includeResolved = Boolean(
     options?.includeResolved
@@ -6775,12 +7017,30 @@ async function refreshAdminRecoveryPlans(options = {}) {
   state.admin.recoveryPlans = Array.isArray(payload?.plans) ? payload.plans : [];
   state.admin.recoveryLastUpdatedAt = payload?.last_updated_at || null;
   renderAdminRecoveryPlans();
+  if (options?.withDelivery !== false) {
+    await refreshAdminRecoveryDeliveryLog({
+      limit: options?.deliveryLimit,
+      silent: true,
+    });
+  }
   if (!options?.silent) {
     const message = includeResolved
       ? 'Recovery desk refreshed, including recovered plans.'
       : 'Recovery desk refreshed.';
     setAdminRecoveryStatus(message, false, 'success');
   }
+  return payload;
+}
+
+async function refreshAdminRecoveryDeliveryLog(options = {}) {
+  const limit = Math.max(10, Number(options?.limit || 40));
+  const payload = await api(`/attendance/admin/recovery-delivery-log?limit=${limit}`);
+  state.admin.recoveryDeliverySummary = payload?.summary && typeof payload.summary === 'object'
+    ? payload.summary
+    : null;
+  state.admin.recoveryDeliveryAttempts = Array.isArray(payload?.attempts) ? payload.attempts : [];
+  state.admin.recoveryDeliveryLastUpdatedAt = payload?.last_updated_at || null;
+  renderAdminRecoveryDeliveryLog();
   return payload;
 }
 
@@ -6845,7 +7105,9 @@ async function recomputeAdminRecoveryScope({ studentId = null, courseId = null, 
     refreshAdminRecoveryPlans({
       includeResolved: state.admin?.recoveryIncludeResolved,
       silent: true,
+      withDelivery: false,
     }),
+    refreshAdminRecoveryDeliveryLog({ silent: true }),
     refreshAdminLive({
       workDate: els.workDate?.value || todayISO(),
       mode: 'enrollment',
@@ -11213,7 +11475,9 @@ async function refreshAdministrativeModule() {
   await Promise.all([
     refreshAdminLive({ workDate, mode: 'enrollment' }),
     refreshAdminInsights({ workDate, mode: 'enrollment' }),
-    refreshAdminRecoveryPlans({ silent: true }),
+    refreshAdminSaarthiOverview({ referenceDate: workDate, silent: true }),
+    refreshAdminRecoveryPlans({ silent: true, withDelivery: false }),
+    refreshAdminRecoveryDeliveryLog({ silent: true }),
     refreshAdminIdentityCases({ silent: true }),
     refreshDemand(workDate),
     refreshAttendanceData(),
@@ -11224,6 +11488,8 @@ async function refreshAdministrativeModule() {
   renderAdministrativeTelemetryChart();
   renderAdminLiveIndicator();
   renderAdminIssues();
+  renderAdminSaarthiOverview();
+  renderAdminIdentityGraph();
   await refreshCopilotAuditTimeline({ silent: true, force: true });
 }
 
@@ -11290,6 +11556,24 @@ function setAdminIdentityShieldStatus(message, isError = false, state = 'neutral
   });
 }
 
+function setAdminApplicantStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminApplicantStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminApplicantStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminIdentityGraphStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminIdentityGraphStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminIdentityGraphStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
 function setAdminCopilotAuditStatus(message, isError = false, state = 'neutral') {
   if (!els.adminCopilotAuditStatus) {
     return;
@@ -11324,6 +11608,185 @@ function identityRiskTone(riskValue) {
   return 'ok';
 }
 
+function normalizeOptionalNumber(rawValue, fieldLabel) {
+  const text = String(rawValue ?? '').trim();
+  if (!text) {
+    return null;
+  }
+  const parsed = Number(text);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${fieldLabel} must be a valid number.`);
+  }
+  return parsed;
+}
+
+function summarizeIdentityArtifact(item) {
+  const parts = [];
+  if (item?.verification_state) {
+    parts.push(String(item.verification_state).replace(/_/g, ' '));
+  }
+  if (item?.document_match_score !== null && item?.document_match_score !== undefined) {
+    parts.push(`doc ${Number(item.document_match_score).toFixed(2)}`);
+  }
+  if (item?.face_match_confidence !== null && item?.face_match_confidence !== undefined) {
+    parts.push(`face ${Number(item.face_match_confidence).toFixed(2)}`);
+  }
+  if (item?.liveness_passed === true) {
+    parts.push('liveness pass');
+  } else if (item?.liveness_passed === false) {
+    parts.push('liveness fail');
+  }
+  return parts.join(' • ');
+}
+
+function graphNodeTypeLabel(nodeType) {
+  const normalized = String(nodeType || '').trim().toLowerCase();
+  if (!normalized) {
+    return 'Node';
+  }
+  return normalized.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function graphNodeTone(nodeType, riskLevel) {
+  const risk = String(riskLevel || '').trim().toLowerCase();
+  if (risk === 'critical' || risk === 'high') {
+    return {
+      fill: 'rgba(250, 110, 118, 0.2)',
+      stroke: '#f97385',
+      text: '#ffe5e8',
+    };
+  }
+  if (risk === 'medium') {
+    return {
+      fill: 'rgba(249, 191, 92, 0.18)',
+      stroke: '#f7b955',
+      text: '#fff1cf',
+    };
+  }
+  const nodeKind = String(nodeType || '').trim().toLowerCase();
+  if (nodeKind === 'device') {
+    return {
+      fill: 'rgba(65, 182, 230, 0.18)',
+      stroke: '#4ec5f1',
+      text: '#dff8ff',
+    };
+  }
+  if (nodeKind === 'applicant' || nodeKind === 'external_subject') {
+    return {
+      fill: 'rgba(115, 159, 255, 0.18)',
+      stroke: '#7fa8ff',
+      text: '#e6edff',
+    };
+  }
+  return {
+    fill: 'rgba(91, 213, 173, 0.16)',
+    stroke: '#5edab6',
+    text: '#e8fff8',
+  };
+}
+
+function renderAdminIdentityGraph() {
+  if (!els.adminIdentityGraphCanvas || !els.adminIdentityGraphSummary) {
+    return;
+  }
+  const graph = state.admin?.identityGraph || null;
+  const summary = graph?.summary && typeof graph.summary === 'object' ? graph.summary : {};
+  const summaryEntries = [];
+  const summaryOrder = [
+    ['shared_device_count', 'Shared devices'],
+    ['connected_user_count', 'Users'],
+    ['connected_student_count', 'Students'],
+    ['connected_applicant_count', 'Applicants'],
+    ['session_count', 'Sessions'],
+  ];
+  for (const [key, label] of summaryOrder) {
+    const value = summary?.[key];
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+    summaryEntries.push(`<span>${escapeHtml(label)}: <strong>${escapeHtml(String(value))}</strong></span>`);
+  }
+  if (summary?.latest_seen_at) {
+    summaryEntries.push(`<span>Latest seen: <strong>${escapeHtml(adminTimestampLabel(summary.latest_seen_at, '--'))}</strong></span>`);
+  }
+  els.adminIdentityGraphSummary.innerHTML = summaryEntries.length
+    ? summaryEntries.join('')
+    : '<span>No graph summary available yet.</span>';
+
+  if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) {
+    els.adminIdentityGraphCanvas.innerHTML = `
+      <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="admin-identity-graph-empty">
+        Load a student, user, or applicant graph to inspect suspicious links.
+      </text>
+    `;
+    return;
+  }
+
+  const width = 720;
+  const height = 420;
+  const lanes = {
+    user: 100,
+    student: 250,
+    device: 360,
+    applicant: 490,
+    external_subject: 620,
+  };
+  const grouped = new Map();
+  for (const node of graph.nodes) {
+    const laneKey = Object.prototype.hasOwnProperty.call(lanes, node?.node_type) ? node.node_type : 'external_subject';
+    if (!grouped.has(laneKey)) {
+      grouped.set(laneKey, []);
+    }
+    grouped.get(laneKey).push(node);
+  }
+
+  const positions = new Map();
+  for (const [laneKey, items] of grouped.entries()) {
+    const step = height / (items.length + 1);
+    items.forEach((node, index) => {
+      positions.set(node.id, {
+        x: lanes[laneKey] || lanes.external_subject,
+        y: Math.round(step * (index + 1)),
+      });
+    });
+  }
+
+  const edgeMarkup = (Array.isArray(graph.edges) ? graph.edges : []).map((edge) => {
+    const source = positions.get(edge?.source);
+    const target = positions.get(edge?.target);
+    if (!source || !target) {
+      return '';
+    }
+    const midX = (source.x + target.x) / 2;
+    const midY = (source.y + target.y) / 2;
+    return `
+      <g class="admin-identity-graph-edge">
+        <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"></line>
+        <text x="${midX}" y="${midY - 6}" text-anchor="middle">${escapeHtml(String(edge?.relation || 'link').replace(/_/g, ' '))}</text>
+      </g>
+    `;
+  }).join('');
+
+  const nodeMarkup = graph.nodes.map((node) => {
+    const point = positions.get(node.id) || { x: width / 2, y: height / 2 };
+    const tone = graphNodeTone(node?.node_type, node?.risk_level);
+    const label = String(node?.label || node?.id || 'Node');
+    const subtitle = graphNodeTypeLabel(node?.node_type);
+    const displayLabel = label.length > 26 ? `${label.slice(0, 23)}...` : label;
+    const left = Math.max(18, Math.min(width - 174, point.x - 78));
+    const top = Math.max(12, Math.min(height - 58, point.y - 22));
+    return `
+      <g class="admin-identity-graph-node">
+        <rect x="${left}" y="${top}" rx="12" ry="12" width="156" height="44" fill="${tone.fill}" stroke="${tone.stroke}"></rect>
+        <text x="${left + 12}" y="${top + 17}" fill="${tone.text}" class="admin-identity-graph-node-label">${escapeHtml(displayLabel)}</text>
+        <text x="${left + 12}" y="${top + 33}" fill="${tone.text}" class="admin-identity-graph-node-subtitle">${escapeHtml(subtitle)}</text>
+      </g>
+    `;
+  }).join('');
+
+  els.adminIdentityGraphCanvas.innerHTML = `${edgeMarkup}${nodeMarkup}`;
+}
+
 function renderAdminIdentityCases() {
   if (!els.adminIdentityCasesWrap) {
     return;
@@ -11347,6 +11810,7 @@ function renderAdminIdentityCases() {
     const signals = Array.isArray(item?.signals) ? item.signals.slice(0, 4) : [];
     const completedChecks = Array.isArray(item?.completed_checks) ? item.completed_checks.slice(0, 3) : [];
     const requestedChecks = Array.isArray(item?.requested_checks) ? item.requested_checks.slice(0, 3) : [];
+    const artifacts = Array.isArray(item?.artifacts) ? item.artifacts.slice(0, 4) : [];
 
     return `
       <div class="list-item ${identityRiskTone(item?.risk_level) === 'bad' ? 'warn' : (String(item?.status || '').toLowerCase() === 'verified' ? 'good' : '')}">
@@ -11371,6 +11835,25 @@ function renderAdminIdentityCases() {
           <div class="admin-identity-case-checks">
             ${completedChecks.length ? `<span>Completed: ${escapeHtml(completedChecks.join(', '))}</span>` : ''}
             ${requestedChecks.length ? `<span>Pending: ${escapeHtml(requestedChecks.join(', '))}</span>` : ''}
+          </div>
+        ` : ''}
+        ${artifacts.length ? `
+          <div class="admin-identity-artifacts">
+            ${artifacts.map((artifact) => {
+              const label = String(artifact?.artifact_type || 'artifact').replace(/_/g, ' ');
+              const summary = summarizeIdentityArtifact(artifact);
+              const note = String(artifact?.note || '').trim();
+              const href = String(artifact?.media_url || '').trim();
+              const content = `
+                <strong>${escapeHtml(label)}</strong>
+                ${summary ? `<span>${escapeHtml(summary)}</span>` : ''}
+                ${note ? `<span>${escapeHtml(note)}</span>` : ''}
+              `;
+              if (href) {
+                return `<a class="admin-identity-artifact-link" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${content}</a>`;
+              }
+              return `<div class="admin-identity-artifact-link">${content}</div>`;
+            }).join('')}
           </div>
         ` : ''}
       </div>
@@ -11409,6 +11892,133 @@ async function refreshAdminIdentityCases(options = {}) {
   }
 
   return state.admin.identityCases;
+}
+
+async function runAdminApplicantIdentityWorkflow() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can run the applicant verification workflow.');
+  }
+
+  const applicantEmail = String(els.adminApplicantEmail?.value || '').trim().toLowerCase();
+  if (!applicantEmail) {
+    throw new Error('Applicant email is required.');
+  }
+
+  const claimedRole = String(els.adminApplicantRole?.value || 'student').trim().toLowerCase() || 'student';
+  const registrationNumber = String(els.adminApplicantRegistration?.value || '').trim() || null;
+  const parentEmail = String(els.adminApplicantParentEmail?.value || '').trim().toLowerCase() || null;
+  const documentMatchScore = normalizeOptionalNumber(els.adminApplicantDocumentScore?.value, 'Document score');
+  const faceMatchConfidence = normalizeOptionalNumber(els.adminApplicantFaceScore?.value, 'Face score');
+  const suspiciousFlags = String(els.adminApplicantFlags?.value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  const documentFile = els.adminApplicantDocumentFile?.files?.[0] || null;
+  const videoFile = els.adminApplicantVideoFile?.files?.[0] || null;
+  const evidenceUploads = [];
+
+  if (documentFile) {
+    evidenceUploads.push({
+      artifact_type: 'document_evidence',
+      data_url: await fileToDataUrl(documentFile),
+      note: `Admin uploaded ${documentFile.name}`,
+      verification_state: documentMatchScore === null ? 'submitted' : 'scored',
+      extracted_identity: {
+        file_name: documentFile.name,
+        source: 'admin_applicant_workflow',
+      },
+      document_match_score: documentMatchScore,
+    });
+  }
+
+  if (videoFile) {
+    const livenessPassed = els.adminApplicantLiveness ? Boolean(els.adminApplicantLiveness.checked) : null;
+    evidenceUploads.push({
+      artifact_type: 'video_verification',
+      data_url: await fileToDataUrl(videoFile),
+      note: `Admin uploaded ${videoFile.name}`,
+      verification_state: livenessPassed === null ? 'submitted' : (livenessPassed ? 'verified' : 'failed'),
+      extracted_identity: {
+        file_name: videoFile.name,
+        source: 'admin_applicant_workflow',
+      },
+      face_match_confidence: faceMatchConfidence,
+      liveness_passed: livenessPassed,
+    });
+  }
+
+  const payload = {
+    applicant_email: applicantEmail,
+    claimed_role: claimedRole,
+    registration_number: registrationNumber,
+    parent_email: parentEmail,
+    external_subject_key: `admin-applicant:${applicantEmail}`,
+    document_match_score: documentMatchScore,
+    face_match_confidence: faceMatchConfidence,
+    liveness_passed: videoFile ? Boolean(els.adminApplicantLiveness?.checked) : null,
+    suspicious_flags: suspiciousFlags,
+    evidence_uploads: evidenceUploads,
+  };
+
+  setAdminApplicantStatus(`Running applicant verification workflow for ${applicantEmail}...`, false, 'loading');
+  const saved = await api('/identity-shield/screenings/applicants', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  await refreshAdminIdentityCases({ silent: true });
+  setAdminApplicantStatus(
+    `Applicant workflow completed for ${applicantEmail}: ${String(saved?.risk_level || 'low').toUpperCase()} risk, ${String(saved?.status || 'pending').replace(/_/g, ' ')}.`,
+    false,
+    identityRiskTone(saved?.risk_level) === 'bad' ? 'loading' : 'success',
+  );
+  return saved;
+}
+
+async function refreshAdminIdentityGraph() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    return null;
+  }
+
+  const scope = String(els.adminIdentityGraphScope?.value || 'student').trim().toLowerCase();
+  const query = String(els.adminIdentityGraphQuery?.value || '').trim();
+  if (!query) {
+    throw new Error('Enter a student id, user id, or applicant email before loading the graph.');
+  }
+
+  let endpoint = '';
+  if (scope === 'student') {
+    const studentId = Number(query);
+    if (!Number.isFinite(studentId) || studentId <= 0) {
+      throw new Error('Student graph requires a numeric student id.');
+    }
+    endpoint = `/identity-shield/graph/students/${studentId}`;
+  } else if (scope === 'user') {
+    const userId = Number(query);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      throw new Error('User graph requires a numeric user id.');
+    }
+    endpoint = `/identity-shield/graph/users/${userId}`;
+  } else {
+    const params = new URLSearchParams();
+    if (query.includes('@')) {
+      params.set('email', query.toLowerCase());
+    } else {
+      params.set('external_subject_key', query.toLowerCase());
+    }
+    endpoint = `/identity-shield/graph/applicants?${params.toString()}`;
+  }
+
+  setAdminIdentityGraphStatus('Loading suspicious identity graph...', false, 'loading');
+  const graph = await api(endpoint);
+  state.admin.identityGraph = graph;
+  renderAdminIdentityGraph();
+  setAdminIdentityGraphStatus(
+    `Loaded graph with ${Array.isArray(graph?.nodes) ? graph.nodes.length : 0} nodes and ${Array.isArray(graph?.edges) ? graph.edges.length : 0} edges.`,
+    false,
+    'success',
+  );
+  return graph;
 }
 
 async function runAdminEnrollmentIdentityScreening() {
@@ -15821,6 +16431,86 @@ function renderAdminRecoveryPlans() {
   }).join('');
 }
 
+function renderAdminRecoveryDeliveryLog() {
+  const summaryEl = els.adminRecoveryDeliverySummary;
+  const listEl = els.adminRecoveryDeliveryList;
+  if (!summaryEl && !listEl) {
+    return;
+  }
+
+  const summary = state.admin?.recoveryDeliverySummary && typeof state.admin.recoveryDeliverySummary === 'object'
+    ? state.admin.recoveryDeliverySummary
+    : {};
+  const attempts = Array.isArray(state.admin?.recoveryDeliveryAttempts) ? state.admin.recoveryDeliveryAttempts : [];
+  const failedAttempts = attempts.filter((attempt) => String(attempt?.status || '').trim().toLowerCase() === 'failed');
+
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="admin-recovery-stat">
+        <span>Delivery Attempts</span>
+        <strong>${Number(summary?.total_attempts || 0)}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>Delivered</span>
+        <strong>${Number(summary?.sent || 0)}</strong>
+      </div>
+      <div class="admin-recovery-stat critical">
+        <span>Failed</span>
+        <strong>${Number(summary?.failed || 0)}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>Deduped</span>
+        <strong>${Number(summary?.already_sent || 0)}</strong>
+      </div>
+    `;
+  }
+
+  if (!listEl) {
+    return;
+  }
+  if (!failedAttempts.length) {
+    listEl.innerHTML = `
+      <div class="list-item good admin-recovery-delivery-empty">
+        <span class="admin-issue-message">No failed recovery deliveries in the recent window.</span>
+        <span class="admin-issue-meta">Worker delivery attempts are being tracked for faculty and parent alerts.</span>
+      </div>
+    `;
+    return;
+  }
+
+  listEl.innerHTML = failedAttempts.map((attempt) => {
+    const metadata = attempt?.metadata && typeof attempt.metadata === 'object' ? attempt.metadata : {};
+    const studentLabel = String(metadata.student_name || 'Student').trim() || 'Student';
+    const registration = String(metadata.registration_number || '').trim();
+    const courseCode = String(metadata.course_code || '').trim();
+    const courseTitle = String(metadata.course_title || '').trim();
+    const courseLabel = courseCode
+      ? `${courseCode}${courseTitle ? ` - ${courseTitle}` : ''}`
+      : (courseTitle || 'Course not available');
+    const attemptLabel = Number(attempt?.attempt_number || 1);
+    const timestampLabel = adminTimestampLabel(attempt?.created_at || state.admin?.recoveryDeliveryLastUpdatedAt || '');
+    const recipientEmail = String(attempt?.recipient_email || '').trim() || 'Recipient unavailable';
+    const errorMessage = String(attempt?.error_message || 'Delivery failed before a provider response was returned.').trim();
+    return `
+      <article class="admin-recovery-delivery-row failed">
+        <div class="admin-recovery-delivery-head">
+          <div>
+            <p class="admin-recovery-delivery-title">${escapeHtml(studentLabel)}${registration ? ` • ${escapeHtml(registration)}` : ''}</p>
+            <p class="admin-recovery-delivery-subtitle">${escapeHtml(courseLabel)}</p>
+          </div>
+          <span class="admin-recovery-delivery-status failed">${escapeHtml(statusLabel(String(attempt?.status || 'failed').replaceAll('_', ' ')))}</span>
+        </div>
+        <div class="admin-recovery-delivery-meta">
+          <small>${escapeHtml(recipientEmail)}</small>
+          <small>Attempt ${attemptLabel}</small>
+          <small>${escapeHtml(timestampLabel)}</small>
+        </div>
+        <p class="admin-recovery-delivery-error">${escapeHtml(errorMessage)}</p>
+      </article>
+    `;
+  }).join('');
+}
+
 function attendanceCourseKey(courseCode, courseTitle) {
   return `${String(courseCode || '').trim().toUpperCase()}::${String(courseTitle || '').trim().toUpperCase()}`;
 }
@@ -18057,6 +18747,10 @@ async function refreshAll() {
         workDate: els.workDate?.value || todayISO(),
         mode: 'enrollment',
       }));
+      tasks.push(refreshAdminSaarthiOverview({
+        referenceDate: els.workDate?.value || todayISO(),
+        silent: true,
+      }));
       if (!state.admin?.insights) {
         tasks.push(refreshAdminInsights({
           workDate: els.workDate?.value || todayISO(),
@@ -20196,6 +20890,34 @@ function bindEvents() {
     });
   }
 
+  if (els.adminSaarthiRefreshBtn) {
+    els.adminSaarthiRefreshBtn.addEventListener('click', async () => {
+      try {
+        await refreshAdminSaarthiOverview({
+          referenceDate: els.workDate?.value || todayISO(),
+        });
+      } catch (error) {
+        const message = String(error?.message || 'Failed to refresh Saarthi observability.');
+        setAdminSaarthiStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminSaarthiExportBtn) {
+    els.adminSaarthiExportBtn.addEventListener('click', async () => {
+      try {
+        await exportAdminSaarthiAudit({
+          referenceDate: els.workDate?.value || todayISO(),
+        });
+      } catch (error) {
+        const message = String(error?.message || 'Failed to export Saarthi audit bundle.');
+        setAdminSaarthiStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
   if (els.adminRecoveryList) {
     els.adminRecoveryList.addEventListener('click', async (event) => {
       const target = event.target;
@@ -20311,6 +21033,46 @@ function bindEvents() {
       } catch (error) {
         const message = String(error?.message || 'Failed to load identity cases.');
         setAdminIdentityShieldStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminApplicantScreenBtn) {
+    els.adminApplicantScreenBtn.addEventListener('click', async () => {
+      try {
+        await runAdminApplicantIdentityWorkflow();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to run applicant verification workflow.');
+        setAdminApplicantStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminIdentityGraphQuery) {
+    els.adminIdentityGraphQuery.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await refreshAdminIdentityGraph();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load suspicious identity graph.');
+        setAdminIdentityGraphStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminIdentityGraphBtn) {
+    els.adminIdentityGraphBtn.addEventListener('click', async () => {
+      try {
+        await refreshAdminIdentityGraph();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load suspicious identity graph.');
+        setAdminIdentityGraphStatus(message, true);
         log(message);
       }
     });

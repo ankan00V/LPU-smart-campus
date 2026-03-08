@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260308b">
-    <script src="/web/app.js?v=20260308c" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260308c">
+    <script src="/web/app.js?v=20260308d" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -687,6 +687,8 @@
                     </div>
                     <p id="admin-recovery-status" class="helper-text">Recovery desk tracks who is drifting, what intervention is active, and which plans escalated to RMS.</p>
                     <div id="admin-recovery-summary" class="admin-recovery-summary"></div>
+                    <div id="admin-recovery-delivery-summary" class="admin-recovery-delivery-summary"></div>
+                    <div id="admin-recovery-delivery-list" class="admin-recovery-delivery-list"></div>
                     <div id="admin-recovery-list" class="attendance-recovery-list admin-recovery-list"></div>
                 </article>
 
@@ -696,6 +698,42 @@
                         <small id="admin-data-freshness-note">Freshness: --</small>
                     </div>
                     <div id="admin-issues-wrap" class="list-wrap"></div>
+                </article>
+
+                <article id="admin-saarthi-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Saarthi Weekly Command</h3>
+                        <small>Completion dashboard, missed-Sunday alerts, and transcript audit export</small>
+                    </div>
+                    <div class="faculty-admin-grid admin-saarthi-toolbar">
+                        <button id="admin-saarthi-refresh-btn" class="btn" type="button">Refresh Saarthi</button>
+                        <button id="admin-saarthi-export-btn" class="btn btn-primary" type="button">Export Weekly Audit</button>
+                    </div>
+                    <p id="admin-saarthi-status" class="helper-text">Saarthi observability is loading.</p>
+                    <div id="admin-saarthi-summary" class="admin-saarthi-summary"></div>
+                    <div class="admin-saarthi-grid">
+                        <div class="admin-saarthi-panel">
+                            <div class="panel-head">
+                                <h4>Department Completion</h4>
+                                <small id="admin-saarthi-window">Week --</small>
+                            </div>
+                            <div id="admin-saarthi-departments" class="list-wrap"></div>
+                        </div>
+                        <div class="admin-saarthi-panel">
+                            <div class="panel-head">
+                                <h4>Missed-Sunday Alerts</h4>
+                                <small>Escalate outreach at the start of the week</small>
+                            </div>
+                            <div id="admin-saarthi-alerts" class="list-wrap"></div>
+                        </div>
+                        <div class="admin-saarthi-panel">
+                            <div class="panel-head">
+                                <h4>Recent Completions</h4>
+                                <small>Latest students who secured the weekly credit</small>
+                            </div>
+                            <div id="admin-saarthi-completed" class="list-wrap"></div>
+                        </div>
+                    </div>
                 </article>
 
                 <article id="absentee-card" class="ops-card glass tilt" data-tilt>
@@ -815,6 +853,88 @@
                     </div>
                     <p id="admin-identity-status" class="helper-text">Latest enrollment and applicant identity cases load here.</p>
                     <div id="admin-identity-cases-wrap" class="list-wrap admin-identity-cases-wrap"></div>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Applicant Verification Workflow</h3>
+                        <small>Capture document/video checks and create evidence-backed applicant cases.</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Applicant Email</span>
+                            <input id="admin-applicant-email" type="email" placeholder="applicant@gmail.com">
+                        </label>
+                        <label class="field">
+                            <span>Claimed Role</span>
+                            <select id="admin-applicant-role">
+                                <option value="student" selected>Student</option>
+                                <option value="faculty">Faculty</option>
+                                <option value="admin">Admin</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Registration Number</span>
+                            <input id="admin-applicant-registration" type="text" placeholder="e.g. 22BCS901">
+                        </label>
+                        <label class="field">
+                            <span>Parent Email</span>
+                            <input id="admin-applicant-parent-email" type="email" placeholder="parent@gmail.com">
+                        </label>
+                        <label class="field">
+                            <span>Document Match Score</span>
+                            <input id="admin-applicant-document-score" type="number" min="0" max="1" step="0.01" placeholder="0.00 - 1.00">
+                        </label>
+                        <label class="field">
+                            <span>Face Match Confidence</span>
+                            <input id="admin-applicant-face-score" type="number" min="0" max="1" step="0.01" placeholder="0.00 - 1.00">
+                        </label>
+                        <label class="field">
+                            <span>Document Evidence</span>
+                            <input id="admin-applicant-document-file" type="file" accept="image/*,application/pdf">
+                        </label>
+                        <label class="field">
+                            <span>Verification Video</span>
+                            <input id="admin-applicant-video-file" type="file" accept="video/*">
+                        </label>
+                        <label class="field field-checkbox">
+                            <span>Liveness Passed</span>
+                            <input id="admin-applicant-liveness" type="checkbox">
+                        </label>
+                        <label class="field field-full">
+                            <span>Suspicion Flags</span>
+                            <input id="admin-applicant-flags" type="text" placeholder="comma separated flags">
+                        </label>
+                        <button id="admin-applicant-screen-btn" class="btn btn-primary" type="button">Run Applicant Workflow</button>
+                    </div>
+                    <p id="admin-applicant-status" class="helper-text">Run a document/video-backed applicant identity workflow from admin.</p>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Suspicious Identity Graph</h3>
+                        <small>Visualize device reuse across applicants, users, and students.</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Graph Scope</span>
+                            <select id="admin-identity-graph-scope">
+                                <option value="student" selected>Student ID</option>
+                                <option value="user">User ID</option>
+                                <option value="applicant">Applicant Email</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Lookup</span>
+                            <input id="admin-identity-graph-query" type="text" placeholder="Student ID, User ID, or applicant email">
+                        </label>
+                        <button id="admin-identity-graph-btn" class="btn" type="button">Load Graph</button>
+                    </div>
+                    <p id="admin-identity-graph-status" class="helper-text">Load a device/account graph to inspect suspicious identity clusters.</p>
+                    <div id="admin-identity-graph-summary" class="admin-identity-graph-summary"></div>
+                    <div class="admin-identity-graph-shell">
+                        <svg id="admin-identity-graph-canvas" class="admin-identity-graph-canvas" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" aria-label="Identity graph viewer"></svg>
+                    </div>
                 </article>
             </section>
 
