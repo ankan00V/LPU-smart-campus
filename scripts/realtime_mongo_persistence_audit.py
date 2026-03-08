@@ -24,9 +24,9 @@ from sqlalchemy import text
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-from app import models
-from app.auth_utils import CurrentUser, create_access_token
-from app.database import engine as relational_engine
+from app import models  # noqa: E402
+from app.auth_utils import CurrentUser, create_access_token  # noqa: E402
+from app.database import engine as relational_engine  # noqa: E402
 DEFAULT_BASE_URL = "http://127.0.0.1:8001"
 
 

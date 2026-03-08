@@ -73,15 +73,15 @@ def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if not raw:
         return int(default)
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return int(default)
 
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = (os.getenv(name, "true" if default else "false") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
-    try:
-        return int(raw.strip())
-    except ValueError:
-        return int(default)
 
 
 def _clamp01(value: float) -> float:
@@ -99,6 +99,32 @@ def _load_config() -> FaceVerificationConfig:
     requested_similarity = _env_float(
         "FACE_MATCH_MIN_SIMILARITY",
         _env_float("FACE_MATCH_PASS_THRESHOLD", 0.80),
+    )
+    min_similarity = max(0.80, min(1.0, requested_similarity))
+    min_frames = max(5, _env_int("FACE_MATCH_MIN_FRAMES", 5))
+    max_frames = max(min_frames, _env_int("FACE_MATCH_MAX_FRAMES", 12))
+    return FaceVerificationConfig(
+        min_similarity=min_similarity,
+        min_consecutive_frames=min_frames,
+        max_frames=max_frames,
+        min_frame_width=max(160, _env_int("FACE_MIN_FRAME_WIDTH", 280)),
+        min_frame_height=max(160, _env_int("FACE_MIN_FRAME_HEIGHT", 280)),
+        blur_threshold=max(1.0, _env_float("FACE_ANTI_SPOOF_BLUR_THRESHOLD", 70.0)),
+        min_face_area_ratio=max(0.03, min(0.9, _env_float("FACE_ANTI_SPOOF_MIN_FACE_AREA_RATIO", 0.09))),
+        max_center_offset_ratio=max(0.05, min(0.95, _env_float("FACE_FACE_CENTER_OFFSET_MAX_RATIO", 0.36))),
+        min_eye_distance_ratio=max(0.05, min(0.9, _env_float("FACE_ANTI_SPOOF_MIN_EYE_DISTANCE_RATIO", 0.13))),
+        min_lower_texture_ratio=max(0.02, min(2.5, _env_float("FACE_ANTI_SPOOF_MIN_LOWER_TEXTURE_RATIO", 0.18))),
+        min_contrast=max(1.0, _env_float("FACE_ANTI_SPOOF_MIN_CONTRAST", 12.0)),
+        min_liveness_motion=max(0.001, _env_float("FACE_LIVENESS_MIN_MOTION", 0.018)),
+        min_liveness_pose_delta=max(0.001, _env_float("FACE_LIVENESS_MIN_POSE_DELTA", 0.012)),
+        min_liveness_yaw_range=max(0.002, _env_float("FACE_LIVENESS_MIN_YAW_RANGE", 0.012)),
+        min_liveness_pitch_range=max(0.002, _env_float("FACE_LIVENESS_MIN_PITCH_RANGE", 0.008)),
+        min_liveness_texture_jitter=max(0.0001, _env_float("FACE_LIVENESS_MIN_TEXTURE_JITTER", 0.011)),
+        min_liveness_contrast_jitter=max(0.01, _env_float("FACE_LIVENESS_MIN_CONTRAST_JITTER", 0.55)),
+        min_primary_face_dominance_ratio=max(
+            1.3,
+            _env_float("FACE_PRIMARY_FACE_DOMINANCE_RATIO", 3.0),
+        ),
     )
 
 
@@ -202,32 +228,6 @@ def _resolve_active_provider(*, strict: bool = False) -> tuple[str, str | None]:
     if provider == "dnn" or strict:
         return "heuristic", error or "OpenCV DNN runtime unavailable"
     return "heuristic", error
-    min_similarity = max(0.80, min(1.0, requested_similarity))
-    min_frames = max(5, _env_int("FACE_MATCH_MIN_FRAMES", 5))
-    max_frames = max(min_frames, _env_int("FACE_MATCH_MAX_FRAMES", 12))
-    return FaceVerificationConfig(
-        min_similarity=min_similarity,
-        min_consecutive_frames=min_frames,
-        max_frames=max_frames,
-        min_frame_width=max(160, _env_int("FACE_MIN_FRAME_WIDTH", 280)),
-        min_frame_height=max(160, _env_int("FACE_MIN_FRAME_HEIGHT", 280)),
-        blur_threshold=max(1.0, _env_float("FACE_ANTI_SPOOF_BLUR_THRESHOLD", 70.0)),
-        min_face_area_ratio=max(0.03, min(0.9, _env_float("FACE_ANTI_SPOOF_MIN_FACE_AREA_RATIO", 0.09))),
-        max_center_offset_ratio=max(0.05, min(0.95, _env_float("FACE_FACE_CENTER_OFFSET_MAX_RATIO", 0.36))),
-        min_eye_distance_ratio=max(0.05, min(0.9, _env_float("FACE_ANTI_SPOOF_MIN_EYE_DISTANCE_RATIO", 0.13))),
-        min_lower_texture_ratio=max(0.02, min(2.5, _env_float("FACE_ANTI_SPOOF_MIN_LOWER_TEXTURE_RATIO", 0.18))),
-        min_contrast=max(1.0, _env_float("FACE_ANTI_SPOOF_MIN_CONTRAST", 12.0)),
-        min_liveness_motion=max(0.001, _env_float("FACE_LIVENESS_MIN_MOTION", 0.018)),
-        min_liveness_pose_delta=max(0.001, _env_float("FACE_LIVENESS_MIN_POSE_DELTA", 0.012)),
-        min_liveness_yaw_range=max(0.002, _env_float("FACE_LIVENESS_MIN_YAW_RANGE", 0.012)),
-        min_liveness_pitch_range=max(0.002, _env_float("FACE_LIVENESS_MIN_PITCH_RANGE", 0.008)),
-        min_liveness_texture_jitter=max(0.0001, _env_float("FACE_LIVENESS_MIN_TEXTURE_JITTER", 0.011)),
-        min_liveness_contrast_jitter=max(0.01, _env_float("FACE_LIVENESS_MIN_CONTRAST_JITTER", 0.55)),
-        min_primary_face_dominance_ratio=max(
-            1.3,
-            _env_float("FACE_PRIMARY_FACE_DOMINANCE_RATIO", 3.0),
-        ),
-    )
 
 
 def _relaxed_enrollment_config(config: FaceVerificationConfig) -> FaceVerificationConfig:

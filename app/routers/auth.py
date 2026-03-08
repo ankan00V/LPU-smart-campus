@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import secrets
@@ -40,6 +41,7 @@ from ..enterprise_controls import (
     match_totp_code,
     verify_backup_code,
 )
+from ..identity_shield import assess_applicant_risk
 from ..mongo import get_mongo_db, invalidate_mongo_connection, mirror_event, next_sequence
 from ..otp_delivery import otp_expiry_minutes
 from ..rate_limit import enforce_rate_limit
@@ -80,6 +82,31 @@ def _mongo_db_or_503():
         return get_mongo_db(required=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _request_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded = (request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        return first or None
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return None
+
+
+def _request_device_id(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    explicit = (request.headers.get("x-device-id") or "").strip()
+    if explicit:
+        return explicit[:120]
+    user_agent = (request.headers.get("user-agent") or "").strip()
+    if not user_agent:
+        return None
+    digest = hashlib.sha256(user_agent.encode("utf-8")).hexdigest()
+    return f"ua-{digest}"
 
 
 def _raise_auth_datastore_unavailable(exc: Exception) -> None:
@@ -655,6 +682,7 @@ def _ensure_role_profile_link(
 @router.post("/register", response_model=schemas.AuthUserOut, status_code=status.HTTP_201_CREATED)
 def register_auth_user(
     payload: schemas.AuthRegisterRequest,
+    request: Request,
     sql_db: Session = Depends(get_db),
 ):
     db = _mongo_db_or_503()
@@ -671,6 +699,25 @@ def register_auth_user(
         invite_token=payload.invite_token,
         provisioning_token=payload.provisioning_token,
     )
+
+    try:
+        assess_applicant_risk(
+            sql_db,
+            schemas.ApplicantRiskAssessmentRequest(
+                applicant_email=email,
+                claimed_role=role.value,
+                registration_number=payload.registration_number,
+                parent_email=payload.parent_email,
+                device_id=_request_device_id(request),
+                user_agent=(request.headers.get("user-agent") if request else None),
+                ip_address=_request_ip(request),
+                external_subject_key=f"signup:{email}",
+                suspicious_flags=[],
+            ),
+        )
+    except Exception:
+        sql_db.rollback()
+        logger.exception("signup_identity_screening_failed email=%s role=%s", email, role.value)
 
     if db["auth_users"].find_one({"email": email}):
         raise HTTPException(status_code=409, detail="Email already exists")

@@ -18,7 +18,6 @@ from ..attendance_recovery import (
     get_admin_recovery_plans,
     get_faculty_recovery_plans,
     get_student_recovery_plans,
-    get_plan_actions,
     recompute_attendance_recovery_scope,
     update_student_recovery_action,
 )

@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 
-from app.database import SessionLocal, database_status
-from app.main import sync_sql_snapshot_to_mongo
-from app.mongo import mongo_status
+from app.database import SessionLocal, database_status  # noqa: E402
+from app.main import sync_sql_snapshot_to_mongo  # noqa: E402
+from app.mongo import mongo_status  # noqa: E402
 
 
 def main() -> int:

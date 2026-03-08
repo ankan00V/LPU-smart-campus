@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
 
-from app.database import POSTGRES_ADMIN_LIBPQ_URL, SQLALCHEMY_DATABASE_URL, postgres_libpq_url
-from app.mongo import get_mongo_db, init_mongo
-from app.postgres_tools import require_postgres_command
+from app.database import POSTGRES_ADMIN_LIBPQ_URL, SQLALCHEMY_DATABASE_URL, postgres_libpq_url  # noqa: E402
+from app.mongo import get_mongo_db, init_mongo  # noqa: E402
+from app.postgres_tools import require_postgres_command  # noqa: E402
 
 
 def _jsonable(value: Any) -> Any:

@@ -17,6 +17,7 @@ from app import models  # noqa: F401
 from app.database import Base
 from app.postgres_tools import require_postgres_command
 
+
 def _normalized_postgres_url(raw: str) -> str:
     value = str(raw or "").strip()
     if value.startswith("postgres://"):
@@ -54,12 +55,15 @@ def _ensure_required_tools() -> None:
 def _assert_distinct_databases(source_url: str, target_url: str) -> None:
     source = make_url(source_url)
     target = make_url(target_url)
-    signature = lambda url: (
-        str(url.host or "").strip().lower(),
-        int(url.port or 5432),
-        str(url.database or "").strip().lower(),
-        str(url.username or "").strip().lower(),
-    )
+
+    def signature(url) -> tuple[str, int, str, str]:
+        return (
+            str(url.host or "").strip().lower(),
+            int(url.port or 5432),
+            str(url.database or "").strip().lower(),
+            str(url.username or "").strip().lower(),
+        )
+
     if signature(source) == signature(target):
         raise SystemExit("Source and target PostgreSQL URLs resolve to the same database")
 
