@@ -207,6 +207,43 @@ def _serialize_recovery_plan_rows(
     return out
 
 
+def _serialize_recovery_delivery_attempt_rows(
+    rows: list[models.NotificationDeliveryAttempt],
+) -> tuple[list[schemas.NotificationDeliveryAttemptOut], schemas.AttendanceRecoveryDeliverySummaryOut]:
+    attempts: list[schemas.NotificationDeliveryAttemptOut] = []
+    summary = {
+        "total_attempts": 0,
+        "sent": 0,
+        "failed": 0,
+        "already_sent": 0,
+    }
+    for row in rows:
+        status_value = str(row.status or "").strip().lower().replace("-", "_") or "unknown"
+        summary["total_attempts"] += 1
+        if status_value == "sent":
+            summary["sent"] += 1
+        elif status_value == "failed":
+            summary["failed"] += 1
+        elif status_value == "already_sent":
+            summary["already_sent"] += 1
+        attempts.append(
+            schemas.NotificationDeliveryAttemptOut(
+                id=int(row.id),
+                student_id=int(row.student_id) if row.student_id else None,
+                recovery_action_id=int(row.recovery_action_id) if row.recovery_action_id else None,
+                notification_type=row.notification_type,
+                recipient_email=row.recipient_email,
+                channel=row.channel,
+                status=status_value,
+                attempt_number=int(row.attempt_number or 1),
+                error_message=row.error_message,
+                metadata=_parse_recovery_action_metadata(row.metadata_json),
+                created_at=row.created_at,
+            )
+        )
+    return attempts, schemas.AttendanceRecoveryDeliverySummaryOut(**summary)
+
+
 def _time_from_hhmm(value: str) -> time:
     parts = value.strip().split(":")
     if len(parts) != 2:
@@ -4798,6 +4835,37 @@ def get_admin_recovery_plan_list(
     )
     return schemas.AttendanceRecoveryPlanListOut(
         plans=_serialize_recovery_plan_rows(db, plans),
+        last_updated_at=datetime.utcnow(),
+    )
+
+
+@router.get("/admin/recovery-delivery-log", response_model=schemas.AttendanceRecoveryDeliveryLogOut)
+def get_admin_recovery_delivery_log(
+    limit: int = Query(default=40, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    rows = (
+        db.query(models.NotificationDeliveryAttempt)
+        .filter(
+            models.NotificationDeliveryAttempt.notification_type.in_(
+                [
+                    "attendance_recovery_faculty_alert",
+                    "attendance_recovery_parent_alert",
+                ]
+            )
+        )
+        .order_by(
+            models.NotificationDeliveryAttempt.created_at.desc(),
+            models.NotificationDeliveryAttempt.id.desc(),
+        )
+        .limit(int(limit))
+        .all()
+    )
+    attempts, summary = _serialize_recovery_delivery_attempt_rows(rows)
+    return schemas.AttendanceRecoveryDeliveryLogOut(
+        attempts=attempts,
+        summary=summary,
         last_updated_at=datetime.utcnow(),
     )
 

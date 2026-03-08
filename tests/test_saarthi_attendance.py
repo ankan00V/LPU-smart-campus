@@ -1,8 +1,11 @@
+import io
 import json
 import os
+import tempfile
 import unittest
 from datetime import date, datetime
 from unittest import mock
+from urllib.error import HTTPError
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -45,6 +48,17 @@ class SaarthiAttendanceTests(unittest.TestCase):
             semester=6,
         )
         self.db.add(self.student)
+        self.db.add(
+            models.AuthUser(
+                id=9002,
+                email="admin@example.com",
+                password_hash="x",
+                role=models.UserRole.ADMIN,
+                student_id=None,
+                faculty_id=None,
+                is_active=True,
+            )
+        )
         self.db.commit()
 
     @staticmethod
@@ -181,6 +195,54 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertEqual(saarthi_rows[0].status, models.AttendanceStatus.ABSENT)
         self.assertEqual(saarthi_rows[0].source, "saarthi-mandatory-missed")
 
+    def test_missed_past_sunday_enqueues_student_and_admin_notifications_once_after_commit(self):
+        with mock.patch("app.workers.enqueue_notification", return_value="inline-thread") as mocked_enqueue:
+            materialize_saarthi_attendance(
+                self.db,
+                student_id=int(self.student.id),
+                academic_start=date(2026, 3, 2),
+                today=date(2026, 3, 9),
+            )
+            self.assertEqual(mocked_enqueue.call_count, 0)
+            self.db.commit()
+
+        self.assertEqual(mocked_enqueue.call_count, 2)
+        payloads = [call.args[0] for call in mocked_enqueue.call_args_list]
+        self.assertCountEqual(
+            [payload["type"] for payload in payloads],
+            ["saarthi_missed_student_alert", "saarthi_missed_admin_alert"],
+        )
+        self.assertEqual({payload["recipient_email"] for payload in payloads}, {"saarthi.student@example.com", "admin@example.com"})
+
+        with self.db.begin():
+            self.db.add(
+                models.NotificationLog(
+                    student_id=int(self.student.id),
+                    message="saarthi-missed:1:2026-03-08",
+                    channel="saarthi-missed-student",
+                    sent_to="saarthi.student@example.com",
+                )
+            )
+            self.db.add(
+                models.NotificationLog(
+                    student_id=int(self.student.id),
+                    message="saarthi-missed:1:2026-03-08",
+                    channel="saarthi-missed-admin",
+                    sent_to="admin@example.com",
+                )
+            )
+
+        with mock.patch("app.workers.enqueue_notification", return_value="inline-thread") as mocked_enqueue:
+            materialize_saarthi_attendance(
+                self.db,
+                student_id=int(self.student.id),
+                academic_start=date(2026, 3, 2),
+                today=date(2026, 3, 9),
+            )
+            self.db.commit()
+
+        mocked_enqueue.assert_not_called()
+
     def test_saarthi_course_is_excluded_from_recovery_automation(self):
         bundle = materialize_saarthi_attendance(
             self.db,
@@ -238,6 +300,219 @@ class SaarthiAttendanceTests(unittest.TestCase):
             )
 
         self.assertEqual(out["reply"], "Live Gemini counselling reply.")
+
+    def test_gemini_rotates_to_next_key_on_quota_exhaustion(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [{"text": "Recovered Gemini counselling reply."}],
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=0):
+            seen_urls.append(request.full_url)
+            if len(seen_urls) == 1:
+                raise HTTPError(
+                    request.full_url,
+                    429,
+                    "Too Many Requests",
+                    hdrs=None,
+                    fp=io.BytesIO(
+                        json.dumps(
+                            {
+                                "error": {
+                                    "status": "RESOURCE_EXHAUSTED",
+                                    "message": "Quota exhausted for the current API key.",
+                                }
+                            }
+                        ).encode("utf-8")
+                    ),
+                )
+            return DummyResponse()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.write(json.dumps({"GEMINI_API_KEYS_JSON": json.dumps(["key-one", "key-two"])}))
+            secret_file = tmp.name
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "APP_SECRETS_PROVIDER": "file",
+                    "APP_SECRETS_FILE": secret_file,
+                    "SAARTHI_LLM_PROVIDER": "gemini",
+                    "SAARTHI_LLM_REQUIRED": "true",
+                    "SAARTHI_LLM_MODEL": "gemini-2.5-flash",
+                },
+                clear=False,
+            ), mock.patch("app.saarthi_service.urllib_request.urlopen", side_effect=fake_urlopen):
+                out = create_saarthi_turn(
+                    self.db,
+                    student=self.student,
+                    message="I need help planning this week.",
+                    current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                    academic_start=date(2026, 3, 2),
+                )
+        finally:
+            try:
+                os.unlink(secret_file)
+            except FileNotFoundError:
+                pass
+
+        self.assertEqual(out["reply"], "Recovered Gemini counselling reply.")
+        self.assertEqual(len(seen_urls), 2)
+        self.assertIn("key=key-one", seen_urls[0])
+        self.assertIn("key=key-two", seen_urls[1])
+
+    def test_gemini_exhaustion_falls_back_to_openrouter_last(self):
+        class OpenRouterResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "OpenRouter final fallback reply.",
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        seen_urls: list[str] = []
+
+        def fake_urlopen(request, timeout=0):
+            seen_urls.append(request.full_url)
+            if "generativelanguage.googleapis.com" in request.full_url:
+                raise HTTPError(
+                    request.full_url,
+                    429,
+                    "Too Many Requests",
+                    hdrs=None,
+                    fp=io.BytesIO(
+                        json.dumps(
+                            {
+                                "error": {
+                                    "status": "RESOURCE_EXHAUSTED",
+                                    "message": "Quota exhausted for the current API key.",
+                                }
+                            }
+                        ).encode("utf-8")
+                    ),
+                )
+            return OpenRouterResponse()
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.write(
+                json.dumps(
+                    {
+                        "GEMINI_API_KEYS_JSON": json.dumps(["key-one", "key-two"]),
+                        "OPENROUTER_API_KEY": "test-openrouter-key",
+                    }
+                )
+            )
+            secret_file = tmp.name
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "APP_SECRETS_PROVIDER": "file",
+                    "APP_SECRETS_FILE": secret_file,
+                    "SAARTHI_LLM_PROVIDER": "gemini",
+                    "SAARTHI_LLM_REQUIRED": "true",
+                    "SAARTHI_LLM_MODEL": "gemini-2.5-flash",
+                },
+                clear=False,
+            ), mock.patch("app.saarthi_service.urllib_request.urlopen", side_effect=fake_urlopen):
+                out = create_saarthi_turn(
+                    self.db,
+                    student=self.student,
+                    message="I need help planning this week.",
+                    current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                    academic_start=date(2026, 3, 2),
+                )
+        finally:
+            try:
+                os.unlink(secret_file)
+            except FileNotFoundError:
+                pass
+
+        self.assertEqual(out["reply"], "OpenRouter final fallback reply.")
+        self.assertEqual(len(seen_urls), 3)
+        self.assertIn("key=key-one", seen_urls[0])
+        self.assertIn("key=key-two", seen_urls[1])
+        self.assertTrue(seen_urls[2].endswith("/chat/completions"))
+
+    def test_configured_openrouter_llm_reply_is_used_from_secrets_file(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "Live OpenRouter counselling reply.",
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.write(json.dumps({"OPENROUTER_API_KEY": "test-openrouter-key"}))
+            secret_file = tmp.name
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "APP_SECRETS_PROVIDER": "file",
+                    "APP_SECRETS_FILE": secret_file,
+                    "SAARTHI_LLM_PROVIDER": "openrouter",
+                    "SAARTHI_LLM_REQUIRED": "true",
+                    "SAARTHI_LLM_MODEL": "google/gemini-2.5-flash",
+                },
+                clear=False,
+            ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()):
+                out = create_saarthi_turn(
+                    self.db,
+                    student=self.student,
+                    message="I need help planning this week.",
+                    current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                    academic_start=date(2026, 3, 2),
+                )
+        finally:
+            try:
+                os.unlink(secret_file)
+            except FileNotFoundError:
+                pass
+
+        self.assertEqual(out["reply"], "Live OpenRouter counselling reply.")
 
 
 if __name__ == "__main__":

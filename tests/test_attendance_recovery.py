@@ -1,6 +1,7 @@
 import json
 import unittest
 from datetime import date, datetime, time, timedelta
+from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -173,6 +174,10 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         faculty_meta = json.loads(actions[models.AttendanceRecoveryActionType.FACULTY_NUDGE].metadata_json or "{}")
         self.assertFalse(bool(remedial_meta.get("mandatory")))
         self.assertTrue(bool(faculty_meta.get("optional")))
+        self.assertEqual(
+            actions[models.AttendanceRecoveryActionType.FACULTY_NUDGE].status,
+            models.AttendanceRecoveryActionStatus.PENDING,
+        )
 
     def test_high_plan_requires_acknowledgement_actions_without_parent_or_rms_escalation(self):
         self._seed_attendance(
@@ -204,6 +209,10 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertTrue(bool(remedial_meta.get("mandatory")))
         self.assertTrue(bool(catchup_meta.get("requires_acknowledgement")))
         self.assertEqual(self.db.query(models.RMSCase).count(), 0)
+        self.assertEqual(
+            actions[models.AttendanceRecoveryActionType.FACULTY_NUDGE].status,
+            models.AttendanceRecoveryActionStatus.PENDING,
+        )
 
     def test_critical_plan_escalates_to_rms_and_admin_alerts(self):
         self._seed_attendance(
@@ -233,10 +242,67 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIn(models.AttendanceRecoveryActionType.PARENT_ALERT, actions)
         self.assertIn(models.AttendanceRecoveryActionType.CATCH_UP_TASK, actions)
         self.assertIn(models.AttendanceRecoveryActionType.OFFICE_HOUR_INVITE, actions)
+        self.assertEqual(
+            actions[models.AttendanceRecoveryActionType.PARENT_ALERT].status,
+            models.AttendanceRecoveryActionStatus.PENDING,
+        )
 
         summary, _, _, alerts = _build_admin_payload(self.db, work_date=self.today, mode="enrollment")
         self.assertGreaterEqual(summary.at_risk_students, 1)
         self.assertTrue(any(alert.issue_type == "attendance_recovery" for alert in alerts))
+
+    def test_recovery_notifications_enqueue_only_after_commit(self):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+
+        with mock.patch("app.workers.enqueue_notification") as mocked_enqueue:
+            evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+
+            self.assertEqual(mocked_enqueue.call_count, 0)
+            self.assertEqual(self.db.query(models.NotificationLog).count(), 0)
+
+            self.db.commit()
+
+        self.assertEqual(mocked_enqueue.call_count, 1)
+        payload = mocked_enqueue.call_args.args[0]
+        self.assertEqual(payload["type"], "attendance_recovery_faculty_alert")
+        self.assertEqual(payload["student_id"], 101)
+        self.assertEqual(payload["recipient_email"], "faculty.one@example.com")
+        self.assertEqual(payload["log_channel"], "attendance-recovery-faculty")
+        self.assertEqual(self.db.query(models.NotificationLog).count(), 0)
+
+    def test_critical_recovery_parent_alert_enqueues_on_commit_and_clears_on_rollback(self):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+
+        with mock.patch("app.workers.enqueue_notification") as mocked_enqueue:
+            evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+            self.assertEqual(mocked_enqueue.call_count, 0)
+
+            self.db.rollback()
+            self.assertEqual(mocked_enqueue.call_count, 0)
+
+            evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+            self.db.commit()
+
+        notification_types = [call.args[0]["type"] for call in mocked_enqueue.call_args_list]
+        self.assertEqual(notification_types.count("attendance_recovery_faculty_alert"), 1)
+        self.assertEqual(notification_types.count("attendance_recovery_parent_alert"), 1)
 
     def test_remedial_completion_marks_recovery_action_completed(self):
         self._seed_attendance(

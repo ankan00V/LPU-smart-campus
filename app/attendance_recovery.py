@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from . import models
 from .realtime_bus import publish_domain_event
 from .saarthi_service import is_saarthi_course
+from .workers import enqueue_notification_after_commit
 ACTIVE_PLAN_STATUSES = (
     models.AttendanceRecoveryPlanStatus.ACTIVE,
     models.AttendanceRecoveryPlanStatus.ESCALATED,
@@ -354,25 +355,6 @@ def _mirror_plan(plan: models.AttendanceRecoveryPlan) -> None:
     return None
 
 
-def _write_notification_log(
-    db: Session,
-    *,
-    student_id: int,
-    sent_to: str,
-    channel: str,
-    message: str,
-) -> models.NotificationLog:
-    row = models.NotificationLog(
-        student_id=int(student_id),
-        message=str(message or "").strip()[:500],
-        channel=str(channel or "").strip()[:50] or "in-app",
-        sent_to=str(sent_to or "").strip()[:120],
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
 def _recovery_case_subject(course: models.Course) -> str:
     return f"Attendance Recovery Autopilot - {course.code}"
 
@@ -600,6 +582,60 @@ def _publish_rms_case_event(event_type: str, *, case_row: models.RMSCase) -> Non
         topics={"rms", "admin"},
         source="attendance-recovery",
     )
+
+
+def _format_notification_datetime(value: datetime | None) -> str:
+    if value is None:
+        return "Not scheduled"
+    return value.strftime("%d %b %Y %I:%M %p")
+
+
+def _makeup_notification_summary(row: models.MakeUpClass | None) -> str:
+    if row is None:
+        return "No remedial slot is currently assigned."
+    return (
+        f"{row.class_date.isoformat()} {row.start_time.strftime('%H:%M')}-{row.end_time.strftime('%H:%M')} "
+        f"({row.class_mode or 'offline'})"
+    )
+
+
+def _build_recovery_notification_payload(
+    *,
+    action: models.AttendanceRecoveryAction,
+    plan: models.AttendanceRecoveryPlan,
+    student: models.Student,
+    course: models.Course,
+    notification_type: str,
+    recipient_email: str,
+    message: str,
+    next_makeup: models.MakeUpClass | None,
+    office_hour_slot: datetime | None,
+) -> dict:
+    return {
+        "type": notification_type,
+        "action_id": int(action.id),
+        "student_id": int(student.id),
+        "recipient_email": str(recipient_email or "").strip(),
+        "student_name": str(student.name or "").strip() or f"Student #{student.id}",
+        "registration_number": str(student.registration_number or "").strip(),
+        "course_id": int(course.id),
+        "course_code": str(course.code or "").strip(),
+        "course_title": str(course.title or "").strip(),
+        "risk_level": plan.risk_level.value,
+        "attendance_percent": float(plan.attendance_percent or 0.0),
+        "consecutive_absences": int(plan.consecutive_absences or 0),
+        "missed_remedials": int(plan.missed_remedials or 0),
+        "summary": str(plan.summary or "").strip(),
+        "recovery_due_at": plan.recovery_due_at.isoformat() if plan.recovery_due_at else None,
+        "suggested_remedial": _makeup_notification_summary(next_makeup),
+        "office_hour_at": _format_notification_datetime(office_hour_slot),
+        "message": str(message or "").strip(),
+        "log_channel": (
+            "attendance-recovery-faculty"
+            if notification_type == "attendance_recovery_faculty_alert"
+            else "attendance-recovery-parent"
+        ),
+    }
 
 
 def _upsert_action(
@@ -895,16 +931,23 @@ def evaluate_attendance_recovery(
             "risk_level": risk_level.value,
             "optional": risk_level == models.AttendanceRecoveryRiskLevel.WATCH,
         },
-        default_status=models.AttendanceRecoveryActionStatus.SENT,
+        default_status=models.AttendanceRecoveryActionStatus.PENDING,
     )
     keep_action_ids.add(int(faculty_action.id))
     if faculty_action.created_at == faculty_action.updated_at and faculty is not None:
-        _write_notification_log(
+        enqueue_notification_after_commit(
             db,
-            student_id=int(student.id),
-            sent_to=faculty.email,
-            channel="attendance-recovery-faculty",
-            message=faculty_action.description,
+            _build_recovery_notification_payload(
+                action=faculty_action,
+                plan=plan,
+                student=student,
+                course=course,
+                notification_type="attendance_recovery_faculty_alert",
+                recipient_email=faculty.email,
+                message=faculty_action.description,
+                next_makeup=next_makeup,
+                office_hour_slot=office_hour_slot,
+            ),
         )
 
     if next_makeup is not None:
@@ -1019,16 +1062,23 @@ def evaluate_attendance_recovery(
             recipient_email=student.parent_email,
             scheduled_for=now_dt,
             metadata={"student_id": int(student.id), "course_id": int(course.id), "risk_level": risk_level.value},
-            default_status=models.AttendanceRecoveryActionStatus.SENT,
+            default_status=models.AttendanceRecoveryActionStatus.PENDING,
         )
         keep_action_ids.add(int(parent_action.id))
         if parent_action.created_at == parent_action.updated_at:
-            _write_notification_log(
+            enqueue_notification_after_commit(
                 db,
-                student_id=int(student.id),
-                sent_to=student.parent_email or "",
-                channel="attendance-recovery-parent",
-                message=parent_action.description,
+                _build_recovery_notification_payload(
+                    action=parent_action,
+                    plan=plan,
+                    student=student,
+                    course=course,
+                    notification_type="attendance_recovery_parent_alert",
+                    recipient_email=student.parent_email or "",
+                    message=parent_action.description,
+                    next_makeup=next_makeup,
+                    office_hour_slot=office_hour_slot,
+                ),
             )
 
     _cancel_unused_actions(db, plan=plan, keep_action_ids=keep_action_ids)

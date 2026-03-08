@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,12 @@ from ..media_storage import signed_url_for_object
 from ..mongo import mirror_document, mongo_status
 from ..redis_client import cache_get_json, cache_set_json
 from ..realtime_bus import publish_domain_event
+from ..saarthi_service import (
+    SAARTHI_ATTENDANCE_MINUTES,
+    SAARTHI_COURSE_CODE,
+    enqueue_saarthi_missed_notifications,
+    saarthi_reporting_window,
+)
 from ..workers import enqueue_notification, enqueue_recompute
 
 router = APIRouter(prefix="/admin", tags=["Administrative Realtime"])
@@ -1370,6 +1377,304 @@ def _build_admin_payload(db: Session, *, work_date: date, mode: str) -> tuple[
     return summary, capacity_rows, workload_rows, alerts
 
 
+def _saarthi_status_for_reference(
+    *,
+    reference_date: date,
+    mandatory_date: date,
+    completed: bool,
+) -> str:
+    if completed:
+        return "completed"
+    if reference_date > mandatory_date:
+        return "missed"
+    if reference_date == mandatory_date:
+        return "due_today"
+    return "pending"
+
+
+def _serialize_saarthi_admin_student_row(row: dict[str, Any]) -> schemas.SaarthiAdminStudentWeekOut:
+    student = row["student"]
+    return schemas.SaarthiAdminStudentWeekOut(
+        student_id=int(student.id),
+        name=str(student.name or ""),
+        registration_number=str(student.registration_number or "").strip() or None,
+        section=str(student.section or "").strip() or None,
+        department=str(student.department or "").strip() or "Unknown",
+        week_status=str(row.get("week_status") or "pending"),
+        message_count=int(row.get("message_count") or 0),
+        attendance_credit_minutes=int(row.get("attendance_credit_minutes") or 0),
+        attendance_awarded_on=row.get("attendance_awarded_on"),
+        last_message_at=row.get("last_message_at"),
+    )
+
+
+def _build_saarthi_missed_alerts(
+    *,
+    mandatory_date: date,
+    rows: list[dict[str, Any]],
+    now_dt: datetime,
+) -> list[schemas.AdminAlertItem]:
+    alerts: list[schemas.AdminAlertItem] = []
+    for row in rows:
+        if str(row.get("week_status") or "") != "missed":
+            continue
+        student = row["student"]
+        alerts.append(
+            schemas.AdminAlertItem(
+                id=f"saarthi-missed-{int(student.id)}-{mandatory_date.isoformat()}",
+                issue_type="saarthi_missed_sunday",
+                severity="high",
+                message=(
+                    f"{student.name} missed Saarthi on {mandatory_date.isoformat()} "
+                    f"({student.registration_number or f'ST-{int(student.id)}'})"
+                ),
+                context={
+                    "student_id": int(student.id),
+                    "student_name": student.name,
+                    "registration_number": student.registration_number,
+                    "section": student.section,
+                    "department": student.department,
+                    "mandatory_date": mandatory_date.isoformat(),
+                    "message_count": int(row.get("message_count") or 0),
+                },
+                last_updated_at=now_dt,
+            )
+        )
+    alerts.sort(key=lambda item: (item.context.get("department") or "", item.message))
+    return alerts[:12]
+
+
+def _queue_saarthi_missed_notifications_from_rows(
+    db: Session,
+    *,
+    week_start_date: date,
+    mandatory_date: date,
+    rows: list[dict[str, Any]],
+) -> int:
+    enqueued = 0
+    for row in rows:
+        if str(row.get("week_status") or "") != "missed":
+            continue
+        enqueued += enqueue_saarthi_missed_notifications(
+            db,
+            student=row["student"],
+            mandatory_date=mandatory_date,
+            week_start_date=week_start_date,
+            message_count=int(row.get("message_count") or 0),
+            last_message_at=row.get("last_message_at"),
+            after_commit=False,
+        )
+    return enqueued
+
+
+def _collect_saarthi_admin_rows(
+    db: Session,
+    *,
+    reference_date: date,
+) -> tuple[date, date, list[dict[str, Any]]]:
+    week_start_date, mandatory_date = saarthi_reporting_window(reference_date)
+    students = (
+        db.query(models.Student)
+        .order_by(models.Student.department.asc(), models.Student.registration_number.asc(), models.Student.id.asc())
+        .all()
+    )
+    sessions = (
+        db.query(models.SaarthiSession)
+        .filter(models.SaarthiSession.week_start_date == week_start_date)
+        .all()
+    )
+    sessions_by_student = {int(row.student_id): row for row in sessions}
+    session_ids = [int(row.id) for row in sessions]
+
+    message_counts_by_session: dict[int, int] = {}
+    last_message_by_session: dict[int, datetime] = {}
+    if session_ids:
+        for session_id, count_value, last_message_at in (
+            db.query(
+                models.SaarthiMessage.session_id,
+                func.count(models.SaarthiMessage.id),
+                func.max(models.SaarthiMessage.created_at),
+            )
+            .filter(models.SaarthiMessage.session_id.in_(session_ids))
+            .group_by(models.SaarthiMessage.session_id)
+            .all()
+        ):
+            message_counts_by_session[int(session_id)] = int(count_value or 0)
+            if last_message_at is not None:
+                last_message_by_session[int(session_id)] = last_message_at
+
+    course = (
+        db.query(models.Course)
+        .filter(models.Course.code == SAARTHI_COURSE_CODE)
+        .first()
+    )
+    records_by_student: dict[int, models.AttendanceRecord] = {}
+    events_by_student: dict[int, models.AttendanceEvent] = {}
+    if course is not None:
+        records = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.course_id == int(course.id),
+                models.AttendanceRecord.attendance_date == mandatory_date,
+            )
+            .all()
+        )
+        records_by_student = {int(row.student_id): row for row in records}
+        events = (
+            db.query(models.AttendanceEvent)
+            .filter(
+                models.AttendanceEvent.course_id == int(course.id),
+                models.AttendanceEvent.attendance_date == mandatory_date,
+                models.AttendanceEvent.source.like("saarthi%"),
+            )
+            .order_by(models.AttendanceEvent.created_at.desc(), models.AttendanceEvent.id.desc())
+            .all()
+        )
+        for event in events:
+            student_id = int(event.student_id)
+            if student_id not in events_by_student:
+                events_by_student[student_id] = event
+
+    out: list[dict[str, Any]] = []
+    for student in students:
+        session = sessions_by_student.get(int(student.id))
+        record = records_by_student.get(int(student.id))
+        event = events_by_student.get(int(student.id))
+        attendance_awarded_on = session.attendance_marked_at if session is not None else None
+        completed = bool(
+            (session is not None and session.attendance_marked_at is not None)
+            or (record is not None and record.status == models.AttendanceStatus.PRESENT)
+        )
+        message_count = message_counts_by_session.get(int(session.id), 0) if session is not None else 0
+        last_message_at = last_message_by_session.get(int(session.id)) if session is not None else None
+        week_status = _saarthi_status_for_reference(
+            reference_date=reference_date,
+            mandatory_date=mandatory_date,
+            completed=completed,
+        )
+        out.append(
+            {
+                "student": student,
+                "session": session,
+                "record": record,
+                "event": event,
+                "message_count": message_count,
+                "last_message_at": last_message_at,
+                "week_status": week_status,
+                "attendance_awarded_on": attendance_awarded_on,
+                "attendance_credit_minutes": (
+                    int(session.attendance_credit_minutes or SAARTHI_ATTENDANCE_MINUTES)
+                    if completed and session is not None
+                    else (SAARTHI_ATTENDANCE_MINUTES if completed else 0)
+                ),
+            }
+        )
+    return week_start_date, mandatory_date, out
+
+
+def _build_saarthi_admin_overview(
+    db: Session,
+    *,
+    reference_date: date,
+) -> tuple[schemas.SaarthiAdminOverviewOut, list[dict[str, Any]]]:
+    week_start_date, mandatory_date, rows = _collect_saarthi_admin_rows(db, reference_date=reference_date)
+    _queue_saarthi_missed_notifications_from_rows(
+        db,
+        week_start_date=week_start_date,
+        mandatory_date=mandatory_date,
+        rows=rows,
+    )
+    now_dt = datetime.utcnow()
+
+    total_students = len(rows)
+    completed_students = sum(1 for row in rows if row["week_status"] == "completed")
+    pending_students = sum(1 for row in rows if row["week_status"] == "pending")
+    due_today_students = sum(1 for row in rows if row["week_status"] == "due_today")
+    missed_students = sum(1 for row in rows if row["week_status"] == "missed")
+    engaged_students = sum(1 for row in rows if int(row.get("message_count") or 0) > 0)
+    total_messages = sum(int(row.get("message_count") or 0) for row in rows)
+    total_attendance_hours = _safe_round(
+        sum(float(int(row.get("attendance_credit_minutes") or 0)) for row in rows) / 60.0
+    )
+    completion_rate_percent = _safe_round(
+        (completed_students / total_students) * 100.0 if total_students else 0.0
+    )
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        student = row["student"]
+        department = str(student.department or "").strip() or "Unknown"
+        grouped[department].append(row)
+
+    departments: list[schemas.SaarthiAdminDepartmentOut] = []
+    for department, dept_rows in sorted(grouped.items(), key=lambda item: item[0]):
+        dept_total = len(dept_rows)
+        dept_completed = sum(1 for row in dept_rows if row["week_status"] == "completed")
+        dept_pending = sum(1 for row in dept_rows if row["week_status"] == "pending")
+        dept_due_today = sum(1 for row in dept_rows if row["week_status"] == "due_today")
+        dept_missed = sum(1 for row in dept_rows if row["week_status"] == "missed")
+        dept_engaged = sum(1 for row in dept_rows if int(row.get("message_count") or 0) > 0)
+        dept_message_total = sum(int(row.get("message_count") or 0) for row in dept_rows)
+        departments.append(
+            schemas.SaarthiAdminDepartmentOut(
+                department=department,
+                total_students=dept_total,
+                completed_students=dept_completed,
+                pending_students=dept_pending,
+                due_today_students=dept_due_today,
+                missed_students=dept_missed,
+                engaged_students=dept_engaged,
+                completion_rate_percent=_safe_round((dept_completed / dept_total) * 100.0 if dept_total else 0.0),
+                average_messages_per_engaged_student=_safe_round(
+                    (dept_message_total / dept_engaged) if dept_engaged else 0.0
+                ),
+            )
+        )
+
+    completed_sorted = sorted(
+        [row for row in rows if row["week_status"] == "completed"],
+        key=lambda row: (
+            row.get("attendance_awarded_on") or datetime.min,
+            row.get("last_message_at") or datetime.min,
+        ),
+        reverse=True,
+    )
+    waiting_sorted = sorted(
+        [row for row in rows if row["week_status"] in {"due_today", "pending", "missed"}],
+        key=lambda row: (
+            {"missed": 0, "due_today": 1, "pending": 2}.get(str(row.get("week_status") or ""), 9),
+            str(row["student"].department or ""),
+            str(row["student"].registration_number or ""),
+            int(row["student"].id),
+        ),
+    )
+
+    overview = schemas.SaarthiAdminOverviewOut(
+        reference_date=reference_date,
+        week_start_date=week_start_date,
+        mandatory_date=mandatory_date,
+        total_students=total_students,
+        completed_students=completed_students,
+        pending_students=pending_students,
+        due_today_students=due_today_students,
+        missed_students=missed_students,
+        engaged_students=engaged_students,
+        completion_rate_percent=completion_rate_percent,
+        total_messages=total_messages,
+        total_attendance_hours=total_attendance_hours,
+        departments=departments,
+        missed_alerts=_build_saarthi_missed_alerts(
+            mandatory_date=mandatory_date,
+            rows=rows,
+            now_dt=now_dt,
+        ),
+        recent_completed=[_serialize_saarthi_admin_student_row(row) for row in completed_sorted[:8]],
+        waiting_students=[_serialize_saarthi_admin_student_row(row) for row in waiting_sorted[:12]],
+        last_updated_at=now_dt,
+    )
+    return overview, rows
+
+
 def _bootstrap_department_classrooms(
     db: Session,
     *,
@@ -1649,6 +1954,85 @@ def admin_insights(
         ttl_seconds=ADMIN_INSIGHTS_CACHE_TTL_SECONDS,
     )
     return payload
+
+
+@router.get("/saarthi/overview", response_model=schemas.SaarthiAdminOverviewOut)
+def admin_saarthi_overview(
+    reference_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    target_date = reference_date or date.today()
+    overview, _ = _build_saarthi_admin_overview(db, reference_date=target_date)
+    return overview
+
+
+@router.get("/saarthi/export", response_model=schemas.SaarthiAdminExportOut)
+def admin_saarthi_export(
+    reference_date: date | None = Query(default=None),
+    include_messages: bool = Query(default=True),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    target_date = reference_date or date.today()
+    overview, rows = _build_saarthi_admin_overview(db, reference_date=target_date)
+    session_ids = [int(row["session"].id) for row in rows if row.get("session") is not None]
+    messages_by_session: dict[int, list[models.SaarthiMessage]] = defaultdict(list)
+    if include_messages and session_ids:
+        for message in (
+            db.query(models.SaarthiMessage)
+            .filter(models.SaarthiMessage.session_id.in_(session_ids))
+            .order_by(models.SaarthiMessage.created_at.asc(), models.SaarthiMessage.id.asc())
+            .all()
+        ):
+            messages_by_session[int(message.session_id)].append(message)
+
+    records: list[schemas.SaarthiAdminTranscriptRecordOut] = []
+    for row in rows:
+        session = row.get("session")
+        record = row.get("record")
+        event = row.get("event")
+        transcript_rows = messages_by_session.get(int(session.id), []) if session is not None else []
+        records.append(
+            schemas.SaarthiAdminTranscriptRecordOut(
+                student=_serialize_saarthi_admin_student_row(row),
+                session_id=(int(session.id) if session is not None else None),
+                attendance_record_id=(int(record.id) if record is not None else None),
+                attendance_status=(record.status if record is not None else None),
+                attendance_source=(str(record.source or "") if record is not None else None),
+                attendance_note=(str(event.note or "") if event is not None and event.note else None),
+                attendance_event_id=(int(event.id) if event is not None else None),
+                attendance_event_source=(str(event.source or "") if event is not None else None),
+                attendance_event_created_at=(event.created_at if event is not None else None),
+                transcript=[
+                    schemas.SaarthiMessageOut(
+                        id=int(message.id),
+                        sender_role=str(message.sender_role or "").strip().lower() or "assistant",
+                        message=str(message.message or "").strip(),
+                        created_at=message.created_at or datetime.utcnow(),
+                    )
+                    for message in transcript_rows
+                ],
+            )
+        )
+
+    export_rows = [row.model_dump(mode="json") for row in records]
+    checksum = hashlib.sha256(
+        json.dumps(export_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return schemas.SaarthiAdminExportOut(
+        file_name=(
+            f"saarthi-audit-{overview.week_start_date.isoformat()}-to-{overview.mandatory_date.isoformat()}.json"
+        ),
+        generated_at=datetime.utcnow(),
+        reference_date=target_date,
+        week_start_date=overview.week_start_date,
+        mandatory_date=overview.mandatory_date,
+        checksum_sha256=checksum,
+        record_count=len(records),
+        overview=overview,
+        records=records,
+    )
 
 
 @router.get("/rms/queries", response_model=schemas.RMSQueryDashboardOut)
