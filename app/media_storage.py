@@ -58,7 +58,7 @@ def _decode_data_url(data_url: str) -> tuple[str, bytes]:
     raw = str(data_url or "").strip()
     match = _DATA_URL_PATTERN.match(raw)
     if not match:
-        raise HTTPException(status_code=400, detail="Expected image data URL payload")
+        raise HTTPException(status_code=400, detail="Expected media data URL payload")
 
     content_type = str(match.group(1)).strip().lower()
     encoded = match.group(2).strip()
@@ -81,6 +81,14 @@ def _guess_extension(content_type: str) -> str:
         return "webp"
     if content_type.endswith("gif"):
         return "gif"
+    if content_type.endswith("pdf"):
+        return "pdf"
+    if content_type.endswith("mp4"):
+        return "mp4"
+    if content_type.endswith("webm"):
+        return "webm"
+    if content_type.endswith("quicktime") or content_type.endswith("mov"):
+        return "mov"
     return "bin"
 
 

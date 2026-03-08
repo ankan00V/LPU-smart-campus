@@ -1,5 +1,6 @@
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -123,6 +124,69 @@ class IdentityShieldTests(unittest.TestCase):
         self.assertIn("face_match_low", signal_types)
         self.assertIn("liveness_failed", signal_types)
         self.assertEqual(result.status, models.IdentityVerificationStatus.FLAGGED)
+        self.assertTrue(mirror_document_mock.called)
+        self.assertTrue(publish_domain_event_mock.called)
+
+    @patch("app.identity_shield.publish_domain_event")
+    @patch("app.identity_shield.mirror_document")
+    @patch("app.identity_shield.store_data_url_object")
+    @patch("app.identity_shield.get_mongo_db", return_value=None)
+    def test_applicant_risk_assessment_persists_evidence_artifacts(
+        self,
+        _get_mongo_db,
+        store_data_url_object_mock,
+        mirror_document_mock,
+        publish_domain_event_mock,
+    ):
+        store_data_url_object_mock.side_effect = [
+            SimpleNamespace(
+                object_key="identity/cases/doc.pdf",
+                content_type="application/pdf",
+                size_bytes=3210,
+                checksum_sha256="d" * 64,
+            ),
+            SimpleNamespace(
+                object_key="identity/cases/video.mp4",
+                content_type="video/mp4",
+                size_bytes=6543,
+                checksum_sha256="e" * 64,
+            ),
+        ]
+
+        payload = schemas.ApplicantRiskAssessmentRequest(
+            applicant_email="evidence@example.com",
+            claimed_role="student",
+            registration_number="24BCS1001",
+            document_match_score=0.84,
+            face_match_confidence=0.88,
+            liveness_passed=True,
+            evidence_uploads=[
+                schemas.IdentityVerificationArtifactUpload(
+                    artifact_type="document_evidence",
+                    data_url="data:application/pdf;base64,QUJDRA==",
+                    verification_state="scored",
+                    note="Passport scan",
+                    document_match_score=0.84,
+                ),
+                schemas.IdentityVerificationArtifactUpload(
+                    artifact_type="video_verification",
+                    data_url="data:video/mp4;base64,QUJDRA==",
+                    verification_state="verified",
+                    note="Liveness clip",
+                    face_match_confidence=0.88,
+                    liveness_passed=True,
+                ),
+            ],
+        )
+
+        result = assess_applicant_risk(self.db, payload)
+
+        self.assertEqual(len(result.artifacts), 2)
+        self.assertEqual(result.artifacts[0].artifact_type, "document_evidence")
+        self.assertEqual(result.artifacts[0].media_object_key, "identity/cases/doc.pdf")
+        self.assertEqual(result.artifacts[1].artifact_type, "video_verification")
+        self.assertEqual(result.artifacts[1].media_object_key, "identity/cases/video.mp4")
+        self.assertEqual(self.db.query(models.IdentityVerificationArtifact).count(), 2)
         self.assertTrue(mirror_document_mock.called)
         self.assertTrue(publish_domain_event_mock.called)
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from . import models, schemas
 from .face_verification import compare_face_templates
+from .media_storage import signed_url_for_object, store_data_url_object
 from .mongo import get_mongo_db, mirror_document
 from .realtime_bus import publish_domain_event
 
@@ -162,11 +163,75 @@ def observe_identity_session(
     return fingerprint
 
 
+def observe_applicant_identity(
+    mongo_db,
+    *,
+    applicant_email: str | None,
+    external_subject_key: str | None,
+    device_id: str | None,
+    user_agent: str | None,
+    ip_address: str | None,
+) -> str | None:
+    if mongo_db is None:
+        return None
+
+    fingerprint = _device_fingerprint(device_id, user_agent)
+    if not fingerprint:
+        return None
+
+    now = _utc_now()
+    update: dict[str, Any] = {
+        "$set": {
+            "device_fingerprint": fingerprint,
+            "device_id_hint": (str(device_id or "")[-12:] or None),
+            "user_agent_hash": _stable_hash(user_agent),
+            "last_ip_hash": _stable_hash(ip_address),
+            "last_seen_at": now,
+            "updated_at": now,
+        },
+        "$setOnInsert": {
+            "created_at": now,
+            "session_count": 0,
+            "linked_user_ids": [],
+            "linked_student_ids": [],
+            "linked_faculty_ids": [],
+            "linked_roles": [],
+            "linked_email_hashes": [],
+            "linked_applicant_email_hashes": [],
+            "linked_external_subject_keys": [],
+            "seen_ip_hashes": [],
+        },
+        "$inc": {"session_count": 1},
+    }
+
+    add_to_set: dict[str, Any] = {}
+    applicant_email_hash = _stable_hash(applicant_email)
+    if applicant_email_hash:
+        add_to_set["linked_applicant_email_hashes"] = applicant_email_hash
+    normalized_subject_key = str(external_subject_key or "").strip().lower()
+    if normalized_subject_key:
+        add_to_set["linked_external_subject_keys"] = normalized_subject_key
+    ip_hash = _stable_hash(ip_address)
+    if ip_hash:
+        add_to_set["seen_ip_hashes"] = ip_hash
+    if add_to_set:
+        update["$addToSet"] = add_to_set
+
+    mongo_db["identity_device_profiles"].update_one(
+        {"device_fingerprint": fingerprint},
+        update,
+        upsert=True,
+    )
+    return fingerprint
+
+
 def _device_profiles_for_subject(
     mongo_db,
     *,
     user_id: int | None = None,
     student_id: int | None = None,
+    applicant_email: str | None = None,
+    external_subject_key: str | None = None,
 ) -> list[dict[str, Any]]:
     if mongo_db is None:
         return []
@@ -175,6 +240,12 @@ def _device_profiles_for_subject(
         clauses.append({"linked_user_ids": int(user_id)})
     if student_id is not None:
         clauses.append({"linked_student_ids": int(student_id)})
+    applicant_email_hash = _stable_hash(applicant_email)
+    if applicant_email_hash:
+        clauses.append({"linked_applicant_email_hashes": applicant_email_hash})
+    normalized_subject_key = str(external_subject_key or "").strip().lower()
+    if normalized_subject_key:
+        clauses.append({"linked_external_subject_keys": normalized_subject_key})
     if not clauses:
         return []
     return list(mongo_db["identity_device_profiles"].find({"$or": clauses}))
@@ -184,15 +255,34 @@ def build_subject_identity_graph(
     *,
     user_id: int | None = None,
     student_id: int | None = None,
+    applicant_email: str | None = None,
+    external_subject_key: str | None = None,
 ) -> dict[str, Any]:
     mongo_db = get_mongo_db(required=False)
-    profiles = _device_profiles_for_subject(mongo_db, user_id=user_id, student_id=student_id)
+    profiles = _device_profiles_for_subject(
+        mongo_db,
+        user_id=user_id,
+        student_id=student_id,
+        applicant_email=applicant_email,
+        external_subject_key=external_subject_key,
+    )
 
-    subject_key = f"user:{int(user_id)}" if user_id is not None else f"student:{int(student_id or 0)}"
+    normalized_applicant_email = str(applicant_email or "").strip().lower()
+    normalized_subject_key = str(external_subject_key or "").strip().lower()
+    if user_id is not None:
+        subject_key = f"user:{int(user_id)}"
+    elif student_id is not None:
+        subject_key = f"student:{int(student_id)}"
+    elif normalized_applicant_email:
+        subject_key = f"applicant:{normalized_applicant_email}"
+    else:
+        subject_key = f"external:{normalized_subject_key}"
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
     connected_user_ids: set[int] = set()
     connected_student_ids: set[int] = set()
+    connected_applicant_hashes: set[str] = set()
+    connected_external_subject_keys: set[str] = set()
     shared_device_count = 0
     latest_seen_at: datetime | None = None
 
@@ -213,6 +303,22 @@ def build_subject_identity_graph(
             "risk_level": models.FraudRiskLevel.LOW,
             "metadata": {},
         }
+    if normalized_applicant_email:
+        nodes[subject_key] = {
+            "id": subject_key,
+            "node_type": "applicant",
+            "label": normalized_applicant_email,
+            "risk_level": models.FraudRiskLevel.LOW,
+            "metadata": {},
+        }
+    elif normalized_subject_key:
+        nodes[subject_key] = {
+            "id": subject_key,
+            "node_type": "external_subject",
+            "label": normalized_subject_key,
+            "risk_level": models.FraudRiskLevel.LOW,
+            "metadata": {},
+        }
 
     for profile in profiles:
         fingerprint = str(profile.get("device_fingerprint") or "").strip()
@@ -221,15 +327,22 @@ def build_subject_identity_graph(
         device_key = f"device:{fingerprint}"
         linked_users = {int(value) for value in profile.get("linked_user_ids") or [] if value is not None}
         linked_students = {int(value) for value in profile.get("linked_student_ids") or [] if value is not None}
+        linked_applicants = {str(value).strip().lower() for value in profile.get("linked_external_subject_keys") or [] if str(value).strip()}
+        linked_applicant_hashes = {str(value).strip() for value in profile.get("linked_applicant_email_hashes") or [] if str(value).strip()}
         connected_user_ids.update(linked_users)
         connected_student_ids.update(linked_students)
-        if len(linked_users) > 1 or len(linked_students) > 1:
+        connected_external_subject_keys.update(linked_applicants)
+        connected_applicant_hashes.update(linked_applicant_hashes)
+        if len(linked_users) > 1 or len(linked_students) > 1 or len(linked_applicants) > 1 or len(linked_applicant_hashes) > 1:
             shared_device_count += 1
         seen_at = profile.get("last_seen_at")
         if isinstance(seen_at, datetime) and (latest_seen_at is None or seen_at > latest_seen_at):
             latest_seen_at = seen_at
 
-        device_risk = _risk_level(float((len(linked_users) - 1 + len(linked_students) - 1) * 15), blocking=False)
+        device_risk = _risk_level(
+            float((len(linked_users) - 1 + len(linked_students) - 1 + len(linked_applicants) - 1) * 15),
+            blocking=False,
+        )
         nodes[device_key] = {
             "id": device_key,
             "node_type": "device",
@@ -239,6 +352,7 @@ def build_subject_identity_graph(
                 "session_count": int(profile.get("session_count") or 0),
                 "linked_user_count": len(linked_users),
                 "linked_student_count": len(linked_students),
+                "linked_applicant_count": len(linked_applicants),
                 "last_seen_at": seen_at,
             },
         }
@@ -286,13 +400,40 @@ def build_subject_identity_graph(
                     },
                 }
             )
+        for linked_subject_key in sorted(linked_applicants):
+            node_key = f"external:{linked_subject_key}"
+            if normalized_applicant_email and linked_subject_key == normalized_subject_key:
+                node_key = subject_key
+            if node_key not in nodes:
+                nodes[node_key] = {
+                    "id": node_key,
+                    "node_type": "applicant",
+                    "label": linked_subject_key,
+                    "risk_level": models.FraudRiskLevel.LOW,
+                    "metadata": {},
+                }
+            edges.append(
+                {
+                    "source": device_key,
+                    "target": node_key,
+                    "relation": "signup_device",
+                    "weight": float(profile.get("session_count") or 1),
+                    "metadata": {
+                        "shared_users": len(linked_users),
+                        "shared_students": len(linked_students),
+                        "shared_applicants": len(linked_applicants),
+                    },
+                }
+            )
 
     other_users = connected_user_ids - ({int(user_id)} if user_id is not None else set())
     other_students = connected_student_ids - ({int(student_id)} if student_id is not None else set())
+    other_subjects = connected_external_subject_keys - ({normalized_subject_key} if normalized_subject_key else set())
     summary = {
         "shared_device_count": int(shared_device_count),
         "connected_user_count": len(other_users),
         "connected_student_count": len(other_students),
+        "connected_applicant_count": len(other_subjects),
         "latest_seen_at": latest_seen_at,
         "profile_count": len(profiles),
     }
@@ -304,7 +445,72 @@ def build_subject_identity_graph(
     }
 
 
-def _serialize_case(case: models.IdentityVerificationCase, signals: Iterable[models.IdentityRiskSignal]) -> schemas.IdentityVerificationCaseOut:
+def _serialize_artifact(
+    artifact: models.IdentityVerificationArtifact,
+) -> schemas.IdentityVerificationArtifactOut:
+    return schemas.IdentityVerificationArtifactOut(
+        id=artifact.id,
+        artifact_type=artifact.artifact_type,
+        media_object_key=artifact.media_object_key,
+        media_url=signed_url_for_object(artifact.media_object_key),
+        content_type=artifact.content_type,
+        size_bytes=int(artifact.size_bytes or 0),
+        checksum_sha256=artifact.checksum_sha256,
+        verification_state=artifact.verification_state,
+        document_match_score=artifact.document_match_score,
+        face_match_confidence=artifact.face_match_confidence,
+        liveness_passed=artifact.liveness_passed,
+        note=artifact.note,
+        extracted_identity=json.loads(artifact.extracted_identity_json or "{}"),
+        created_at=artifact.created_at,
+    )
+
+
+def _persist_case_artifacts(
+    db: Session,
+    *,
+    case: models.IdentityVerificationCase,
+    artifact_uploads: Iterable[schemas.IdentityVerificationArtifactUpload] | None,
+) -> list[models.IdentityVerificationArtifact]:
+    uploads = list(artifact_uploads or [])
+    if not uploads:
+        return []
+
+    retention_days = max(30, int(os.getenv("IDENTITY_EVIDENCE_RETENTION_DAYS", "365")))
+    artifacts: list[models.IdentityVerificationArtifact] = []
+    for item in uploads:
+        media = store_data_url_object(
+            db,
+            owner_table="identity_verification_cases",
+            owner_id=int(case.id),
+            media_kind=f"identity-{str(item.artifact_type or 'artifact').strip().lower()}",
+            data_url=item.data_url,
+            retention_days=retention_days,
+        )
+        artifact = models.IdentityVerificationArtifact(
+            case_id=case.id,
+            artifact_type=str(item.artifact_type or "artifact").strip().lower(),
+            media_object_key=media.object_key,
+            content_type=media.content_type,
+            size_bytes=int(media.size_bytes or 0),
+            checksum_sha256=media.checksum_sha256,
+            verification_state=str(item.verification_state or "submitted").strip().lower() or "submitted",
+            document_match_score=item.document_match_score,
+            face_match_confidence=item.face_match_confidence,
+            liveness_passed=item.liveness_passed,
+            note=item.note,
+            extracted_identity_json=json.dumps(item.extracted_identity or {}, default=str),
+        )
+        db.add(artifact)
+        artifacts.append(artifact)
+    return artifacts
+
+
+def _serialize_case(
+    case: models.IdentityVerificationCase,
+    signals: Iterable[models.IdentityRiskSignal],
+    artifacts: Iterable[models.IdentityVerificationArtifact] | None = None,
+) -> schemas.IdentityVerificationCaseOut:
     requested_checks = json.loads(case.requested_checks_json or "[]")
     completed_checks = json.loads(case.completed_checks_json or "[]")
     graph_summary = json.loads(case.graph_summary_json or "{}")
@@ -343,6 +549,7 @@ def _serialize_case(case: models.IdentityVerificationCase, signals: Iterable[mod
             )
             for signal in signals
         ],
+        artifacts=[_serialize_artifact(artifact) for artifact in (artifacts or [])],
     )
 
 
@@ -361,6 +568,7 @@ def _persist_case_and_signals(
     graph_summary: dict[str, Any],
     evidence: dict[str, Any],
     signals: list[dict[str, Any]],
+    artifact_uploads: Iterable[schemas.IdentityVerificationArtifactUpload] | None = None,
 ) -> schemas.IdentityVerificationCaseOut:
     score = float(sum(float(item.get("score_delta") or 0.0) for item in signals))
     blocking = any(bool(item.get("is_blocking")) for item in signals)
@@ -403,12 +611,20 @@ def _persist_case_and_signals(
         db.add(signal)
         orm_signals.append(signal)
 
+    orm_artifacts = _persist_case_artifacts(
+        db,
+        case=case,
+        artifact_uploads=artifact_uploads,
+    )
+
     db.commit()
     db.refresh(case)
     for signal in orm_signals:
         db.refresh(signal)
+    for artifact in orm_artifacts:
+        db.refresh(artifact)
 
-    payload = _serialize_case(case, orm_signals)
+    payload = _serialize_case(case, orm_signals, orm_artifacts)
     mirror_document(
         "identity_verification_cases",
         payload.model_dump(mode="json"),
@@ -422,6 +638,15 @@ def _persist_case_and_signals(
                 **signal.model_dump(mode="json"),
             },
             upsert_filter={"id": signal.id},
+        )
+    for artifact in payload.artifacts:
+        mirror_document(
+            "identity_verification_artifacts",
+            {
+                "case_id": case.id,
+                **artifact.model_dump(mode="json"),
+            },
+            upsert_filter={"id": artifact.id},
         )
     publish_domain_event(
         "identity.case.updated",
@@ -603,20 +828,34 @@ def assess_applicant_risk(
     payload: schemas.ApplicantRiskAssessmentRequest,
 ) -> schemas.IdentityVerificationCaseOut:
     normalized_email = str(payload.applicant_email or "").strip().lower()
+    normalized_subject_key = str(payload.external_subject_key or normalized_email or "").strip().lower() or None
     suspicious_flags = [str(item or "").strip() for item in payload.suspicious_flags if str(item or "").strip()]
     signals: list[dict[str, Any]] = []
     requested_checks: list[str] = []
     completed_checks: list[str] = []
 
+    mongo_db = get_mongo_db(required=False)
+    fingerprint = observe_applicant_identity(
+        mongo_db,
+        applicant_email=normalized_email,
+        external_subject_key=normalized_subject_key,
+        device_id=payload.device_id,
+        user_agent=payload.user_agent,
+        ip_address=payload.ip_address,
+    )
+
     existing_user = db.query(models.AuthUser).filter(models.AuthUser.email == normalized_email).first()
+    if existing_user is None and mongo_db is not None and normalized_email:
+        existing_user = mongo_db["auth_users"].find_one({"email": normalized_email}, {"id": 1})
     if existing_user is not None:
+        existing_user_id = int(existing_user.id) if hasattr(existing_user, "id") else int(existing_user.get("id") or 0)
         _append_signal(
             signals,
             signal_type="existing_account_email",
             severity=models.FraudRiskLevel.HIGH,
             score_delta=24.0,
             reason="Applicant email already belongs to an existing campus account.",
-            evidence={"auth_user_id": existing_user.id},
+            evidence={"auth_user_id": existing_user_id},
         )
 
     if not payload.registration_number:
@@ -719,52 +958,52 @@ def assess_applicant_risk(
             evidence={"flags": suspicious_flags},
         )
 
-    graph_summary: dict[str, Any] = {}
-    mongo_db = get_mongo_db(required=False)
-    fingerprint = _device_fingerprint(payload.device_id, payload.user_agent)
-    if mongo_db is not None and fingerprint:
-        profile = mongo_db["identity_device_profiles"].find_one({"device_fingerprint": fingerprint})
-        if profile:
-            linked_users = len(profile.get("linked_user_ids") or [])
-            linked_students = len(profile.get("linked_student_ids") or [])
-            graph_summary = {
-                "device_fingerprint": fingerprint,
-                "linked_user_count": linked_users,
-                "linked_student_count": linked_students,
-                "session_count": int(profile.get("session_count") or 0),
-            }
-            if linked_users > 0 or linked_students > 0:
-                _append_signal(
-                    signals,
-                    signal_type="device_reuse_cluster",
-                    severity=models.FraudRiskLevel.HIGH if linked_users + linked_students >= 3 else models.FraudRiskLevel.MEDIUM,
-                    score_delta=min(28.0, float((linked_users + linked_students) * 10)),
-                    reason="Applicant device fingerprint is already linked to other campus identities.",
-                    evidence=graph_summary,
-                )
-        else:
-            graph_summary = {"device_fingerprint": fingerprint, "linked_user_count": 0, "linked_student_count": 0}
+    graph = build_subject_identity_graph(
+        applicant_email=normalized_email,
+        external_subject_key=normalized_subject_key,
+    )
+    graph_summary: dict[str, Any] = dict(graph.get("summary", {}) or {})
+    if fingerprint:
+        graph_summary["device_fingerprint"] = fingerprint
+
+    shared_device_count = int(graph_summary.get("shared_device_count") or 0)
+    connected_users = int(graph_summary.get("connected_user_count") or 0)
+    connected_students = int(graph_summary.get("connected_student_count") or 0)
+    connected_applicants = int(graph_summary.get("connected_applicant_count") or 0)
+    connected_total = connected_users + connected_students + connected_applicants
+    if connected_total > 0 or shared_device_count > 0:
+        _append_signal(
+            signals,
+            signal_type="device_reuse_cluster",
+            severity=models.FraudRiskLevel.HIGH if connected_total >= 3 or shared_device_count >= 2 else models.FraudRiskLevel.MEDIUM,
+            score_delta=min(30.0, float(max(1, connected_total + shared_device_count) * 9)),
+            reason="Applicant device fingerprint is already linked to other campus identities or signup attempts.",
+            evidence=graph_summary,
+        )
+        requested_checks.append("device_review")
 
     evidence = {
         "applicant_email": _mask_email(normalized_email),
         "claimed_role": payload.claimed_role,
         "parent_email": _mask_email(payload.parent_email),
         "document_reference_hash": _stable_hash(payload.document_reference),
+        "device_fingerprint": fingerprint,
     }
     return _persist_case_and_signals(
         db,
         workflow_key="applicant_identity",
         subject_role="applicant",
-        auth_user_id=existing_user.id if existing_user else None,
+        auth_user_id=(int(existing_user.id) if hasattr(existing_user, "id") else int(existing_user.get("id") or 0)) if existing_user else None,
         student_id=None,
         faculty_id=None,
         applicant_email=normalized_email,
-        external_subject_key=normalized_email,
+        external_subject_key=normalized_subject_key,
         requested_checks=sorted(set(requested_checks)),
         completed_checks=sorted(set(completed_checks)),
         graph_summary=graph_summary,
         evidence=evidence,
         signals=signals,
+        artifact_uploads=payload.evidence_uploads,
     )
 
 
@@ -773,6 +1012,7 @@ def list_identity_cases(
     *,
     status: models.IdentityVerificationStatus | None = None,
     student_id: int | None = None,
+    applicant_email: str | None = None,
     workflow_key: str | None = None,
     limit: int = 50,
 ) -> list[schemas.IdentityVerificationCaseOut]:
@@ -781,6 +1021,8 @@ def list_identity_cases(
         query = query.filter(models.IdentityVerificationCase.status == status)
     if student_id is not None:
         query = query.filter(models.IdentityVerificationCase.student_id == student_id)
+    if applicant_email:
+        query = query.filter(models.IdentityVerificationCase.applicant_email == str(applicant_email).strip().lower())
     if workflow_key:
         query = query.filter(models.IdentityVerificationCase.workflow_key == workflow_key)
     cases = query.limit(max(1, min(200, limit))).all()
@@ -792,7 +1034,13 @@ def list_identity_cases(
             .order_by(models.IdentityRiskSignal.created_at.asc())
             .all()
         )
-        results.append(_serialize_case(case, signals))
+        artifacts = (
+            db.query(models.IdentityVerificationArtifact)
+            .filter(models.IdentityVerificationArtifact.case_id == case.id)
+            .order_by(models.IdentityVerificationArtifact.created_at.asc())
+            .all()
+        )
+        results.append(_serialize_case(case, signals, artifacts))
     return results
 
 
@@ -806,4 +1054,10 @@ def get_identity_case(db: Session, case_id: int) -> schemas.IdentityVerification
         .order_by(models.IdentityRiskSignal.created_at.asc())
         .all()
     )
-    return _serialize_case(case, signals)
+    artifacts = (
+        db.query(models.IdentityVerificationArtifact)
+        .filter(models.IdentityVerificationArtifact.case_id == case.id)
+        .order_by(models.IdentityVerificationArtifact.created_at.asc())
+        .all()
+    )
+    return _serialize_case(case, signals, artifacts)

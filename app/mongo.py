@@ -421,14 +421,21 @@ def _ensure_indexes(db) -> None:
     db["identity_verification_cases"].create_index([("workflow_key", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
     db["identity_verification_cases"].create_index([("student_id", ASCENDING), ("created_at", ASCENDING)])
     db["identity_verification_cases"].create_index([("auth_user_id", ASCENDING), ("created_at", ASCENDING)])
+    db["identity_verification_cases"].create_index([("applicant_email", ASCENDING), ("created_at", ASCENDING)])
 
     db["identity_risk_signals"].create_index([("id", ASCENDING)], unique=True)
     db["identity_risk_signals"].create_index([("case_id", ASCENDING), ("created_at", ASCENDING)])
     db["identity_risk_signals"].create_index([("signal_type", ASCENDING), ("severity", ASCENDING), ("created_at", ASCENDING)])
 
+    db["identity_verification_artifacts"].create_index([("id", ASCENDING)], unique=True)
+    db["identity_verification_artifacts"].create_index([("case_id", ASCENDING), ("created_at", ASCENDING)])
+    db["identity_verification_artifacts"].create_index([("artifact_type", ASCENDING), ("created_at", ASCENDING)])
+
     db["identity_device_profiles"].create_index([("device_fingerprint", ASCENDING)], unique=True)
     db["identity_device_profiles"].create_index([("linked_user_ids", ASCENDING), ("updated_at", ASCENDING)])
     db["identity_device_profiles"].create_index([("linked_student_ids", ASCENDING), ("updated_at", ASCENDING)])
+    db["identity_device_profiles"].create_index([("linked_applicant_email_hashes", ASCENDING), ("updated_at", ASCENDING)])
+    db["identity_device_profiles"].create_index([("linked_external_subject_keys", ASCENDING), ("updated_at", ASCENDING)])
 
     db["event_stream"].create_index([("created_at", ASCENDING)])
     db["compliance_retention_runs"].create_index([("id", ASCENDING)], unique=True)

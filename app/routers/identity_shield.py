@@ -48,6 +48,7 @@ def run_applicant_identity_screening(
 def get_identity_cases(
     status: models.IdentityVerificationStatus | None = Query(default=None),
     student_id: int | None = Query(default=None),
+    applicant_email: str | None = Query(default=None),
     workflow_key: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -57,6 +58,7 @@ def get_identity_cases(
         db,
         status=status,
         student_id=student_id,
+        applicant_email=applicant_email,
         workflow_key=workflow_key,
         limit=limit,
     )
@@ -89,4 +91,21 @@ def get_user_identity_graph(
     _: CurrentUser = Depends(_ADMIN_DEPENDENCY),
 ):
     graph = build_subject_identity_graph(user_id=user_id)
+    return schemas.IdentityGraphOut(**graph)
+
+
+@router.get("/graph/applicants", response_model=schemas.IdentityGraphOut)
+def get_applicant_identity_graph(
+    email: str | None = Query(default=None),
+    external_subject_key: str | None = Query(default=None),
+    _: CurrentUser = Depends(_ADMIN_DEPENDENCY),
+):
+    normalized_email = str(email or "").strip().lower() or None
+    normalized_subject_key = str(external_subject_key or "").strip().lower() or None
+    if not normalized_email and not normalized_subject_key:
+        raise HTTPException(status_code=400, detail="Provide applicant email or external_subject_key")
+    graph = build_subject_identity_graph(
+        applicant_email=normalized_email,
+        external_subject_key=normalized_subject_key,
+    )
     return schemas.IdentityGraphOut(**graph)
