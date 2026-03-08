@@ -12,3 +12,7 @@ venv/
 .DS_Store
 
 campus.db
+node_modules/
+playwright-report/
+test-results/
+lhci_reports/

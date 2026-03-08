@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
-from app.routers.makeup import send_remedial_code_to_sections
+from app.routers.remedial import send_remedial_code_to_sections
 
 
 class RemedialSendMessageTests(unittest.TestCase):
@@ -112,8 +112,8 @@ class RemedialSendMessageTests(unittest.TestCase):
         )
         payload = schemas.RemedialSendMessageRequest(custom_message="Bring assignment notebook.")
 
-        with patch("app.routers.makeup.mirror_document", side_effect=RuntimeError("mongo down")), patch(
-            "app.routers.makeup.mirror_event",
+        with patch("app.routers.remedial.mirror_document", side_effect=RuntimeError("mongo down")), patch(
+            "app.routers.remedial.mirror_event",
             side_effect=RuntimeError("mongo down"),
         ):
             out = send_remedial_code_to_sections(

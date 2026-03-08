@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import re
@@ -23,11 +24,21 @@ from ..food_bootstrap import bootstrap_food_hall_catalog
 from ..mongo import get_mongo_db, mirror_document, mirror_event
 
 router = APIRouter(prefix="/food", tags=["Food Pre-Ordering"])
+logger = logging.getLogger(__name__)
 
 _order_rate_lock = Lock()
 _order_rate_buckets: dict[int, list[datetime]] = {}
 _FOOD_SERVICE_START = dt_time(10, 0)
 _FOOD_SERVICE_END = dt_time(21, 0)
+_DEMAND_EXCLUDED_STATUSES = {
+    models.FoodOrderStatus.CANCELLED.value,
+    models.FoodOrderStatus.REJECTED.value,
+}
+_DEMAND_INACTIVE_STATUSES = _DEMAND_EXCLUDED_STATUSES | {
+    models.FoodOrderStatus.DELIVERED.value,
+    models.FoodOrderStatus.COLLECTED.value,
+    models.FoodOrderStatus.REFUNDED.value,
+}
 
 
 def _float_env(name: str, default: float) -> float:
@@ -169,6 +180,15 @@ def _mongo_read_preferred() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _strict_runtime_enabled() -> bool:
+    raw = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _mongo_read_required() -> bool:
+    return _mongo_read_preferred() and _strict_runtime_enabled()
+
+
 def _coerce_mongo_datetime(value) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -260,10 +280,19 @@ def _list_orders_from_mongo(
     order_date: date | None,
     limit: int | None,
     current_user: CurrentUser,
+    db: Session | None = None,
 ):
+    if db is not None:
+        try:
+            bind = db.get_bind()
+            if bind is not None and bind.dialect.name == "sqlite" and ":memory:" in str(bind.url):
+                return None
+        except Exception:
+            # Best-effort guard only; continue with normal path if bind introspection fails.
+            pass
     if not _mongo_read_preferred():
         return None
-    mongo_db = get_mongo_db(required=False)
+    mongo_db = get_mongo_db(required=_mongo_read_required())
     if mongo_db is None:
         return None
 
@@ -294,7 +323,14 @@ def _list_orders_from_mongo(
         query_filter["shop_id"] = {"$in": shop_ids}
 
     if order_date:
-        query_filter["order_date"] = {"$in": [order_date.isoformat(), order_date]}
+        order_date_iso = order_date.isoformat()
+        day_start = datetime.combine(order_date, dt_time.min)
+        day_end = day_start + timedelta(days=1)
+        # Support both mirrored string dates and legacy datetime values.
+        query_filter["$or"] = [
+            {"order_date": order_date_iso},
+            {"order_date": {"$gte": day_start, "$lt": day_end}},
+        ]
 
     cursor = mongo_db["food_orders"].find(query_filter).sort([("created_at", -1), ("order_id", -1)])
     if limit:
@@ -307,6 +343,403 @@ def _list_orders_from_mongo(
         if parsed is not None:
             rows.append(parsed)
     return rows
+
+
+def _mongo_filter_for_order_date(order_date: date) -> dict[str, Any]:
+    order_date_iso = order_date.isoformat()
+    day_start = datetime.combine(order_date, dt_time.min)
+    day_end = day_start + timedelta(days=1)
+    return {
+        "$or": [
+            {"order_date": order_date_iso},
+            {"order_date": {"$gte": day_start, "$lt": day_end}},
+        ]
+    }
+
+
+def _mongo_filter_for_order_date_range(start_date: date, end_date: date) -> dict[str, Any]:
+    start_iso = start_date.isoformat()
+    end_iso = end_date.isoformat()
+    day_start = datetime.combine(start_date, dt_time.min)
+    day_end = datetime.combine(end_date + timedelta(days=1), dt_time.min)
+    return {
+        "$or": [
+            {"order_date": {"$gte": start_iso, "$lte": end_iso}},
+            {"order_date": {"$gte": day_start, "$lt": day_end}},
+        ]
+    }
+
+
+def _mongo_combine_filter_clauses(*clauses: dict[str, Any] | None) -> dict[str, Any]:
+    clean = [dict(clause) for clause in clauses if isinstance(clause, dict) and clause]
+    if not clean:
+        return {}
+    if len(clean) == 1:
+        return clean[0]
+    return {"$and": clean}
+
+
+def _slot_sort_key(start_time_value: Any, label: str | None = None) -> int:
+    if isinstance(start_time_value, dt_time):
+        return (start_time_value.hour * 60) + start_time_value.minute
+    raw = str(start_time_value or "").strip()
+    if raw:
+        try:
+            parsed = dt_time.fromisoformat(raw)
+            return (parsed.hour * 60) + parsed.minute
+        except ValueError:
+            pass
+
+    label_raw = str(label or "").strip()
+    match = re.search(r"(\d{1,2}):(\d{2})", label_raw)
+    if match:
+        return (int(match.group(1)) * 60) + int(match.group(2))
+    return 10_000
+
+
+def _mongo_break_slots_snapshot(mongo_db, db: Session) -> dict[int, dict[str, Any]]:
+    snapshot: dict[int, dict[str, Any]] = {}
+    docs = list(
+        mongo_db["break_slots"].find(
+            {},
+            {"slot_id": 1, "id": 1, "label": 1, "max_orders": 1, "start_time": 1},
+        )
+    )
+    for doc in docs:
+        slot_id_raw = doc.get("slot_id", doc.get("id"))
+        if slot_id_raw is None:
+            continue
+        slot_id = int(slot_id_raw)
+        if slot_id <= 0:
+            continue
+        label = str(doc.get("label") or f"Slot #{slot_id}").strip() or f"Slot #{slot_id}"
+        capacity = max(0, int(doc.get("max_orders") or 0))
+        sort_key = _slot_sort_key(doc.get("start_time"), label)
+        snapshot[slot_id] = {
+            "slot_id": slot_id,
+            "label": label,
+            "capacity": capacity,
+            "sort_key": sort_key,
+        }
+
+    if snapshot:
+        return snapshot
+
+    for slot in _query_food_slots(db):
+        snapshot[int(slot.id)] = {
+            "slot_id": int(slot.id),
+            "label": str(slot.label),
+            "capacity": max(0, int(slot.max_orders or 0)),
+            "sort_key": _slot_sort_key(slot.start_time, slot.label),
+        }
+    return snapshot
+
+
+def _mongo_owner_scope_clause(mongo_db, db: Session, owner_user_id: int) -> dict[str, Any] | None:
+    shop_docs = list(
+        mongo_db["food_shops"].find(
+            {"owner_user_id": int(owner_user_id)},
+            {"shop_id": 1, "id": 1, "name": 1},
+        )
+    )
+
+    shop_ids = {
+        int(doc.get("shop_id") or doc.get("id"))
+        for doc in shop_docs
+        if doc.get("shop_id") is not None or doc.get("id") is not None
+    }
+    shop_names = {str(doc.get("name") or "").strip() for doc in shop_docs if str(doc.get("name") or "").strip()}
+
+    if not shop_ids and not shop_names:
+        rows = (
+            db.query(models.FoodShop.id, models.FoodShop.name)
+            .filter(models.FoodShop.owner_user_id == int(owner_user_id))
+            .all()
+        )
+        for row in rows:
+            if row.id is not None:
+                shop_ids.add(int(row.id))
+            if row.name:
+                shop_names.add(str(row.name).strip())
+
+    if not shop_ids and not shop_names:
+        return None
+
+    clauses: list[dict[str, Any]] = []
+    if shop_ids:
+        clauses.append({"shop_id": {"$in": sorted(shop_ids)}})
+    if shop_names:
+        clauses.append({"shop_name": {"$in": sorted(shop_names)}})
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$or": clauses}
+
+
+def _slot_demand_from_mongo(*, order_date: date, db: Session) -> list[schemas.SlotDemand] | None:
+    if not _mongo_read_preferred():
+        return None
+    mongo_db = get_mongo_db(required=_mongo_read_required())
+    if mongo_db is None:
+        return None
+
+    slot_snapshot = _mongo_break_slots_snapshot(mongo_db, db)
+    query_filter = _mongo_filter_for_order_date(order_date)
+    docs = list(
+        mongo_db["food_orders"].find(
+            query_filter,
+            {"slot_id": 1, "status": 1},
+        )
+    )
+
+    counts_by_slot: dict[int, int] = {}
+    for doc in docs:
+        slot_id = int(doc.get("slot_id") or 0)
+        if slot_id <= 0:
+            continue
+        status_value = str(doc.get("status") or "").strip().lower()
+        if status_value in _DEMAND_EXCLUDED_STATUSES:
+            continue
+        counts_by_slot[slot_id] = counts_by_slot.get(slot_id, 0) + 1
+
+    known_slot_ids = set(slot_snapshot.keys()) | set(counts_by_slot.keys())
+    sorted_slot_ids = sorted(
+        known_slot_ids,
+        key=lambda slot_id: (
+            int(slot_snapshot.get(slot_id, {}).get("sort_key", 10_000)),
+            str(slot_snapshot.get(slot_id, {}).get("label", f"Slot #{slot_id}")),
+            int(slot_id),
+        ),
+    )
+
+    response: list[schemas.SlotDemand] = []
+    for slot_id in sorted_slot_ids:
+        meta = slot_snapshot.get(slot_id, {})
+        capacity = max(0, int(meta.get("capacity") or 0))
+        orders = max(0, int(counts_by_slot.get(slot_id, 0)))
+        utilization = (orders / capacity * 100.0) if capacity else 0.0
+        response.append(
+            schemas.SlotDemand(
+                slot_id=int(slot_id),
+                slot_label=str(meta.get("label") or f"Slot #{slot_id}"),
+                orders=orders,
+                capacity=capacity,
+                utilization_percent=round(utilization, 2),
+            )
+        )
+
+    return sorted(response, key=lambda row: row.orders, reverse=True)
+
+
+def _slot_demand_live_from_mongo(
+    *,
+    order_date: date,
+    window_minutes: int,
+    current_user: CurrentUser,
+    db: Session,
+) -> schemas.SlotDemandLiveOut | None:
+    if not _mongo_read_preferred():
+        return None
+    mongo_db = get_mongo_db(required=_mongo_read_required())
+    if mongo_db is None:
+        return None
+
+    slot_snapshot = _mongo_break_slots_snapshot(mongo_db, db)
+    slot_label_by_id = {
+        int(slot_id): str(meta.get("label") or f"Slot #{slot_id}")
+        for slot_id, meta in slot_snapshot.items()
+    }
+
+    order_date_clause = _mongo_filter_for_order_date(order_date)
+    owner_clause: dict[str, Any] | None = None
+    if current_user.role == models.UserRole.OWNER:
+        owner_clause = _mongo_owner_scope_clause(mongo_db, db, int(current_user.id))
+        if owner_clause is None:
+            return schemas.SlotDemandLiveOut(
+                order_date=order_date,
+                window_minutes=window_minutes,
+                synced_at=datetime.utcnow(),
+                active_orders=0,
+                orders_last_window=0,
+                status_updates_last_window=0,
+                payment_events_last_window=0,
+                hottest_slot_label=None,
+                hottest_slot_orders=0,
+                pulses=[],
+            )
+
+    query_filter = _mongo_combine_filter_clauses(order_date_clause, owner_clause)
+    order_docs = list(
+        mongo_db["food_orders"].find(
+            query_filter,
+            {"order_id": 1, "id": 1, "slot_id": 1, "status": 1},
+        )
+    )
+
+    active_orders = 0
+    slot_count_by_id: dict[int, int] = {}
+    order_slot_by_id: dict[int, int] = {}
+
+    for doc in order_docs:
+        slot_id = int(doc.get("slot_id") or 0)
+        if slot_id <= 0:
+            continue
+        order_id_raw = doc.get("order_id", doc.get("id"))
+        if order_id_raw is not None:
+            order_slot_by_id[int(order_id_raw)] = slot_id
+
+        status_value = str(doc.get("status") or "").strip().lower()
+        if status_value not in _DEMAND_INACTIVE_STATUSES:
+            active_orders += 1
+        if status_value in _DEMAND_EXCLUDED_STATUSES:
+            continue
+        slot_count_by_id[slot_id] = slot_count_by_id.get(slot_id, 0) + 1
+
+    hottest_slot_label: str | None = None
+    hottest_slot_orders = 0
+    if slot_count_by_id:
+        hottest_slot_id, hottest_slot_orders = max(
+            slot_count_by_id.items(),
+            key=lambda pair: int(pair[1]),
+        )
+        hottest_slot_orders = int(hottest_slot_orders or 0)
+        if hottest_slot_id:
+            hottest_slot_label = slot_label_by_id.get(hottest_slot_id, f"Slot #{hottest_slot_id}")
+
+    window_start = datetime.utcnow() - timedelta(minutes=window_minutes)
+    audit_docs = list(
+        mongo_db["food_order_audit"].find(
+            {"created_at": {"$gte": window_start}},
+            {"order_id": 1, "event_type": 1},
+        )
+    )
+
+    orders_last_window = 0
+    status_updates_last_window = 0
+    payment_events_last_window = 0
+    pulse_bucket_by_slot: dict[int, dict[str, int]] = {}
+
+    for doc in audit_docs:
+        order_id_raw = doc.get("order_id")
+        if order_id_raw is None:
+            continue
+        order_id = int(order_id_raw)
+        slot_id = int(order_slot_by_id.get(order_id) or 0)
+        if slot_id <= 0:
+            continue
+
+        bucket = pulse_bucket_by_slot.setdefault(
+            slot_id,
+            {
+                "event_count": 0,
+                "created_count": 0,
+                "status_count": 0,
+                "payment_count": 0,
+            },
+        )
+        bucket["event_count"] += 1
+
+        event_type = str(doc.get("event_type") or "").strip().lower()
+        if event_type == "order_created":
+            bucket["created_count"] += 1
+            orders_last_window += 1
+        elif event_type.startswith("payment_"):
+            bucket["payment_count"] += 1
+            payment_events_last_window += 1
+        else:
+            bucket["status_count"] += 1
+            status_updates_last_window += 1
+
+    pulses: list[schemas.SlotDemandLivePulse] = []
+    sorted_pulses = sorted(
+        pulse_bucket_by_slot.items(),
+        key=lambda pair: (-int(pair[1]["event_count"]), slot_label_by_id.get(pair[0], f"Slot #{pair[0]}")),
+    )
+    for slot_id, bucket in sorted_pulses:
+        pulses.append(
+            schemas.SlotDemandLivePulse(
+                slot_id=int(slot_id),
+                slot_label=slot_label_by_id.get(slot_id, f"Slot #{slot_id}"),
+                event_count=int(bucket["event_count"]),
+                created_count=int(bucket["created_count"]),
+                status_count=int(bucket["status_count"]),
+                payment_count=int(bucket["payment_count"]),
+            )
+        )
+
+    return schemas.SlotDemandLiveOut(
+        order_date=order_date,
+        window_minutes=window_minutes,
+        synced_at=datetime.utcnow(),
+        active_orders=int(active_orders or 0),
+        orders_last_window=int(orders_last_window),
+        status_updates_last_window=int(status_updates_last_window),
+        payment_events_last_window=int(payment_events_last_window),
+        hottest_slot_label=hottest_slot_label,
+        hottest_slot_orders=int(hottest_slot_orders),
+        pulses=pulses,
+    )
+
+
+def _peak_times_from_mongo(*, lookback_days: int, db: Session) -> list[schemas.PeakTimePrediction] | None:
+    if not _mongo_read_preferred():
+        return None
+    mongo_db = get_mongo_db(required=_mongo_read_required())
+    if mongo_db is None:
+        return None
+
+    today = date.today()
+    start_date = today - timedelta(days=lookback_days - 1)
+    slot_snapshot = _mongo_break_slots_snapshot(mongo_db, db)
+
+    query_filter = _mongo_filter_for_order_date_range(start_date, today)
+    docs = list(
+        mongo_db["food_orders"].find(
+            query_filter,
+            {"slot_id": 1, "order_date": 1, "status": 1},
+        )
+    )
+
+    count_map: dict[int, dict[date, int]] = {}
+    for doc in docs:
+        slot_id = int(doc.get("slot_id") or 0)
+        if slot_id <= 0:
+            continue
+        status_value = str(doc.get("status") or "").strip().lower()
+        if status_value in _DEMAND_EXCLUDED_STATUSES:
+            continue
+        order_day = _coerce_mongo_date(doc.get("order_date"))
+        if order_day is None or order_day < start_date or order_day > today:
+            continue
+        day_counts = count_map.setdefault(slot_id, {})
+        day_counts[order_day] = int(day_counts.get(order_day, 0) + 1)
+
+    known_slot_ids = set(slot_snapshot.keys()) | set(count_map.keys())
+    predictions: list[schemas.PeakTimePrediction] = []
+
+    for slot_id in sorted(known_slot_ids):
+        slot_meta = slot_snapshot.get(slot_id, {})
+        daily_counts = count_map.get(slot_id, {})
+        average_orders = sum(daily_counts.values()) / lookback_days
+        capacity = max(0, int(slot_meta.get("capacity") or 0))
+        utilization_ratio = (average_orders / capacity) if capacity else 0.0
+
+        if utilization_ratio >= 0.8:
+            rush_level = "high"
+        elif utilization_ratio >= 0.5:
+            rush_level = "medium"
+        else:
+            rush_level = "low"
+
+        predictions.append(
+            schemas.PeakTimePrediction(
+                slot_id=int(slot_id),
+                slot_label=str(slot_meta.get("label") or f"Slot #{slot_id}"),
+                average_orders=round(average_orders, 2),
+                predicted_rush_level=rush_level,
+            )
+        )
+
+    return sorted(predictions, key=lambda row: row.average_orders, reverse=True)
 
 
 def _validate_order_time_window(*, order_date: date, slot: models.BreakSlot) -> None:
@@ -801,33 +1234,51 @@ def _record_order_audit(
         payload_json=(json.dumps(payload, default=str) if payload else None),
     )
     db.add(row)
-    mirror_document(
-        "food_order_audit",
-        {
-            "order_id": order.id,
-            "event_type": event_type,
-            "from_status": from_status,
-            "to_status": to_status,
-            "actor_role": row.actor_role,
-            "actor_id": row.actor_id,
-            "actor_email": row.actor_email,
-            "message": message,
-            "payload": payload or {},
-            "created_at": datetime.utcnow(),
-        },
-    )
-    mirror_event(
-        "food.order.audit",
-        {
-            "order_id": order.id,
-            "event_type": event_type,
-            "from_status": from_status,
-            "to_status": to_status,
-            "message": message,
-        },
-        source="food-router",
-        actor={"id": actor.id, "email": actor.email, "role": actor.role.value} if actor else None,
-    )
+    try:
+        mirror_document(
+            "food_order_audit",
+            {
+                "order_id": order.id,
+                "event_type": event_type,
+                "from_status": from_status,
+                "to_status": to_status,
+                "actor_role": row.actor_role,
+                "actor_id": row.actor_id,
+                "actor_email": row.actor_email,
+                "message": message,
+                "payload": payload or {},
+                "created_at": datetime.utcnow(),
+            },
+            required=False,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mirror food order audit document for order_id=%s event_type=%s",
+            order.id,
+            event_type,
+            exc_info=True,
+        )
+    try:
+        mirror_event(
+            "food.order.audit",
+            {
+                "order_id": order.id,
+                "event_type": event_type,
+                "from_status": from_status,
+                "to_status": to_status,
+                "message": message,
+            },
+            source="food-router",
+            actor={"id": actor.id, "email": actor.email, "role": actor.role.value} if actor else None,
+            required=False,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mirror food order audit event for order_id=%s event_type=%s",
+            order.id,
+            event_type,
+            exc_info=True,
+        )
 
 
 def _notify_order_status(db: Session, order: models.FoodOrder, message: str) -> None:
@@ -2162,7 +2613,7 @@ def list_orders(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
-    mongo_rows = _list_orders_from_mongo(order_date=order_date, limit=limit, current_user=current_user)
+    mongo_rows = _list_orders_from_mongo(order_date=order_date, limit=limit, current_user=current_user, db=db)
     if mongo_rows is not None:
         return mongo_rows
 
@@ -2798,6 +3249,10 @@ def get_slot_demand(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
+    mongo_rows = _slot_demand_from_mongo(order_date=order_date, db=db)
+    if mongo_rows is not None:
+        return mongo_rows
+
     slots = _query_food_slots(db)
     response: list[schemas.SlotDemand] = []
 
@@ -2836,6 +3291,15 @@ def get_slot_demand_live_signal(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
+    mongo_live = _slot_demand_live_from_mongo(
+        order_date=order_date,
+        window_minutes=window_minutes,
+        current_user=current_user,
+        db=db,
+    )
+    if mongo_live is not None:
+        return mongo_live
+
     slots = _query_food_slots(db)
     slot_label_by_id = {int(slot.id): str(slot.label) for slot in slots}
 
@@ -2974,6 +3438,10 @@ def get_peak_times(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
+    mongo_predictions = _peak_times_from_mongo(lookback_days=lookback_days, db=db)
+    if mongo_predictions is not None:
+        return mongo_predictions
+
     today = date.today()
     start_date = today - timedelta(days=lookback_days - 1)
 
@@ -3130,6 +3598,438 @@ def food_ops_metrics(
         avg_preparing_minutes=round((sum(prep_minutes) / len(prep_minutes)) if prep_minutes else 0.0, 2),
         funnel=funnel,
         generated_at=datetime.utcnow(),
+    )
+
+
+@router.get("/vendor/dashboard", response_model=schemas.VendorDashboardOut)
+def vendor_dashboard(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    range_end = end_date or date.today()
+    range_start = start_date or (range_end - timedelta(days=29))
+    if range_start > range_end:
+        raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
+    if (range_end - range_start).days > 120:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 120 days")
+
+    order_query = db.query(models.FoodOrder).filter(
+        models.FoodOrder.order_date >= range_start,
+        models.FoodOrder.order_date <= range_end,
+    )
+    if current_user.role == models.UserRole.OWNER:
+        order_query = _order_visible_to_owner_filter(order_query, db, current_user.id)
+    rows = order_query.all()
+
+    shop_ids = {int(row.shop_id) for row in rows if row.shop_id}
+    if current_user.role == models.UserRole.OWNER:
+        owner_shops = (
+            db.query(models.FoodShop.id)
+            .filter(models.FoodShop.owner_user_id == int(current_user.id))
+            .all()
+        )
+        shop_ids.update(int(item.id) for item in owner_shops if item.id)
+    shop_count = len(shop_ids)
+
+    status_breakdown = {status_value.value: 0 for status_value in models.FoodOrderStatus}
+    for row in rows:
+        status_breakdown[row.status.value] = status_breakdown.get(row.status.value, 0) + 1
+
+    prep_durations: list[float] = []
+    delivery_durations: list[float] = []
+    fulfillment_durations: list[float] = []
+    monitored_orders = 0
+    on_time_orders = 0
+    breach_count = 0
+    unverified_delivery_count = 0
+    stale_update_count = 0
+    cancelled_count = 0
+
+    for row in rows:
+        if row.status == models.FoodOrderStatus.CANCELLED:
+            cancelled_count += 1
+
+        if row.preparing_at:
+            prep_end = row.out_for_delivery_at or row.delivered_at or row.estimated_ready_at
+            if prep_end and prep_end >= row.preparing_at:
+                prep_durations.append((prep_end - row.preparing_at).total_seconds() / 60.0)
+
+        if row.out_for_delivery_at and row.delivered_at and row.delivered_at >= row.out_for_delivery_at:
+            delivery_durations.append((row.delivered_at - row.out_for_delivery_at).total_seconds() / 60.0)
+
+        delivered_stamp = row.delivered_at if row.status == models.FoodOrderStatus.DELIVERED else None
+        if row.status == models.FoodOrderStatus.COLLECTED:
+            delivered_stamp = row.delivered_at or row.estimated_ready_at
+        if delivered_stamp and delivered_stamp >= row.created_at:
+            fulfillment_durations.append((delivered_stamp - row.created_at).total_seconds() / 60.0)
+
+        target_time = row.estimated_ready_at
+        if target_time is None and row.out_for_delivery_at and row.delivery_eta_minutes:
+            target_time = row.out_for_delivery_at + timedelta(minutes=max(1, int(row.delivery_eta_minutes)))
+        if target_time and delivered_stamp:
+            monitored_orders += 1
+            if delivered_stamp <= target_time:
+                on_time_orders += 1
+            else:
+                breach_count += 1
+
+        if row.status in {models.FoodOrderStatus.DELIVERED, models.FoodOrderStatus.COLLECTED} and not row.location_verified:
+            unverified_delivery_count += 1
+
+        if row.last_status_updated_at and row.created_at:
+            lag_minutes = (row.last_status_updated_at - row.created_at).total_seconds() / 60.0
+            if lag_minutes > 90:
+                stale_update_count += 1
+
+    order_ids = [int(row.id) for row in rows if row.id]
+    payment_rows: list[models.FoodPayment] = []
+    if order_ids:
+        order_ids_token = {int(item) for item in order_ids}
+        payment_rows = (
+            db.query(models.FoodPayment)
+            .filter(models.FoodPayment.order_ids_json.isnot(None))
+            .order_by(models.FoodPayment.updated_at.desc(), models.FoodPayment.id.desc())
+            .all()
+        )
+        filtered_payments: list[models.FoodPayment] = []
+        for pay in payment_rows:
+            try:
+                parsed_ids = json.loads(pay.order_ids_json or "[]")
+            except (TypeError, json.JSONDecodeError):
+                parsed_ids = []
+            if not isinstance(parsed_ids, list):
+                continue
+            normalized_ids = {int(item) for item in parsed_ids if isinstance(item, int) or str(item).isdigit()}
+            if normalized_ids.intersection(order_ids_token):
+                filtered_payments.append(pay)
+        payment_rows = filtered_payments
+
+    gross_amount = round(sum(float(row.total_price or 0.0) for row in rows), 2)
+    paid_amount = round(
+        sum(float(row.total_price or 0.0) for row in rows if str(row.payment_status or "").strip().lower() == "paid"),
+        2,
+    )
+    failed_amount = round(
+        sum(float(pay.amount or 0.0) for pay in payment_rows if str(pay.status or "").strip().lower() == "failed"),
+        2,
+    )
+    pending_amount = round(max(gross_amount - paid_amount, 0.0), 2)
+    reconciliation_gap_count = sum(
+        1
+        for row in rows
+        if str(row.payment_status or "").strip().lower() == "paid"
+        and not any(str(pay.payment_reference or "").strip() == str(row.payment_reference or "").strip() for pay in payment_rows)
+    )
+
+    compliance_flags: list[schemas.VendorComplianceFlagOut] = []
+    if breach_count > 0:
+        severity = "high" if breach_count >= 10 else "medium"
+        compliance_flags.append(
+            schemas.VendorComplianceFlagOut(
+                code="SLA_BREACH",
+                severity=severity,
+                message="Orders breached promised SLA windows.",
+                count=breach_count,
+            )
+        )
+    if unverified_delivery_count > 0:
+        compliance_flags.append(
+            schemas.VendorComplianceFlagOut(
+                code="LOCATION_UNVERIFIED_DELIVERY",
+                severity="high",
+                message="Delivered/collected orders without verified location.",
+                count=unverified_delivery_count,
+            )
+        )
+    if stale_update_count > 0:
+        compliance_flags.append(
+            schemas.VendorComplianceFlagOut(
+                code="STALE_STATUS_UPDATES",
+                severity="medium",
+                message="Orders had delayed status updates beyond expected threshold.",
+                count=stale_update_count,
+            )
+        )
+    cancellation_rate = (cancelled_count / len(rows) * 100.0) if rows else 0.0
+    if cancellation_rate >= 12.0:
+        compliance_flags.append(
+            schemas.VendorComplianceFlagOut(
+                code="HIGH_CANCELLATION_RATE",
+                severity="medium",
+                message=f"Cancellation rate is elevated at {cancellation_rate:.1f}%.",
+                count=cancelled_count,
+            )
+        )
+
+    return schemas.VendorDashboardOut(
+        range_start=range_start,
+        range_end=range_end,
+        shops=shop_count,
+        sla=schemas.VendorSLAOut(
+            monitored_orders=monitored_orders,
+            on_time_orders=on_time_orders,
+            on_time_percent=round((on_time_orders / monitored_orders * 100.0) if monitored_orders else 100.0, 2),
+            avg_fulfillment_minutes=round(
+                (sum(fulfillment_durations) / len(fulfillment_durations)) if fulfillment_durations else 0.0,
+                2,
+            ),
+            breach_count=breach_count,
+        ),
+        fulfillment=schemas.VendorFulfillmentOut(
+            total_orders=len(rows),
+            status_breakdown=status_breakdown,
+            avg_prep_minutes=round((sum(prep_durations) / len(prep_durations)) if prep_durations else 0.0, 2),
+            avg_delivery_minutes=round((sum(delivery_durations) / len(delivery_durations)) if delivery_durations else 0.0, 2),
+        ),
+        billing=schemas.VendorBillingOut(
+            gross_amount=gross_amount,
+            paid_amount=paid_amount,
+            pending_amount=pending_amount,
+            failed_amount=failed_amount,
+            reconciliation_gap_count=reconciliation_gap_count,
+        ),
+        compliance_flags=compliance_flags,
+        generated_at=datetime.utcnow(),
+    )
+
+
+def _payment_rows_for_order_ids(db: Session, order_ids: set[int]) -> list[models.FoodPayment]:
+    if not order_ids:
+        return []
+    rows = (
+        db.query(models.FoodPayment)
+        .filter(models.FoodPayment.order_ids_json.isnot(None))
+        .order_by(models.FoodPayment.updated_at.desc(), models.FoodPayment.id.desc())
+        .all()
+    )
+    filtered: list[models.FoodPayment] = []
+    for row in rows:
+        try:
+            parsed_ids = json.loads(row.order_ids_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            parsed_ids = []
+        if not isinstance(parsed_ids, list):
+            continue
+        normalized_ids = {int(item) for item in parsed_ids if isinstance(item, int) or str(item).isdigit()}
+        if normalized_ids.intersection(order_ids):
+            filtered.append(row)
+    return filtered
+
+
+def _build_vendor_reconciliation_items(
+    *,
+    orders: list[models.FoodOrder],
+    payments: list[models.FoodPayment],
+) -> list[schemas.VendorReconciliationItemOut]:
+    payment_index_by_reference: dict[str, list[models.FoodPayment]] = {}
+    payment_index_by_order: dict[int, list[models.FoodPayment]] = {}
+    for pay in payments:
+        ref = str(pay.payment_reference or "").strip()
+        if ref:
+            payment_index_by_reference.setdefault(ref, []).append(pay)
+        try:
+            parsed_ids = json.loads(pay.order_ids_json or "[]")
+        except (TypeError, json.JSONDecodeError):
+            parsed_ids = []
+        if isinstance(parsed_ids, list):
+            for item in parsed_ids:
+                if isinstance(item, int) or str(item).isdigit():
+                    payment_index_by_order.setdefault(int(item), []).append(pay)
+
+    issues: list[schemas.VendorReconciliationItemOut] = []
+    for order in orders:
+        order_payment_status = str(order.payment_status or "").strip().lower()
+        candidates = list(payment_index_by_order.get(int(order.id), []))
+        ref = str(order.payment_reference or "").strip()
+        if ref and ref in payment_index_by_reference:
+            candidates.extend(payment_index_by_reference[ref])
+        seen_payment_ids: set[int] = set()
+        unique_candidates: list[models.FoodPayment] = []
+        for item in candidates:
+            if int(item.id) in seen_payment_ids:
+                continue
+            seen_payment_ids.add(int(item.id))
+            unique_candidates.append(item)
+        latest_payment = (
+            sorted(
+                unique_candidates,
+                key=lambda row: (row.updated_at or row.created_at or datetime.min, int(row.id)),
+                reverse=True,
+            )[0]
+            if unique_candidates
+            else None
+        )
+        payment_record_status = str((latest_payment.status if latest_payment else "") or "").strip().lower() or None
+        payment_state = str((latest_payment.payment_state if latest_payment else "") or "").strip().lower() or None
+        is_payment_captured = bool(
+            payment_record_status in {"paid", "captured", "succeeded"}
+            or payment_state in {"paid", "captured", "succeeded"}
+        )
+
+        issue_code = None
+        issue_message = None
+        if order_payment_status == "paid" and latest_payment is None:
+            issue_code = "MISSING_PAYMENT_RECORD"
+            issue_message = "Order marked paid but no payment record was found."
+        elif order_payment_status == "paid" and not is_payment_captured:
+            issue_code = "PAID_FLAG_MISMATCH"
+            issue_message = "Order marked paid but payment record is not captured."
+        elif order_payment_status != "paid" and is_payment_captured:
+            issue_code = "UNPAID_FLAG_MISMATCH"
+            issue_message = "Payment captured but order payment_status is not paid."
+        elif order.status in {models.FoodOrderStatus.DELIVERED, models.FoodOrderStatus.COLLECTED} and order_payment_status != "paid":
+            issue_code = "DELIVERED_UNPAID"
+            issue_message = "Delivered/collected order is still marked unpaid."
+
+        if not issue_code:
+            continue
+        issues.append(
+            schemas.VendorReconciliationItemOut(
+                order_id=int(order.id),
+                order_date=order.order_date,
+                shop_id=(int(order.shop_id) if order.shop_id else None),
+                shop_name=(str(order.shop_name or "").strip() or None),
+                total_price=round(float(order.total_price or 0.0), 2),
+                payment_reference=(ref or None),
+                order_payment_status=str(order.payment_status or "").strip() or "unknown",
+                payment_record_status=payment_record_status,
+                issue_code=issue_code,
+                issue_message=issue_message,
+                last_status_updated_at=order.last_status_updated_at,
+            )
+        )
+    return issues
+
+
+@router.get("/vendor/reconciliation", response_model=schemas.VendorReconciliationListOut)
+def vendor_reconciliation_list(
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    include_resolved: bool = Query(default=False),
+    limit: int = Query(default=300, ge=20, le=1000),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    range_end = end_date or date.today()
+    range_start = start_date or (range_end - timedelta(days=29))
+    if range_start > range_end:
+        raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
+    if (range_end - range_start).days > 120:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 120 days")
+
+    order_query = db.query(models.FoodOrder).filter(
+        models.FoodOrder.order_date >= range_start,
+        models.FoodOrder.order_date <= range_end,
+    )
+    if current_user.role == models.UserRole.OWNER:
+        order_query = _order_visible_to_owner_filter(order_query, db, current_user.id)
+    orders = (
+        order_query.order_by(models.FoodOrder.order_date.desc(), models.FoodOrder.id.desc())
+        .limit(int(limit))
+        .all()
+    )
+    if not orders:
+        return schemas.VendorReconciliationListOut(
+            range_start=range_start,
+            range_end=range_end,
+            total_issues=0,
+            items=[],
+        )
+
+    order_ids = {int(row.id) for row in orders}
+    payments = _payment_rows_for_order_ids(db, order_ids)
+    items = _build_vendor_reconciliation_items(orders=orders, payments=payments)
+    if items and not include_resolved:
+        resolved_order_ids = {
+            int(row.order_id)
+            for row in (
+                db.query(models.FoodOrderAudit.order_id)
+                .filter(
+                    models.FoodOrderAudit.order_id.in_([item.order_id for item in items]),
+                    models.FoodOrderAudit.event_type == "reconciliation_resolved",
+                )
+                .all()
+            )
+        }
+        items = [item for item in items if int(item.order_id) not in resolved_order_ids]
+
+    items.sort(key=lambda item: (item.order_date, item.order_id), reverse=True)
+    return schemas.VendorReconciliationListOut(
+        range_start=range_start,
+        range_end=range_end,
+        total_issues=len(items),
+        items=items,
+    )
+
+
+@router.post("/vendor/reconciliation/resolve", response_model=schemas.VendorReconciliationResolveOut)
+def vendor_reconciliation_resolve(
+    payload: schemas.VendorReconciliationResolveRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    order_ids = sorted({int(item) for item in payload.order_ids if int(item) > 0})
+    if not order_ids:
+        raise HTTPException(status_code=400, detail="No valid order_ids were provided.")
+
+    query = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(order_ids))
+    if current_user.role == models.UserRole.OWNER:
+        query = _order_visible_to_owner_filter(query, db, current_user.id)
+    rows = query.all()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No matching orders found for reconciliation control.")
+    order_ids_set = {int(item) for item in order_ids}
+    payments = _payment_rows_for_order_ids(db, order_ids_set)
+    issue_rows = _build_vendor_reconciliation_items(orders=rows, payments=payments)
+    issue_order_ids = {int(item.order_id) for item in issue_rows}
+    if not issue_order_ids:
+        raise HTTPException(status_code=409, detail="Selected orders do not have reconciliation issues.")
+
+    already_resolved = {
+        int(row.order_id)
+        for row in (
+            db.query(models.FoodOrderAudit.order_id)
+            .filter(
+                models.FoodOrderAudit.order_id.in_(list(issue_order_ids)),
+                models.FoodOrderAudit.event_type == "reconciliation_resolved",
+            )
+            .all()
+        )
+    }
+    actionable_order_ids = issue_order_ids - already_resolved
+    if not actionable_order_ids:
+        raise HTTPException(status_code=409, detail="Selected reconciliation issues are already resolved.")
+
+    note = str(payload.note or "").strip()
+    now_dt = datetime.utcnow()
+    resolved_order_ids: list[int] = []
+    for row in rows:
+        if int(row.id) not in actionable_order_ids:
+            continue
+        row.status_note = f"Reconciliation resolved: {note}"[:240]
+        row.last_status_updated_at = now_dt
+        _record_order_audit(
+            db,
+            row,
+            event_type="reconciliation_resolved",
+            actor=current_user,
+            from_status=row.status.value,
+            to_status=row.status.value,
+            message=note,
+            payload={"control": "vendor_reconciliation"},
+        )
+        resolved_order_ids.append(int(row.id))
+    if not resolved_order_ids:
+        raise HTTPException(status_code=409, detail="No unresolved reconciliation issues matched the selected orders.")
+    db.commit()
+
+    return schemas.VendorReconciliationResolveOut(
+        resolved=len(resolved_order_ids),
+        order_ids=resolved_order_ids,
+        note=note,
+        resolved_at=now_dt,
     )
 
 

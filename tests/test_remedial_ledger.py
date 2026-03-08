@@ -10,7 +10,7 @@ from app.routers.attendance import (
     get_student_attendance_aggregate,
     get_student_attendance_history,
 )
-from app.routers.makeup import get_student_remedial_attendance_history
+from app.routers.remedial import get_student_remedial_attendance_history
 
 
 class RemedialLedgerTests(unittest.TestCase):

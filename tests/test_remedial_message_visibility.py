@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.routers.makeup import get_student_remedial_messages
+from app.routers.remedial import get_student_remedial_messages
 
 
 class RemedialMessagesVisibilityTests(unittest.TestCase):

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.routers.makeup import cancel_makeup_class, get_student_remedial_messages
+from app.routers.remedial import cancel_makeup_class, get_student_remedial_messages
 
 
 class RemedialCancelCleanupTests(unittest.TestCase):
@@ -136,10 +136,10 @@ class RemedialCancelCleanupTests(unittest.TestCase):
         before_rows = get_student_remedial_messages(limit=50, db=self.db, current_user=self._student_user())
         self.assertEqual(len(before_rows), 2)
 
-        with patch("app.routers.makeup._sync_makeup_class_to_mongo", return_value=None), patch(
-            "app.routers.makeup.mirror_event",
+        with patch("app.routers.remedial._sync_makeup_class_to_mongo", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
             return_value=False,
-        ), patch("app.routers.makeup.get_mongo_db", return_value=None):
+        ), patch("app.routers.remedial.get_mongo_db", return_value=None):
             cancel_makeup_class(class_id=51, db=self.db, current_user=self._faculty_user())
 
         message_rows = (
@@ -154,10 +154,10 @@ class RemedialCancelCleanupTests(unittest.TestCase):
         self.assertEqual(after_rows[0].class_id, 52)
 
     def test_cancel_reject_window_blocks_after_30_minutes(self):
-        with patch("app.routers.makeup._sync_makeup_class_to_mongo", return_value=None), patch(
-            "app.routers.makeup.mirror_event",
+        with patch("app.routers.remedial._sync_makeup_class_to_mongo", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
             return_value=False,
-        ), patch("app.routers.makeup.get_mongo_db", return_value=None):
+        ), patch("app.routers.remedial.get_mongo_db", return_value=None):
             with self.assertRaises(HTTPException) as exc:
                 cancel_makeup_class(class_id=52, db=self.db, current_user=self._faculty_user())
 

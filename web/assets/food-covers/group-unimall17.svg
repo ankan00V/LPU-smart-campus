@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="UniMall Block 17 cover">
+  <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stop-color="#1a4f7c"/><stop offset="100%" stop-color="#2e8ed2"/></linearGradient></defs>
+  <rect width="1200" height="700" fill="url(#g)"/>
+  <text x="80" y="350" fill="#f7fcff" font-family="Manrope, Arial, sans-serif" font-size="62" font-weight="800">UniMall - Block 17</text>
+</svg>

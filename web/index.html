@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>LPU Smart Campus Command Deck</title>
-    <link rel="icon" href="/favicon.ico" sizes="any">
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-    <link rel="stylesheet" href="/web/styles.css?v=20260301h">
-    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-    <script src="/web/app.js?v=20260301h" defer></script>
+    <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
+    <link rel="stylesheet" href="/web/styles.css?v=20260308b">
+    <script src="/web/app.js?v=20260308c" defer></script>
 </head>
 <body>
+    <a class="skip-link" href="#dashboard-root">Skip to main content</a>
     <div class="scene" id="scene">
         <div class="parallax-layer nebula layer-a" data-depth="22"></div>
         <div class="parallax-layer nebula layer-b" data-depth="14"></div>
@@ -22,23 +22,59 @@
     <section id="auth-overlay" class="auth-overlay">
         <div class="auth-card glass tilt" data-tilt>
             <div class="auth-shell">
-                <aside class="auth-brand-panel">
+                <aside class="auth-brand-panel" aria-label="Platform highlights">
+                    <figure class="auth-brand-hero" role="img" aria-label="LPU Smart Campus side banner image">
+                        <img
+                            class="auth-brand-image"
+                            src="/assets/static/auth-side-panel-bg?v=20260306c"
+                            data-fallback-src="/web/assets/auth-side-panel-bg.png?v=20260306c"
+                            alt="LPU Smart Campus banner"
+                            loading="eager"
+                            decoding="async"
+                        >
+                    </figure>
                 </aside>
 
                 <div class="auth-form-panel">
                     <p class="kicker">SECURE ACCESS</p>
-                    <h2>Welcome to LPU Smart Campus</h2>
-                    <p class="auth-sub">Signup once, then login quickly with email, password, and OTP.</p>
+                    <h2>Smart Campus Login</h2>
+                    <p class="auth-sub">Secure OTP access for admin, faculty, student, and operations accounts.</p>
+                    <div class="auth-highlights" aria-label="Platform highlights">
+                        <span class="auth-highlight">Realtime Attendance</span>
+                        <span class="auth-highlight">RMS Workflows</span>
+                        <span class="auth-highlight">Role-Based Security</span>
+                    </div>
+                    <div class="auth-journey" aria-label="Getting started">
+                        <article class="auth-journey-step">
+                            <span>1</span>
+                            <p>Create account once</p>
+                        </article>
+                        <article class="auth-journey-step">
+                            <span>2</span>
+                            <p>Login with email + password</p>
+                        </article>
+                        <article class="auth-journey-step">
+                            <span>3</span>
+                            <p>Verify OTP to enter dashboard</p>
+                        </article>
+                    </div>
 
             <div class="auth-mode-switch" role="tablist" aria-label="Authentication Mode">
                 <button id="auth-mode-login-btn" class="btn auth-mode-btn active" type="button" role="tab" aria-selected="true">Login</button>
                 <button id="auth-mode-signup-btn" class="btn auth-mode-btn" type="button" role="tab" aria-selected="false">Signup</button>
             </div>
+            <div class="auth-progress" aria-hidden="true">
+                <span class="auth-progress-dot active"></span>
+                <span class="auth-progress-label">Step 1 — Account Login</span>
+                <span class="auth-progress-arrow">•</span>
+                <span class="auth-progress-dot"></span>
+                <span class="auth-progress-label">Step 2 — Email Verification</span>
+            </div>
 
             <section id="auth-login-section" class="auth-flow-section auth-login-section">
                 <div class="auth-section-head">
-                    <h3>1. Login</h3>
-                    <p>Enter your account credentials first.</p>
+                    <h3>Account Login</h3>
+                    <p>Step 1 of 2: enter your credentials.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -53,27 +89,28 @@
 
             <div id="auth-login-controls" class="auth-login-controls auth-flow-section auth-otp-section">
                 <div class="auth-section-head">
-                    <h3>2. Send OTP</h3>
+                    <h3>Email Verification</h3>
                     <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
                 </div>
                 <div class="auth-actions auth-actions-emphasis">
                     <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
                     <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Login</button>
                 </div>
-                <label id="auth-send-alt-wrap" class="checkbox-wrap">
-                    <input id="auth-send-alt-otp" type="checkbox">
-                    <span>Send OTP to alternate Gmail (if configured)</span>
-                </label>
                 <label id="auth-otp-wrap" class="field">
                     <span>OTP Code</span>
                     <input id="auth-otp" type="text" inputmode="numeric" placeholder="6-digit OTP" maxlength="6">
                 </label>
+                <label id="auth-mfa-wrap" class="field hidden">
+                    <span>Authenticator Code (admin/faculty after MFA setup)</span>
+                    <input id="auth-mfa-code" type="text" inputmode="numeric" placeholder="6-digit TOTP or backup code" maxlength="20">
+                </label>
+                <p id="auth-mfa-help" class="password-strength hidden">Enter authenticator app code (or backup code) for privileged accounts with MFA enabled.</p>
             </div>
 
             <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
                 <div class="auth-section-head">
-                    <h3>3. Signup</h3>
-                    <p>Create your account once, then use Login + OTP.</p>
+                    <h3>Create Account</h3>
+                    <p>Complete details once, then use Login + OTP.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -87,10 +124,19 @@
                 <label id="auth-role-wrap" class="field">
                     <span>Role</span>
                     <select id="auth-role-select">
+                        <option value="admin">admin (@gmail.com)</option>
                         <option value="faculty">faculty (@gmail.com)</option>
                         <option value="student">student (@gmail.com)</option>
                         <option value="owner">shop owner (@gmail.com)</option>
                     </select>
+                </label>
+                <label id="auth-signup-registration-wrap" class="field">
+                    <span>Registration Number (student)</span>
+                    <input id="auth-signup-registration" type="text" placeholder="e.g. 22BCS101">
+                </label>
+                <label id="auth-signup-faculty-id-wrap" class="field hidden">
+                    <span>Faculty Identifier (faculty)</span>
+                    <input id="auth-signup-faculty-id" type="text" placeholder="e.g. FAC-CSE-11">
                 </label>
                 <label class="field">
                     <span>Full Name</span>
@@ -118,9 +164,8 @@
                 <button id="register-btn" class="btn btn-ghost" type="button">Register Account</button>
             </div>
 
-                    <p id="auth-message" class="auth-message" aria-live="polite">Enter email/password, request OTP, then verify to login.</p>
-                    <p id="otp-debug" class="otp-debug hidden"></p>
-                    <p class="auth-hint">No predefined users. Signup once, then use Login mode for OTP access.</p>
+                    <p id="auth-message" class="auth-message" aria-live="polite">Login with email/password, request OTP, then verify to continue.</p>
+                    <p class="auth-hint">Signup once, then use Login + OTP for future access.</p>
                 </div>
             </div>
         </div>
@@ -173,6 +218,83 @@
                 <p id="forgot-message" class="auth-message" aria-live="polite"></p>
             </div>
         </div>
+
+        <div id="mfa-setup-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="mfa-setup-title">
+            <div class="auth-modal-card glass mfa-setup-card">
+                <div class="auth-modal-head">
+                    <h3 id="mfa-setup-title">MFA Enrollment Required</h3>
+                    <button id="mfa-logout-btn" class="btn btn-ghost" type="button">Logout</button>
+                </div>
+                <p class="auth-modal-sub">Admin and faculty actions require MFA. Start enrollment, save backup codes, then activate using a TOTP code.</p>
+                <div class="auth-actions mfa-help-actions">
+                    <button id="mfa-enroll-btn" class="btn btn-primary" type="button">Start MFA Enrollment</button>
+                    <button id="mfa-help-open-btn" class="btn btn-ghost" type="button">What is TOTP?</button>
+                </div>
+                <div class="mfa-qr-block">
+                    <p class="auth-hint">Step 1: Scan this QR in your authenticator app (recommended).</p>
+                    <div class="mfa-qr-frame">
+                        <img id="mfa-qr-image" class="mfa-qr-image hidden" alt="MFA enrollment QR code">
+                        <p id="mfa-qr-empty" class="mfa-qr-empty">QR appears after you click Start MFA Enrollment.</p>
+                    </div>
+                </div>
+                <label class="checkbox-wrap mfa-qr-confirm-wrap">
+                    <input id="mfa-qr-confirm" type="checkbox">
+                    <span>Optional: I have scanned the QR code in my authenticator app.</span>
+                </label>
+                <label class="field">
+                    <span>Authenticator Secret</span>
+                    <div class="mfa-inline-field">
+                        <input id="mfa-secret" class="mfa-readonly mfa-secret-input" type="text" readonly placeholder="Generated after enrollment">
+                        <button id="mfa-copy-secret-btn" class="btn btn-ghost mfa-copy-btn" type="button" disabled>Copy</button>
+                    </div>
+                </label>
+                <label class="field">
+                    <span>OTPAuth URI</span>
+                    <div class="mfa-inline-field">
+                        <input id="mfa-otpauth-uri" class="mfa-readonly" type="text" readonly placeholder="Use if your app supports QR import via URI">
+                        <button id="mfa-copy-uri-btn" class="btn btn-ghost mfa-copy-btn" type="button" disabled>Copy</button>
+                    </div>
+                </label>
+                <p class="auth-hint mfa-secret-hint">Step 2 (fallback if scan is unavailable): use manual setup key. For Microsoft Authenticator choose <strong>Add account</strong> -> <strong>Other account</strong> -> <strong>Enter setup key</strong>, then select <strong>Time-based</strong>.</p>
+                <p id="mfa-setup-expires" class="auth-hint">Setup session details will appear after enrollment.</p>
+                <div>
+                    <p class="auth-hint">Backup Codes (store securely):</p>
+                    <ul id="mfa-backup-codes" class="mfa-backup-codes"></ul>
+                </div>
+                <label class="field">
+                    <span>TOTP Code</span>
+                    <input id="mfa-totp-code" type="text" inputmode="numeric" placeholder="Enter 6-digit authenticator code" maxlength="10">
+                </label>
+                <div class="auth-actions">
+                    <button id="mfa-activate-btn" class="btn btn-primary" type="button">Activate MFA</button>
+                </div>
+                <p id="mfa-setup-status" class="auth-message" aria-live="polite"></p>
+            </div>
+        </div>
+
+        <div id="mfa-help-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="mfa-help-title">
+            <div class="auth-modal-card glass mfa-help-card">
+                <div class="auth-modal-head">
+                    <h3 id="mfa-help-title">How to Get Your TOTP Code</h3>
+                    <button id="mfa-help-close-btn" class="btn btn-ghost" type="button">Close</button>
+                </div>
+                <p class="auth-modal-sub">TOTP means Time-based One-Time Password. It is the 6-digit code generated in your authenticator app every ~30 seconds.</p>
+                <ol class="mfa-help-steps">
+                    <li>Install an authenticator app: Google Authenticator, Microsoft Authenticator, or Authy.</li>
+                    <li>Click <strong>Start MFA Enrollment</strong> on the previous screen.</li>
+                    <li>In Microsoft Authenticator, tap <strong>Add account</strong> -> <strong>Other account</strong> -> <strong>Enter setup key</strong>.</li>
+                    <li>Select <strong>Time-based</strong> account type (not counter-based) and keep phone date/time on automatic sync.</li>
+                    <li>Use your email as account name and paste the <strong>Authenticator Secret</strong> shown in this portal.</li>
+                    <li>Do not manually type if possible. If typing, treat <strong>O as letter O</strong> (not zero).</li>
+                    <li>The app will generate a 6-digit code. Enter that in <strong>TOTP Code</strong> and click <strong>Activate MFA</strong>.</li>
+                    <li>Save backup codes safely. Each backup code can be used once if your phone is unavailable.</li>
+                </ol>
+                <p class="auth-hint">Security note: never share your secret key, TOTP code, or backup codes.</p>
+                <div class="auth-actions">
+                    <button id="mfa-help-got-it-btn" class="btn btn-primary" type="button">Got it, continue setup</button>
+                </div>
+            </div>
+        </div>
     </section>
 
     <aside class="ums-sidebar" aria-label="Section Navigation">
@@ -180,7 +302,8 @@
             <div class="ums-logo-mark-frame">
                 <img
                     class="ums-logo-mark"
-                    src="/assets/static/lpu-smart-campus-logo"
+                    src="/assets/static/lpu-smart-campus-logo?v=20260306c"
+                    data-fallback-src="/web/assets/lpu-smart-campus-logo.png?v=20260306c"
                     alt="LPU Smart Campus logo"
                     loading="eager"
                     decoding="async"
@@ -188,44 +311,113 @@
             </div>
             <span>LPU SMART</span>
         </div>
-        <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">Dashboard</button>
-        <button id="nav-courses-btn" class="ums-side-item" data-nav="courses" type="button">My Courses</button>
-        <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">Attendance</button>
+        <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">
+            <span class="nav-glyph" aria-hidden="true">DB</span>
+            <span class="nav-label">Dashboard</span>
+        </button>
+        <button id="nav-courses-btn" class="ums-side-item" data-nav="courses" type="button">
+            <span class="nav-glyph" aria-hidden="true">CR</span>
+            <span class="nav-label">My Courses</span>
+        </button>
+        <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">
+            <span class="nav-glyph" aria-hidden="true">AT</span>
+            <span class="nav-label">Attendance</span>
+        </button>
+        <section id="verlyn-sidebar-widget" class="verlyn-sidebar-widget" aria-live="polite">
+            <button id="verlyn-toggle-btn" class="verlyn-toggle-btn" type="button" aria-expanded="false" aria-controls="verlyn-panel">
+                <span class="verlyn-toggle-avatar" aria-hidden="true">C</span>
+                <span class="verlyn-toggle-copy">
+                    <strong>Campus Copilot</strong>
+                    <small>Explainable Actions</small>
+                </span>
+            </button>
+            <div id="verlyn-panel" class="verlyn-panel" role="dialog" aria-label="Campus copilot">
+                <div class="verlyn-head">
+                    <div class="verlyn-head-copy">
+                        <strong>Campus Copilot</strong>
+                        <small>Explains decisions, executes safe actions, logs every run</small>
+                    </div>
+                    <button id="verlyn-minimize-btn" class="btn btn-ghost verlyn-minimize-btn" type="button">Close</button>
+                </div>
+                <p id="verlyn-status" class="helper-text verlyn-status">Supported prompts only. Every result includes evidence and audit log.</p>
+                <p id="verlyn-module-context" class="helper-text verlyn-module-context">Module-aware quick actions load here after sign-in.</p>
+                <div id="verlyn-quick-actions" class="verlyn-quick-actions" aria-live="polite"></div>
+                <div id="verlyn-output" class="verlyn-output">Student Copilot
+1. Supported prompts only. No free-form chatbot mode.
+2. Every result includes evidence, allowed actions, and an audit log id.
+3. Why can't I mark attendance?
+4. What do I need to fix before I lose eligibility?</div>
+                <label class="field verlyn-compose-field">
+                    <span>Manual Copilot Request</span>
+                    <input id="verlyn-input" type="text" placeholder="e.g. Why can't I mark attendance?">
+                </label>
+                <p class="helper-text verlyn-compose-note">Use quick actions above when available. Manual requests are validated against the same guardrails.</p>
+                <div class="inline-controls verlyn-actions">
+                    <button id="verlyn-ask-btn" class="btn btn-primary" type="button">Run Copilot</button>
+                </div>
+            </div>
+        </section>
     </aside>
 
     <main class="dashboard" id="dashboard-root">
         <header id="main-dashboard-header" class="topbar glass nav-anchor">
             <div class="ums-top-left">
                 <p class="kicker">UNIVERSITY MANAGEMENT SYSTEM</p>
-                <h1 id="dashboard-title">Vertos Dashboard</h1>
-                <p id="dashboard-subtitle" class="subline">Your all in one Uni-need.</p>
-                <p id="live-datetime" class="live-datetime" aria-live="polite">Loading local time...</p>
+                <h1 id="dashboard-title">Campus Command Center</h1>
+                <p id="dashboard-subtitle" class="subline">Unified attendance, remedial, food, and operations workflows.</p>
+                <div class="hero-summary">
+                    <div class="hero-kpi">
+                        <span>Live Modules</span>
+                        <strong>5 Active Workstreams</strong>
+                    </div>
+                    <a class="btn btn-primary hero-primary-cta" href="#attendance">Open Attendance Hub</a>
+                </div>
+                <time id="live-datetime" class="live-datetime" aria-live="off">Loading campus local time...</time>
             </div>
-            <nav class="ums-top-nav" aria-label="Primary Modules">
-                <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">Attendance</button>
-                <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">Food Hall</button>
-                <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">Administrative</button>
-                <button id="top-nav-remedial" class="ums-module-btn" data-module="remedial" type="button">Remedial</button>
-            </nav>
-            <div class="topbar-actions">
-                <button id="theme-toggle-btn" class="btn btn-ghost theme-toggle-btn" type="button" aria-label="Toggle light and dark mode">
-                    Dark Mode
-                </button>
-                <div class="account-menu">
-                    <button id="account-menu-btn" class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
-                        <img id="account-menu-avatar" class="account-avatar hidden" alt="Profile">
-                        <span id="account-menu-initial" class="account-initial">G</span>
+            <div class="topbar-control-row">
+                <nav class="ums-top-nav" aria-label="Primary Modules">
+                    <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">
+                        <span class="module-glyph" aria-hidden="true">AT</span>
+                        <span class="module-label">Attendance</span>
                     </button>
-                    <div id="account-menu-dropdown" class="account-dropdown hidden" role="menu">
-                        <div class="account-dropdown-head">
-                            <img id="account-dropdown-photo" class="account-avatar" alt="Profile">
-                            <div class="account-lines">
-                                <strong id="account-dropdown-email">guest@example.com</strong>
-                                <small id="account-dropdown-reg">Reg No: Not set</small>
+                    <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">
+                        <span class="module-glyph" aria-hidden="true">FD</span>
+                        <span class="module-label">Food Hall</span>
+                    </button>
+                    <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">
+                        <span class="module-glyph" aria-hidden="true">AD</span>
+                        <span class="module-label">Administrative</span>
+                    </button>
+                    <button id="top-nav-rms" class="ums-module-btn" data-module="rms" type="button">
+                        <span class="module-glyph" aria-hidden="true">RM</span>
+                        <span class="module-label">RMS</span>
+                    </button>
+                    <button id="top-nav-remedial" class="ums-module-btn" data-module="remedial" type="button">
+                        <span class="module-glyph" aria-hidden="true">RD</span>
+                        <span class="module-label">Remedial</span>
+                    </button>
+                </nav>
+                <div class="topbar-actions">
+                    <button id="theme-toggle-btn" class="btn btn-ghost theme-toggle-btn" type="button" aria-label="Toggle light and dark mode">
+                        Dark Mode
+                    </button>
+                    <div class="account-menu">
+                        <button id="account-menu-btn" class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false">
+                            <img id="account-menu-avatar" class="account-avatar hidden" alt="Profile">
+                            <span id="account-menu-initial" class="account-initial">G</span>
+                        </button>
+                        <div id="account-menu-dropdown" class="account-dropdown hidden" role="menu">
+                            <div class="account-dropdown-head">
+                                <img id="account-dropdown-photo" class="account-avatar" alt="Profile">
+                                <div class="account-lines">
+                                    <strong id="account-dropdown-email">guest@example.com</strong>
+                                    <small id="account-dropdown-reg">Reg No: Not set</small>
+                                </div>
                             </div>
+                            <button id="view-profile-btn" class="dropdown-item" type="button" role="menuitem">View Profile</button>
+                            <button id="account-mfa-setup-btn" class="dropdown-item hidden" type="button" role="menuitem">Setup MFA</button>
+                            <button id="logout-btn" class="dropdown-item hidden" type="button" role="menuitem">Logout</button>
                         </div>
-                        <button id="view-profile-btn" class="dropdown-item" type="button" role="menuitem">View Profile</button>
-                        <button id="logout-btn" class="dropdown-item hidden" type="button" role="menuitem">Logout</button>
                     </div>
                 </div>
             </div>
@@ -480,6 +672,24 @@
             </div>
 
             <section class="ops-grid admin-ops-grid">
+                <article id="admin-recovery-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Attendance Recovery Autopilot</h3>
+                        <small>Watch, high, and critical plans with recompute control and RMS escalation visibility</small>
+                    </div>
+                    <div class="faculty-admin-grid admin-recovery-toolbar">
+                        <label class="field field-inline">
+                            <span>Include recovered plans</span>
+                            <input id="admin-recovery-include-resolved" type="checkbox">
+                        </label>
+                        <button id="admin-recovery-refresh-btn" class="btn" type="button">Refresh Recovery Desk</button>
+                        <button id="admin-recovery-recompute-all-btn" class="btn btn-primary" type="button">Recompute Risk Scope</button>
+                    </div>
+                    <p id="admin-recovery-status" class="helper-text">Recovery desk tracks who is drifting, what intervention is active, and which plans escalated to RMS.</p>
+                    <div id="admin-recovery-summary" class="admin-recovery-summary"></div>
+                    <div id="admin-recovery-list" class="attendance-recovery-list admin-recovery-list"></div>
+                </article>
+
                 <article id="admin-issues-card" class="ops-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>Top Issues</h3>
@@ -509,6 +719,330 @@
                     <div id="ai-output" class="ai-output">AI output will appear here.</div>
                 </article>
             </section>
+
+            <div class="admin-cluster-head">
+                <h4>Identity Search & Grading</h4>
+                <small>Production-grade admin lookup by registration/faculty ID and course grade controls.</small>
+            </div>
+
+            <section class="ops-grid admin-ops-grid">
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Identity Search</h3>
+                        <small>Search student, faculty, or global entities</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Student Registration Number</span>
+                            <input id="admin-search-student-registration" type="text" placeholder="e.g. 22BCS101">
+                        </label>
+                        <button id="admin-search-student-btn" class="btn btn-primary" type="button">Search Student</button>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Faculty Identifier</span>
+                            <input id="admin-search-faculty-identifier" type="text" placeholder="e.g. FAC-CSE-11">
+                        </label>
+                        <button id="admin-search-faculty-btn" class="btn btn-primary" type="button">Search Faculty</button>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Global Search</span>
+                            <input id="admin-global-search-query" type="text" placeholder="Name, email, registration, faculty id, course code">
+                        </label>
+                        <button id="admin-global-search-btn" class="btn" type="button">Search Everything</button>
+                    </div>
+                    <p id="admin-search-status" class="helper-text">Use registration number or faculty identifier for exact production lookup.</p>
+                    <div id="admin-search-results" class="list-wrap"></div>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Student Grading Control</h3>
+                        <small>Assign or update grade by registration number and course code</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Student Registration Number</span>
+                            <input id="admin-grade-student-registration" type="text" placeholder="e.g. 22BCS101">
+                        </label>
+                        <label class="field">
+                            <span>Course Code</span>
+                            <input id="admin-grade-course-code" type="text" placeholder="e.g. CSE101">
+                        </label>
+                        <label class="field">
+                            <span>Grade</span>
+                            <select id="admin-grade-letter">
+                                <option value="A+">A+</option>
+                                <option value="A">A</option>
+                                <option value="B+">B+</option>
+                                <option value="B">B</option>
+                                <option value="C+">C+</option>
+                                <option value="C">C</option>
+                                <option value="D">D</option>
+                                <option value="F">F</option>
+                                <option value="PASS">PASS</option>
+                                <option value="FAIL">FAIL</option>
+                                <option value="I">I</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Marks % (optional)</span>
+                            <input id="admin-grade-marks" type="number" min="0" max="100" step="0.01" placeholder="e.g. 87.5">
+                        </label>
+                        <label class="field">
+                            <span>Remark (optional)</span>
+                            <input id="admin-grade-remark" type="text" placeholder="e.g. strong performance">
+                        </label>
+                        <button id="admin-grade-submit-btn" class="btn btn-primary" type="button">Save Grade</button>
+                    </div>
+                    <p id="admin-grade-status" class="helper-text">Grade changes are audit logged and can be fetched by registration number.</p>
+                    <div id="admin-grade-history-wrap" class="list-wrap"></div>
+                </article>
+
+                <article class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Fraud & Identity Shield</h3>
+                        <small>Trigger enrollment screening and review recent identity risk cases.</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Student ID</span>
+                            <input id="admin-identity-student-id" type="number" min="1" placeholder="e.g. 101">
+                        </label>
+                        <button id="admin-identity-screen-btn" class="btn btn-primary" type="button">Run Screening</button>
+                        <button id="admin-identity-refresh-btn" class="btn" type="button">Refresh Cases</button>
+                    </div>
+                    <p id="admin-identity-status" class="helper-text">Latest enrollment and applicant identity cases load here.</p>
+                    <div id="admin-identity-cases-wrap" class="list-wrap admin-identity-cases-wrap"></div>
+                </article>
+            </section>
+
+            <div class="admin-cluster-head">
+                <h4>Copilot Governance</h4>
+                <small>Search every explainable copilot action with actor, scope, evidence, and outcome.</small>
+            </div>
+
+            <section class="ops-grid admin-ops-grid">
+                <article id="admin-copilot-audit-card" class="ops-card glass tilt" data-tilt>
+                    <div class="panel-head">
+                        <h3>Campus Copilot Audit Timeline</h3>
+                        <small>Search audited copilot runs by actor, intent, outcome, registration, query text, or scope.</small>
+                    </div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Search</span>
+                            <input id="admin-copilot-audit-search" type="text" placeholder="Query text, registration, email, scope, or audit id">
+                        </label>
+                        <label class="field">
+                            <span>Intent</span>
+                            <select id="admin-copilot-audit-intent">
+                                <option value="all">All intents</option>
+                                <option value="attendance_blocker">Attendance Blocker</option>
+                                <option value="eligibility_risk">Eligibility Risk</option>
+                                <option value="create_remedial_plan">Create Remedial Plan</option>
+                                <option value="student_flag_reason">Student Flag Reason</option>
+                                <option value="unsupported">Unsupported</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Outcome</span>
+                            <select id="admin-copilot-audit-outcome">
+                                <option value="all">All outcomes</option>
+                                <option value="completed">Completed</option>
+                                <option value="blocked">Blocked</option>
+                                <option value="denied">Denied</option>
+                                <option value="failed">Failed</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Actor Role</span>
+                            <select id="admin-copilot-audit-role">
+                                <option value="all">All roles</option>
+                                <option value="student">Student</option>
+                                <option value="faculty">Faculty</option>
+                                <option value="admin">Admin</option>
+                                <option value="owner">Owner</option>
+                            </select>
+                        </label>
+                        <label class="field">
+                            <span>Actor User ID</span>
+                            <input id="admin-copilot-audit-actor-user-id" type="number" min="1" placeholder="Optional user id">
+                        </label>
+                        <label class="field">
+                            <span>Rows</span>
+                            <select id="admin-copilot-audit-limit">
+                                <option value="25">25</option>
+                                <option value="50" selected>50</option>
+                                <option value="100">100</option>
+                                <option value="200">200</option>
+                            </select>
+                        </label>
+                        <button id="admin-copilot-audit-search-btn" class="btn btn-primary" type="button">Search Timeline</button>
+                        <button id="admin-copilot-audit-clear-btn" class="btn" type="button">Reset Filters</button>
+                    </div>
+                    <p id="admin-copilot-audit-status" class="helper-text">Search copilot runs by actor, intent, outcome, registration, scope, or audit id.</p>
+                    <div id="admin-copilot-audit-wrap" class="list-wrap admin-copilot-audit-wrap"></div>
+                </article>
+            </section>
+        </section>
+
+        <section id="rms-section" class="role-section module-panel hidden" data-module="rms">
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>RMS - Relationship Management System</h3>
+                    <small>Segregated student queries and action approvals desk</small>
+                </div>
+                <div class="faculty-controls">
+                    <label class="field">
+                        <span>Query Category</span>
+                        <select id="rms-query-category">
+                            <option value="all">All</option>
+                            <option value="Attendance">Attendance</option>
+                            <option value="Academics">Academics</option>
+                            <option value="Discrepancy">Discrepancy</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Thread Status</span>
+                        <select id="rms-query-status">
+                            <option value="all">All</option>
+                            <option value="pending">Pending Faculty/Admin Action</option>
+                            <option value="resolved">Resolved / Answered</option>
+                        </select>
+                    </label>
+                    <button id="rms-refresh-btn" class="btn btn-primary" type="button">Refresh RMS</button>
+                </div>
+                <p id="rms-status-msg" class="helper-text">RMS loads student query threads grouped by type.</p>
+                <section class="faculty-stats-grid">
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Total Threads</h2>
+                        <p id="rms-total-threads" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Pending Actions</h2>
+                        <p id="rms-total-pending" class="metric-value">0</p>
+                    </article>
+                    <article class="metric glass tilt" data-tilt>
+                        <h2>Active Categories</h2>
+                        <p id="rms-active-categories" class="metric-value">0</p>
+                    </article>
+                </section>
+            </article>
+
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Student Query Buckets</h3>
+                    <small>Attendance, Academics, Discrepancy, and Other threads</small>
+                </div>
+                <div id="rms-query-list" class="list-wrap"></div>
+            </article>
+
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Thread Approval Workflow</h3>
+                    <small>Approve, disapprove, or schedule a selected RMS thread</small>
+                </div>
+                <div id="rms-selected-thread" class="helper-text">Select a thread from the list to apply workflow action.</div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Workflow Action</span>
+                        <select id="rms-thread-action">
+                            <option value="approve">Approve</option>
+                            <option value="disapprove">Disapprove</option>
+                            <option value="schedule">Schedule</option>
+                        </select>
+                    </label>
+                    <label id="rms-thread-schedule-wrap" class="field hidden">
+                        <span>Schedule For</span>
+                        <input id="rms-thread-scheduled-for" type="datetime-local">
+                    </label>
+                    <label class="field">
+                        <span>Action Note (optional)</span>
+                        <input id="rms-thread-note" type="text" placeholder="Add approval/disapproval note">
+                    </label>
+                    <button id="rms-apply-thread-action-btn" class="btn btn-primary" type="button">Apply Thread Action</button>
+                </div>
+                <p id="rms-thread-action-msg" class="helper-text">Workflow actions are logged and reflected in RMS status buckets.</p>
+            </article>
+
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Student Search & Approval Actions</h3>
+                    <small>Search by registration number, then approve correction updates</small>
+                </div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Student Registration Number</span>
+                        <input id="rms-search-registration" type="text" placeholder="e.g. 12216457">
+                    </label>
+                    <button id="rms-student-search-btn" class="btn btn-primary" type="button">Search Student</button>
+                </div>
+                <div id="rms-student-summary" class="helper-text">Search a student to load profile and pending query context.</div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Correct Registration Number</span>
+                        <input id="rms-update-registration" type="text" placeholder="e.g. 12216457">
+                    </label>
+                    <label class="field">
+                        <span>Approve Section Change</span>
+                        <input id="rms-update-section" type="text" placeholder="e.g. P132">
+                    </label>
+                    <button id="rms-apply-update-btn" class="btn" type="button">Apply Approval Update</button>
+                </div>
+                <p id="rms-student-update-msg" class="helper-text">Section and registration corrections are audit-logged as approvals.</p>
+            </article>
+
+            <article class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>RMS Attendance Status Control</h3>
+                    <small>Faculty can correct own-course attendance. Admin has full override desk.</small>
+                </div>
+                <p id="rms-admin-dedicated-note" class="helper-text hidden">
+                    Admin dedicated spot: use this zone for production attendance overrides and approval-based corrections.
+                </p>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Student Registration Number</span>
+                        <input id="rms-attendance-registration" type="text" placeholder="e.g. 22BCS101">
+                    </label>
+                    <button id="rms-attendance-search-btn" class="btn btn-primary" type="button">Search Student Subjects</button>
+                </div>
+                <div id="rms-attendance-student-summary" class="helper-text">
+                    Search by registration number to load student name and enrolled subjects.
+                </div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Enrolled Subject</span>
+                        <select id="rms-attendance-subject-select">
+                            <option value="">Select subject</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Attendance Date</span>
+                        <input id="rms-attendance-date" type="date">
+                    </label>
+                    <label class="field">
+                        <span>Current Status</span>
+                        <input id="rms-attendance-current-status" type="text" value="Not marked" readonly>
+                    </label>
+                    <label class="field">
+                        <span>Status</span>
+                        <select id="rms-attendance-status">
+                            <option value="present">Present</option>
+                            <option value="absent">Absent</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Approval Note (optional)</span>
+                        <input id="rms-attendance-note" type="text" placeholder="Reason for override">
+                    </label>
+                    <button id="rms-attendance-apply-btn" class="btn btn-primary" type="button">Apply Attendance Status</button>
+                </div>
+                <p id="rms-attendance-status-msg" class="helper-text">Search by registration number, select subject, review current status, then apply attendance override.</p>
+                <div id="rms-attendance-result" class="list-wrap"></div>
+            </article>
         </section>
 
         <section id="student-section" class="role-section hidden module-panel" data-module="attendance" data-module-role="student">
@@ -536,6 +1070,7 @@
                 </div>
                 <p id="selected-class-label" class="helper-text">Upcoming Class | --:-- -- - --:-- -- | --</p>
                 <div class="inline-controls">
+                    <button id="student-attendance-demo-btn" class="btn btn-ghost student-attendance-demo-btn" type="button" aria-pressed="false">Demo Attendance OFF</button>
                     <button id="take-selfie-btn" class="btn btn-primary" disabled>Open Camera & Mark Attendance</button>
                 </div>
                 <div class="photo-preview-wrap">
@@ -550,6 +1085,38 @@
                     <small>Real-time faculty announcements and updates for your section</small>
                 </div>
                 <div id="student-messages-list" class="list-wrap"></div>
+            </article>
+
+            <article id="student-saarthi-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <div class="panel-head">
+                    <h3>Saarthi</h3>
+                    <small>Mandatory weekly AI counselling for CON111. Sunday check-in counts once for 1 hour only.</small>
+                </div>
+                <p id="saarthi-status" class="helper-text">Loading Saarthi session...</p>
+                <section class="saarthi-chip-grid">
+                    <div class="saarthi-chip">
+                        <span>Mandatory Sunday</span>
+                        <strong id="saarthi-mandatory-date">--</strong>
+                    </div>
+                    <div class="saarthi-chip">
+                        <span>This Week</span>
+                        <strong id="saarthi-weekly-credit">Pending</strong>
+                    </div>
+                </section>
+                <div id="saarthi-history" class="saarthi-history" role="log" aria-live="polite"></div>
+                <label class="field saarthi-compose-field">
+                    <span>Private message to Saarthi</span>
+                    <textarea
+                        id="saarthi-compose-input"
+                        rows="4"
+                        maxlength="2000"
+                        placeholder="Share what is worrying you today. Attendance is credited only once on Sunday."
+                    ></textarea>
+                </label>
+                <div class="inline-controls saarthi-actions">
+                    <small class="helper-text">Only the mandatory Sunday chat updates attendance. Other days remain counselling-only.</small>
+                    <button id="saarthi-send-btn" class="btn btn-primary" type="button">Send to Saarthi</button>
+                </div>
             </article>
 
             <article id="student-ledger-card" class="ops-card glass tilt" data-tilt>
@@ -568,6 +1135,13 @@
                     </div>
                 </section>
                 <p class="helper-text">Click a subject card to view date-wise attendance details.</p>
+                <section class="attendance-recovery-panel">
+                    <div class="panel-head panel-head-compact">
+                        <h4>Recovery Autopilot</h4>
+                        <small>Automatic intervention plan when attendance risk builds up</small>
+                    </div>
+                    <div id="student-recovery-plans" class="attendance-recovery-list"></div>
+                </section>
                 <div id="student-aggregate-courses" class="list-wrap"></div>
             </article>
         </section>
@@ -589,6 +1163,130 @@
                     </label>
                     <button id="faculty-refresh-btn" class="btn">Refresh Class Data</button>
                 </div>
+            </article>
+
+            <article id="admin-attendance-actions-card" class="ops-card glass tilt hidden" data-tilt>
+                <div class="panel-head">
+                    <h3>Admin Approval & Scheduling Controls</h3>
+                    <small>Create class schedules and approve student section updates</small>
+                </div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Course ID</span>
+                        <input id="admin-create-schedule-course-id" type="number" min="1" placeholder="e.g. 101">
+                    </label>
+                    <label class="field">
+                        <span>Faculty ID</span>
+                        <input id="admin-create-schedule-faculty-id" type="number" min="1" placeholder="e.g. 12">
+                    </label>
+                    <label class="field">
+                        <span>Weekday</span>
+                        <select id="admin-create-schedule-weekday">
+                            <option value="0">Monday</option>
+                            <option value="1">Tuesday</option>
+                            <option value="2">Wednesday</option>
+                            <option value="3">Thursday</option>
+                            <option value="4">Friday</option>
+                            <option value="5">Saturday</option>
+                            <option value="6">Sunday</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Start Time</span>
+                        <input id="admin-create-schedule-start-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>End Time</span>
+                        <input id="admin-create-schedule-end-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>Classroom Label (optional)</span>
+                        <input id="admin-create-schedule-room-label" type="text" placeholder="e.g. B1-201">
+                    </label>
+                    <button id="admin-create-schedule-btn" class="btn btn-primary" type="button">Create Schedule</button>
+                </div>
+                <p id="admin-create-schedule-status" class="helper-text">Create schedules with full admin privileges.</p>
+
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Timetable Scope</span>
+                        <select id="admin-timetable-override-scope">
+                            <option value="student">One Student</option>
+                            <option value="section">Entire Section</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Student ID</span>
+                        <input id="admin-timetable-override-student-id" type="number" min="1" placeholder="Required for one student">
+                    </label>
+                    <label class="field">
+                        <span>Section</span>
+                        <input id="admin-timetable-override-section" type="text" placeholder="Required for section scope">
+                    </label>
+                    <label class="field">
+                        <span>Replace Day</span>
+                        <select id="admin-timetable-override-source-weekday">
+                            <option value="0">Monday</option>
+                            <option value="1">Tuesday</option>
+                            <option value="2">Wednesday</option>
+                            <option value="3">Thursday</option>
+                            <option value="4">Friday</option>
+                            <option value="5">Saturday</option>
+                            <option value="6">Sunday</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Replace Start</span>
+                        <input id="admin-timetable-override-source-start-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>Course ID</span>
+                        <input id="admin-timetable-override-course-id" type="number" min="1" placeholder="e.g. 101">
+                    </label>
+                    <label class="field">
+                        <span>Faculty ID</span>
+                        <input id="admin-timetable-override-faculty-id" type="number" min="1" placeholder="e.g. 12">
+                    </label>
+                    <label class="field">
+                        <span>New Day</span>
+                        <select id="admin-timetable-override-weekday">
+                            <option value="0">Monday</option>
+                            <option value="1">Tuesday</option>
+                            <option value="2">Wednesday</option>
+                            <option value="3">Thursday</option>
+                            <option value="4">Friday</option>
+                            <option value="5">Saturday</option>
+                            <option value="6">Sunday</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>New Start</span>
+                        <input id="admin-timetable-override-start-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>New End</span>
+                        <input id="admin-timetable-override-end-time" type="time">
+                    </label>
+                    <label class="field">
+                        <span>Room Label (optional)</span>
+                        <input id="admin-timetable-override-room-label" type="text" placeholder="e.g. B1-201">
+                    </label>
+                    <button id="admin-timetable-override-btn" class="btn btn-primary" type="button">Update Timetable</button>
+                </div>
+                <p id="admin-timetable-override-status" class="helper-text">Replace one slot for a single student or every student in a section.</p>
+
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Student ID</span>
+                        <input id="admin-update-student-id" type="number" min="1" placeholder="e.g. 54">
+                    </label>
+                    <label class="field">
+                        <span>Target Section</span>
+                        <input id="admin-update-student-section" type="text" placeholder="e.g. P132">
+                    </label>
+                    <button id="admin-update-student-section-btn" class="btn" type="button">Approve Section Update</button>
+                </div>
+                <p id="admin-update-student-section-status" class="helper-text">Apply approved section changes directly.</p>
             </article>
 
             <section class="faculty-stats-grid">
@@ -639,6 +1337,33 @@
                         <tbody id="faculty-submissions-body"></tbody>
                     </table>
                 </div>
+                <div class="panel-head faculty-rectification-head">
+                    <h4>Rectification Requests</h4>
+                    <small>Proof-based absent to present updates</small>
+                </div>
+                <div class="table-wrap">
+                    <table class="submissions-table rectification-table">
+                        <thead>
+                            <tr>
+                                <th>Student</th>
+                                <th>Class</th>
+                                <th>Proof</th>
+                                <th>Requested</th>
+                                <th>Status</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="faculty-rectification-body"></tbody>
+                    </table>
+                </div>
+            </article>
+
+            <article id="faculty-recovery-card" class="ops-card glass tilt" data-tilt>
+                <div class="panel-head">
+                    <h3>Attendance Recovery Radar</h3>
+                    <small>Students needing intervention, catch-up, or remedial routing</small>
+                </div>
+                <div id="faculty-recovery-list" class="attendance-recovery-list faculty-recovery-list"></div>
             </article>
 
             <section class="analysis-grid">
@@ -1015,7 +1740,13 @@
                 <h3>Command Log</h3>
                 <small>Operational timeline</small>
             </div>
-            <div id="status-log" class="status-log" aria-live="polite"></div>
+            <div id="status-log" class="status-log" aria-live="polite">
+                <div class="status-log-skeleton" role="status" aria-label="Loading command timeline">
+                    <span class="skeleton-line"></span>
+                    <span class="skeleton-line"></span>
+                    <span class="skeleton-line"></span>
+                </div>
+            </div>
         </section>
     </main>
 
@@ -1076,7 +1807,7 @@
                 </label>
                 <p id="profile-section-note" class="helper-text hidden"></p>
                 <label class="field">
-                    <span>Alternate Gmail (optional)</span>
+                    <span>Secondary Email (optional)</span>
                     <input id="profile-alternate-email" type="email" placeholder="you@gmail.com">
                 </label>
                 <label id="profile-photo-wrap" class="field">
@@ -1110,7 +1841,7 @@
             </section>
             <div class="auth-actions">
                 <button id="save-profile-photo-btn" class="btn btn-primary">Save Profile</button>
-                <button id="save-alternate-email-btn" class="btn">Save Alternate Email</button>
+                <button id="save-alternate-email-btn" class="btn">Save Secondary Email</button>
                 <button id="profile-close-btn" class="btn">Close</button>
                 <button id="account-logout-btn" class="btn btn-ghost">Logout</button>
             </div>
@@ -1161,6 +1892,34 @@
             <div id="attendance-details-list" class="attendance-details-list"></div>
             <div class="auth-actions">
                 <button id="attendance-details-close-btn" class="btn btn-primary" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="attendance-rectification-modal" class="camera-modal hidden">
+        <div class="camera-card glass attendance-details-card attendance-rectification-card">
+            <div class="panel-head">
+                <h3 id="attendance-rectification-title">Attendance Rectification Request</h3>
+                <small id="attendance-rectification-meta">Submit proof to subject faculty for absent to present correction</small>
+            </div>
+            <div class="profile-modal-grid">
+                <p id="attendance-rectification-context" class="helper-text">Select an absent class to request correction.</p>
+                <label class="field">
+                    <span>Proof details</span>
+                    <textarea id="attendance-rectification-proof-note" rows="4" maxlength="1200" placeholder="Explain what happened and add your proof details."></textarea>
+                </label>
+                <label class="field">
+                    <span>Supporting proof image (optional)</span>
+                    <input id="attendance-rectification-proof-photo" type="file" accept="image/*">
+                </label>
+                <div class="photo-preview-wrap">
+                    <img id="attendance-rectification-proof-preview" class="photo-preview hidden" alt="Rectification proof preview">
+                </div>
+                <p id="attendance-rectification-status" class="helper-text"></p>
+            </div>
+            <div class="auth-actions">
+                <button id="attendance-rectification-submit-btn" class="btn btn-primary" type="button">Submit Request</button>
+                <button id="attendance-rectification-cancel-btn" class="btn" type="button">Cancel</button>
             </div>
         </div>
     </section>
@@ -1278,6 +2037,54 @@
             </label>
             <div class="inline-controls food-ai-controls">
                 <button id="food-ai-suggest-btn" class="btn btn-primary" type="button">Send to Chotu</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="support-desk-widget" class="support-desk-widget hidden" aria-live="polite">
+        <button id="support-desk-toggle-btn" class="support-desk-toggle-btn" type="button" aria-expanded="false" aria-controls="support-desk-panel">
+            <span class="support-desk-avatar" aria-hidden="true">MSG</span>
+            <span class="support-desk-toggle-copy">
+                <strong>Message Desk</strong>
+                <small>Realtime Queries</small>
+            </span>
+            <span id="support-desk-unread-badge" class="support-desk-unread hidden" aria-live="polite">0</span>
+        </button>
+        <div id="support-desk-panel" class="support-desk-panel" role="dialog" aria-label="Realtime Message Desk">
+            <div class="support-desk-head">
+                <div class="support-desk-head-main">
+                    <span class="support-desk-head-avatar" aria-hidden="true">MSG</span>
+                    <div class="support-desk-head-copy">
+                        <strong>Realtime Query Desk</strong>
+                        <small>Attendance, academics, discrepancy, and other issues</small>
+                    </div>
+                </div>
+                <button id="support-desk-minimize-btn" class="btn btn-ghost support-desk-minimize-btn" type="button">Minimize</button>
+            </div>
+            <p id="support-desk-status" class="helper-text support-desk-status">Select recipient and send your message. Replies update live.</p>
+            <div class="support-desk-controls">
+                <label class="field">
+                    <span id="support-desk-recipient-label">Faculty</span>
+                    <select id="support-desk-recipient-select"></select>
+                </label>
+                <label class="field">
+                    <span>Category</span>
+                    <select id="support-desk-category-select">
+                        <option value="Attendance">Attendance</option>
+                        <option value="Academics">Academics</option>
+                        <option value="Discrepancy">Discrepancy</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </label>
+            </div>
+            <p id="support-desk-thread-meta" class="support-desk-thread-meta">Realtime responses appear here.</p>
+            <div id="support-desk-messages" class="support-desk-messages"></div>
+            <label class="field support-desk-compose-field">
+                <span>Message</span>
+                <textarea id="support-desk-compose-input" rows="3" placeholder="Describe your issue or query clearly..."></textarea>
+            </label>
+            <div class="inline-controls support-desk-actions">
+                <button id="support-desk-send-btn" class="btn btn-primary" type="button">Send Message</button>
             </div>
         </div>
     </section>

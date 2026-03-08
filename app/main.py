@@ -1,5 +1,7 @@
 import os
 import logging
+import asyncio
+import threading
 from decimal import Decimal
 from datetime import date, datetime, time, timedelta
 from enum import Enum as PyEnum
@@ -8,7 +10,7 @@ import time as pytime
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import DuplicateKeyError
@@ -16,29 +18,52 @@ from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.orm import Session
 
 from . import models
+from .attendance_ledger import append_attendance_event, recompute_attendance_record
 from .auth_utils import hash_password, require_roles
-from .database import Base, SessionLocal, engine
+from .database import Base, SessionLocal, database_status, engine
+from .enterprise_controls import validate_production_secrets
 from .food_bootstrap import bootstrap_food_hall_catalog
 from .mongo import (
     close_mongo,
     get_mongo_db,
     init_mongo,
+    mirror_document,
     mongo_persistence_required,
     mongo_status,
     next_sequence,
+)
+from .outbox import dispatch_outbox_batch
+from .observability import install_observability, metrics_response, observability_router
+from .otp_delivery import assert_otp_delivery_ready
+from .performance import record_request_metric
+from .redis_client import close_redis, init_redis, redis_required, redis_status
+from .realtime_bus import realtime_hub
+from .runtime_infra import managed_services_required
+from .workers import (
+    assert_worker_ready,
+    inline_fallback_enabled as worker_inline_fallback_enabled,
+    worker_live,
+    worker_ready,
+    worker_required,
+    worker_transport_status,
 )
 from .routers import (
     admin_router,
     assets_router,
     attendance_router,
     auth_router,
+    copilot_router,
+    enterprise_router,
     food_router,
-    makeup_router,
+    identity_shield_router,
+    remedial_router,
     messages_router,
     people_router,
+    realtime_router,
     resources_router,
+    saarthi_router,
 )
-from .routers.assets import seed_static_assets_to_mongo
+from .routers.assets import build_static_asset_response, seed_static_assets_to_mongo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
@@ -51,7 +76,214 @@ app = FastAPI(
         "Smart Campus backend with mandatory modules + role-based auth + OTP login."
     ),
 )
+install_observability(app)
 ALLOW_DEMO_SEED = os.getenv("ALLOW_DEMO_SEED", "false").strip().lower() in {"1", "true", "yes"}
+_health_cache_lock = threading.Lock()
+_health_cache_payload: dict[str, Any] | None = None
+_health_cache_expires_at = 0.0
+_health_cache_refreshing = False
+
+
+def _strict_runtime_mode_enabled() -> bool:
+    raw = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _enabled_flag(name: str, default: bool) -> bool:
+    raw = (os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _managed_services_contract_enabled() -> bool:
+    raw = (os.getenv("APP_MANAGED_SERVICES_REQUIRED") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _health_cache_ttl_seconds() -> float:
+    raw = (os.getenv("HEALTH_STATUS_CACHE_SECONDS", "10") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 10.0
+    return max(1.0, min(60.0, value))
+
+
+def _health_worker_live_timeout_seconds() -> float:
+    raw = (os.getenv("HEALTH_WORKER_LIVE_TIMEOUT_SECONDS", "0.8") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.8
+    return max(0.2, min(5.0, value))
+
+
+def _build_health_payload() -> dict[str, Any]:
+    return {
+        "message": "Smart Campus Management API is running",
+        "docs": "/docs",
+        "ui": "/ui",
+        "runtime_strict": _strict_runtime_mode_enabled(),
+        "managed_services_required": managed_services_required(),
+        "database": database_status(),
+        "mongo": mongo_status(),
+        "redis": redis_status(),
+        "worker": {
+            "required": worker_required(),
+            "ready": worker_ready(),
+            "live": worker_live(timeout_seconds=_health_worker_live_timeout_seconds()),
+            "inline_fallback_enabled": worker_inline_fallback_enabled(),
+            "transport": worker_transport_status(),
+        },
+    }
+
+
+def _store_health_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    global _health_cache_payload, _health_cache_expires_at
+    with _health_cache_lock:
+        _health_cache_payload = payload
+        _health_cache_expires_at = pytime.monotonic() + _health_cache_ttl_seconds()
+    return payload
+
+
+def _refresh_health_payload_sync() -> dict[str, Any]:
+    global _health_cache_refreshing
+    try:
+        payload = _build_health_payload()
+        return _store_health_payload(payload)
+    finally:
+        with _health_cache_lock:
+            _health_cache_refreshing = False
+
+
+def _refresh_health_payload_async() -> None:
+    global _health_cache_refreshing
+    with _health_cache_lock:
+        if _health_cache_refreshing:
+            return
+        _health_cache_refreshing = True
+    thread = threading.Thread(
+        target=_refresh_health_payload_sync,
+        name="smartcampus-health-refresh",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _health_payload() -> dict[str, Any]:
+    now = pytime.monotonic()
+    with _health_cache_lock:
+        payload = _health_cache_payload
+        expires_at = _health_cache_expires_at
+
+    if payload is None:
+        return _refresh_health_payload_sync()
+
+    if now >= expires_at:
+        _refresh_health_payload_async()
+    return payload
+
+
+def _assert_strict_runtime_contract() -> None:
+    if not _strict_runtime_mode_enabled():
+        return
+    db_state = database_status()
+    mongo_state = mongo_status()
+    redis_state = redis_status()
+    if str(db_state.get("backend") or "").strip().lower() != "postgresql" or not bool(db_state.get("connected")):
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires a live PostgreSQL SQLALCHEMY_DATABASE_URL."
+        )
+    if not mongo_persistence_required():
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires MONGO_PERSISTENCE_REQUIRED=true."
+        )
+    if not redis_required():
+        raise RuntimeError("APP_RUNTIME_STRICT=true requires REDIS_REQUIRED=true.")
+    if not worker_required():
+        raise RuntimeError("APP_RUNTIME_STRICT=true requires WORKER_REQUIRED=true.")
+    if not _enabled_flag("MONGO_STARTUP_STRICT", default=True):
+        raise RuntimeError("APP_RUNTIME_STRICT=true requires MONGO_STARTUP_STRICT=true.")
+    if worker_inline_fallback_enabled():
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires WORKER_INLINE_FALLBACK_ENABLED=false."
+        )
+    if not _enabled_flag("WORKER_WAIT_FOR_OTP_RESULT", default=True):
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires WORKER_WAIT_FOR_OTP_RESULT=true."
+        )
+    otp_mode = (os.getenv("OTP_DELIVERY_MODE", "smtp") or "").strip().lower() or "smtp"
+    if otp_mode not in {"smtp", "graph"}:
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires OTP_DELIVERY_MODE to be 'smtp' or 'graph'."
+        )
+    required_worker_flags = [
+        "WORKER_ENABLE_OTP",
+        "WORKER_ENABLE_NOTIFICATIONS",
+        "WORKER_ENABLE_FACE_REVERIFY",
+        "WORKER_ENABLE_RECOMPUTE",
+    ]
+    disabled = [name for name in required_worker_flags if not _enabled_flag(name, default=True)]
+    if disabled:
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true requires worker queues enabled: "
+            + ", ".join(disabled)
+            + "."
+        )
+    if _managed_services_contract_enabled() and ("remote_host" in db_state or "tls_enabled" in db_state):
+        if not bool(db_state.get("remote_host")):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires SQLALCHEMY_DATABASE_URL to use a non-local PostgreSQL host."
+            )
+        if not bool(db_state.get("tls_enabled")):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires PostgreSQL TLS via DATABASE_SSL_MODE=require|verify-ca|verify-full."
+            )
+        if not bool(mongo_state.get("remote_host")):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires MONGO_URI to use a non-local MongoDB host."
+            )
+        if not bool(mongo_state.get("tls_enabled")):
+            raise RuntimeError("APP_MANAGED_SERVICES_REQUIRED=true requires MongoDB TLS.")
+        if not bool(redis_state.get("remote_host")):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires REDIS_URL to use a non-local Redis host."
+            )
+        if not bool(redis_state.get("tls_enabled")):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires REDIS_URL to use rediss:// with TLS."
+            )
+
+        worker_transport = worker_transport_status()
+        for target_name in ("broker", "backend"):
+            target = worker_transport.get(target_name) or {}
+            if not bool(target.get("configured")):
+                raise RuntimeError(
+                    f"APP_MANAGED_SERVICES_REQUIRED=true requires worker {target_name} transport to be configured."
+                )
+            if not bool(target.get("remote_host")):
+                raise RuntimeError(
+                    f"APP_MANAGED_SERVICES_REQUIRED=true requires worker {target_name} transport to use a non-local Redis host."
+                )
+            if not bool(target.get("tls_enabled")):
+                raise RuntimeError(
+                    f"APP_MANAGED_SERVICES_REQUIRED=true requires worker {target_name} transport to use rediss:// with TLS."
+                )
+
+
+@app.middleware("http")
+async def request_latency_middleware(request: Request, call_next):
+    started_at = pytime.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        latency_ms = (pytime.perf_counter() - started_at) * 1000.0
+        record_request_metric(request.url.path, request.method, 500, latency_ms)
+        raise
+
+    latency_ms = (pytime.perf_counter() - started_at) * 1000.0
+    record_request_metric(request.url.path, request.method, int(response.status_code), latency_ms)
+    response.headers["X-Request-Latency-Ms"] = f"{latency_ms:.2f}"
+    return response
 
 
 def apply_sqlite_migrations() -> None:
@@ -66,6 +298,10 @@ def apply_sqlite_migrations() -> None:
         if "profile_photo_data_url" not in student_columns:
             connection.execute(
                 text("ALTER TABLE students ADD COLUMN profile_photo_data_url TEXT")
+            )
+        if "profile_photo_object_key" not in student_columns:
+            connection.execute(
+                text("ALTER TABLE students ADD COLUMN profile_photo_object_key TEXT")
             )
         if "profile_photo_updated_at" not in student_columns:
             connection.execute(
@@ -127,6 +363,10 @@ def apply_sqlite_migrations() -> None:
         if "profile_photo_data_url" not in faculty_columns:
             connection.execute(
                 text("ALTER TABLE faculty ADD COLUMN profile_photo_data_url TEXT")
+            )
+        if "profile_photo_object_key" not in faculty_columns:
+            connection.execute(
+                text("ALTER TABLE faculty ADD COLUMN profile_photo_object_key TEXT")
             )
         if "profile_photo_updated_at" not in faculty_columns:
             connection.execute(
@@ -354,32 +594,201 @@ def apply_sqlite_migrations() -> None:
             text("CREATE INDEX IF NOT EXISTS ix_food_payments_provider_payment_id ON food_payments (provider_payment_id)")
         )
 
+        attendance_record_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(attendance_records)")).fetchall()
+        }
+        if "updated_at" not in attendance_record_columns:
+            connection.execute(
+                text("ALTER TABLE attendance_records ADD COLUMN updated_at DATETIME")
+            )
+        if "computed_from_event_id" not in attendance_record_columns:
+            connection.execute(
+                text("ALTER TABLE attendance_records ADD COLUMN computed_from_event_id INTEGER")
+            )
+        connection.execute(
+            text(
+                "UPDATE attendance_records SET updated_at = COALESCE(updated_at, created_at) "
+                "WHERE updated_at IS NULL"
+            )
+        )
+
+        attendance_submission_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(attendance_submissions)")).fetchall()
+        }
+        if "selfie_photo_object_key" not in attendance_submission_columns:
+            connection.execute(
+                text("ALTER TABLE attendance_submissions ADD COLUMN selfie_photo_object_key TEXT")
+            )
+
+        rectification_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(attendance_rectification_requests)")).fetchall()
+        }
+        if "proof_photo_object_key" not in rectification_columns:
+            connection.execute(
+                text("ALTER TABLE attendance_rectification_requests ADD COLUMN proof_photo_object_key TEXT")
+            )
+
+        analysis_columns = {
+            row[1]
+            for row in connection.execute(text("PRAGMA table_info(classroom_analyses)")).fetchall()
+        }
+        if "photo_object_key" not in analysis_columns:
+            connection.execute(
+                text("ALTER TABLE classroom_analyses ADD COLUMN photo_object_key TEXT")
+            )
+
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_students_profile_photo_object_key "
+                "ON students (profile_photo_object_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_faculty_profile_photo_object_key "
+                "ON faculty (profile_photo_object_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_attendance_records_updated_at "
+                "ON attendance_records (updated_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_attendance_records_computed_from_event_id "
+                "ON attendance_records (computed_from_event_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_attendance_events_event_key "
+                "ON attendance_events (event_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_attendance_events_student_course_date "
+                "ON attendance_events (student_id, course_id, attendance_date, created_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_auth_sessions_user_id "
+                "ON auth_sessions (user_id, revoked_at, refresh_expires_at)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_sessions_sid "
+                "ON auth_sessions (sid)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_auth_token_revocations_jti "
+                "ON auth_token_revocations (jti)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_media_objects_owner "
+                "ON media_objects (owner_table, owner_id, media_kind)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_media_objects_object_key "
+                "ON media_objects (object_key)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_outbox_events_status_available "
+                "ON outbox_events (status, available_at)"
+            )
+        )
+
+
+def apply_mysql_enrollment_schema_migrations() -> None:
+    if engine.dialect.name != "mysql":
+        return
+
+    with engine.begin() as connection:
+        inspector = sa_inspect(connection)
+        if "students" not in set(inspector.get_table_names()):
+            return
+
+        student_columns = {
+            column["name"]: column
+            for column in inspector.get_columns("students")
+        }
+        required_additions = {
+            "profile_face_template_json": "LONGTEXT NULL",
+            "profile_face_template_updated_at": "DATETIME NULL",
+            "enrollment_video_template_json": "LONGTEXT NULL",
+            "enrollment_video_updated_at": "DATETIME NULL",
+            "enrollment_video_locked_until": "DATETIME NULL",
+        }
+        for column_name, column_sql in required_additions.items():
+            if column_name in student_columns:
+                continue
+            connection.execute(text(f"ALTER TABLE students ADD COLUMN {column_name} {column_sql}"))
+
+        mysql_types = {
+            row[0]: row[1]
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT COLUMN_NAME, DATA_TYPE
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'students'
+                    """
+                )
+            ).fetchall()
+        }
+        for column_name in ("profile_face_template_json", "enrollment_video_template_json"):
+            if str(mysql_types.get(column_name, "")).lower() == "longtext":
+                continue
+            connection.execute(text(f"ALTER TABLE students MODIFY COLUMN {column_name} LONGTEXT NULL"))
+
 Base.metadata.create_all(bind=engine)
 apply_sqlite_migrations()
+apply_mysql_enrollment_schema_migrations()
 
 app.include_router(assets_router)
 app.include_router(auth_router)
 app.include_router(people_router)
 app.include_router(attendance_router)
+app.include_router(copilot_router)
 app.include_router(food_router)
+app.include_router(identity_shield_router)
 app.include_router(resources_router)
 app.include_router(admin_router)
-app.include_router(makeup_router)
+app.include_router(remedial_router)
 app.include_router(messages_router)
+app.include_router(saarthi_router)
+app.include_router(enterprise_router)
+app.include_router(realtime_router)
+app.include_router(observability_router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 if WEB_DIR.exists():
-    app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+    app.mount("/web", StaticFiles(directory=WEB_DIR, html=True), name="web")
 
 
 @app.get("/")
 def health_check():
-    return {
-        "message": "Smart Campus Management API is running",
-        "docs": "/docs",
-        "ui": "/ui",
-        "mongo": mongo_status(),
-    }
+    return _health_payload()
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics():
+    return metrics_response()
 
 
 @app.get("/ui", include_in_schema=False)
@@ -390,36 +799,32 @@ def ui():
     return {"message": "UI is not available. Ensure web/index.html exists."}
 
 
-def _ui_logo_file() -> Path:
-    return WEB_DIR / "assets" / "lpu-smart-campus-logo.png"
-
-
 @app.get("/favicon.ico", include_in_schema=False)
 def favicon():
-    logo_file = _ui_logo_file()
-    if logo_file.exists():
-        return FileResponse(logo_file, media_type="image/png")
-    raise HTTPException(status_code=404, detail="Favicon not found")
+    return build_static_asset_response("lpu-smart-campus-logo", prefer_database=True)
 
 
 @app.get("/apple-touch-icon.png", include_in_schema=False)
 def apple_touch_icon():
-    logo_file = _ui_logo_file()
-    if logo_file.exists():
-        return FileResponse(logo_file, media_type="image/png")
-    raise HTTPException(status_code=404, detail="Apple touch icon not found")
+    return build_static_asset_response("lpu-smart-campus-logo", prefer_database=True)
 
 
 @app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
 def apple_touch_icon_precomposed():
-    logo_file = _ui_logo_file()
-    if logo_file.exists():
-        return FileResponse(logo_file, media_type="image/png")
-    raise HTTPException(status_code=404, detail="Apple touch icon not found")
+    return build_static_asset_response("lpu-smart-campus-logo", prefer_database=True)
 
 
 @app.on_event("startup")
-def startup_event() -> None:
+async def startup_event() -> None:
+    _assert_strict_runtime_contract()
+    validate_production_secrets()
+    assert_otp_delivery_ready(verify_connection=True)
+    redis_ok = init_redis(force=True)
+    if not redis_ok and redis_required():
+        raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup.")
+    assert_worker_ready()
+    realtime_hub.bind_loop(asyncio.get_running_loop())
+    await realtime_hub.start()
     requires_mongo = mongo_persistence_required()
     strict_startup = (os.getenv("MONGO_STARTUP_STRICT", "true") or "").strip().lower() in {
         "1",
@@ -473,6 +878,8 @@ def startup_event() -> None:
         seed_static_assets_to_mongo()
     db = SessionLocal()
     try:
+        dispatch_outbox_batch(db, limit=200)
+        db.commit()
         bootstrap_food_hall_catalog(db)
         startup_snapshot_sync = (os.getenv("MONGO_STARTUP_SQL_SNAPSHOT_SYNC", "true") or "").strip().lower() in {
             "1",
@@ -489,10 +896,13 @@ def startup_event() -> None:
         logger.warning("Startup SQL->Mongo sync skipped due to non-fatal error: %s", exc)
     finally:
         db.close()
+    _store_health_payload(_build_health_payload())
 
 
 @app.on_event("shutdown")
-def shutdown_event() -> None:
+async def shutdown_event() -> None:
+    await realtime_hub.stop()
+    close_redis()
     close_mongo()
 
 
@@ -549,9 +959,7 @@ def ensure_auth_user(
 
 
 def sync_sql_snapshot_to_mongo(db: Session) -> None:
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        return
+    mongo_db = get_mongo_db(required=False)
 
     def _normalize_value(value: Any) -> Any:
         if isinstance(value, PyEnum):
@@ -602,6 +1010,14 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
         raise RuntimeError(f"Unable to build Mongo upsert filter for {row.__class__.__name__}")
 
     def _safe_update_one(collection_name: str, match_filter: dict[str, Any], payload: dict[str, Any]) -> None:
+        if mongo_db is None:
+            mirror_document(
+                collection_name,
+                payload,
+                upsert_filter=match_filter,
+                required=False,
+            )
+            return
         collection = mongo_db[collection_name]
         try:
             collection.update_one(match_filter, {"$set": payload}, upsert=True)
@@ -616,7 +1032,7 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
             fallback_payload.pop("id", None)
             result = collection.update_one(dict(key_value), {"$set": fallback_payload}, upsert=False)
             if result.matched_count:
-                logger.warning(
+                logger.debug(
                     "Resolved startup sync duplicate key for collection=%s via filter=%s",
                     collection_name,
                     key_value,
@@ -637,6 +1053,7 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
         models.Classroom,
         models.CourseClassroom,
         models.AttendanceRecord,
+        models.AttendanceEvent,
         models.NotificationLog,
         models.FoodItem,
         models.FoodShop,
@@ -649,11 +1066,18 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
         models.RemedialAttendance,
         models.RemedialMessage,
         models.FacultyMessage,
+        models.SupportQueryMessage,
         models.ClassSchedule,
         models.AttendanceSubmission,
+        models.AttendanceRectificationRequest,
         models.ClassroomAnalysis,
+        models.StudentGrade,
         models.AuthOTP,
         models.AuthOTPDelivery,
+        models.AuthSession,
+        models.AuthTokenRevocation,
+        models.MediaObject,
+        models.OutboxEvent,
     ]
 
     for model_cls in sync_models:
@@ -668,15 +1092,18 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
                 payload,
             )
 
-    auth_collection = mongo_db["auth_users"]
     for auth_user in db.query(models.AuthUser).all():
-        existing_by_email = auth_collection.find_one({"email": auth_user.email})
-        if existing_by_email:
-            auth_id = int(existing_by_email["id"])
+        if mongo_db is None:
+            auth_id = int(auth_user.id)
         else:
-            auth_id = next_sequence("auth_users")
-            while auth_collection.find_one({"id": auth_id}):
+            auth_collection = mongo_db["auth_users"]
+            existing_by_email = auth_collection.find_one({"email": auth_user.email})
+            if existing_by_email:
+                auth_id = int(existing_by_email["id"])
+            else:
                 auth_id = next_sequence("auth_users")
+                while auth_collection.find_one({"id": auth_id}):
+                    auth_id = next_sequence("auth_users")
 
         _safe_update_one(
             "auth_users",
@@ -910,34 +1337,29 @@ def seed_demo_data(
             .count()
         )
         if not attendance_exists:
-            db.add_all(
-                [
-                    models.AttendanceRecord(
-                        student_id=students_by_email["aman.student@gmail.com"].id,
-                        course_id=course_1.id,
-                        marked_by_faculty_id=faculty_1.id,
-                        attendance_date=today,
-                        status=models.AttendanceStatus.PRESENT,
-                        source="faculty-web",
-                    ),
-                    models.AttendanceRecord(
-                        student_id=students_by_email["riya.student@gmail.com"].id,
-                        course_id=course_1.id,
-                        marked_by_faculty_id=faculty_1.id,
-                        attendance_date=today,
-                        status=models.AttendanceStatus.ABSENT,
-                        source="faculty-web",
-                    ),
-                    models.AttendanceRecord(
-                        student_id=students_by_email["neha.student@gmail.com"].id,
-                        course_id=course_1.id,
-                        marked_by_faculty_id=faculty_1.id,
-                        attendance_date=today,
-                        status=models.AttendanceStatus.PRESENT,
-                        source="faculty-web",
-                    ),
-                ]
-            )
+            demo_attendance = [
+                (students_by_email["aman.student@gmail.com"].id, models.AttendanceStatus.PRESENT),
+                (students_by_email["riya.student@gmail.com"].id, models.AttendanceStatus.ABSENT),
+                (students_by_email["neha.student@gmail.com"].id, models.AttendanceStatus.PRESENT),
+            ]
+            for student_id, status_value in demo_attendance:
+                append_attendance_event(
+                    db,
+                    student_id=int(student_id),
+                    course_id=int(course_1.id),
+                    attendance_date=today,
+                    status=status_value,
+                    source="demo-seed-attendance",
+                    actor_faculty_id=int(faculty_1.id),
+                    actor_role=models.UserRole.FACULTY,
+                    note="Demo seed initialization",
+                )
+                recompute_attendance_record(
+                    db,
+                    student_id=int(student_id),
+                    course_id=int(course_1.id),
+                    attendance_date=today,
+                )
 
         created["auth_users"] += int(
             ensure_auth_user(

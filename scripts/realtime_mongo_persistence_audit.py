@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -20,11 +19,14 @@ from urllib.request import Request, urlopen
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
+from sqlalchemy import text
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 from app import models
 from app.auth_utils import CurrentUser, create_access_token
-
-
+from app.database import engine as relational_engine
 DEFAULT_BASE_URL = "http://127.0.0.1:8001"
 
 
@@ -116,20 +118,24 @@ def _token_for_user_doc(doc: dict[str, Any]) -> str:
 
 def _pick_face_ready_user(
     mongo_db,
-    sql_db_path: Path,
     *,
     base_url: str,
 ) -> tuple[dict[str, Any] | None, str]:
-    with sqlite3.connect(sql_db_path) as conn:
+    with relational_engine.connect() as conn:
         rows = conn.execute(
-            """
-            SELECT id, email, name, department, semester
-            FROM students
-            WHERE LENGTH(COALESCE(profile_photo_data_url, '')) > 20
-              AND LENGTH(COALESCE(enrollment_video_template_json, '')) > 20
-            ORDER BY id ASC
-            LIMIT 20
-            """
+            text(
+                """
+                SELECT id, email, name, department, semester
+                FROM students
+                WHERE (
+                    LENGTH(COALESCE(profile_photo_data_url, '')) > 20
+                    OR LENGTH(COALESCE(profile_photo_object_key, '')) > 20
+                )
+                  AND LENGTH(COALESCE(enrollment_video_template_json, '')) > 20
+                ORDER BY id ASC
+                LIMIT 20
+                """
+            )
         ).fetchall()
 
     if not rows:
@@ -159,8 +165,6 @@ def _pick_face_ready_user(
 
 
 def main() -> int:
-    project_root = Path(__file__).resolve().parent.parent
-    load_dotenv(project_root / ".env")
     base_url = os.getenv("AUDIT_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
 
     checks: list[Check] = []
@@ -351,7 +355,7 @@ def main() -> int:
     checks.append(Check("Attendance history realtime endpoint", history_ok, f"status={status}, records={len(history_data.get('records', [])) if isinstance(history_data, dict) else 0}"))
 
     # Validate trial attendance is ephemeral and not persisted to Mongo.
-    face_user_doc, face_user_note = _pick_face_ready_user(mongo_db, project_root / "campus.db", base_url=base_url)
+    face_user_doc, face_user_note = _pick_face_ready_user(mongo_db, base_url=base_url)
     if face_user_doc is None:
         warnings.append(f"Trial attendance persistence check skipped: {face_user_note}")
     else:

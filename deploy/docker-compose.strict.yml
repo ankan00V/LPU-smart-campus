@@ -1,0 +1,150 @@
+x-strict-env: &strict-env
+  APP_ENV: "development"
+  APP_RUNTIME_STRICT: "true"
+  APP_MANAGED_SERVICES_REQUIRED: "false"
+  APP_COOKIE_SECURE: "false"
+  APP_ACCESS_COOKIE_NAME: "lpu_access_token"
+  LOG_LEVEL: "INFO"
+
+  MONGO_URI: "mongodb://mongo:27017"
+  MONGO_DB_NAME: "lpu_smart"
+  MONGO_PERSISTENCE_REQUIRED: "true"
+  MONGO_STARTUP_STRICT: "true"
+  MONGO_STARTUP_MAX_ATTEMPTS: "20"
+  MONGO_STARTUP_RETRY_DELAY_SECONDS: "1.0"
+  MONGO_STARTUP_SQL_SNAPSHOT_SYNC: "true"
+  MONGO_READ_PREFERRED: "true"
+
+  REDIS_URL: "redis://redis:6379/0"
+  REDIS_REQUIRED: "true"
+  REDIS_SOCKET_TIMEOUT_SECONDS: "1.5"
+  REALTIME_REDIS_CHANNEL: "campus:events:stream"
+
+  DATABASE_CONNECT_TIMEOUT_SECONDS: "10"
+  DATABASE_POOL_SIZE: "10"
+  DATABASE_MAX_OVERFLOW: "20"
+  DATABASE_POOL_TIMEOUT_SECONDS: "30"
+  DATABASE_POOL_RECYCLE_SECONDS: "1800"
+
+  CELERY_BROKER_URL: "redis://redis:6379/1"
+  CELERY_RESULT_BACKEND: "redis://redis:6379/2"
+  WORKER_REQUIRED: "true"
+  WORKER_ENABLE_OTP: "true"
+  WORKER_ENABLE_NOTIFICATIONS: "true"
+  WORKER_ENABLE_FACE_REVERIFY: "true"
+  WORKER_ENABLE_RECOMPUTE: "true"
+  WORKER_INLINE_FALLBACK_ENABLED: "false"
+  WORKER_WAIT_FOR_OTP_RESULT: "false"
+  WORKER_TASK_TIME_LIMIT_SECONDS: "60"
+
+  OTP_DELIVERY_MODE: "debug"
+  SQLALCHEMY_DATABASE_URL: "postgresql+psycopg://smartcampus:smartcampus@postgres:5432/lpu_smart"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "lpu_smart"
+      POSTGRES_USER: "smartcampus"
+      POSTGRES_PASSWORD: "smartcampus"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smartcampus -d lpu_smart >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  mongo:
+    image: mongo:7
+    command: ["mongod", "--bind_ip_all"]
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1 >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment: *strict-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    command: ["celery", "-A", "app.workers:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--hostname=worker@%h"]
+    volumes:
+      - app-data:/srv/app/runtime-data
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.workers:celery_app inspect ping --timeout=2 | grep -qi pong"]
+      interval: 10s
+      timeout: 8s
+      retries: 20
+      start_period: 20s
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment: *strict-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "18000:8000"
+    volumes:
+      - app-data:/srv/app/runtime-data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >
+          python -c "import json,urllib.request;
+          d=json.loads(urllib.request.urlopen('http://127.0.0.1:8000/',timeout=3).read().decode('utf-8'));
+          assert d.get('runtime_strict') is True;
+          assert d.get('database',{}).get('connected') is True;
+          assert d.get('database',{}).get('backend') == 'postgresql';
+          assert d.get('mongo',{}).get('enabled') is True;
+          assert d.get('redis',{}).get('enabled') is True;
+          w=d.get('worker',{});assert w.get('required') is True and w.get('ready') is True and w.get('live') is True and w.get('inline_fallback_enabled') is False"
+      interval: 10s
+      timeout: 8s
+      retries: 20
+      start_period: 25s
+
+volumes:
+  postgres-data:
+  mongo-data:
+  redis-data:
+  app-data:

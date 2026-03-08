@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="Food cover placeholder">
+  <defs>
+    <linearGradient id="g" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#123a5a"/>
+      <stop offset="100%" stop-color="#2b6fa3"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="700" fill="url(#g)"/>
+  <circle cx="1020" cy="120" r="180" fill="rgba(255,255,255,0.10)"/>
+  <circle cx="160" cy="620" r="240" fill="rgba(255,255,255,0.08)"/>
+  <text x="80" y="340" fill="#f4fbff" font-family="Manrope, Arial, sans-serif" font-size="58" font-weight="700">LPU Food Hall</text>
+  <text x="80" y="408" fill="#d5ebff" font-family="Manrope, Arial, sans-serif" font-size="34">Image available in controlled media CDN soon</text>
+</svg>

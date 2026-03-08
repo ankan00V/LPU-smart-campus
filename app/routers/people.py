@@ -8,19 +8,26 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth_utils import CurrentUser, require_roles
 from ..database import get_db
-from ..mongo import get_mongo_db
+from ..enterprise_controls import apply_pii_encryption_policy
+from ..mongo import get_mongo_db, mirror_document
 
 router = APIRouter(prefix="/core", tags=["Core Setup"])
 logger = logging.getLogger(__name__)
 
 
 def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
-    try:
-        mongo_db = get_mongo_db(required=True)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
     body = dict(payload)
     body["id"] = doc_id
+    body = apply_pii_encryption_policy(collection, body)
+    mongo_db = get_mongo_db(required=False)
+    if mongo_db is None:
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
+        )
+        return
     try:
         mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
     except DuplicateKeyError as exc:
@@ -38,6 +45,20 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
             collection,
             doc_id,
             key_value,
+        )
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
+        )
+        return
+    except Exception:
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
         )
         return
 
@@ -63,7 +84,8 @@ def create_student(
             "name": student.name,
             "email": student.email,
             "parent_email": student.parent_email,
-            "profile_photo_data_url": student.profile_photo_data_url,
+            "profile_photo_data_url": None,
+            "profile_photo_object_key": student.profile_photo_object_key,
             "profile_photo_updated_at": student.profile_photo_updated_at,
             "profile_photo_locked_until": student.profile_photo_locked_until,
             "department": student.department,
@@ -79,11 +101,16 @@ def create_student(
 @router.get("/students", response_model=list[schemas.StudentOut])
 def list_students(
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
+    current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
     ),
 ):
-    return db.query(models.Student).order_by(models.Student.id.asc()).all()
+    query = db.query(models.Student)
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        query = query.filter(models.Student.id == int(current_user.student_id))
+    return query.order_by(models.Student.id.asc()).all()
 
 
 @router.post("/faculty", response_model=schemas.FacultyOut, status_code=status.HTTP_201_CREATED)
@@ -109,7 +136,8 @@ def create_faculty(
             "faculty_identifier": faculty.faculty_identifier,
             "section": faculty.section,
             "section_updated_at": faculty.section_updated_at,
-            "profile_photo_data_url": faculty.profile_photo_data_url,
+            "profile_photo_data_url": None,
+            "profile_photo_object_key": faculty.profile_photo_object_key,
             "profile_photo_updated_at": faculty.profile_photo_updated_at,
             "profile_photo_locked_until": faculty.profile_photo_locked_until,
             "department": faculty.department,
@@ -124,11 +152,29 @@ def create_faculty(
 @router.get("/faculty", response_model=list[schemas.FacultyOut])
 def list_faculty(
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
+    current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
     ),
 ):
-    return db.query(models.Faculty).order_by(models.Faculty.id.asc()).all()
+    query = db.query(models.Faculty)
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        faculty_ids = {
+            int(row[0])
+            for row in (
+                db.query(models.Course.faculty_id)
+                .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+                .filter(models.Enrollment.student_id == int(current_user.student_id))
+                .distinct()
+                .all()
+            )
+            if row and row[0] is not None
+        }
+        if not faculty_ids:
+            return []
+        query = query.filter(models.Faculty.id.in_(sorted(faculty_ids)))
+    return query.distinct().order_by(models.Faculty.id.asc()).all()
 
 
 @router.post("/courses", response_model=schemas.CourseOut, status_code=status.HTTP_201_CREATED)
@@ -168,11 +214,19 @@ def create_course(
 @router.get("/courses", response_model=list[schemas.CourseOut])
 def list_courses(
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
+    current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
     ),
 ):
-    return db.query(models.Course).order_by(models.Course.id.asc()).all()
+    query = db.query(models.Course)
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        query = (
+            query.join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+            .filter(models.Enrollment.student_id == int(current_user.student_id))
+        )
+    return query.distinct().order_by(models.Course.id.asc()).all()
 
 
 @router.post("/enroll", status_code=status.HTTP_201_CREATED)
@@ -258,11 +312,20 @@ def create_classroom(
 @router.get("/classrooms", response_model=list[schemas.ClassroomOut])
 def list_classrooms(
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
+    current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
     ),
 ):
-    return db.query(models.Classroom).order_by(models.Classroom.id.asc()).all()
+    query = db.query(models.Classroom)
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        query = (
+            query.join(models.CourseClassroom, models.CourseClassroom.classroom_id == models.Classroom.id)
+            .join(models.Enrollment, models.Enrollment.course_id == models.CourseClassroom.course_id)
+            .filter(models.Enrollment.student_id == int(current_user.student_id))
+        )
+    return query.distinct().order_by(models.Classroom.id.asc()).all()
 
 
 @router.post("/course-classroom", status_code=status.HTTP_201_CREATED)

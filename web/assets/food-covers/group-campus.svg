@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="Campus-wide food cover">
+  <defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stop-color="#2c4b65"/><stop offset="100%" stop-color="#4e7ea6"/></linearGradient></defs>
+  <rect width="1200" height="700" fill="url(#g)"/>
+  <text x="80" y="350" fill="#f3f9ff" font-family="Manrope, Arial, sans-serif" font-size="62" font-weight="800">Campus-wide Food Spot</text>
+</svg>

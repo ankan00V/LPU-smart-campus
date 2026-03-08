@@ -1,11 +1,11 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..auth_utils import require_roles
+from ..auth_utils import CurrentUser, require_roles
 from ..database import get_db
 from ..mongo import get_mongo_db, mongo_status
 
@@ -15,10 +15,66 @@ router = APIRouter(prefix="/resources", tags=["Campus Resources & Estimation"])
 @router.get("/overview")
 def resources_overview(
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
+    current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
     ),
 ):
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id:
+            raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+        enrolled_course_ids = [
+            int(row[0])
+            for row in (
+                db.query(models.Enrollment.course_id)
+                .filter(models.Enrollment.student_id == int(current_user.student_id))
+                .all()
+            )
+            if row and row[0] is not None
+        ]
+        if not enrolled_course_ids:
+            return {
+                "blocks": 0,
+                "classrooms": 0,
+                "courses": 0,
+                "faculty": 0,
+                "students": 1,
+                "scope": "student",
+            }
+        classroom_ids = {
+            int(row[0])
+            for row in (
+                db.query(models.CourseClassroom.classroom_id)
+                .filter(models.CourseClassroom.course_id.in_(enrolled_course_ids))
+                .all()
+            )
+            if row and row[0] is not None
+        }
+        faculty_ids = {
+            int(row[0])
+            for row in (
+                db.query(models.Course.faculty_id)
+                .filter(models.Course.id.in_(enrolled_course_ids))
+                .all()
+            )
+            if row and row[0] is not None
+        }
+        blocks_count = 0
+        if classroom_ids:
+            blocks_count = (
+                db.query(func.count(func.distinct(models.Classroom.block)))
+                .filter(models.Classroom.id.in_(sorted(classroom_ids)))
+                .scalar()
+                or 0
+            )
+        return {
+            "blocks": int(blocks_count),
+            "classrooms": len(classroom_ids),
+            "courses": len(set(enrolled_course_ids)),
+            "faculty": len(faculty_ids),
+            "students": 1,
+            "scope": "student",
+        }
+
     blocks_count = db.query(func.count(func.distinct(models.Classroom.block))).scalar() or 0
     return {
         "blocks": blocks_count,
@@ -33,9 +89,7 @@ def resources_overview(
 def capacity_utilization(
     course_id: int | None = None,
     db: Session = Depends(get_db),
-    _: models.AuthUser = Depends(
-        require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT)
-    ),
+    _: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
     query = db.query(models.CourseClassroom)
     if course_id:
@@ -137,6 +191,7 @@ def get_mongo_consistency(
         ("remedial_attendance", models.RemedialAttendance),
         ("class_schedules", models.ClassSchedule),
         ("attendance_submissions", models.AttendanceSubmission),
+        ("attendance_rectification_requests", models.AttendanceRectificationRequest),
         ("classroom_analyses", models.ClassroomAnalysis),
         ("auth_users", models.AuthUser),
         ("auth_otps", models.AuthOTP),

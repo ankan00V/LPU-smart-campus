@@ -1,6 +1,7 @@
 const DAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const AI_MODEL = 'gemini-3-flash-preview';
 const PUTER_SDK_URL = 'https://js.puter.com/v2/';
+const RAZORPAY_SDK_URL = 'https://checkout.razorpay.com/v1/checkout.js';
 const ENABLE_DECORATIVE_MOTION = false;
 const USE_CLIENT_AI_FACE_ASSIST = false;
 const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 12000;
@@ -14,13 +15,46 @@ const FOOD_PLATFORM_FEE_INR = 5;
 const FOOD_SERVICE_START_MINUTES = 10 * 60;
 const FOOD_SERVICE_END_MINUTES = 21 * 60;
 const FOOD_SERVICE_HOURS_LABEL = '10:00 AM - 9:00 PM';
-const FOOD_DEMAND_LIVE_REFRESH_MS = 10000;
-const REMEDIAL_LIVE_REFRESH_MS = 4000;
+const FOOD_DEMAND_LIVE_REFRESH_MS = 3000;
+const STUDENT_LIVE_REFRESH_MS = 60000;
+const REMEDIAL_LIVE_REFRESH_MS = 30000;
+const SUPPORT_DESK_LIVE_REFRESH_MS = 30000;
+const REALTIME_TOPICS = 'attendance,messages,rms,food,remedial,admin,identity,identity_shield';
+const ROUTE_SPLIT_ASSET_VERSION = '20260308b';
 const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
 const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
 const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
+const LIVE_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: 'short',
+  year: 'numeric',
+  month: 'short',
+  day: '2-digit',
+});
+const LIVE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+});
+const LIVE_TIMEZONE_SHORT_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  timeZoneName: 'short',
+});
+const LIVE_TIMEZONE_LONG_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  timeZoneName: 'long',
+});
+const LIVE_DATE_TOOLTIP_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: 'long',
+  year: 'numeric',
+  month: 'long',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+});
+const LIVE_OPERATIONAL_REFRESH_MS = 10 * 1000;
 const FOOD_ORDER_STATUS_LABELS = {
   placed: 'Order being verified by',
   verified: 'Order verified',
@@ -70,108 +104,42 @@ const FOOD_DEMAND_PIE_COLORS = [
   '#B0A54A',
   '#5AB7F2',
 ];
-const FOOD_POPULAR_SPOT_IDS = ['oven-express', 'kitchen-ette-block41', 'nk-food-court-bh2-6'];
-const FOOD_SHOP_GROUPS = [
+const MODULE_LABELS = {
+  attendance: 'Attendance',
+  food: 'Food Hall',
+  administrative: 'Administrative',
+  rms: 'RMS',
+  remedial: 'Remedial',
+};
+let FOOD_POPULAR_SPOT_IDS = ['oven-express', 'kitchen-ette-block41', 'nk-food-court-bh2-6'];
+let FOOD_SHOP_GROUPS = [
   { key: 'popular', title: 'Popular Spots', subtitle: 'Most loved by students right now' },
-  { key: 'unimall17', title: 'UniMall — Block 17', subtitle: 'Branded chains' },
+  { key: 'unimall17', title: 'UniMall - Block 17', subtitle: 'Branded chains' },
   { key: 'bh1', title: 'BH-1 Food Kiosk Area', subtitle: 'Quick meals and snacks' },
   { key: 'bh2to6', title: 'BH-2 to BH-6 Kiosk Cluster', subtitle: 'High variety cluster' },
   { key: 'block41', title: 'Block-41 Food Court Zone', subtitle: 'Tea + snack hub' },
   { key: 'block34', title: 'Block-34 Kiosk Area', subtitle: 'Hidden popular picks' },
 ];
-const FOOD_AI_QUICK_CRAVINGS = [
+let FOOD_SLOT_FALLBACK = [];
+let FOOD_AI_QUICK_CRAVINGS = [
   'Spicy snacks under INR 150',
   'Healthy juice and light meal',
   'Coffee + dessert combo',
   'North Indian full meal',
   'Fast pizza pickup',
 ];
-const FOOD_DELIVERY_POINTS = [
-  ['01', 'LIM'],
-  ['02', 'Campus Cafe'],
-  ['03', 'Auditorium'],
-  ['04', 'LIT Engineering'],
-  ['05', 'LIT Pharmacy'],
-  ['06', 'LIT Architecture'],
-  ['07', 'LIT Pharmacy'],
-  ['08', 'Shri Baldev Raj Mittal Auditorium'],
-  ['09', 'Girls Hostel 1'],
-  ['10', 'Girls Hostel 2'],
-  ['11', 'Girls Hostel 3'],
-  ['12', 'Girls Hostel 4'],
-  ['13', 'LIT Polytechnic'],
-  ['14', 'Business Block'],
-  ['15', 'Lovely Mall'],
-  ['16', 'Hotel Mgt'],
-  ['17', 'Mall - II'],
-  ['18', 'Education'],
-  ['19', 'Auditorium'],
-  ['20', 'LSB'],
-  ['21', 'Girl Hostel 5'],
-  ['22', 'Girl Hostel 6'],
-  ['23', 'Auditorium'],
-  ['24', 'Auditorium'],
-  ['25', 'Engineering'],
-  ['26', 'Engineering'],
-  ['27', 'Engineering'],
-  ['28', 'Engineering'],
-  ['29', 'Engineering'],
-  ['30', 'Chancellor Office'],
-  ['31', 'Administrative Block'],
-  ['32', 'Administrative Block'],
-  ['33', 'Engineering'],
-  ['34', 'Engineering'],
-  ['35', 'Engineering'],
-  ['36', 'Engineering'],
-  ['37', 'Engineering'],
-  ['38', 'Engineering'],
-  ['39', 'STP'],
-  ['40', 'Store'],
-  ['41', 'Staff Residence'],
-  ['42', 'Staff Residence'],
-  ['43', 'Boys Hostel 1'],
-  ['45', 'Boys Hostel 2'],
-  ['46', 'Boys Hostel 3'],
-  ['47', 'Boys Hostel 4'],
-  ['51', 'Boys Hostel 5'],
-  ['52', 'Boys Hostel 6'],
-  ['53', 'Academic Block 1'],
-  ['54', 'Academic Block 2'],
-  ['55', 'Academic Block 3'],
-  ['71', 'Boys Studios 8'],
-  ['72', 'Boys Studios 9'],
-  ['73', 'Boys Studios 10'],
-];
-const FOOD_SHOP_DIRECTORY = [
-  { id: 'dominos', name: "Domino's Pizza", block: 'UniMall — Block 17', group: 'unimall17', cover: 'https://www.dominos.co.in/theme2/front/assets/banner2.webp' },
-  { id: 'wow-momo', name: 'Wow! Momo', block: 'UniMall — Block 17', group: 'unimall17', cover: 'https://marinamallchennai.com/wp-content/uploads/2020/08/rsz_elv02242-min.jpg' },
-  { id: 'chicago-pizza', name: 'Chicago Pizza', block: 'UniMall — Block 17', group: 'unimall17', cover: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTBZ3sJ3rGxFwTen7xou80brkNAi2U3v4yN5Q&s' },
-  { id: 'ccd', name: 'Café Coffee Day', block: 'UniMall — Block 17', group: 'unimall17', cover: 'https://www.shutterstock.com/image-photo/mumbai-india-feb-23-cafe-600nw-2605028205.jpg' },
-  { id: 'andhra-food-house', name: 'Andhra Food House', block: 'BH-1', group: 'bh1', cover: 'https://lpubeyondclasses.weebly.com/uploads/5/9/7/7/59774945/1234924.jpg?250' },
-  { id: 'ab-juice-bar-bh1', name: 'AB Juice Bar', block: 'BH-1', group: 'bh1', cover: 'https://happenings.lpu.in/wp-content/uploads/2018/02/7.2-1.jpg' },
-  { id: 'telugu-vantillu', name: 'Telugu Vantillu', block: 'BH-1', group: 'bh1', cover: 'https://b.zmtcdn.com/data/pictures/4/20876424/72e4680b9c9a66c3d157c1ceac1e5ceb.jpg' },
-  { id: 'campus-fusion-bh1', name: 'Campus Fusion', block: 'BH-1', group: 'bh1', cover: 'https://b.zmtcdn.com/data/pictures/chains/7/20402557/7c9fe2b6a8ae9d14736d68d1f11e18be_featured_v2.jpg' },
-  { id: 'havmor-ice-cream', name: 'Havmor Ice Cream', block: 'BH-1', group: 'bh1', cover: 'https://content.jdmagicbox.com/v2/comp/delhi/l6/011pxx11.xx11.221228184909.u2l6/catalogue/-1qb99pzzka.jpg' },
-  { id: 'nk-food-court-bh2-6', name: 'NK Food Court', block: 'BH-2–6', group: 'bh2to6', cover: 'https://i.pinimg.com/736x/42/7e/a2/427ea2b8d28fbaf5efc1f6f7db47e25a.jpg' },
-  { id: 'pizza-express', name: 'Pizza Express', block: 'BH-2–6', group: 'bh2to6', cover: 'https://pizzaexpress.in/wp-content/uploads/2025/02/Lulu2-1024x683.jpg' },
-  { id: 'juice-world', name: 'Juice World', block: 'BH-2–6', group: 'bh2to6', cover: 'https://b.zmtcdn.com/data/pictures/9/19235239/b4e9bc5386c4242cc71516a02664d38a.jpg?fit=around%7C960:500&crop=960:500;*,*' },
-  { id: 'chinese-eatery', name: 'Chinese Eatery', block: 'BH-2–6', group: 'bh2to6', cover: 'https://dynamic-media-cdn.tripadvisor.com/media/photo-o/1a/b0/43/c4/traditional-chinese-restaurant.jpg?w=1200&h=1200&s=1' },
-  { id: 'nand-juice-bh2-6', name: 'Nand Juice', block: 'BH-2–6', group: 'bh2to6', cover: 'https://content.jdmagicbox.com/v2/comp/phagwara/u2/9999p1824.1824.251108083345.v2u2/catalogue/nand-juice-corner-phagwara-juice-centres-zw6zkfkvyn.jpg' },
-  { id: 'campus-fusion-bh2-6', name: 'Campus Fusion', block: 'BH-2–6', group: 'bh2to6', cover: 'https://b.zmtcdn.com/data/pictures/chains/7/20402557/7c9fe2b6a8ae9d14736d68d1f11e18be_featured_v2.jpg' },
-  { id: 'kannu-ki-chai', name: 'Kannu Ki Chai', block: 'Block-41', group: 'block41', cover: 'https://kannukichai.com/wp-content/uploads/2024/01/2023.jpg' },
-  { id: 'yippee', name: 'Yippee', block: 'Block-41', group: 'block41', cover: 'https://www.retail4growth.com/public/uploads/editor/2024-07-10/1720614018.jpeg' },
-  { id: 'kitchen-ette-block41', name: 'Kitchen Ette', block: 'Block-41', group: 'block41', cover: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSmbgumgEId2NhiLJru_xhGeGI8tU1PxzQLfg&s' },
-  { id: 'ab-juice-bar-block41', name: 'AB Juice Bar', block: 'Block-41', group: 'block41', cover: 'https://content.jdmagicbox.com/v2/comp/undefined/w3/0141px141.x141.230203182338.v9w3/catalogue/ab-juice-club-mansarovar-jaipur-juice-centres-gr4f661o1u.jpg' },
-  { id: 'basant-ice-cream-corner', name: 'Basant Ice Cream Corner', block: 'Block-41', group: 'block41', cover: 'https://content.jdmagicbox.com/comp/ludhiana/y3/0161px161.x161.120521093214.l4y3/catalogue/basant-ice-cream-ferozepur-road-ludhiana-ice-cream-distributors-gw5p0o36b2.jpg' },
-  { id: 'northern-delights', name: 'Northern Delights', block: 'Block-34', group: 'block34', cover: 'https://static.where-e.com/India/Uttar_Pradesh_State/Northern-Delights_8fdc73f2560fa6ab3e05f456a769dd54.jpg' },
-  { id: 'bengali-bawarchi', name: 'Bengali Bawarchi', block: 'Block-34', group: 'block34', cover: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSKKktniVK5RYKu_34CySDu6wACHGex2XAq0g&s' },
-  { id: 'tandoor-hub', name: 'Tandoor Hub', block: 'Block-34', group: 'block34', cover: 'https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_366/RX_THUMBNAIL/IMAGES/VENDOR/2024/10/17/0335aa92-1e2e-45d5-8f57-b3fe9dcc9482_410561.jpg' },
-  { id: 'nand-juice-block34', name: 'Nand Juice', block: 'Block-34', group: 'block34', cover: 'https://content.jdmagicbox.com/v2/comp/phagwara/u2/9999p1824.1824.251108083345.v2u2/catalogue/nand-juice-corner-phagwara-juice-centres-zw6zkfkvyn.jpg' },
-  { id: 'oven-express', name: 'Oven Express', block: 'Campus-wide', group: 'campus', cover: 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTyxtuHgUZkBkQbEe1FqMNEM0kapS4Lqgwz6g&s' },
-];
+let FOOD_DELIVERY_POINTS = [];
+let FOOD_SHOP_DIRECTORY = [];
+let FOOD_COVER_FALLBACK_URL = '/web/assets/food-covers/fallback.svg';
 
 let puterSdkPromise = null;
+let razorpaySdkPromise = null;
+let verlynHelpModulePromise = null;
+let foodCatalogModulePromise = null;
+let foodCatalogReady = false;
 let liveDateTimeTimer = null;
+let liveDateTimeLabelCache = '';
+let liveDateUtilityLastRunMs = 0;
 let studentRealtimeTimer = null;
 let studentTimetableStatusTimer = null;
 let moduleRealtimeTimer = null;
@@ -185,12 +153,21 @@ let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
 let remedialLiveTimer = null;
 let remedialLiveBusy = false;
+let supportDeskLiveTimer = null;
+let supportDeskLiveBusy = false;
+let realtimeBusController = null;
+let realtimeBusLoadingPromise = null;
+let routeModuleRuntime = null;
+const routeModuleInstances = new Map();
+const routeModuleActiveKeys = new Set();
+let routeModuleSyncToken = 0;
 let sessionIdleTimer = null;
 let sessionMaxTimer = null;
 let sessionActivityBound = false;
 let lastSessionActivityPingMs = 0;
 const runtimeUiStore = {
   profilePromptSeenByUser: new Set(),
+  mfaGuideSeenByUser: new Set(),
   themeByUser: new Map(),
 };
 
@@ -278,8 +255,15 @@ const state = {
     summary: null,
     alerts: [],
     insights: null,
+    identityCases: [],
+    recoveryPlans: [],
+    recoveryIncludeResolved: false,
+    recoveryLastUpdatedAt: null,
     lastUpdatedAt: null,
     staleAfterSeconds: 60,
+    copilotAuditLoadedAtMs: 0,
+    copilotAuditBusy: false,
+    copilotAuditQueued: false,
   },
   remedial: {
     eligibleCourses: [],
@@ -297,6 +281,28 @@ const state = {
     markedClassId: null,
     markedOnlineLink: '',
     demoBypassLeadTime: false,
+  },
+  supportDesk: {
+    categories: ['Attendance', 'Academics', 'Discrepancy', 'Other'],
+    contacts: [],
+    threads: [],
+    messages: [],
+    selectedCounterpartyId: null,
+    selectedCategory: 'Attendance',
+    selectedCounterpartyName: '',
+    selectedCounterpartySection: '',
+    unreadTotal: 0,
+  },
+  rms: {
+    dashboard: null,
+    selectedCategory: 'all',
+    selectedStatus: 'all',
+    selectedStudent: null,
+    selectedThread: null,
+    threadAction: 'approve',
+    attendanceContext: null,
+    attendanceSelectedCourseCode: '',
+    attendanceUpdate: null,
   },
   student: {
     weekStart: '',
@@ -336,11 +342,22 @@ const state = {
     pendingProfilePhotoDataUrl: '',
     profileSetupRequired: false,
     autoRefreshBusy: false,
+    demoAttendanceEnabled: false,
     selfieDataUrl: '',
     attendanceAggregate: null,
+    recoveryPlans: [],
     attendanceHistory: [],
     attendanceHistoryByCourse: {},
+    saarthiStatus: null,
+    saarthiMessages: [],
+    saarthiSending: false,
+    saarthiUiMessage: 'Saarthi session will appear here.',
+    saarthiUiState: 'neutral',
     attendanceDetailsCourseKey: '',
+    attendanceRectificationRequests: [],
+    attendanceRectificationByKey: {},
+    attendanceRectificationTarget: null,
+    attendanceRectificationProofDataUrl: '',
     kpiScheduleId: null,
   },
   faculty: {
@@ -348,7 +365,9 @@ const state = {
     selectedScheduleId: null,
     classDate: '',
     dashboard: null,
+    recoveryPlans: [],
     selectedSubmissionIds: new Set(),
+    rectificationRequests: [],
     analysisHistory: [],
     classroomPhotoDataUrl: '',
   },
@@ -379,6 +398,8 @@ const state = {
     theme: 'light',
     activeModule: 'attendance',
     chotuOpen: false,
+    supportDeskOpen: false,
+    verlynOpen: false,
   },
 };
 
@@ -395,6 +416,10 @@ const authState = {
   forgotOtpRequestInFlight: false,
   forgotResetToken: '',
   forgotResetTokenExpiresAt: '',
+  mfaSetupRequired: false,
+  mfaEnrollInFlight: false,
+  mfaActivateInFlight: false,
+  mfaSetup: null,
   sessionStartedAtMs: 0,
   lastActivityAtMs: 0,
 };
@@ -459,11 +484,16 @@ const els = {
   authLoginControls: document.getElementById('auth-login-controls'),
   authSignupFields: document.getElementById('auth-signup-fields'),
   authSignupActions: document.getElementById('auth-signup-actions'),
-  authSendAltWrap: document.getElementById('auth-send-alt-wrap'),
   authOtpWrap: document.getElementById('auth-otp-wrap'),
-  authSendAltOtp: document.getElementById('auth-send-alt-otp'),
+  authMfaWrap: document.getElementById('auth-mfa-wrap'),
+  authMfaCode: document.getElementById('auth-mfa-code'),
+  authMfaHelp: document.getElementById('auth-mfa-help'),
   authName: document.getElementById('auth-name'),
   authDepartment: document.getElementById('auth-department'),
+  authSignupRegistrationWrap: document.getElementById('auth-signup-registration-wrap'),
+  authSignupRegistration: document.getElementById('auth-signup-registration'),
+  authSignupFacultyIdWrap: document.getElementById('auth-signup-faculty-id-wrap'),
+  authSignupFacultyId: document.getElementById('auth-signup-faculty-id'),
   authSectionWrap: document.getElementById('auth-section-wrap'),
   authSignupSection: document.getElementById('auth-signup-section'),
   authSemesterWrap: document.getElementById('auth-semester-wrap'),
@@ -490,6 +520,25 @@ const els = {
   forgotCancelBtn: document.getElementById('forgot-cancel-btn'),
   forgotModalCloseBtn: document.getElementById('forgot-modal-close-btn'),
   forgotMessage: document.getElementById('forgot-message'),
+  mfaSetupModal: document.getElementById('mfa-setup-modal'),
+  mfaEnrollBtn: document.getElementById('mfa-enroll-btn'),
+  mfaSecret: document.getElementById('mfa-secret'),
+  mfaCopySecretBtn: document.getElementById('mfa-copy-secret-btn'),
+  mfaOtpauthUri: document.getElementById('mfa-otpauth-uri'),
+  mfaCopyUriBtn: document.getElementById('mfa-copy-uri-btn'),
+  mfaQrImage: document.getElementById('mfa-qr-image'),
+  mfaQrEmpty: document.getElementById('mfa-qr-empty'),
+  mfaQrConfirm: document.getElementById('mfa-qr-confirm'),
+  mfaSetupExpires: document.getElementById('mfa-setup-expires'),
+  mfaBackupCodes: document.getElementById('mfa-backup-codes'),
+  mfaTotpCode: document.getElementById('mfa-totp-code'),
+  mfaActivateBtn: document.getElementById('mfa-activate-btn'),
+  mfaLogoutBtn: document.getElementById('mfa-logout-btn'),
+  mfaHelpOpenBtn: document.getElementById('mfa-help-open-btn'),
+  mfaHelpModal: document.getElementById('mfa-help-modal'),
+  mfaHelpCloseBtn: document.getElementById('mfa-help-close-btn'),
+  mfaHelpGotItBtn: document.getElementById('mfa-help-got-it-btn'),
+  mfaSetupStatus: document.getElementById('mfa-setup-status'),
   otpPopup: document.getElementById('otp-popup'),
   otpPopupLoader: document.getElementById('otp-popup-loader'),
   otpPopupTitle: document.getElementById('otp-popup-title'),
@@ -500,7 +549,6 @@ const els = {
   foodToastTitle: document.getElementById('food-toast-title'),
   foodToastText: document.getElementById('food-toast-text'),
   foodToastCloseBtn: document.getElementById('food-toast-close-btn'),
-  otpDebug: document.getElementById('otp-debug'),
   accountMenuBtn: document.getElementById('account-menu-btn'),
   accountMenuDropdown: document.getElementById('account-menu-dropdown'),
   accountMenuAvatar: document.getElementById('account-menu-avatar'),
@@ -509,6 +557,7 @@ const els = {
   accountDropdownEmail: document.getElementById('account-dropdown-email'),
   accountDropdownReg: document.getElementById('account-dropdown-reg'),
   viewProfileBtn: document.getElementById('view-profile-btn'),
+  accountMfaSetupBtn: document.getElementById('account-mfa-setup-btn'),
   logoutBtn: document.getElementById('logout-btn'),
   navDashboardBtn: document.getElementById('nav-dashboard-btn'),
   navCoursesBtn: document.getElementById('nav-courses-btn'),
@@ -516,6 +565,7 @@ const els = {
   topNavAttendanceBtn: document.getElementById('top-nav-attendance'),
   topNavFoodBtn: document.getElementById('top-nav-food'),
   topNavAdministrativeBtn: document.getElementById('top-nav-administrative'),
+  topNavRmsBtn: document.getElementById('top-nav-rms'),
   topNavRemedialBtn: document.getElementById('top-nav-remedial'),
   modulePanels: document.querySelectorAll('.module-panel[data-module]'),
   accountSection: document.getElementById('account-section'),
@@ -528,8 +578,16 @@ const els = {
   alternateEmailStatus: document.getElementById('alternate-email-status'),
 
   executiveSection: document.getElementById('executive-section'),
+  rmsSection: document.getElementById('rms-section'),
   studentSection: document.getElementById('student-section'),
   facultySection: document.getElementById('faculty-section'),
+  adminAttendanceActionsCard: document.getElementById('admin-attendance-actions-card'),
+  adminRecoveryIncludeResolved: document.getElementById('admin-recovery-include-resolved'),
+  adminRecoveryRefreshBtn: document.getElementById('admin-recovery-refresh-btn'),
+  adminRecoveryRecomputeAllBtn: document.getElementById('admin-recovery-recompute-all-btn'),
+  adminRecoveryStatus: document.getElementById('admin-recovery-status'),
+  adminRecoverySummary: document.getElementById('admin-recovery-summary'),
+  adminRecoveryList: document.getElementById('admin-recovery-list'),
   adminLiveChip: document.getElementById('admin-live-chip'),
   adminDataFreshnessNote: document.getElementById('admin-data-freshness-note'),
   adminIssuesWrap: document.getElementById('admin-issues-wrap'),
@@ -582,6 +640,29 @@ const els = {
   chotuToggleBtn: document.getElementById('chotu-toggle-btn'),
   chotuPanel: document.getElementById('chotu-panel'),
   chotuMinimizeBtn: document.getElementById('chotu-minimize-btn'),
+  supportDeskWidget: document.getElementById('support-desk-widget'),
+  supportDeskToggleBtn: document.getElementById('support-desk-toggle-btn'),
+  supportDeskUnreadBadge: document.getElementById('support-desk-unread-badge'),
+  supportDeskPanel: document.getElementById('support-desk-panel'),
+  supportDeskMinimizeBtn: document.getElementById('support-desk-minimize-btn'),
+  supportDeskStatus: document.getElementById('support-desk-status'),
+  supportDeskRecipientLabel: document.getElementById('support-desk-recipient-label'),
+  supportDeskRecipientSelect: document.getElementById('support-desk-recipient-select'),
+  supportDeskCategorySelect: document.getElementById('support-desk-category-select'),
+  supportDeskThreadMeta: document.getElementById('support-desk-thread-meta'),
+  supportDeskMessages: document.getElementById('support-desk-messages'),
+  supportDeskComposeInput: document.getElementById('support-desk-compose-input'),
+  supportDeskSendBtn: document.getElementById('support-desk-send-btn'),
+  verlynSidebarWidget: document.getElementById('verlyn-sidebar-widget'),
+  verlynToggleBtn: document.getElementById('verlyn-toggle-btn'),
+  verlynPanel: document.getElementById('verlyn-panel'),
+  verlynMinimizeBtn: document.getElementById('verlyn-minimize-btn'),
+  verlynStatus: document.getElementById('verlyn-status'),
+  verlynModuleContext: document.getElementById('verlyn-module-context'),
+  verlynQuickActions: document.getElementById('verlyn-quick-actions'),
+  verlynOutput: document.getElementById('verlyn-output'),
+  verlynInput: document.getElementById('verlyn-input'),
+  verlynAskBtn: document.getElementById('verlyn-ask-btn'),
   foodAdminPanel: document.getElementById('food-admin-panel'),
   foodAdminPanelTitle: document.getElementById('food-admin-panel-title'),
   foodAdminPanelSubtitle: document.getElementById('food-admin-panel-subtitle'),
@@ -674,6 +755,7 @@ const els = {
   timetableGrid: document.getElementById('timetable-grid'),
   themeToggleBtn: document.getElementById('theme-toggle-btn'),
   selectedClassLabel: document.getElementById('selected-class-label'),
+  studentAttendanceDemoBtn: document.getElementById('student-attendance-demo-btn'),
   attendanceKpiSubtitle: document.getElementById('attendance-kpi-subtitle'),
   takeSelfieBtn: document.getElementById('take-selfie-btn'),
   studentAttendanceResult: document.getElementById('student-attendance-result'),
@@ -717,8 +799,16 @@ const els = {
   selfiePreview: document.getElementById('selfie-preview'),
   studentMessagesList: document.getElementById('student-messages-list'),
   studentMessagesOpenRemedialBtn: document.getElementById('student-messages-open-remedial-btn'),
+  studentSaarthiCard: document.getElementById('student-saarthi-card'),
+  saarthiStatus: document.getElementById('saarthi-status'),
+  saarthiMandatoryDate: document.getElementById('saarthi-mandatory-date'),
+  saarthiWeeklyCredit: document.getElementById('saarthi-weekly-credit'),
+  saarthiHistory: document.getElementById('saarthi-history'),
+  saarthiComposeInput: document.getElementById('saarthi-compose-input'),
+  saarthiSendBtn: document.getElementById('saarthi-send-btn'),
   studentAggregatePercent: document.getElementById('student-aggregate-percent'),
   studentAttendedDelivered: document.getElementById('student-attended-delivered'),
+  studentRecoveryPlans: document.getElementById('student-recovery-plans'),
   studentAggregateCourses: document.getElementById('student-aggregate-courses'),
   attendanceDetailsModal: document.getElementById('attendance-details-modal'),
   attendanceDetailsTitle: document.getElementById('attendance-details-title'),
@@ -727,6 +817,16 @@ const els = {
   dashboardSubtitle: document.getElementById('dashboard-subtitle'),
   attendanceDetailsList: document.getElementById('attendance-details-list'),
   attendanceDetailsCloseBtn: document.getElementById('attendance-details-close-btn'),
+  attendanceRectificationModal: document.getElementById('attendance-rectification-modal'),
+  attendanceRectificationTitle: document.getElementById('attendance-rectification-title'),
+  attendanceRectificationMeta: document.getElementById('attendance-rectification-meta'),
+  attendanceRectificationContext: document.getElementById('attendance-rectification-context'),
+  attendanceRectificationProofNote: document.getElementById('attendance-rectification-proof-note'),
+  attendanceRectificationProofPhotoInput: document.getElementById('attendance-rectification-proof-photo'),
+  attendanceRectificationProofPreview: document.getElementById('attendance-rectification-proof-preview'),
+  attendanceRectificationStatus: document.getElementById('attendance-rectification-status'),
+  attendanceRectificationSubmitBtn: document.getElementById('attendance-rectification-submit-btn'),
+  attendanceRectificationCancelBtn: document.getElementById('attendance-rectification-cancel-btn'),
 
   facultyScheduleSelect: document.getElementById('faculty-schedule-select'),
   facultyClassDate: document.getElementById('faculty-class-date'),
@@ -740,6 +840,98 @@ const els = {
   facultyApproveBtn: document.getElementById('faculty-approve-btn'),
   facultyRejectBtn: document.getElementById('faculty-reject-btn'),
   facultySubmissionsBody: document.getElementById('faculty-submissions-body'),
+  facultyRecoveryList: document.getElementById('faculty-recovery-list'),
+  facultyRectificationBody: document.getElementById('faculty-rectification-body'),
+  adminCreateScheduleCourseId: document.getElementById('admin-create-schedule-course-id'),
+  adminCreateScheduleFacultyId: document.getElementById('admin-create-schedule-faculty-id'),
+  adminCreateScheduleWeekday: document.getElementById('admin-create-schedule-weekday'),
+  adminCreateScheduleStartTime: document.getElementById('admin-create-schedule-start-time'),
+  adminCreateScheduleEndTime: document.getElementById('admin-create-schedule-end-time'),
+  adminCreateScheduleRoomLabel: document.getElementById('admin-create-schedule-room-label'),
+  adminCreateScheduleBtn: document.getElementById('admin-create-schedule-btn'),
+  adminCreateScheduleStatus: document.getElementById('admin-create-schedule-status'),
+  adminTimetableOverrideScope: document.getElementById('admin-timetable-override-scope'),
+  adminTimetableOverrideStudentId: document.getElementById('admin-timetable-override-student-id'),
+  adminTimetableOverrideSection: document.getElementById('admin-timetable-override-section'),
+  adminTimetableOverrideSourceWeekday: document.getElementById('admin-timetable-override-source-weekday'),
+  adminTimetableOverrideSourceStartTime: document.getElementById('admin-timetable-override-source-start-time'),
+  adminTimetableOverrideCourseId: document.getElementById('admin-timetable-override-course-id'),
+  adminTimetableOverrideFacultyId: document.getElementById('admin-timetable-override-faculty-id'),
+  adminTimetableOverrideWeekday: document.getElementById('admin-timetable-override-weekday'),
+  adminTimetableOverrideStartTime: document.getElementById('admin-timetable-override-start-time'),
+  adminTimetableOverrideEndTime: document.getElementById('admin-timetable-override-end-time'),
+  adminTimetableOverrideRoomLabel: document.getElementById('admin-timetable-override-room-label'),
+  adminTimetableOverrideBtn: document.getElementById('admin-timetable-override-btn'),
+  adminTimetableOverrideStatus: document.getElementById('admin-timetable-override-status'),
+  adminUpdateStudentId: document.getElementById('admin-update-student-id'),
+  adminUpdateStudentSection: document.getElementById('admin-update-student-section'),
+  adminUpdateStudentSectionBtn: document.getElementById('admin-update-student-section-btn'),
+  adminUpdateStudentSectionStatus: document.getElementById('admin-update-student-section-status'),
+  adminSearchStudentRegistration: document.getElementById('admin-search-student-registration'),
+  adminSearchStudentBtn: document.getElementById('admin-search-student-btn'),
+  adminSearchFacultyIdentifier: document.getElementById('admin-search-faculty-identifier'),
+  adminSearchFacultyBtn: document.getElementById('admin-search-faculty-btn'),
+  adminGlobalSearchQuery: document.getElementById('admin-global-search-query'),
+  adminGlobalSearchBtn: document.getElementById('admin-global-search-btn'),
+  adminSearchStatus: document.getElementById('admin-search-status'),
+  adminSearchResults: document.getElementById('admin-search-results'),
+  adminGradeStudentRegistration: document.getElementById('admin-grade-student-registration'),
+  adminGradeCourseCode: document.getElementById('admin-grade-course-code'),
+  adminGradeLetter: document.getElementById('admin-grade-letter'),
+  adminGradeMarks: document.getElementById('admin-grade-marks'),
+  adminGradeRemark: document.getElementById('admin-grade-remark'),
+  adminGradeSubmitBtn: document.getElementById('admin-grade-submit-btn'),
+  adminGradeStatus: document.getElementById('admin-grade-status'),
+  adminGradeHistoryWrap: document.getElementById('admin-grade-history-wrap'),
+  adminIdentityStudentId: document.getElementById('admin-identity-student-id'),
+  adminIdentityScreenBtn: document.getElementById('admin-identity-screen-btn'),
+  adminIdentityRefreshBtn: document.getElementById('admin-identity-refresh-btn'),
+  adminIdentityStatus: document.getElementById('admin-identity-status'),
+  adminIdentityCasesWrap: document.getElementById('admin-identity-cases-wrap'),
+  adminCopilotAuditSearch: document.getElementById('admin-copilot-audit-search'),
+  adminCopilotAuditIntent: document.getElementById('admin-copilot-audit-intent'),
+  adminCopilotAuditOutcome: document.getElementById('admin-copilot-audit-outcome'),
+  adminCopilotAuditRole: document.getElementById('admin-copilot-audit-role'),
+  adminCopilotAuditActorUserId: document.getElementById('admin-copilot-audit-actor-user-id'),
+  adminCopilotAuditLimit: document.getElementById('admin-copilot-audit-limit'),
+  adminCopilotAuditSearchBtn: document.getElementById('admin-copilot-audit-search-btn'),
+  adminCopilotAuditClearBtn: document.getElementById('admin-copilot-audit-clear-btn'),
+  adminCopilotAuditStatus: document.getElementById('admin-copilot-audit-status'),
+  adminCopilotAuditWrap: document.getElementById('admin-copilot-audit-wrap'),
+  rmsQueryCategory: document.getElementById('rms-query-category'),
+  rmsQueryStatus: document.getElementById('rms-query-status'),
+  rmsRefreshBtn: document.getElementById('rms-refresh-btn'),
+  rmsStatusMsg: document.getElementById('rms-status-msg'),
+  rmsTotalThreads: document.getElementById('rms-total-threads'),
+  rmsTotalPending: document.getElementById('rms-total-pending'),
+  rmsActiveCategories: document.getElementById('rms-active-categories'),
+  rmsQueryList: document.getElementById('rms-query-list'),
+  rmsSelectedThread: document.getElementById('rms-selected-thread'),
+  rmsThreadAction: document.getElementById('rms-thread-action'),
+  rmsThreadScheduleWrap: document.getElementById('rms-thread-schedule-wrap'),
+  rmsThreadScheduledFor: document.getElementById('rms-thread-scheduled-for'),
+  rmsThreadNote: document.getElementById('rms-thread-note'),
+  rmsApplyThreadActionBtn: document.getElementById('rms-apply-thread-action-btn'),
+  rmsThreadActionMsg: document.getElementById('rms-thread-action-msg'),
+  rmsSearchRegistration: document.getElementById('rms-search-registration'),
+  rmsStudentSearchBtn: document.getElementById('rms-student-search-btn'),
+  rmsStudentSummary: document.getElementById('rms-student-summary'),
+  rmsUpdateRegistration: document.getElementById('rms-update-registration'),
+  rmsUpdateSection: document.getElementById('rms-update-section'),
+  rmsApplyUpdateBtn: document.getElementById('rms-apply-update-btn'),
+  rmsStudentUpdateMsg: document.getElementById('rms-student-update-msg'),
+  rmsAdminDedicatedNote: document.getElementById('rms-admin-dedicated-note'),
+  rmsAttendanceRegistration: document.getElementById('rms-attendance-registration'),
+  rmsAttendanceSearchBtn: document.getElementById('rms-attendance-search-btn'),
+  rmsAttendanceStudentSummary: document.getElementById('rms-attendance-student-summary'),
+  rmsAttendanceSubjectSelect: document.getElementById('rms-attendance-subject-select'),
+  rmsAttendanceDate: document.getElementById('rms-attendance-date'),
+  rmsAttendanceCurrentStatus: document.getElementById('rms-attendance-current-status'),
+  rmsAttendanceStatus: document.getElementById('rms-attendance-status'),
+  rmsAttendanceNote: document.getElementById('rms-attendance-note'),
+  rmsAttendanceApplyBtn: document.getElementById('rms-attendance-apply-btn'),
+  rmsAttendanceStatusMsg: document.getElementById('rms-attendance-status-msg'),
+  rmsAttendanceResult: document.getElementById('rms-attendance-result'),
   classroomPhotoInput: document.getElementById('classroom-photo-input'),
   captureClassroomBtn: document.getElementById('capture-classroom-btn'),
   analyzeClassroomBtn: document.getElementById('analyze-classroom-btn'),
@@ -770,29 +962,410 @@ function log(message) {
   if (!els.statusLog) {
     return;
   }
+  const skeleton = els.statusLog.querySelector('.status-log-skeleton');
+  if (skeleton) {
+    skeleton.remove();
+  }
   const line = document.createElement('div');
   line.className = 'log-line';
   line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   els.statusLog.prepend(line);
 }
 
-function setAuthMessage(message, isError = false) {
-  const isLight = document.body.classList.contains('ums-theme');
-  els.authMessage.textContent = message;
-  els.authMessage.style.color = isError
-    ? (isLight ? '#b23322' : '#ffaf93')
-    : (isLight ? '#4b6783' : '#c0dbf3');
+function normalizeUiState(state = 'neutral') {
+  const candidate = String(state || '').trim().toLowerCase();
+  if (candidate === 'loading' || candidate === 'empty' || candidate === 'error' || candidate === 'success') {
+    return candidate;
+  }
+  return 'neutral';
 }
 
-function setForgotMessage(message, isError = false) {
+function setUiStateMessage(element, message, { state = 'neutral' } = {}) {
+  if (!element) {
+    return;
+  }
+  const normalizedState = normalizeUiState(state);
+  element.textContent = String(message || '');
+  element.dataset.uiState = normalizedState;
+  element.classList.add('ui-state');
+  element.classList.toggle('error-text', normalizedState === 'error');
+}
+
+function setAuthMessage(message, isError = false, state = 'neutral') {
+  setUiStateMessage(els.authMessage, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setForgotMessage(message, isError = false, state = 'neutral') {
   if (!els.forgotMessage) {
     return;
   }
-  const isLight = document.body.classList.contains('ums-theme');
-  els.forgotMessage.textContent = message || '';
-  els.forgotMessage.style.color = isError
-    ? (isLight ? '#b23322' : '#ffaf93')
-    : (isLight ? '#4b6783' : '#c0dbf3');
+  setUiStateMessage(els.forgotMessage, message || '', {
+    state: isError ? 'error' : state,
+  });
+}
+
+function isPrivilegedMfaRole(role) {
+  const value = String(role || '').trim().toLowerCase();
+  return value === 'admin' || value === 'faculty' || value === 'owner';
+}
+
+function isMfaEnrollmentRequiredMessage(message = '') {
+  const text = String(message || '').trim().toLowerCase();
+  return text.includes('mfa enrollment is required')
+    || (text.includes('/auth/mfa/enroll') && text.includes('/auth/mfa/activate'));
+}
+
+function isMfaCodeRequiredMessage(message = '') {
+  const text = String(message || '').trim().toLowerCase();
+  return text.includes('mfa code is required')
+    || text.includes('valid totp')
+    || text.includes('backup code');
+}
+
+function setAuthMfaInputVisible(visible, helpMessage = '') {
+  const show = Boolean(visible);
+  setHidden(els.authMfaWrap, !show);
+  if (els.authMfaHelp) {
+    setHidden(els.authMfaHelp, !show);
+    if (show && helpMessage) {
+      els.authMfaHelp.textContent = String(helpMessage);
+    } else if (!show) {
+      els.authMfaHelp.textContent = 'Enter authenticator app code (or backup code) for privileged accounts with MFA enabled.';
+    }
+  }
+  if (!show && els.authMfaCode) {
+    els.authMfaCode.value = '';
+  }
+}
+
+function setMfaSetupMessage(message, isError = false, state = 'neutral') {
+  if (!els.mfaSetupStatus) {
+    return;
+  }
+  setUiStateMessage(els.mfaSetupStatus, message || '', {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setMfaActionBusyState() {
+  const enrollBusy = Boolean(authState.mfaEnrollInFlight);
+  const activateBusy = Boolean(authState.mfaActivateInFlight);
+  if (els.mfaEnrollBtn) {
+    els.mfaEnrollBtn.disabled = enrollBusy || activateBusy;
+    els.mfaEnrollBtn.textContent = enrollBusy ? 'Generating Setup...' : 'Start MFA Enrollment';
+  }
+  if (els.mfaActivateBtn) {
+    const normalizedTotpCode = String(els.mfaTotpCode?.value || '').replace(/\D+/g, '');
+    const hasTotpCode = normalizedTotpCode.length === 6;
+    els.mfaActivateBtn.disabled = enrollBusy || activateBusy || !hasTotpCode;
+    els.mfaActivateBtn.textContent = activateBusy ? 'Activating...' : 'Activate MFA';
+  }
+}
+
+function resetMfaCopyButtonLabels() {
+  if (els.mfaCopySecretBtn) {
+    els.mfaCopySecretBtn.textContent = 'Copy';
+  }
+  if (els.mfaCopyUriBtn) {
+    els.mfaCopyUriBtn.textContent = 'Copy';
+  }
+}
+
+function syncMfaCopyButtonsState() {
+  if (els.mfaCopySecretBtn) {
+    els.mfaCopySecretBtn.disabled = !Boolean((els.mfaSecret?.value || '').trim());
+  }
+  if (els.mfaCopyUriBtn) {
+    els.mfaCopyUriBtn.disabled = !Boolean((els.mfaOtpauthUri?.value || '').trim());
+  }
+}
+
+async function copyTextToClipboard(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return false;
+  }
+  if (navigator?.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (_error) {
+      // Fallback to document.execCommand when Clipboard API is blocked.
+    }
+  }
+  const ghost = document.createElement('textarea');
+  ghost.value = text;
+  ghost.setAttribute('readonly', 'readonly');
+  ghost.style.position = 'fixed';
+  ghost.style.left = '-9999px';
+  ghost.style.opacity = '0';
+  document.body.appendChild(ghost);
+  ghost.select();
+  ghost.setSelectionRange(0, ghost.value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (_error) {
+    copied = false;
+  }
+  ghost.remove();
+  return copied;
+}
+
+function showMfaCopyButtonFeedback(button, label = 'Copied') {
+  if (!button) {
+    return;
+  }
+  button.textContent = label;
+  window.clearTimeout(showMfaCopyButtonFeedback._timerById?.get(button));
+  if (!showMfaCopyButtonFeedback._timerById) {
+    showMfaCopyButtonFeedback._timerById = new Map();
+  }
+  const timer = window.setTimeout(() => {
+    button.textContent = 'Copy';
+    showMfaCopyButtonFeedback._timerById.delete(button);
+  }, 1400);
+  showMfaCopyButtonFeedback._timerById.set(button, timer);
+}
+
+function renderMfaSetupData(payload = null) {
+  const data = payload && typeof payload === 'object' ? payload : null;
+  authState.mfaSetup = data;
+  if (els.mfaQrImage && els.mfaQrEmpty) {
+    const qrPayload = data?.qr_svg_data_uri ? String(data.qr_svg_data_uri) : '';
+    if (qrPayload) {
+      els.mfaQrImage.src = qrPayload;
+      els.mfaQrImage.classList.remove('hidden');
+      els.mfaQrEmpty.textContent = 'Scan using Google Authenticator / Microsoft Authenticator / Authy.';
+    } else {
+      els.mfaQrImage.removeAttribute('src');
+      els.mfaQrImage.classList.add('hidden');
+      els.mfaQrEmpty.textContent = 'QR is unavailable in this runtime. Use manual setup key below.';
+    }
+  }
+  if (els.mfaSecret) {
+    els.mfaSecret.value = data?.secret ? String(data.secret) : '';
+  }
+  if (els.mfaOtpauthUri) {
+    els.mfaOtpauthUri.value = data?.otpauth_uri ? String(data.otpauth_uri) : '';
+  }
+  if (els.mfaSetupExpires) {
+    if (data?.setup_expires_at) {
+      const expiresAt = new Date(String(data.setup_expires_at));
+      const label = Number.isNaN(expiresAt.getTime())
+        ? String(data.setup_expires_at)
+        : expiresAt.toLocaleString();
+      els.mfaSetupExpires.textContent = `Setup expires at: ${label}`;
+    } else {
+      els.mfaSetupExpires.textContent = 'Setup session details will appear after enrollment.';
+    }
+  }
+  if (els.mfaBackupCodes) {
+    els.mfaBackupCodes.innerHTML = '';
+    const codes = Array.isArray(data?.backup_codes) ? data.backup_codes : [];
+    if (!codes.length) {
+      const empty = document.createElement('li');
+      empty.className = 'mfa-backup-code mfa-backup-code-empty';
+      empty.textContent = 'No backup codes yet. Generate by starting enrollment.';
+      els.mfaBackupCodes.appendChild(empty);
+    } else {
+      for (const code of codes) {
+        const item = document.createElement('li');
+        item.className = 'mfa-backup-code';
+        item.textContent = String(code || '');
+        els.mfaBackupCodes.appendChild(item);
+      }
+    }
+  }
+  resetMfaCopyButtonLabels();
+  syncMfaCopyButtonsState();
+}
+
+function setMfaSetupModal(open) {
+  if (!els.mfaSetupModal) {
+    return;
+  }
+  setHidden(els.mfaSetupModal, !open);
+  if (!open) {
+    setMfaHelpModal(false);
+  }
+}
+
+function setMfaHelpModal(open) {
+  if (!els.mfaHelpModal) {
+    return;
+  }
+  const shouldOpen = Boolean(open);
+  setHidden(els.mfaHelpModal, !shouldOpen);
+  if (!shouldOpen && els.mfaSetupModal && !els.mfaSetupModal.classList.contains('hidden')) {
+    syncModalFocusTrap(els.mfaSetupModal);
+  }
+}
+
+function resetMfaSetupUiState() {
+  authState.mfaEnrollInFlight = false;
+  authState.mfaActivateInFlight = false;
+  authState.mfaSetup = null;
+  renderMfaSetupData(null);
+  if (els.mfaQrConfirm) {
+    els.mfaQrConfirm.checked = false;
+  }
+  if (els.mfaTotpCode) {
+    els.mfaTotpCode.value = '';
+  }
+  setMfaSetupMessage('');
+  setMfaActionBusyState();
+}
+
+function maybeShowMfaGuidePrompt() {
+  const email = String(authState.user?.email || '').trim().toLowerCase();
+  if (!email) {
+    return;
+  }
+  if (hasSeenMfaGuidePrompt(email)) {
+    return;
+  }
+  markMfaGuidePromptSeen(email);
+  setMfaHelpModal(true);
+}
+
+function openMfaSetupModalForStatus(status = null, triggerMessage = 'MFA enrollment is required for this account.') {
+  openAuthOverlay(triggerMessage);
+  authState.mfaSetupRequired = true;
+  setAuthMfaInputVisible(false);
+  setAuthMessage('MFA enrollment is required for admin/faculty accounts. Complete setup below to continue.', true);
+  resetMfaSetupUiState();
+  if (status?.setup_pending && status?.setup_expires_at && els.mfaSetupExpires) {
+    const expiresAt = new Date(String(status.setup_expires_at));
+    const label = Number.isNaN(expiresAt.getTime())
+      ? String(status.setup_expires_at)
+      : expiresAt.toLocaleString();
+    els.mfaSetupExpires.textContent = `A pending setup already exists. You can restart enrollment. Pending setup expires at: ${label}`;
+  }
+  setMfaSetupMessage('Start MFA enrollment, add secret to your authenticator app, then activate using TOTP.', false, 'neutral');
+  setMfaSetupModal(true);
+  maybeShowMfaGuidePrompt();
+}
+
+async function openMfaSetupFromAccountMenu() {
+  if (!authState.user || !authState.token) {
+    openAuthOverlay('Sign in first to complete MFA setup.');
+    return;
+  }
+  if (!isPrivilegedMfaRole(authState.user.role)) {
+    log('MFA setup is only available for privileged roles.');
+    return;
+  }
+  const status = await api('/auth/mfa/status');
+  const required = Boolean(status?.required);
+  const enabled = Boolean(status?.enabled || authState.user?.mfa_enabled);
+  if (!required) {
+    log('MFA enrollment is not required for this account.');
+    return;
+  }
+  if (enabled) {
+    log('MFA is already enabled for this account.');
+    return;
+  }
+  openMfaSetupModalForStatus(status, 'MFA enrollment is required for this account.');
+}
+
+async function maybePromptPrivilegedMfaSetup(triggerMessage = '') {
+  if (!authState.user || !authState.token || !isPrivilegedMfaRole(authState.user.role)) {
+    authState.mfaSetupRequired = false;
+    return false;
+  }
+  if (authState.mfaSetupRequired && els.mfaSetupModal && !els.mfaSetupModal.classList.contains('hidden')) {
+    return true;
+  }
+  let status = null;
+  try {
+    status = await api('/auth/mfa/status');
+  } catch (error) {
+    log(error?.message || 'Unable to load MFA status.');
+    return false;
+  }
+  const required = Boolean(status?.required);
+  const enabled = Boolean(status?.enabled || authState.user?.mfa_enabled);
+  if (!required || enabled) {
+    authState.mfaSetupRequired = false;
+    return false;
+  }
+
+  openMfaSetupModalForStatus(status, triggerMessage || 'MFA enrollment is required for this account.');
+  return true;
+}
+
+async function enrollMfaSetup() {
+  if (authState.mfaEnrollInFlight || authState.mfaActivateInFlight) {
+    return;
+  }
+  const hasExistingSetup = Boolean((authState.mfaSetup?.secret || '').trim());
+  if (hasExistingSetup) {
+    const shouldRegenerate = window.confirm(
+      'Start MFA Enrollment will regenerate your secret and invalidate the previously scanned QR. Continue?'
+    );
+    if (!shouldRegenerate) {
+      return;
+    }
+  }
+  authState.mfaEnrollInFlight = true;
+  setMfaActionBusyState();
+  setMfaSetupMessage('Generating MFA secret and backup codes...', false, 'loading');
+  try {
+    const data = await api('/auth/mfa/enroll', { method: 'POST' });
+    renderMfaSetupData(data);
+    setMfaSetupMessage('MFA setup generated. Save backup codes securely, then activate with TOTP.', false, 'success');
+    log('MFA enrollment initiated');
+  } catch (error) {
+    setMfaSetupMessage(error?.message || 'Unable to start MFA enrollment.', true);
+    throw error;
+  } finally {
+    authState.mfaEnrollInFlight = false;
+    setMfaActionBusyState();
+  }
+}
+
+async function activateMfaSetup() {
+  if (authState.mfaActivateInFlight || authState.mfaEnrollInFlight) {
+    return;
+  }
+  const totpCode = String(els.mfaTotpCode?.value || '').replace(/\D+/g, '');
+  if (els.mfaTotpCode) {
+    els.mfaTotpCode.value = totpCode;
+  }
+  if (totpCode.length !== 6) {
+    throw new Error('Enter a valid 6-digit authenticator TOTP code.');
+  }
+  authState.mfaActivateInFlight = true;
+  setMfaActionBusyState();
+  setMfaSetupMessage('Activating MFA...', false, 'loading');
+  try {
+    await api('/auth/mfa/activate', {
+      method: 'POST',
+      body: JSON.stringify({ totp_code: totpCode }),
+    });
+    authState.mfaSetupRequired = false;
+    if (authState.user && typeof authState.user === 'object') {
+      authState.user.mfa_enabled = true;
+    }
+    setMfaSetupMessage('MFA activated. Continuing to dashboard...', false, 'success');
+    log('MFA activated');
+    setMfaSetupModal(false);
+    setAuthMfaInputVisible(false);
+    const restored = await restoreSession();
+    if (restored) {
+      await refreshAll();
+    }
+  } catch (error) {
+    setMfaSetupMessage(error?.message || 'Unable to activate MFA.', true);
+    throw error;
+  } finally {
+    authState.mfaActivateInFlight = false;
+    setMfaActionBusyState();
+  }
 }
 
 function passwordStrengthMeta(password) {
@@ -1126,8 +1699,10 @@ function openAuthOverlay(message = 'Sign in to continue.') {
   stopFoodDemandLiveTicker();
   document.body.classList.add('auth-open');
   els.authOverlay.classList.remove('hidden');
-  els.otpDebug.classList.add('hidden');
-  els.otpDebug.textContent = '';
+  setMfaSetupModal(false);
+  authState.mfaSetupRequired = false;
+  resetMfaSetupUiState();
+  setAuthMfaInputVisible(false);
   hideOtpPopup();
   setAuthMode('login');
   setForgotPasswordPanel(false);
@@ -1137,9 +1712,9 @@ function openAuthOverlay(message = 'Sign in to continue.') {
 
 function closeAuthOverlay() {
   document.body.classList.remove('auth-open');
+  document.body.classList.remove('auth-signup-mode');
   els.authOverlay.classList.add('hidden');
-  els.otpDebug.classList.add('hidden');
-  els.otpDebug.textContent = '';
+  setMfaSetupModal(false);
   hideOtpPopup();
   syncFoodDemandLiveTicker();
 }
@@ -1170,12 +1745,25 @@ function profilePromptStorageKey(userEmail = '') {
   return normalizedEmail;
 }
 
+function mfaGuideStorageKey(userEmail = '') {
+  const normalizedEmail = String(userEmail || '').trim().toLowerCase() || 'guest';
+  return normalizedEmail;
+}
+
 function hasSeenProfileSetupPrompt(userEmail = '') {
   return runtimeUiStore.profilePromptSeenByUser.has(profilePromptStorageKey(userEmail));
 }
 
 function markProfileSetupPromptSeen(userEmail = '') {
   runtimeUiStore.profilePromptSeenByUser.add(profilePromptStorageKey(userEmail));
+}
+
+function hasSeenMfaGuidePrompt(userEmail = '') {
+  return runtimeUiStore.mfaGuideSeenByUser.has(mfaGuideStorageKey(userEmail));
+}
+
+function markMfaGuidePromptSeen(userEmail = '') {
+  runtimeUiStore.mfaGuideSeenByUser.add(mfaGuideStorageKey(userEmail));
 }
 
 function getInitialTheme(userEmail = '') {
@@ -1191,6 +1779,24 @@ function applyDaylightTint(now = new Date()) {
   const isWarm = Number.isFinite(hour) && hour >= 17;
   document.body.classList.toggle('ums-daylight-warm', isWarm);
   document.body.classList.toggle('ums-daylight-day', !isWarm);
+}
+
+function syncTopNavActiveButtonIntoView() {
+  const activeButton = [
+    els.topNavAttendanceBtn,
+    els.topNavFoodBtn,
+    els.topNavAdministrativeBtn,
+    els.topNavRmsBtn,
+    els.topNavRemedialBtn,
+  ].find((button) => button && button.classList.contains('active'));
+  if (!activeButton || typeof activeButton.scrollIntoView !== 'function') {
+    return;
+  }
+  activeButton.scrollIntoView({
+    behavior: 'auto',
+    block: 'nearest',
+    inline: 'nearest',
+  });
 }
 
 function applyTheme(theme, options = {}) {
@@ -1210,6 +1816,9 @@ function applyTheme(theme, options = {}) {
       resolved === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'
     );
   }
+  window.requestAnimationFrame(() => {
+    syncTopNavActiveButtonIntoView();
+  });
 }
 
 function toggleTheme() {
@@ -1219,26 +1828,70 @@ function toggleTheme() {
   });
 }
 
+function bindStaticAssetFallbacks() {
+  document.querySelectorAll('img[data-fallback-src]').forEach((image) => {
+    if (!(image instanceof HTMLImageElement)) {
+      return;
+    }
+
+    image.addEventListener('error', () => {
+      const fallbackSrc = String(image.dataset.fallbackSrc || '').trim();
+      if (!fallbackSrc) {
+        return;
+      }
+      const currentSrc = String(image.getAttribute('src') || '').trim();
+      if (!currentSrc || currentSrc === fallbackSrc) {
+        return;
+      }
+      image.setAttribute('src', fallbackSrc);
+    }, { once: true });
+  });
+}
+
+function formatUtcOffsetLabel(offsetMinutes) {
+  const normalized = Number.isFinite(offsetMinutes) ? Math.trunc(offsetMinutes) : 0;
+  const sign = normalized >= 0 ? '+' : '-';
+  const absolute = Math.abs(normalized);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, '0');
+  const minutes = String(absolute % 60).padStart(2, '0');
+  return `UTC${sign}${hours}:${minutes}`;
+}
+
+function extractTimeZoneName(formatter, dateValue) {
+  const parts = formatter.formatToParts(dateValue);
+  const zonePart = parts.find((part) => part.type === 'timeZoneName');
+  return String(zonePart?.value || '').trim();
+}
+
 function renderLiveDateTime() {
   if (!els.liveDateTime) {
     return;
   }
   const now = new Date();
-  const formatted = new Intl.DateTimeFormat(undefined, {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true,
-  }).format(now);
-  els.liveDateTime.textContent = `${formatted} (Local Time)`;
-  applyDaylightTint(now);
-  renderFoodFreshnessIndicators();
-  renderFoodDemandFreshnessIndicator();
-  applyFoodRealtimeAvailability({ showStatusOnTransition: true });
+  const dateLabel = LIVE_DATE_FORMATTER.format(now);
+  const timeLabel = LIVE_TIME_FORMATTER.format(now);
+  const zoneShort = extractTimeZoneName(LIVE_TIMEZONE_SHORT_FORMATTER, now) || 'Local';
+  const zoneLong = extractTimeZoneName(LIVE_TIMEZONE_LONG_FORMATTER, now);
+  const utcOffset = formatUtcOffsetLabel(-now.getTimezoneOffset());
+  const nextLabel = `${dateLabel} • ${timeLabel} ${zoneShort} (${utcOffset})`;
+
+  if (nextLabel !== liveDateTimeLabelCache) {
+    liveDateTimeLabelCache = nextLabel;
+    els.liveDateTime.textContent = nextLabel;
+  }
+
+  const tooltip = `${LIVE_DATE_TOOLTIP_FORMATTER.format(now)}${zoneLong ? ` • ${zoneLong}` : ''} • ${utcOffset}`;
+  els.liveDateTime.setAttribute('title', tooltip);
+  els.liveDateTime.setAttribute('datetime', now.toISOString());
+
+  const nowMs = now.getTime();
+  if (nowMs - liveDateUtilityLastRunMs >= LIVE_OPERATIONAL_REFRESH_MS) {
+    liveDateUtilityLastRunMs = nowMs;
+    applyDaylightTint(now);
+    renderFoodFreshnessIndicators();
+    renderFoodDemandFreshnessIndicator();
+    applyFoodRealtimeAvailability({ showStatusOnTransition: true });
+  }
 }
 
 function startLiveDateTimeTicker() {
@@ -1278,32 +1931,8 @@ function startStudentTimetableStatusTicker() {
 }
 
 function startStudentRealtimeTicker() {
-  if (studentRealtimeTimer) {
-    return;
-  }
-
-  studentRealtimeTimer = setInterval(async () => {
-    if (!authState.user || authState.user.role !== 'student') {
-      return;
-    }
-    if (document.body.classList.contains('auth-open')) {
-      return;
-    }
-    if (state.student.autoRefreshBusy) {
-      return;
-    }
-
-    state.student.autoRefreshBusy = true;
-    try {
-      await refreshStudentKpiTimetable({ forceNetwork: true });
-      await loadStudentTimetable({ forceNetwork: true });
-      await loadStudentAttendanceInsights();
-    } catch (error) {
-      log(error.message || 'Student realtime refresh failed');
-    } finally {
-      state.student.autoRefreshBusy = false;
-    }
-  }, 45000);
+  // Student attendance/message realtime is event-driven via SSE route modules.
+  stopStudentRealtimeTicker();
 }
 
 function stopModuleRealtimeTicker() {
@@ -1316,28 +1945,7 @@ function stopModuleRealtimeTicker() {
 }
 
 function startModuleRealtimeTicker() {
-  if (moduleRealtimeTimer) {
-    return;
-  }
-  moduleRealtimeTimer = setInterval(async () => {
-    if (!authState.user || moduleRealtimeBusy) {
-      return;
-    }
-    if (document.body.classList.contains('auth-open')) {
-      return;
-    }
-    if (authState.user.role === 'student' && state.ui.activeModule === 'attendance') {
-      return;
-    }
-    moduleRealtimeBusy = true;
-    try {
-      await refreshActiveModuleData();
-    } catch (error) {
-      log(error.message || 'Module realtime refresh failed');
-    } finally {
-      moduleRealtimeBusy = false;
-    }
-  }, 45000);
+  stopModuleRealtimeTicker();
 }
 
 function canRunRemedialLiveTicker() {
@@ -1361,30 +1969,12 @@ function stopRemedialLiveTicker() {
 }
 
 function startRemedialLiveTicker() {
-  if (remedialLiveTimer || !canRunRemedialLiveTicker()) {
-    return;
-  }
-  remedialLiveTimer = window.setInterval(async () => {
-    if (!canRunRemedialLiveTicker() || remedialLiveBusy) {
-      return;
-    }
-    remedialLiveBusy = true;
-    try {
-      await Promise.allSettled([refreshRemedialMessages(), refreshStudentMessages()]);
-    } catch (_) {
-      // Keep silent here; user-triggered actions already log explicit errors.
-    } finally {
-      remedialLiveBusy = false;
-    }
-  }, REMEDIAL_LIVE_REFRESH_MS);
+  // Remedial + message updates are event-driven via SSE route modules.
+  stopRemedialLiveTicker();
 }
 
 function syncRemedialLiveTicker() {
-  if (!canRunRemedialLiveTicker()) {
-    stopRemedialLiveTicker();
-    return;
-  }
-  startRemedialLiveTicker();
+  stopRemedialLiveTicker();
 }
 
 function getActiveProfilePhotoDataUrl() {
@@ -1487,6 +2077,9 @@ function renderAccountMenuProfile() {
 
 function updateAuthBadges() {
   if (!authState.user) {
+    if (els.accountMfaSetupBtn) {
+      els.accountMfaSetupBtn.classList.add('hidden');
+    }
     if (els.logoutBtn) {
       els.logoutBtn.classList.add('hidden');
     }
@@ -1495,6 +2088,10 @@ function updateAuthBadges() {
     return;
   }
 
+  if (els.accountMfaSetupBtn) {
+    const canSetupMfa = isPrivilegedMfaRole(authState.user.role) && !Boolean(authState.user.mfa_enabled);
+    els.accountMfaSetupBtn.classList.toggle('hidden', !canSetupMfa);
+  }
   if (els.logoutBtn) {
     els.logoutBtn.classList.remove('hidden');
   }
@@ -1538,7 +2135,966 @@ function updateChotuVisibility() {
     setChotuOpen(false);
     return;
   }
-  renderFoodAiQuickChips();
+  void renderFoodAiQuickChips();
+}
+
+function setVerlynStatus(message, isError = false, state = 'neutral') {
+  if (!els.verlynStatus) {
+    return;
+  }
+  setUiStateMessage(els.verlynStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setVerlynOpen(open) {
+  if (!els.verlynSidebarWidget || !els.verlynPanel || !els.verlynToggleBtn) {
+    return;
+  }
+  const shouldOpen = Boolean(open);
+  state.ui.verlynOpen = shouldOpen;
+  els.verlynSidebarWidget.classList.remove('is-closing');
+  els.verlynSidebarWidget.classList.toggle('is-open', shouldOpen);
+  els.verlynToggleBtn.classList.toggle('is-active', shouldOpen);
+  els.verlynToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  if (shouldOpen) {
+    window.clearTimeout(setVerlynOpen._closeTimer);
+    return;
+  }
+  els.verlynSidebarWidget.classList.add('is-closing');
+  window.clearTimeout(setVerlynOpen._closeTimer);
+  setVerlynOpen._closeTimer = window.setTimeout(() => {
+    els.verlynSidebarWidget?.classList.remove('is-closing');
+  }, 260);
+}
+
+function toggleVerlynOpen() {
+  setVerlynOpen(!state.ui.verlynOpen);
+}
+
+function updateVerlynVisibility() {
+  if (!els.verlynSidebarWidget) {
+    return;
+  }
+  const compactLayout = window.matchMedia('(max-width: 940px)').matches;
+  const visible = !compactLayout;
+  setHidden(els.verlynSidebarWidget, !visible);
+  if (!visible) {
+    setVerlynOpen(false);
+  }
+}
+
+function getVerlynRoleLabel() {
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  if (!role) {
+    return 'Guest';
+  }
+  return asTitleCase(role);
+}
+
+function getVerlynModuleLabel(moduleKey = getSanitizedModuleKey(state.ui.activeModule)) {
+  const normalized = getSanitizedModuleKey(moduleKey);
+  return MODULE_LABELS[normalized] || asTitleCase(normalized);
+}
+
+function getVerlynSeedRegistration() {
+  const candidates = [
+    state.rms?.selectedStudent?.registration_number,
+    els.adminSearchStudentRegistration?.value,
+    els.rmsAttendanceRegistration?.value,
+    els.rmsSearchRegistration?.value,
+    els.adminGradeStudentRegistration?.value,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizedRegistrationInput(candidate || '');
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return '';
+}
+
+function resolveRemedialCourseCodeFromId(courseId) {
+  const numericId = Number(courseId || 0);
+  if (!numericId) {
+    return '';
+  }
+  const sourceCourses = [
+    ...(Array.isArray(state.remedial.eligibleCourses) ? state.remedial.eligibleCourses : []),
+    ...Object.values(state.coursesById || {}),
+  ];
+  const matched = sourceCourses.find((course) => Number(course?.id || 0) === numericId);
+  return normalizeRemedialCourseCode(matched?.code || '');
+}
+
+function getVerlynRemedialDefaults() {
+  const courseId = Number(els.remedialCourseSelect?.value || 0) || null;
+  const courseCode = normalizeRemedialCourseCode(
+    els.remedialCourseCodeInput?.value || resolveRemedialCourseCodeFromId(courseId)
+  );
+  const sections = normalizeRemedialSections(els.remedialSectionsInput?.value);
+  const classMode = String(els.remedialModeSelect?.value || 'offline').trim().toLowerCase() === 'online'
+    ? 'online'
+    : 'offline';
+  return {
+    courseId,
+    courseCode,
+    section: sections[0] || '',
+    classDate: String(els.remedialDate?.value || '').trim(),
+    startTime: String(els.remedialStartTime?.value || '').trim(),
+    classMode,
+    roomNumber: String(els.remedialRoomInput?.value || '').trim(),
+    sendMessage: true,
+  };
+}
+
+function getVerlynPromptExamples() {
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
+  if (role === 'student') {
+    if (moduleKey === 'attendance') {
+      return [
+        "Why can't I mark attendance?",
+        'What do I need to fix before I lose eligibility?',
+      ];
+    }
+    return ['Open Attendance module for student copilot checks.'];
+  }
+  if (role === 'faculty' || role === 'admin') {
+    if (moduleKey === 'remedial') {
+      return ['Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00'];
+    }
+    if (moduleKey === 'attendance' || moduleKey === 'rms' || moduleKey === 'administrative') {
+      return ['Show why student 22BCS777 is flagged'];
+    }
+    return [
+      'Show why student 22BCS777 is flagged',
+      'Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00',
+    ];
+  }
+  return ['Login to use explainable campus actions.'];
+}
+
+function getVerlynDefaultOutput() {
+  const roleLabel = getVerlynRoleLabel();
+  const moduleLabel = getVerlynModuleLabel();
+  const examples = getVerlynPromptExamples();
+  const lines = [
+    `${roleLabel} Copilot | ${moduleLabel} Module`,
+    '1. Quick actions above build audited requests for this module.',
+    '2. Manual entry is still validated against the same hard guardrails.',
+  ];
+  examples.forEach((example, index) => {
+    lines.push(`${index + 3}. ${example}`);
+  });
+  return lines.join('\n');
+}
+
+function syncVerlynQuickActionFieldState() {
+  const modeSelect = document.getElementById('verlyn-remedial-mode');
+  const roomInput = document.getElementById('verlyn-remedial-room');
+  const roomLabel = roomInput?.closest('.verlyn-quick-field');
+  if (!modeSelect || !roomInput || !roomLabel) {
+    return;
+  }
+  const isOnline = String(modeSelect.value || 'offline').trim().toLowerCase() === 'online';
+  roomInput.disabled = isOnline;
+  roomInput.placeholder = isOnline ? 'Not required for online remedial' : 'e.g. 34-101';
+  roomLabel.classList.toggle('is-disabled', isOnline);
+}
+
+function renderVerlynQuickActions() {
+  if (!els.verlynQuickActions || !els.verlynModuleContext) {
+    return;
+  }
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
+  const moduleLabel = getVerlynModuleLabel(moduleKey);
+  const seedRegistration = getVerlynSeedRegistration();
+  const remedialDefaults = getVerlynRemedialDefaults();
+  let contextMessage = `${moduleLabel} quick actions load here.`;
+  let markup = '';
+
+  if (!authState.user) {
+    contextMessage = 'Sign in to load role-scoped copilot actions for the active module.';
+    markup = `
+      <div class="verlyn-empty-note">
+        Campus Copilot stays locked until a verified session is active.
+      </div>
+    `;
+  } else if (role === 'student' && moduleKey === 'attendance') {
+    contextMessage = 'Student attendance checks are available for the active attendance module.';
+    markup = `
+      <section class="verlyn-action-card">
+        <div class="verlyn-action-head">
+          <strong>Attendance Checks</strong>
+          <small>Run explainable student checks without typing supported prompt text.</small>
+        </div>
+        <div class="verlyn-chip-row">
+          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+            Why can't I mark attendance?
+          </button>
+          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
+            Eligibility risk check
+          </button>
+        </div>
+      </section>
+    `;
+  } else if (role === 'admin' && moduleKey === 'administrative') {
+    contextMessage = 'Administrative copilot actions are live for flag review, remedial planning, and audit governance.';
+    markup = `
+      <form class="verlyn-action-card" data-verlyn-action="flag_reason">
+        <div class="verlyn-action-head">
+          <strong>Flag Review</strong>
+          <small>Explain exactly why a student is flagged before taking a remedial or RMS action.</small>
+        </div>
+        <div class="verlyn-field-grid">
+          <label class="field verlyn-quick-field">
+            <span>Registration Number</span>
+            <input id="verlyn-flag-registration" type="text" value="${escapeHtml(seedRegistration)}" placeholder="e.g. 22BCS777">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Student ID (optional)</span>
+            <input id="verlyn-flag-student-id" type="number" min="1" placeholder="e.g. 102">
+          </label>
+        </div>
+        <div class="verlyn-chip-row">
+          <button class="btn btn-primary" type="submit">Show Why This Student Is Flagged</button>
+          <button class="btn" type="button" data-verlyn-action="focus_audit_timeline">Open Audit Timeline</button>
+        </div>
+      </form>
+      <form class="verlyn-action-card" data-verlyn-action="create_remedial_plan">
+        <div class="verlyn-action-head">
+          <strong>Remedial Planner</strong>
+          <small>Admin can schedule audited remedial plans directly from the administrative module.</small>
+        </div>
+        <div class="verlyn-field-grid">
+          <label class="field verlyn-quick-field">
+            <span>Course Code</span>
+            <input id="verlyn-remedial-course-code" type="text" value="${escapeHtml(remedialDefaults.courseCode)}" placeholder="e.g. CSE501">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Section</span>
+            <input id="verlyn-remedial-section" type="text" value="${escapeHtml(remedialDefaults.section)}" placeholder="e.g. P132">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Class Date</span>
+            <input id="verlyn-remedial-date" type="date" value="${escapeHtml(remedialDefaults.classDate)}">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Start Time</span>
+            <input id="verlyn-remedial-time" type="time" value="${escapeHtml(remedialDefaults.startTime)}">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Mode</span>
+            <select id="verlyn-remedial-mode">
+              <option value="offline"${remedialDefaults.classMode === 'offline' ? ' selected' : ''}>Offline</option>
+              <option value="online"${remedialDefaults.classMode === 'online' ? ' selected' : ''}>Online</option>
+            </select>
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Room Number (offline)</span>
+            <input id="verlyn-remedial-room" type="text" value="${escapeHtml(remedialDefaults.roomNumber)}" placeholder="e.g. 34-101">
+          </label>
+        </div>
+        <label class="verlyn-inline-check">
+          <input id="verlyn-remedial-send-message" type="checkbox" ${remedialDefaults.sendMessage ? 'checked' : ''}>
+          Notify section automatically after scheduling
+        </label>
+        <div class="verlyn-chip-row">
+          <button class="btn btn-primary" type="submit">Preview or Schedule Remedial Plan</button>
+        </div>
+      </form>
+    `;
+  } else if ((role === 'faculty' || role === 'admin') && (moduleKey === 'attendance' || moduleKey === 'rms')) {
+    contextMessage = `Flag review is available from the ${moduleLabel} module.`;
+    markup = `
+      <form class="verlyn-action-card" data-verlyn-action="flag_reason">
+        <div class="verlyn-action-head">
+          <strong>Flag Review</strong>
+          <small>Explain exactly why a student is flagged before taking a remedial or RMS action.</small>
+        </div>
+        <div class="verlyn-field-grid">
+          <label class="field verlyn-quick-field">
+            <span>Registration Number</span>
+            <input id="verlyn-flag-registration" type="text" value="${escapeHtml(seedRegistration)}" placeholder="e.g. 22BCS777">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Student ID (optional)</span>
+            <input id="verlyn-flag-student-id" type="number" min="1" placeholder="e.g. 102">
+          </label>
+        </div>
+        <div class="verlyn-chip-row">
+          <button class="btn btn-primary" type="submit">Show Why This Student Is Flagged</button>
+        </div>
+      </form>
+    `;
+  } else if ((role === 'faculty' || role === 'admin') && moduleKey === 'remedial') {
+    contextMessage = 'Remedial quick form maps directly to structured scheduling fields and audited execution.';
+    markup = `
+      <form class="verlyn-action-card" data-verlyn-action="create_remedial_plan">
+        <div class="verlyn-action-head">
+          <strong>Remedial Planner</strong>
+          <small>Fill only the scheduling fields you have. Copilot will preview or execute, then log the outcome.</small>
+        </div>
+        <div class="verlyn-field-grid">
+          <label class="field verlyn-quick-field">
+            <span>Course Code</span>
+            <input id="verlyn-remedial-course-code" type="text" value="${escapeHtml(remedialDefaults.courseCode)}" placeholder="e.g. CSE501">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Section</span>
+            <input id="verlyn-remedial-section" type="text" value="${escapeHtml(remedialDefaults.section)}" placeholder="e.g. P132">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Class Date</span>
+            <input id="verlyn-remedial-date" type="date" value="${escapeHtml(remedialDefaults.classDate)}">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Start Time</span>
+            <input id="verlyn-remedial-time" type="time" value="${escapeHtml(remedialDefaults.startTime)}">
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Mode</span>
+            <select id="verlyn-remedial-mode">
+              <option value="offline"${remedialDefaults.classMode === 'offline' ? ' selected' : ''}>Offline</option>
+              <option value="online"${remedialDefaults.classMode === 'online' ? ' selected' : ''}>Online</option>
+            </select>
+          </label>
+          <label class="field verlyn-quick-field">
+            <span>Room Number (offline)</span>
+            <input id="verlyn-remedial-room" type="text" value="${escapeHtml(remedialDefaults.roomNumber)}" placeholder="e.g. 34-101">
+          </label>
+        </div>
+        <label class="verlyn-inline-check">
+          <input id="verlyn-remedial-send-message" type="checkbox" ${remedialDefaults.sendMessage ? 'checked' : ''}>
+          Notify section automatically after scheduling
+        </label>
+        <div class="verlyn-chip-row">
+          <button class="btn btn-primary" type="submit">Preview or Schedule Remedial Plan</button>
+        </div>
+      </form>
+    `;
+  } else if (role === 'student') {
+    contextMessage = `No student copilot action is exposed in ${moduleLabel}.`;
+    markup = `
+      <section class="verlyn-action-card">
+        <div class="verlyn-action-head">
+          <strong>Switch Module</strong>
+          <small>Student copilot checks currently run only from Attendance.</small>
+        </div>
+        <div class="verlyn-chip-row">
+          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="open_attendance_module">Open Attendance Module</button>
+        </div>
+      </section>
+    `;
+  } else {
+    contextMessage = `No academic copilot action is exposed for your role in ${moduleLabel}.`;
+    markup = `
+      <div class="verlyn-empty-note">
+        This module does not expose a guarded copilot workflow for your current role.
+      </div>
+    `;
+  }
+
+  els.verlynModuleContext.textContent = contextMessage;
+  els.verlynQuickActions.innerHTML = markup;
+  if (els.verlynInput) {
+    const firstExample = getVerlynPromptExamples()[0] || 'Use a supported copilot request';
+    els.verlynInput.placeholder = `e.g. ${firstExample}`;
+  }
+  syncVerlynQuickActionFieldState();
+}
+
+function syncVisibleVerlynQuickActions() {
+  if (!state.ui.verlynOpen) {
+    return;
+  }
+  renderVerlynQuickActions();
+}
+
+function formatVerlynCopilotResponse(response = {}) {
+  const lines = [];
+  const title = String(response?.title || 'Campus Copilot').trim();
+  const outcome = asTitleCase(String(response?.outcome || 'completed').replaceAll('_', ' '));
+  lines.push(`${title} (${outcome})`);
+
+  const explanation = Array.isArray(response?.explanation) ? response.explanation : [];
+  if (explanation.length) {
+    lines.push('');
+    explanation.forEach((item, index) => {
+      lines.push(`${index + 1}. ${String(item || '').trim()}`);
+    });
+  }
+
+  const evidence = Array.isArray(response?.evidence) ? response.evidence : [];
+  if (evidence.length) {
+    lines.push('', 'Evidence');
+    evidence.forEach((item) => {
+      const status = String(item?.status || 'info').toUpperCase();
+      const label = String(item?.label || 'Item').trim();
+      const value = String(item?.value || '').trim();
+      lines.push(`- [${status}] ${label}: ${value}`);
+    });
+  }
+
+  const actions = Array.isArray(response?.actions) ? response.actions : [];
+  if (actions.length) {
+    lines.push('', 'Actions');
+    actions.forEach((item) => {
+      const action = String(item?.action || 'action').replaceAll('_', ' ');
+      const status = String(item?.status || 'preview').toUpperCase();
+      const detail = String(item?.detail || '').trim();
+      lines.push(`- [${status}] ${action}${detail ? `: ${detail}` : ''}`);
+    });
+  }
+
+  const nextSteps = Array.isArray(response?.next_steps) ? response.next_steps : [];
+  if (nextSteps.length) {
+    lines.push('', 'Next Steps');
+    nextSteps.forEach((item, index) => {
+      lines.push(`${index + 1}. ${String(item || '').trim()}`);
+    });
+  }
+
+  if (response?.audit_id) {
+    lines.push('', `Audit Log: #${response.audit_id}`);
+  }
+
+  return lines.join('\n');
+}
+
+function buildVerlynFlagPayload() {
+  const registration = normalizedRegistrationInput(document.getElementById('verlyn-flag-registration')?.value || getVerlynSeedRegistration());
+  const studentIdRaw = String(document.getElementById('verlyn-flag-student-id')?.value || '').trim();
+  const studentId = Number(studentIdRaw || 0) || null;
+  if (!registration && !studentId) {
+    throw new Error('Enter a registration number or student id for flag review.');
+  }
+  return {
+    query_text: registration
+      ? `Show why student ${registration} is flagged`
+      : `Show why student id ${studentId} is flagged`,
+    registration_number: registration || null,
+    student_id: studentId,
+  };
+}
+
+function buildVerlynRemedialPayload() {
+  const defaults = getVerlynRemedialDefaults();
+  const courseCode = normalizeRemedialCourseCode(
+    document.getElementById('verlyn-remedial-course-code')?.value || defaults.courseCode
+  );
+  const courseId = courseCode && courseCode !== defaults.courseCode ? null : defaults.courseId;
+  const section = normalizeRemedialSections(
+    document.getElementById('verlyn-remedial-section')?.value || defaults.section
+  )[0] || '';
+  const classDate = String(document.getElementById('verlyn-remedial-date')?.value || defaults.classDate || '').trim();
+  const startTime = String(document.getElementById('verlyn-remedial-time')?.value || defaults.startTime || '').trim();
+  const classMode = String(
+    document.getElementById('verlyn-remedial-mode')?.value || defaults.classMode || 'offline'
+  ).trim().toLowerCase() === 'online'
+    ? 'online'
+    : 'offline';
+  const roomNumber = String(document.getElementById('verlyn-remedial-room')?.value || defaults.roomNumber || '').trim();
+  const sendMessage = Boolean(document.getElementById('verlyn-remedial-send-message')?.checked);
+  if (!courseCode && !courseId) {
+    throw new Error('Enter a course code or pick a course from the Remedial module.');
+  }
+  if (!section) {
+    throw new Error('Enter the target section.');
+  }
+
+  const queryParts = ['Create a remedial plan for'];
+  if (courseCode) {
+    queryParts.push(`course ${courseCode}`);
+  } else {
+    queryParts.push(`course id ${courseId}`);
+  }
+  queryParts.push(`section ${section}`);
+  if (classDate) {
+    queryParts.push(`on ${classDate}`);
+  }
+  if (startTime) {
+    queryParts.push(`at ${startTime}`);
+  }
+  if (classMode === 'offline' && roomNumber) {
+    queryParts.push(`room ${roomNumber}`);
+  }
+
+  return {
+    query_text: queryParts.join(' '),
+    course_id: courseId,
+    course_code: courseCode || null,
+    section,
+    class_date: classDate || null,
+    start_time: startTime || null,
+    class_mode: classMode,
+    room_number: classMode === 'offline' ? (roomNumber || null) : null,
+    send_message: sendMessage,
+  };
+}
+
+function focusAdminCopilotAuditTimeline({ refresh = true } = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can open the copilot audit timeline.');
+  }
+  if (getSanitizedModuleKey(state.ui.activeModule) !== 'administrative') {
+    setActiveModule('administrative');
+  }
+  window.setTimeout(() => {
+    document.getElementById('admin-copilot-audit-card')?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
+    els.adminCopilotAuditSearch?.focus();
+  }, 60);
+  if (refresh) {
+    void refreshCopilotAuditTimeline({ silent: true });
+  }
+}
+
+async function runVerlynCopilot(payload, { syncInput = true } = {}) {
+  if (!els.verlynOutput) {
+    return null;
+  }
+  if (!authState.token) {
+    setVerlynStatus('Login is required to run campus copilot actions.', true, 'error');
+    els.verlynOutput.textContent = getVerlynDefaultOutput();
+    return null;
+  }
+  const queryText = String(payload?.query_text || '').trim();
+  if (!queryText) {
+    setVerlynStatus('Type your question first.', true, 'empty');
+    els.verlynOutput.textContent = getVerlynDefaultOutput();
+    return null;
+  }
+  if (syncInput && els.verlynInput) {
+    els.verlynInput.value = queryText;
+  }
+  setVerlynStatus('Running audited campus check...', false, 'loading');
+  try {
+    const response = await api('/copilot/query', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    els.verlynOutput.textContent = formatVerlynCopilotResponse(response);
+    const outcome = String(response?.outcome || '').trim().toLowerCase();
+    if (outcome === 'completed') {
+      setVerlynStatus('Action completed and logged.', false, 'success');
+    } else if (outcome === 'blocked') {
+      setVerlynStatus('Copilot needs more context before it can execute. Result logged.', false, 'neutral');
+    } else if (outcome === 'denied') {
+      setVerlynStatus('Role guardrail denied this request. Result logged.', true, 'error');
+    } else {
+      setVerlynStatus('Copilot could not complete the request. Review the audit-backed response.', true, 'error');
+    }
+    if (
+      outcome === 'completed'
+      && String(response?.intent || '').trim().toLowerCase() === 'create_remedial_plan'
+      && getSanitizedModuleKey(state.ui.activeModule) === 'remedial'
+    ) {
+      await refreshRemedialModule();
+      syncVisibleVerlynQuickActions();
+    }
+    if (authState.user?.role === 'admin' && getSanitizedModuleKey(state.ui.activeModule) === 'administrative') {
+      void refreshCopilotAuditTimeline({ silent: true, force: true });
+    }
+    return response;
+  } catch (error) {
+    setVerlynStatus(
+      error?.message || 'Campus copilot is unavailable right now. Retry in a moment.',
+      true,
+      'error',
+    );
+    return null;
+  }
+}
+
+async function askVerlyn() {
+  const queryText = String(els.verlynInput?.value || '').trim();
+  if (!queryText) {
+    setVerlynStatus('Type your question first.', true, 'empty');
+    els.verlynOutput.textContent = getVerlynDefaultOutput();
+    return;
+  }
+  await runVerlynCopilot({ query_text: queryText }, { syncInput: false });
+}
+
+function normalizeSupportDeskCategory(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'attendance') {
+    return 'Attendance';
+  }
+  if (normalized === 'academics') {
+    return 'Academics';
+  }
+  if (normalized === 'discrepancy') {
+    return 'Discrepancy';
+  }
+  return 'Other';
+}
+
+function formatSupportDeskDateTime(rawValue) {
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return '--';
+  }
+  return parsed.toLocaleString([], {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function setSupportDeskStatus(message, isError = false, state = 'neutral') {
+  if (!els.supportDeskStatus) {
+    return;
+  }
+  setUiStateMessage(els.supportDeskStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setSupportDeskOpen(open) {
+  if (!els.supportDeskWidget || !els.supportDeskPanel || !els.supportDeskToggleBtn) {
+    return;
+  }
+  const shouldOpen = Boolean(open);
+  state.ui.supportDeskOpen = shouldOpen;
+  els.supportDeskWidget.classList.remove('is-closing');
+  els.supportDeskWidget.classList.toggle('is-open', shouldOpen);
+  els.supportDeskToggleBtn.classList.toggle('is-active', shouldOpen);
+  els.supportDeskToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  if (shouldOpen) {
+    window.clearTimeout(setSupportDeskOpen._closeTimer);
+    return;
+  }
+  els.supportDeskWidget.classList.add('is-closing');
+  window.clearTimeout(setSupportDeskOpen._closeTimer);
+  setSupportDeskOpen._closeTimer = window.setTimeout(() => {
+    els.supportDeskWidget?.classList.remove('is-closing');
+  }, 320);
+}
+
+function toggleSupportDeskOpen() {
+  setSupportDeskOpen(!state.ui.supportDeskOpen);
+}
+
+function updateSupportDeskVisibility() {
+  if (!els.supportDeskWidget) {
+    return;
+  }
+  const role = authState.user?.role;
+  const visible = Boolean(
+    (role === 'student' || role === 'faculty')
+    && getSanitizedModuleKey(state.ui.activeModule) === 'attendance'
+  );
+  setHidden(els.supportDeskWidget, !visible);
+  if (!visible) {
+    setSupportDeskOpen(false);
+    return;
+  }
+  if (!state.supportDesk.contacts.length && !state.supportDesk.threads.length) {
+    void refreshSupportDeskContext({ silent: true, refreshThread: false }).catch(() => {});
+  } else {
+    renderSupportDeskWidget();
+  }
+}
+
+function recomputeSupportDeskUnread() {
+  const threads = Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : [];
+  state.supportDesk.unreadTotal = threads.reduce(
+    (sum, item) => sum + Math.max(0, Number(item?.unread_count || 0)),
+    0,
+  );
+}
+
+function ensureSupportDeskSelection() {
+  const currentId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const currentCategory = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  const threads = Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : [];
+  const contacts = Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : [];
+  const validContactIds = new Set(contacts.map((entry) => Number(entry?.id || 0)).filter((id) => id > 0));
+  if (currentId > 0 && validContactIds.has(currentId)) {
+    state.supportDesk.selectedCounterpartyId = currentId;
+    state.supportDesk.selectedCategory = currentCategory;
+    return;
+  }
+  const firstThread = threads[0];
+  if (firstThread && Number(firstThread.counterparty_id || 0) > 0) {
+    state.supportDesk.selectedCounterpartyId = Number(firstThread.counterparty_id);
+    state.supportDesk.selectedCategory = normalizeSupportDeskCategory(firstThread.category);
+    state.supportDesk.selectedCounterpartyName = String(firstThread.counterparty_name || '').trim();
+    state.supportDesk.selectedCounterpartySection = String(firstThread.section || '').trim();
+    return;
+  }
+  const firstContact = contacts[0];
+  if (firstContact && Number(firstContact.id || 0) > 0) {
+    state.supportDesk.selectedCounterpartyId = Number(firstContact.id);
+    state.supportDesk.selectedCategory = 'Attendance';
+    state.supportDesk.selectedCounterpartyName = String(firstContact.name || '').trim();
+    state.supportDesk.selectedCounterpartySection = String(firstContact.section || '').trim();
+    return;
+  }
+  state.supportDesk.selectedCounterpartyId = null;
+  state.supportDesk.selectedCounterpartyName = '';
+  state.supportDesk.selectedCounterpartySection = '';
+}
+
+function renderSupportDeskRecipientOptions() {
+  if (!els.supportDeskRecipientSelect) {
+    return;
+  }
+  const contacts = Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : [];
+  const selectedId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const role = authState.user?.role;
+  if (els.supportDeskRecipientLabel) {
+    els.supportDeskRecipientLabel.textContent = role === 'faculty' ? 'Student' : 'Faculty';
+  }
+
+  if (!contacts.length) {
+    els.supportDeskRecipientSelect.innerHTML = '<option value="">No contacts available</option>';
+    els.supportDeskRecipientSelect.disabled = true;
+    return;
+  }
+  const options = contacts
+    .map((item) => {
+      const id = Number(item?.id || 0);
+      if (!id) {
+        return '';
+      }
+      const section = String(item?.section || '').trim();
+      const descriptor = String(item?.descriptor || '').trim();
+      const extra = descriptor || section;
+      const label = extra ? `${item.name} • ${extra}` : item.name;
+      const selected = id === selectedId ? 'selected' : '';
+      return `<option value="${id}" ${selected}>${escapeHtml(label)}</option>`;
+    })
+    .filter(Boolean)
+    .join('');
+  els.supportDeskRecipientSelect.innerHTML = options;
+  els.supportDeskRecipientSelect.disabled = false;
+}
+
+function renderSupportDeskMessages() {
+  if (!els.supportDeskMessages) {
+    return;
+  }
+  const rows = Array.isArray(state.supportDesk.messages) ? state.supportDesk.messages : [];
+  if (!rows.length) {
+    els.supportDeskMessages.innerHTML = '<div class="support-desk-empty">No messages yet. Start with a query below.</div>';
+    return;
+  }
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  els.supportDeskMessages.innerHTML = rows.map((row) => {
+    const senderRole = String(row?.sender_role || '').trim().toLowerCase();
+    const mine = senderRole === role;
+    const senderLabel = mine ? 'You' : (senderRole === 'faculty' ? 'Faculty' : 'Student');
+    return `
+      <article class="support-desk-message ${mine ? 'mine' : 'theirs'}">
+        <div class="support-desk-message-header">
+          <strong>${escapeHtml(senderLabel)}</strong>
+          <span>${escapeHtml(formatSupportDeskDateTime(row?.created_at))}</span>
+        </div>
+        <p class="support-desk-message-text">${escapeHtml(String(row?.message || ''))}</p>
+      </article>
+    `;
+  }).join('');
+  els.supportDeskMessages.scrollTop = els.supportDeskMessages.scrollHeight;
+}
+
+function renderSupportDeskWidget() {
+  const unread = Math.max(0, Number(state.supportDesk.unreadTotal || 0));
+  if (els.supportDeskUnreadBadge) {
+    if (unread > 0) {
+      els.supportDeskUnreadBadge.textContent = unread > 99 ? '99+' : String(unread);
+      els.supportDeskUnreadBadge.classList.remove('hidden');
+    } else {
+      els.supportDeskUnreadBadge.classList.add('hidden');
+    }
+  }
+  renderSupportDeskRecipientOptions();
+
+  if (els.supportDeskCategorySelect) {
+    const categories = Array.isArray(state.supportDesk.categories) && state.supportDesk.categories.length
+      ? state.supportDesk.categories
+      : ['Attendance', 'Academics', 'Discrepancy', 'Other'];
+    if (!els.supportDeskCategorySelect.dataset.ready) {
+      els.supportDeskCategorySelect.innerHTML = categories
+        .map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`)
+        .join('');
+      els.supportDeskCategorySelect.dataset.ready = 'true';
+    }
+    els.supportDeskCategorySelect.value = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  }
+
+  const selectedId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const selectedCategory = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  const selectedThread = (Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : []).find((item) => (
+    Number(item?.counterparty_id || 0) === selectedId
+    && normalizeSupportDeskCategory(item?.category) === selectedCategory
+  ));
+  const selectedContact = (Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : []).find(
+    (item) => Number(item?.id || 0) === selectedId
+  );
+  if (els.supportDeskThreadMeta) {
+    if (selectedThread) {
+      const unreadLabel = Number(selectedThread.unread_count || 0) > 0
+        ? `${selectedThread.unread_count} unread`
+        : 'up to date';
+      const section = selectedThread.section ? ` • ${selectedThread.section}` : '';
+      els.supportDeskThreadMeta.textContent =
+        `${selectedThread.counterparty_name}${section} • ${selectedCategory} • ${unreadLabel}`;
+    } else if (selectedContact) {
+      els.supportDeskThreadMeta.textContent =
+        `${selectedContact.name} • ${selectedCategory} • Start a new conversation`;
+    } else {
+      els.supportDeskThreadMeta.textContent = 'Choose a recipient to start realtime messaging.';
+    }
+  }
+  renderSupportDeskMessages();
+}
+
+async function refreshSupportDeskThread({ silent = false } = {}) {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
+    state.supportDesk.messages = [];
+    renderSupportDeskWidget();
+    return;
+  }
+  const counterpartyId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const category = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  if (!counterpartyId) {
+    state.supportDesk.messages = [];
+    renderSupportDeskWidget();
+    return;
+  }
+  const rows = await api(
+    `/messages/support/thread?counterparty_id=${counterpartyId}&category=${encodeURIComponent(category)}&limit=160`,
+  );
+  state.supportDesk.messages = Array.isArray(rows) ? rows : [];
+  const thread = (Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : []).find(
+    (item) => Number(item?.counterparty_id || 0) === counterpartyId
+      && normalizeSupportDeskCategory(item?.category) === category
+  );
+  if (thread) {
+    thread.unread_count = 0;
+    const latest = state.supportDesk.messages[state.supportDesk.messages.length - 1];
+    if (latest) {
+      thread.last_message = String(latest.message || thread.last_message || '');
+      thread.last_sender_role = String(latest.sender_role || thread.last_sender_role || '');
+      thread.last_created_at = latest.created_at || thread.last_created_at;
+    }
+  }
+  recomputeSupportDeskUnread();
+  renderSupportDeskWidget();
+  if (!silent && state.ui.supportDeskOpen) {
+    setSupportDeskStatus('Messages synced in realtime.');
+  }
+}
+
+async function refreshSupportDeskContext({ silent = false, refreshThread = false } = {}) {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
+    state.supportDesk.contacts = [];
+    state.supportDesk.threads = [];
+    state.supportDesk.messages = [];
+    state.supportDesk.unreadTotal = 0;
+    renderSupportDeskWidget();
+    return;
+  }
+  const payload = await api('/messages/support/context?limit=180');
+  state.supportDesk.categories = Array.isArray(payload?.categories) && payload.categories.length
+    ? payload.categories.map((value) => normalizeSupportDeskCategory(value))
+    : ['Attendance', 'Academics', 'Discrepancy', 'Other'];
+  state.supportDesk.contacts = Array.isArray(payload?.contacts) ? payload.contacts : [];
+  state.supportDesk.threads = Array.isArray(payload?.threads) ? payload.threads : [];
+  state.supportDesk.unreadTotal = Math.max(0, Number(payload?.unread_total || 0));
+  ensureSupportDeskSelection();
+  renderSupportDeskWidget();
+  if (refreshThread) {
+    await refreshSupportDeskThread({ silent: true });
+  }
+  if (!silent && state.ui.supportDeskOpen) {
+    setSupportDeskStatus('Realtime inbox refreshed.');
+  }
+}
+
+async function sendSupportDeskMessage() {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
+    return;
+  }
+  const recipientId = Number(state.supportDesk.selectedCounterpartyId || els.supportDeskRecipientSelect?.value || 0);
+  if (!recipientId) {
+    throw new Error('Select a recipient first.');
+  }
+  const category = normalizeSupportDeskCategory(
+    els.supportDeskCategorySelect?.value || state.supportDesk.selectedCategory
+  );
+  const message = String(els.supportDeskComposeInput?.value || '').trim();
+  if (!message) {
+    throw new Error('Type your query before sending.');
+  }
+  if (els.supportDeskSendBtn) {
+    els.supportDeskSendBtn.disabled = true;
+  }
+  try {
+    await api('/messages/support/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        recipient_id: recipientId,
+        category,
+        message,
+      }),
+    });
+    if (els.supportDeskComposeInput) {
+      els.supportDeskComposeInput.value = '';
+    }
+    state.supportDesk.selectedCounterpartyId = recipientId;
+    state.supportDesk.selectedCategory = category;
+    await refreshSupportDeskContext({ silent: true, refreshThread: false });
+    await refreshSupportDeskThread({ silent: true });
+    setSupportDeskStatus('Message sent. Waiting for realtime response...');
+  } finally {
+    if (els.supportDeskSendBtn) {
+      els.supportDeskSendBtn.disabled = false;
+    }
+  }
+}
+
+function canRunSupportDeskLiveTicker() {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
+    return false;
+  }
+  if (document.body.classList.contains('auth-open')) {
+    return false;
+  }
+  if (els.supportDeskWidget?.classList.contains('hidden')) {
+    return false;
+  }
+  return true;
+}
+
+function stopSupportDeskLiveTicker() {
+  if (!supportDeskLiveTimer) {
+    return;
+  }
+  window.clearInterval(supportDeskLiveTimer);
+  supportDeskLiveTimer = null;
+  supportDeskLiveBusy = false;
+}
+
+function startSupportDeskLiveTicker() {
+  // Support-desk realtime is event-driven via SSE route modules.
+  stopSupportDeskLiveTicker();
+}
+
+function syncSupportDeskLiveTicker() {
+  stopSupportDeskLiveTicker();
 }
 
 function setHidden(element, hidden) {
@@ -1546,6 +3102,289 @@ function setHidden(element, hidden) {
     return;
   }
   element.classList.toggle('hidden', hidden);
+  if (isModalFocusTarget(element)) {
+    syncModalFocusTrap(element);
+  }
+}
+
+function buildDefaultFoodSlotFallback() {
+  return Array.from({ length: 11 }, (_, index) => {
+    const startHour = 10 + index;
+    const endHour = startHour + 1;
+    return {
+      id: index + 1,
+      label: `${String(startHour).padStart(2, '0')}:00 - ${String(endHour).padStart(2, '0')}:00`,
+      start_time: `${String(startHour).padStart(2, '0')}:00:00`,
+      end_time: `${String(endHour).padStart(2, '0')}:00:00`,
+      max_orders: 250,
+    };
+  });
+}
+
+if (!FOOD_SLOT_FALLBACK.length) {
+  FOOD_SLOT_FALLBACK = buildDefaultFoodSlotFallback();
+}
+
+let FOOD_SHOP_COVER_BY_ALIAS = new Map();
+let FOOD_SHOP_COVER_BY_NAME = new Map();
+let FOOD_SHOP_FALLBACK_BY_ALIAS = new Map();
+let FOOD_SHOP_FALLBACK_BY_NAME = new Map();
+
+function rebuildFoodCoverIndexes() {
+  FOOD_SHOP_COVER_BY_ALIAS = new Map(
+    FOOD_SHOP_DIRECTORY.map((shop) => [shopAliasKey(shop.name, shop.block), shop.cover || ''])
+  );
+  FOOD_SHOP_COVER_BY_NAME = new Map(
+    FOOD_SHOP_DIRECTORY.map((shop) => [normalizeFoodKey(shop.name), shop.cover || ''])
+  );
+  FOOD_SHOP_FALLBACK_BY_ALIAS = new Map(
+    FOOD_SHOP_DIRECTORY.map((shop) => [shopAliasKey(shop.name, shop.block), shop.fallbackCover || FOOD_COVER_FALLBACK_URL || ''])
+  );
+  FOOD_SHOP_FALLBACK_BY_NAME = new Map(
+    FOOD_SHOP_DIRECTORY.map((shop) => [normalizeFoodKey(shop.name), shop.fallbackCover || FOOD_COVER_FALLBACK_URL || ''])
+  );
+}
+
+function applyFoodCatalogPayload(payload = {}) {
+  const catalog = payload && typeof payload === 'object' ? payload : {};
+
+  FOOD_POPULAR_SPOT_IDS = Array.isArray(catalog.popularSpotIds) && catalog.popularSpotIds.length
+    ? [...catalog.popularSpotIds]
+    : FOOD_POPULAR_SPOT_IDS;
+
+  FOOD_SHOP_GROUPS = Array.isArray(catalog.shopGroups) && catalog.shopGroups.length
+    ? [...catalog.shopGroups]
+    : FOOD_SHOP_GROUPS;
+
+  FOOD_SLOT_FALLBACK = Array.isArray(catalog.slotFallback) && catalog.slotFallback.length
+    ? catalog.slotFallback.map((slot) => ({ ...slot }))
+    : buildDefaultFoodSlotFallback();
+
+  FOOD_AI_QUICK_CRAVINGS = Array.isArray(catalog.aiQuickCravings) && catalog.aiQuickCravings.length
+    ? [...catalog.aiQuickCravings]
+    : FOOD_AI_QUICK_CRAVINGS;
+
+  FOOD_DELIVERY_POINTS = Array.isArray(catalog.deliveryPoints)
+    ? catalog.deliveryPoints.map((row) => [String(row?.[0] || ''), String(row?.[1] || '')])
+    : FOOD_DELIVERY_POINTS;
+
+  FOOD_SHOP_DIRECTORY = Array.isArray(catalog.shopDirectory)
+    ? catalog.shopDirectory.map((shop) => ({ ...shop }))
+    : FOOD_SHOP_DIRECTORY;
+
+  FOOD_COVER_FALLBACK_URL = String(catalog.fallbackCoverUrl || FOOD_COVER_FALLBACK_URL || '').trim()
+    || '/web/assets/food-covers/fallback.svg';
+
+  rebuildFoodCoverIndexes();
+  foodCatalogReady = true;
+}
+
+async function ensureFoodCatalogLoaded({ preloadOnly = false } = {}) {
+  if (foodCatalogReady) {
+    return;
+  }
+  if (foodCatalogModulePromise) {
+    await foodCatalogModulePromise;
+    return;
+  }
+  foodCatalogModulePromise = import(`/web/modules/food-catalog.js?v=${ROUTE_SPLIT_ASSET_VERSION}`)
+    .then((module) => {
+      applyFoodCatalogPayload(module?.foodCatalog || {});
+      if (!preloadOnly && getSanitizedModuleKey(state.ui.activeModule) === 'food') {
+        void renderFoodAiQuickChips();
+      }
+    })
+    .catch((error) => {
+      if (!foodCatalogReady) {
+        applyFoodCatalogPayload({});
+      }
+      if (!preloadOnly) {
+        log(`Food catalog fallback active: ${error?.message || 'deferred bundle unavailable'}`);
+      }
+    })
+    .finally(() => {
+      foodCatalogModulePromise = null;
+    });
+  await foodCatalogModulePromise;
+}
+
+async function ensureVerlynHelpModule() {
+  if (verlynHelpModulePromise) {
+    return verlynHelpModulePromise;
+  }
+  verlynHelpModulePromise = import(`/web/modules/verlyn-help.js?v=${ROUTE_SPLIT_ASSET_VERSION}`)
+    .catch((error) => {
+      verlynHelpModulePromise = null;
+      throw error;
+  });
+  return verlynHelpModulePromise;
+}
+
+const MODAL_FOCUS_TARGET_SELECTOR = '.auth-overlay, .auth-modal, .camera-modal, .otp-popup, [aria-modal="true"]';
+const MODAL_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+const modalFocusTrapState = {
+  activeModal: null,
+  restoreFocusEl: null,
+  keydownHandler: null,
+  focusinHandler: null,
+  observers: new Map(),
+};
+
+function isModalFocusTarget(element) {
+  return element instanceof HTMLElement && element.matches(MODAL_FOCUS_TARGET_SELECTOR);
+}
+
+function isElementVisibleForFocus(element) {
+  return element instanceof HTMLElement
+    && element.isConnected
+    && !element.hasAttribute('disabled')
+    && element.getAttribute('aria-hidden') !== 'true'
+    && element.getClientRects().length > 0;
+}
+
+function collectFocusableInModal(modal) {
+  if (!(modal instanceof HTMLElement)) {
+    return [];
+  }
+  const nodes = [...modal.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)];
+  return nodes.filter((node) => isElementVisibleForFocus(node));
+}
+
+function isModalVisible(modal) {
+  return modal instanceof HTMLElement
+    && !modal.classList.contains('hidden')
+    && modal.getAttribute('aria-hidden') !== 'true';
+}
+
+function deactivateModalFocusTrap({ restoreFocus = true } = {}) {
+  const { activeModal, keydownHandler, focusinHandler, restoreFocusEl } = modalFocusTrapState;
+  if (!activeModal) {
+    return;
+  }
+  if (keydownHandler) {
+    document.removeEventListener('keydown', keydownHandler, true);
+  }
+  if (focusinHandler) {
+    document.removeEventListener('focusin', focusinHandler, true);
+  }
+  modalFocusTrapState.activeModal = null;
+  modalFocusTrapState.keydownHandler = null;
+  modalFocusTrapState.focusinHandler = null;
+  if (restoreFocus && isElementVisibleForFocus(restoreFocusEl)) {
+    restoreFocusEl.focus({ preventScroll: true });
+  }
+  modalFocusTrapState.restoreFocusEl = null;
+}
+
+function activateModalFocusTrap(modal) {
+  if (!(modal instanceof HTMLElement) || !isModalVisible(modal)) {
+    return;
+  }
+  if (modalFocusTrapState.activeModal === modal) {
+    return;
+  }
+  deactivateModalFocusTrap({ restoreFocus: false });
+  modalFocusTrapState.activeModal = modal;
+  modalFocusTrapState.restoreFocusEl = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+
+  const keydownHandler = (event) => {
+    if (event.key !== 'Tab') {
+      return;
+    }
+    const focusables = collectFocusableInModal(modal);
+    if (!focusables.length) {
+      event.preventDefault();
+      modal.focus({ preventScroll: true });
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey) {
+      if (active === first || !modal.contains(active)) {
+        event.preventDefault();
+        last.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (active === last || !modal.contains(active)) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    }
+  };
+
+  const focusinHandler = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (modal.contains(target)) {
+      return;
+    }
+    const focusables = collectFocusableInModal(modal);
+    if (focusables.length) {
+      focusables[0].focus({ preventScroll: true });
+      return;
+    }
+    modal.focus({ preventScroll: true });
+  };
+
+  modalFocusTrapState.keydownHandler = keydownHandler;
+  modalFocusTrapState.focusinHandler = focusinHandler;
+  document.addEventListener('keydown', keydownHandler, true);
+  document.addEventListener('focusin', focusinHandler, true);
+
+  if (!modal.hasAttribute('tabindex')) {
+    modal.setAttribute('tabindex', '-1');
+  }
+  const preferred = modal.querySelector('[data-autofocus], [autofocus]');
+  if (isElementVisibleForFocus(preferred)) {
+    preferred.focus({ preventScroll: true });
+    return;
+  }
+  const focusables = collectFocusableInModal(modal);
+  if (focusables.length) {
+    focusables[0].focus({ preventScroll: true });
+    return;
+  }
+  modal.focus({ preventScroll: true });
+}
+
+function syncModalFocusTrap(modal) {
+  if (!isModalFocusTarget(modal)) {
+    return;
+  }
+  if (isModalVisible(modal)) {
+    activateModalFocusTrap(modal);
+    return;
+  }
+  if (modalFocusTrapState.activeModal === modal) {
+    deactivateModalFocusTrap({ restoreFocus: true });
+  }
+}
+
+function initModalFocusTrapObserver() {
+  const modals = [...document.querySelectorAll(MODAL_FOCUS_TARGET_SELECTOR)];
+  for (const modal of modals) {
+    if (!(modal instanceof HTMLElement) || modalFocusTrapState.observers.has(modal)) {
+      continue;
+    }
+    const observer = new MutationObserver(() => {
+      syncModalFocusTrap(modal);
+    });
+    observer.observe(modal, { attributes: true, attributeFilter: ['class', 'aria-hidden', 'hidden'] });
+    modalFocusTrapState.observers.set(modal, observer);
+    syncModalFocusTrap(modal);
+  }
 }
 
 function buildEmptyStateRow({
@@ -1578,7 +3417,7 @@ function buildEmptyStateRow({
 
 function selectedAuthRole() {
   const role = String(els.authRoleSelect?.value || '').trim().toLowerCase();
-  if (role === 'faculty' || role === 'owner') {
+  if (role === 'admin' || role === 'faculty' || role === 'owner') {
     return role;
   }
   return 'student';
@@ -1591,6 +3430,7 @@ function isSignupMode() {
 function setAuthMode(mode) {
   authState.mode = mode === 'signup' ? 'signup' : 'login';
   const signup = isSignupMode();
+  document.body.classList.toggle('auth-signup-mode', signup);
 
   setHidden(els.authLoginSection, signup);
   setHidden(els.authRoleWrap, !signup);
@@ -1611,6 +3451,7 @@ function setAuthMode(mode) {
 
   syncAuthRoleForm();
   if (signup) {
+    setAuthMfaInputVisible(false);
     setForgotPasswordPanel(false);
     const loginEmail = (els.authEmail?.value || '').trim().toLowerCase();
     if (loginEmail && els.authSignupEmail && !els.authSignupEmail.value.trim()) {
@@ -1623,7 +3464,7 @@ function setAuthMode(mode) {
   if (signup) {
     setAuthMessage('Signup mode: fill all details and register your account.');
   } else {
-    setAuthMessage('Login first with email/password, request OTP, then verify to continue.');
+    setAuthMessage('Login first with email/password, request OTP, then verify to continue. Use MFA code if your role requires it.');
   }
   renderOtpCooldown();
   renderForgotOtpCooldown();
@@ -1631,6 +3472,8 @@ function setAuthMode(mode) {
 
 function syncAuthRoleForm() {
   if (!isSignupMode()) {
+    setHidden(els.authSignupRegistrationWrap, true);
+    setHidden(els.authSignupFacultyIdWrap, true);
     setHidden(els.authSectionWrap, true);
     setHidden(els.authSemesterWrap, true);
     setHidden(els.authParentEmailWrap, true);
@@ -1638,12 +3481,229 @@ function syncAuthRoleForm() {
   }
   const role = selectedAuthRole();
   const isStudent = role === 'student';
+  const isFaculty = role === 'faculty';
+  setHidden(els.authSignupRegistrationWrap, !isStudent);
+  setHidden(els.authSignupFacultyIdWrap, !isFaculty);
   setHidden(els.authSectionWrap, !isStudent);
   setHidden(els.authSemesterWrap, !isStudent);
   setHidden(els.authParentEmailWrap, !isStudent);
 }
 
-const MODULE_KEYS = new Set(['attendance', 'food', 'administrative', 'remedial']);
+const MODULE_KEYS = new Set(['attendance', 'food', 'administrative', 'rms', 'remedial']);
+const ROUTE_SPLIT_MODULES_BY_ROUTE = {
+  attendance: ['attendance', 'messages'],
+  remedial: ['messages', 'remedial'],
+  rms: ['rms'],
+  food: ['food'],
+  administrative: ['administrative'],
+};
+const ROUTE_SPLIT_IMPORTERS = {
+  attendance: () => import(`/web/routes/attendance-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  messages: () => import(`/web/routes/messages-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  rms: () => import(`/web/routes/rms-dashboard-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  food: () => import(`/web/routes/food.route.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  remedial: () => import(`/web/routes/remedial-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  administrative: () => import(`/web/routes/administrative-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+};
+
+function isRealtimeBusConnected() {
+  return Boolean(realtimeBusController && typeof realtimeBusController.isConnected === 'function' && realtimeBusController.isConnected());
+}
+
+function routeSplitKeysForRoute(moduleKey) {
+  const key = normalizeModuleKey(moduleKey);
+  const keys = ROUTE_SPLIT_MODULES_BY_ROUTE[key];
+  return Array.isArray(keys) ? keys : [];
+}
+
+async function refreshStudentAttendanceRealtime() {
+  await Promise.allSettled([
+    refreshStudentKpiTimetable({ forceNetwork: true }),
+    loadStudentTimetable({ forceNetwork: true }),
+    loadStudentAttendanceInsights(),
+    loadSaarthiStatus({ silent: true }),
+  ]);
+}
+
+async function refreshFacultyAttendanceRealtime() {
+  if (!authState.user) {
+    return;
+  }
+  await refreshAttendanceData();
+  if (authState.user.role === 'faculty' || authState.user.role === 'admin') {
+    if (state.faculty.selectedScheduleId) {
+      await refreshFacultyDashboard();
+    }
+  }
+}
+
+async function refreshSupportDeskRealtime() {
+  await refreshSupportDeskContext({ silent: true, refreshThread: false });
+  if (state.ui.supportDeskOpen && Number(state.supportDesk.selectedCounterpartyId || 0) > 0) {
+    await refreshSupportDeskThread({ silent: true });
+  }
+}
+
+async function refreshStudentMessagesRealtime() {
+  await refreshStudentMessages();
+}
+
+async function refreshRemedialRealtime() {
+  await refreshRemedialMessages();
+}
+
+async function refreshRemedialModuleRealtime() {
+  await refreshRemedialModule();
+}
+
+async function refreshRmsRealtime() {
+  await refreshRmsModule();
+}
+
+async function refreshFoodRealtime() {
+  await refreshFoodModule();
+}
+
+async function refreshAdministrativeRealtime() {
+  await refreshAdministrativeModule();
+}
+
+function buildRouteModuleRuntime() {
+  return {
+    realtimeBus: realtimeBusController,
+    getUserRole: () => String(authState.user?.role || ''),
+    getActiveModule: () => getSanitizedModuleKey(state.ui.activeModule),
+    isSupportDeskOpen: () => Boolean(state.ui.supportDeskOpen),
+    refreshStudentAttendance: async () => refreshStudentAttendanceRealtime(),
+    refreshFacultyAttendance: async () => refreshFacultyAttendanceRealtime(),
+    refreshSupportDesk: async () => refreshSupportDeskRealtime(),
+    refreshStudentMessages: async () => refreshStudentMessagesRealtime(),
+    refreshRemedialMessages: async () => refreshRemedialRealtime(),
+    refreshRemedialModule: async () => refreshRemedialModuleRealtime(),
+    refreshRms: async () => refreshRmsRealtime(),
+    refreshFood: async () => refreshFoodRealtime(),
+    refreshAdministrative: async () => refreshAdministrativeRealtime(),
+    ensureFoodDeferredAssets: async () => ensureFoodCatalogLoaded({ preloadOnly: true }),
+    log,
+  };
+}
+
+async function ensureRealtimeBusController() {
+  if (realtimeBusController) {
+    return realtimeBusController;
+  }
+  if (realtimeBusLoadingPromise) {
+    return realtimeBusLoadingPromise;
+  }
+  realtimeBusLoadingPromise = import(`/web/modules/realtime-event-bus.js?v=${ROUTE_SPLIT_ASSET_VERSION}`)
+    .then((module) => {
+      realtimeBusController = module.createRealtimeBus({
+        url: `/events/stream?topics=${encodeURIComponent(REALTIME_TOPICS)}`,
+        onStatus: (stateLabel) => {
+          if (stateLabel === 'connected' || stateLabel === 'disconnected') {
+            return;
+          }
+          log(`Realtime ${stateLabel}`);
+        },
+        onLog: () => {},
+      });
+      return realtimeBusController;
+    })
+    .finally(() => {
+      realtimeBusLoadingPromise = null;
+    });
+  return realtimeBusLoadingPromise;
+}
+
+async function loadRouteSplitModule(moduleKey) {
+  if (routeModuleInstances.has(moduleKey)) {
+    return routeModuleInstances.get(moduleKey);
+  }
+  const importer = ROUTE_SPLIT_IMPORTERS[moduleKey];
+  if (typeof importer !== 'function') {
+    return null;
+  }
+  const loaded = await importer();
+  routeModuleInstances.set(moduleKey, loaded || null);
+  return loaded || null;
+}
+
+async function deactivateAllRouteModules() {
+  for (const key of [...routeModuleActiveKeys]) {
+    const module = routeModuleInstances.get(key);
+    if (module && typeof module.onDeactivate === 'function') {
+      module.onDeactivate();
+    }
+    routeModuleActiveKeys.delete(key);
+  }
+}
+
+async function syncRouteCodeSplit(moduleKey) {
+  const syncToken = ++routeModuleSyncToken;
+  if (!authState.user || !realtimeBusController) {
+    await deactivateAllRouteModules();
+    routeModuleRuntime = null;
+    return;
+  }
+
+  const requiredKeys = routeSplitKeysForRoute(moduleKey);
+  if (!requiredKeys.length) {
+    await deactivateAllRouteModules();
+    routeModuleRuntime = null;
+    return;
+  }
+
+  routeModuleRuntime = buildRouteModuleRuntime();
+  for (const key of requiredKeys) {
+    await loadRouteSplitModule(key);
+  }
+  if (syncToken !== routeModuleSyncToken) {
+    return;
+  }
+
+  for (const key of [...routeModuleActiveKeys]) {
+    if (requiredKeys.includes(key)) {
+      continue;
+    }
+    const existing = routeModuleInstances.get(key);
+    if (existing && typeof existing.onDeactivate === 'function') {
+      existing.onDeactivate();
+    }
+    routeModuleActiveKeys.delete(key);
+  }
+
+  for (const key of requiredKeys) {
+    const loaded = routeModuleInstances.get(key);
+    if (!loaded || typeof loaded.onActivate !== 'function') {
+      continue;
+    }
+    if (!routeModuleActiveKeys.has(key)) {
+      loaded.onActivate(routeModuleRuntime);
+      routeModuleActiveKeys.add(key);
+    }
+  }
+}
+
+function stopRealtimeEventBus() {
+  routeModuleSyncToken += 1;
+  void deactivateAllRouteModules();
+  routeModuleRuntime = null;
+  if (realtimeBusController && typeof realtimeBusController.disconnect === 'function') {
+    realtimeBusController.disconnect();
+  }
+}
+
+async function syncRealtimeEventBus() {
+  if (!authState.user) {
+    stopRealtimeEventBus();
+    return;
+  }
+  const bus = await ensureRealtimeBusController();
+  if (bus && typeof bus.connect === 'function') {
+    bus.connect();
+  }
+  await syncRouteCodeSplit(getSanitizedModuleKey(state.ui.activeModule));
+}
 
 function normalizeModuleKey(rawModule) {
   const candidate = String(rawModule || '').trim().toLowerCase();
@@ -1663,7 +3723,7 @@ function moduleFromHash() {
 
 function defaultModuleForRole(role = authState.user?.role) {
   if (role === 'admin') {
-    return 'administrative';
+    return 'rms';
   }
   if (role === 'owner') {
     return 'food';
@@ -1677,13 +3737,16 @@ function isModuleAccessible(moduleKey, role = authState.user?.role) {
   }
   const key = normalizeModuleKey(moduleKey);
   if (key === 'attendance') {
-    return role === 'student' || role === 'faculty';
+    return role === 'student' || role === 'faculty' || role === 'admin';
   }
   if (key === 'food') {
     return role === 'student' || role === 'faculty' || role === 'owner';
   }
   if (key === 'administrative') {
-    return role === 'student' || role === 'faculty' || role === 'admin';
+    return role === 'admin';
+  }
+  if (key === 'rms') {
+    return role === 'admin' || role === 'faculty';
   }
   if (key === 'remedial') {
     return role === 'student' || role === 'faculty';
@@ -1705,6 +3768,7 @@ function setTopNavActive(moduleKey) {
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
+    els.topNavRmsBtn,
     els.topNavRemedialBtn,
   ].filter(Boolean);
 
@@ -1713,6 +3777,7 @@ function setTopNavActive(moduleKey) {
     button.classList.toggle('active', isActive);
     button.setAttribute('aria-current', isActive ? 'page' : 'false');
   }
+  syncTopNavActiveButtonIntoView();
 }
 
 function updateModuleHash(moduleKey) {
@@ -1728,10 +3793,6 @@ function updateModuleHash(moduleKey) {
 }
 
 function resolveSidebarModuleTarget() {
-  const role = authState.user?.role;
-  if (role === 'admin') {
-    return 'administrative';
-  }
   return 'attendance';
 }
 
@@ -1747,6 +3808,7 @@ function setActiveModule(moduleKey, { updateHash = true } = {}) {
   applyRoleUI();
   setTopNavActive(nextModule);
   syncFoodDemandLiveTicker();
+  void syncRouteCodeSplit(nextModule);
 }
 
 function updateDashboardHeroByRole() {
@@ -1754,19 +3816,29 @@ function updateDashboardHeroByRole() {
     return;
   }
   const role = authState.user?.role;
-  if (role === 'faculty') {
-    els.dashboardTitle.textContent = 'Faculty Dashboard';
+  if (role === 'admin') {
+    els.dashboardTitle.textContent = 'Administrative Operations Command Center';
+    els.dashboardSubtitle.textContent = 'Monitor attendance, capacity, demand, and institutional health in real time.';
+  } else if (role === 'faculty') {
+    els.dashboardTitle.textContent = 'Faculty Instruction Console';
+    els.dashboardSubtitle.textContent = 'Run classes, review attendance queues, and track section performance.';
+  } else if (role === 'student') {
+    els.dashboardTitle.textContent = 'Student Success Dashboard';
+    els.dashboardSubtitle.textContent = 'Track attendance, schedules, remedials, and campus food workflows from one place.';
   } else if (role === 'owner') {
-    els.dashboardTitle.textContent = 'Vendor Dashboard';
+    els.dashboardTitle.textContent = 'Vendor Operations Console';
+    els.dashboardSubtitle.textContent = 'Manage order intake, preparation flow, and delivery timelines for your shop.';
   } else {
-    els.dashboardTitle.textContent = 'Vertos Dashboard';
+    els.dashboardTitle.textContent = 'Campus Command Center';
+    els.dashboardSubtitle.textContent = 'Unified attendance, remedial, food, and operations workflows.';
   }
-  els.dashboardSubtitle.textContent = 'Your all in one Uni-need.';
 }
 
 function applyRoleUI() {
   const role = authState.user?.role;
+  const isAdmin = role === 'admin';
   const isFaculty = role === 'faculty';
+  const isFacultyOrAdmin = isFaculty || isAdmin;
   const isOwner = role === 'owner';
   const isStudent = role === 'student';
   const isFoodOperator = isFaculty || isOwner;
@@ -1774,9 +3846,12 @@ function applyRoleUI() {
   state.ui.activeModule = activeModule;
 
   setHidden(els.accountSection, true);
-  setHidden(els.executiveSection, !authState.user || activeModule !== 'administrative');
+  setHidden(els.executiveSection, !isAdmin || activeModule !== 'administrative');
+  setHidden(els.rmsSection, !isFacultyOrAdmin || activeModule !== 'rms');
+  setHidden(els.rmsAdminDedicatedNote, !isAdmin || activeModule !== 'rms');
   setHidden(els.studentSection, !isStudent || activeModule !== 'attendance');
-  setHidden(els.facultySection, !isFaculty || activeModule !== 'attendance');
+  setHidden(els.facultySection, !isFacultyOrAdmin || activeModule !== 'attendance');
+  setHidden(els.adminAttendanceActionsCard, !isAdmin || activeModule !== 'attendance');
   setHidden(els.foodSection, !authState.user || activeModule !== 'food');
   setHidden(els.remedialSection, !authState.user || activeModule !== 'remedial');
   setHidden(els.remedialFacultyPanel, !isFaculty);
@@ -1815,10 +3890,14 @@ function applyRoleUI() {
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
+    els.topNavRmsBtn,
     els.topNavRemedialBtn,
   ].filter(Boolean);
   for (const button of moduleButtons) {
-    button.disabled = !authState.user;
+    const moduleKey = normalizeModuleKey(button.dataset.module);
+    const visible = Boolean(role) && isModuleAccessible(moduleKey, role);
+    setHidden(button, !visible);
+    button.disabled = !visible;
   }
 
   if (isStudent) {
@@ -1838,7 +3917,15 @@ function applyRoleUI() {
   renderEnrollmentSummary();
   syncFoodLocationMonitoringByModule();
   syncRemedialLiveTicker();
+  updateVerlynVisibility();
+  renderVerlynQuickActions();
   updateChotuVisibility();
+  updateSupportDeskVisibility();
+  syncSupportDeskLiveTicker();
+  if (isAdmin && activeModule === 'administrative') {
+    void refreshCopilotAuditTimeline({ silent: true });
+  }
+  void syncRealtimeEventBus();
 }
 
 function setSidebarActive(navKey) {
@@ -1920,14 +4007,14 @@ function renderAlternateEmailStatus() {
     return;
   }
   if (!authState.user.primary_login_verified) {
-    els.alternateEmailStatus.textContent = 'Login once using your primary email to enable alternate Gmail OTP.';
+    els.alternateEmailStatus.textContent = 'Login once using your primary email before saving a secondary email.';
     return;
   }
   if (authState.user.alternate_email) {
-    els.alternateEmailStatus.textContent = `Alternate OTP email active: ${authState.user.alternate_email}`;
+    els.alternateEmailStatus.textContent = `Secondary email saved: ${authState.user.alternate_email}`;
     return;
   }
-  els.alternateEmailStatus.textContent = 'No alternate Gmail configured.';
+  els.alternateEmailStatus.textContent = 'No secondary email configured.';
 }
 
 function formatLockDateTime(dateValue) {
@@ -2164,6 +4251,8 @@ function openProfileModal({ required = false } = {}) {
   if (els.profileModalTitle) {
     if (role === 'faculty') {
       els.profileModalTitle.textContent = required ? 'Complete Faculty Profile Setup' : 'Faculty Profile Settings';
+    } else if (role === 'admin') {
+      els.profileModalTitle.textContent = 'Admin Profile';
     } else if (role === 'owner') {
       els.profileModalTitle.textContent = 'Vendor Profile';
     } else {
@@ -2174,13 +4263,15 @@ function openProfileModal({ required = false } = {}) {
     if (role === 'faculty') {
       els.profileModalSubtitle.textContent = required
         ? 'Enter full name, upload profile photo, set faculty ID, and set section before using the portal.'
-        : 'Manage faculty ID, section, profile photo, and alternate OTP email.';
+        : 'Manage faculty ID, section, profile photo, and secondary email.';
+    } else if (role === 'admin') {
+      els.profileModalSubtitle.textContent = 'Admin identity is managed centrally. Use attendance controls for approve/disapprove and schedule actions.';
     } else if (role === 'owner') {
       els.profileModalSubtitle.textContent = 'Vendor identity is separate and connected to your assigned shop data.';
     } else {
       els.profileModalSubtitle.textContent = required
         ? 'Enter full name, upload your profile photo, set registration number, and set section before using the portal.'
-        : 'Manage profile photo, registration number, section, and alternate OTP email.';
+        : 'Manage profile photo, registration number, section, and secondary email.';
     }
   }
   if (els.profileCloseBtn) {
@@ -2423,10 +4514,6 @@ function renderProfileSecurity() {
     if (els.saveAlternateEmailBtn) {
       els.saveAlternateEmailBtn.disabled = true;
     }
-    if (els.authSendAltOtp) {
-      els.authSendAltOtp.checked = false;
-      els.authSendAltOtp.disabled = false;
-    }
     if (els.alternateEmailStatus) {
       els.alternateEmailStatus.textContent = '';
     }
@@ -2444,6 +4531,7 @@ function renderProfileSecurity() {
   const role = authState.user.role;
   const isStudent = role === 'student';
   const isFaculty = role === 'faculty';
+  const isAdmin = role === 'admin';
   const isOwner = role === 'owner';
   const isProfileEditableRole = isStudent || isFaculty;
   const normalizedActiveName = normalizeProfileName(
@@ -2461,11 +4549,15 @@ function renderProfileSecurity() {
     ? (state.student.registrationNumber || '')
     : isFaculty
       ? (state.facultyProfile.facultyIdentifier || '')
+      : isAdmin
+        ? (authState.user?.id ? `ADMIN-${authState.user.id}` : '')
       : (authState.user?.id ? `OWNER-${authState.user.id}` : '');
 
   if (els.profileIdLabel) {
     els.profileIdLabel.textContent = isFaculty
       ? 'Faculty ID'
+      : isAdmin
+        ? 'Admin ID'
       : isOwner
         ? 'Vendor ID'
         : 'Registration Number';
@@ -2482,6 +4574,8 @@ function renderProfileSecurity() {
   if (els.profileRegistrationNote) {
     els.profileRegistrationNote.textContent = isFaculty
       ? 'Faculty ID is permanent and cannot be changed without admin permissions.'
+      : isAdmin
+        ? 'Admin ID is linked to your account and managed centrally.'
       : isOwner
         ? 'Vendor ID is mapped from your account and connected to owned shop data.'
         : 'Registration number is permanent and cannot be changed without admin permissions.';
@@ -2549,9 +4643,6 @@ function renderProfileSecurity() {
   if (els.saveProfilePhotoBtn) {
     els.saveProfilePhotoBtn.disabled = !isProfileEditableRole;
     setHidden(els.saveProfilePhotoBtn, !isProfileEditableRole);
-  }
-  if (els.authSendAltOtp) {
-    els.authSendAltOtp.disabled = false;
   }
   if (!isStudent) {
     setProfileTab('details');
@@ -2699,6 +4790,22 @@ function resetStudentProfileState() {
   state.student.enrollmentFrames = [];
   state.student.enrollmentCaptureRunning = false;
   state.student.autoRefreshBusy = false;
+  state.student.demoAttendanceEnabled = false;
+  state.student.selfieDataUrl = '';
+  state.student.attendanceAggregate = null;
+  state.student.attendanceHistory = [];
+  state.student.attendanceHistoryByCourse = {};
+  state.student.saarthiStatus = null;
+  state.student.saarthiMessages = [];
+  state.student.saarthiSending = false;
+  state.student.saarthiUiMessage = 'Saarthi session will appear here.';
+  state.student.saarthiUiState = 'neutral';
+  state.student.attendanceDetailsCourseKey = '';
+  state.student.attendanceRectificationRequests = [];
+  state.student.attendanceRectificationByKey = {};
+  state.student.attendanceRectificationTarget = null;
+  state.student.attendanceRectificationProofDataUrl = '';
+  renderSaarthiPanel();
 }
 
 function resetFacultyProfileState() {
@@ -2786,6 +4893,8 @@ function setSession(token, user) {
   renderFoodFreshnessIndicators();
   renderFoodDemandLiveSignal({ animate: false });
   state.ui.chotuOpen = false;
+  state.ui.supportDeskOpen = false;
+  state.ui.verlynOpen = false;
   state.remedial.eligibleCourses = [];
   state.remedial.classes = [];
   state.remedial.selectedClassId = null;
@@ -2801,6 +4910,78 @@ function setSession(token, user) {
   state.remedial.markedClassId = null;
   state.remedial.markedOnlineLink = '';
   state.remedial.demoBypassLeadTime = false;
+  state.supportDesk.contacts = [];
+  state.supportDesk.threads = [];
+  state.supportDesk.messages = [];
+  state.supportDesk.selectedCounterpartyId = null;
+  state.supportDesk.selectedCategory = 'Attendance';
+  state.supportDesk.selectedCounterpartyName = '';
+  state.supportDesk.selectedCounterpartySection = '';
+  state.supportDesk.unreadTotal = 0;
+  state.rms.dashboard = null;
+  state.rms.selectedCategory = 'all';
+  state.rms.selectedStatus = 'all';
+  state.rms.selectedStudent = null;
+  state.rms.selectedThread = null;
+  state.rms.threadAction = 'approve';
+  state.rms.attendanceContext = null;
+  state.rms.attendanceSelectedCourseCode = '';
+  state.rms.attendanceUpdate = null;
+  state.admin.telemetryHistory = [];
+  state.admin.summary = null;
+  state.admin.alerts = [];
+  state.admin.insights = null;
+  state.admin.identityCases = [];
+  state.admin.lastUpdatedAt = null;
+  state.admin.staleAfterSeconds = 60;
+  state.admin.copilotAuditLoadedAtMs = 0;
+  state.admin.copilotAuditBusy = false;
+  state.admin.copilotAuditQueued = false;
+  if (els.adminSearchResults) {
+    els.adminSearchResults.innerHTML = '';
+  }
+  if (els.adminGradeHistoryWrap) {
+    els.adminGradeHistoryWrap.innerHTML = '';
+  }
+  setAdminSearchStatus('Use registration number or faculty identifier for exact production lookup.');
+  setAdminGradeStatus('Grade changes are audit logged and can be fetched by registration number.');
+  if (els.rmsThreadAction) {
+    els.rmsThreadAction.value = state.rms.threadAction;
+  }
+  if (els.rmsThreadNote) {
+    els.rmsThreadNote.value = '';
+  }
+  if (els.rmsThreadScheduledFor) {
+    els.rmsThreadScheduledFor.value = '';
+  }
+  if (els.rmsAttendanceRegistration) {
+    els.rmsAttendanceRegistration.value = '';
+  }
+  if (els.rmsAttendanceStudentSummary) {
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+  }
+  if (els.rmsAttendanceSubjectSelect) {
+    els.rmsAttendanceSubjectSelect.innerHTML = '<option value="">Select subject</option>';
+    els.rmsAttendanceSubjectSelect.value = '';
+  }
+  if (els.rmsAttendanceDate) {
+    els.rmsAttendanceDate.value = todayISO();
+  }
+  if (els.rmsAttendanceCurrentStatus) {
+    els.rmsAttendanceCurrentStatus.value = 'Not marked';
+  }
+  if (els.rmsAttendanceStatus) {
+    els.rmsAttendanceStatus.value = 'present';
+  }
+  if (els.rmsAttendanceNote) {
+    els.rmsAttendanceNote.value = '';
+  }
+  setRmsAttendanceStatus('Search by registration number, choose subject, then apply attendance status.');
+  syncRmsThreadActionForm();
+  renderRmsSelectedThreadSummary(null);
+  renderRmsAttendanceStudentSummary(null);
+  renderRmsAttendanceSubjectOptions(null);
+  renderRmsAttendanceResult(null);
   state.studentMessages = [];
   resetStudentProfileState();
   resetFacultyProfileState();
@@ -2835,6 +5016,7 @@ function setSession(token, user) {
   startModuleRealtimeTicker();
   syncFoodDemandLiveTicker();
   startSessionWatchdog();
+  void syncRealtimeEventBus();
 }
 
 function clearSession() {
@@ -2845,6 +5027,10 @@ function clearSession() {
   authState.pendingEmail = '';
   authState.otpCooldownUntilMs = 0;
   authState.otpRequestInFlight = false;
+  authState.mfaSetupRequired = false;
+  authState.mfaEnrollInFlight = false;
+  authState.mfaActivateInFlight = false;
+  authState.mfaSetup = null;
   authState.forgotOtpCooldownUntilMs = 0;
   authState.forgotOtpRequestInFlight = false;
   authState.forgotResetToken = '';
@@ -2855,6 +5041,9 @@ function clearSession() {
   stopForgotOtpCooldownTicker();
   clearSessionWatchdogTimers();
   hideOtpPopup();
+  setMfaSetupModal(false);
+  resetMfaSetupUiState();
+  setAuthMfaInputVisible(false);
   applyTheme(getInitialTheme(''), { persist: false, userEmail: '' });
   persistToken('');
   state.ui.activeModule = 'attendance';
@@ -2872,6 +5061,8 @@ function clearSession() {
   resetFacultyProfileState();
   state.faculty.selectedScheduleId = null;
   state.faculty.selectedSubmissionIds.clear();
+  state.faculty.rectificationRequests = [];
+  closeAttendanceRectificationModal();
   state.camera.liveVerificationActive = false;
   state.camera.liveSessionToken += 1;
   state.food.items = [];
@@ -2938,6 +5129,8 @@ function clearSession() {
   state.food.location.lastVerifiedAtMs = 0;
   state.food.location.message = '';
   state.ui.chotuOpen = false;
+  state.ui.supportDeskOpen = false;
+  state.ui.verlynOpen = false;
   state.remedial.eligibleCourses = [];
   state.remedial.classes = [];
   state.remedial.selectedClassId = null;
@@ -2953,6 +5146,68 @@ function clearSession() {
   state.remedial.markedClassId = null;
   state.remedial.markedOnlineLink = '';
   state.remedial.demoBypassLeadTime = false;
+  state.supportDesk.contacts = [];
+  state.supportDesk.threads = [];
+  state.supportDesk.messages = [];
+  state.supportDesk.selectedCounterpartyId = null;
+  state.supportDesk.selectedCategory = 'Attendance';
+  state.supportDesk.selectedCounterpartyName = '';
+  state.supportDesk.selectedCounterpartySection = '';
+  state.supportDesk.unreadTotal = 0;
+  state.rms.dashboard = null;
+  state.rms.selectedCategory = 'all';
+  state.rms.selectedStatus = 'all';
+  state.rms.selectedStudent = null;
+  state.rms.selectedThread = null;
+  state.rms.threadAction = 'approve';
+  state.rms.attendanceContext = null;
+  state.rms.attendanceSelectedCourseCode = '';
+  state.rms.attendanceUpdate = null;
+  if (els.adminSearchResults) {
+    els.adminSearchResults.innerHTML = '';
+  }
+  if (els.adminGradeHistoryWrap) {
+    els.adminGradeHistoryWrap.innerHTML = '';
+  }
+  setAdminSearchStatus('Use registration number or faculty identifier for exact production lookup.');
+  setAdminGradeStatus('Grade changes are audit logged and can be fetched by registration number.');
+  if (els.rmsThreadAction) {
+    els.rmsThreadAction.value = state.rms.threadAction;
+  }
+  if (els.rmsThreadNote) {
+    els.rmsThreadNote.value = '';
+  }
+  if (els.rmsThreadScheduledFor) {
+    els.rmsThreadScheduledFor.value = '';
+  }
+  if (els.rmsAttendanceRegistration) {
+    els.rmsAttendanceRegistration.value = '';
+  }
+  if (els.rmsAttendanceStudentSummary) {
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+  }
+  if (els.rmsAttendanceSubjectSelect) {
+    els.rmsAttendanceSubjectSelect.innerHTML = '<option value="">Select subject</option>';
+    els.rmsAttendanceSubjectSelect.value = '';
+  }
+  if (els.rmsAttendanceDate) {
+    els.rmsAttendanceDate.value = todayISO();
+  }
+  if (els.rmsAttendanceCurrentStatus) {
+    els.rmsAttendanceCurrentStatus.value = 'Not marked';
+  }
+  if (els.rmsAttendanceStatus) {
+    els.rmsAttendanceStatus.value = 'present';
+  }
+  if (els.rmsAttendanceNote) {
+    els.rmsAttendanceNote.value = '';
+  }
+  setRmsAttendanceStatus('Search by registration number, choose subject, then apply attendance status.');
+  syncRmsThreadActionForm();
+  renderRmsSelectedThreadSummary(null);
+  renderRmsAttendanceStudentSummary(null);
+  renderRmsAttendanceSubjectOptions(null);
+  renderRmsAttendanceResult(null);
   state.studentMessages = [];
   updateAuthBadges();
   applyRoleUI();
@@ -2976,13 +5231,17 @@ function clearSession() {
   if (els.foodShopModal) {
     els.foodShopModal.classList.add('hidden');
   }
+  setVerlynOpen(false);
   setChotuOpen(false);
+  setSupportDeskOpen(false);
   stopEnrollmentCameraStream();
   stopStudentRealtimeTicker();
   stopStudentTimetableStatusTicker();
   stopModuleRealtimeTicker();
   stopFoodDemandLiveTicker();
   stopRemedialLiveTicker();
+  stopSupportDeskLiveTicker();
+  stopRealtimeEventBus();
 }
 
 async function api(path, options = {}) {
@@ -3038,6 +5297,9 @@ async function api(path, options = {}) {
     if (!skipAuth && response.status === 401) {
       clearSession();
       openAuthOverlay('Session expired. Please login again.');
+    }
+    if (!skipAuth && response.status === 428 && isMfaEnrollmentRequiredMessage(detail)) {
+      void maybePromptPrivilegedMfaSetup(detail);
     }
     const error = new Error(detail);
     error.status = response.status;
@@ -3390,18 +5652,66 @@ function getFoodDemandRowsInDisplayOrder() {
   return [...rows].sort((a, b) => parseSlotLabelStartMinutes(a?.slot_label) - parseSlotLabelStartMinutes(b?.slot_label));
 }
 
+function resolveFoodDemandHotRow(rows) {
+  const availableRows = Array.isArray(rows) ? rows : [];
+  let bestRow = null;
+  let bestOrders = 0;
+  let bestUtilization = 0;
+  for (const row of availableRows) {
+    const slotId = Number(row?.slot_id || 0);
+    if (slotId <= 0) {
+      continue;
+    }
+    const orders = Math.max(0, Number(row?.orders || 0));
+    const utilization = Math.max(0, Number(row?.utilization_percent || 0));
+    if (
+      bestRow === null
+      || orders > bestOrders
+      || (orders === bestOrders && utilization > bestUtilization)
+    ) {
+      bestRow = row;
+      bestOrders = orders;
+      bestUtilization = utilization;
+    }
+  }
+  if (!bestRow || bestOrders <= 0) {
+    return null;
+  }
+  return bestRow;
+}
+
+function resolveFoodDemandHotSlotId(rows) {
+  const availableRows = Array.isArray(rows) ? rows : [];
+  const activeSet = new Set(availableRows.map((row) => Number(row?.slot_id || 0)).filter((slotId) => slotId > 0));
+  const liveHotId = Number(state.food?.demandLive?.pulses?.[0]?.slot_id || 0);
+  if (liveHotId > 0 && activeSet.has(liveHotId)) {
+    return liveHotId;
+  }
+  const hotRow = resolveFoodDemandHotRow(availableRows);
+  return Number(hotRow?.slot_id || 0);
+}
+
 function resolveFoodDemandSelectedSlotId(rows) {
   const availableRows = Array.isArray(rows) ? rows : [];
   const activeSet = new Set(availableRows.map((row) => Number(row?.slot_id || 0)).filter((slotId) => slotId > 0));
   let selectedId = Number(state.food.demandSelectedSlotId || 0);
+  const hotSlotId = resolveFoodDemandHotSlotId(availableRows);
+
   if (selectedId > 0 && activeSet.has(selectedId)) {
-    return selectedId;
+    const selectedRow = availableRows.find((row) => Number(row?.slot_id || 0) === selectedId);
+    const selectedOrders = Math.max(0, Number(selectedRow?.orders || 0));
+    const hotRow = resolveFoodDemandHotRow(availableRows);
+    const hotOrders = Math.max(0, Number(hotRow?.orders || 0));
+    if (selectedOrders > 0 || hotOrders <= 0 || selectedId === hotSlotId) {
+      return selectedId;
+    }
   }
-  const hottestId = Number(state.food.demandLive?.pulses?.[0]?.slot_id || 0);
-  if (hottestId > 0 && activeSet.has(hottestId)) {
-    state.food.demandSelectedSlotId = hottestId;
-    return hottestId;
+
+  if (hotSlotId > 0 && activeSet.has(hotSlotId)) {
+    state.food.demandSelectedSlotId = hotSlotId;
+    return hotSlotId;
   }
+
   const firstBusy = availableRows.find((row) => Number(row?.orders || 0) > 0);
   selectedId = Number(firstBusy?.slot_id || availableRows[0]?.slot_id || 0);
   state.food.demandSelectedSlotId = selectedId;
@@ -3630,15 +5940,20 @@ function renderFoodDemandLiveSignal({ animate = false } = {}) {
   const payments = Math.max(0, Number(live.paymentEventsLastWindow || 0));
   const active = Math.max(0, Number(live.activeOrders || 0));
   const totalEvents = created + status + payments;
-  const hottestText = live.hottestSlotLabel
-    ? `${live.hottestSlotLabel} (${Number(live.hottestSlotOrders || 0)})`
-    : '--';
+  const demandRows = getFoodDemandRowsInDisplayOrder();
+  const fallbackHotRow = resolveFoodDemandHotRow(demandRows);
+  let hottestText = '--';
+  if (live.hottestSlotLabel && Number(live.hottestSlotOrders || 0) > 0) {
+    hottestText = `${live.hottestSlotLabel} (${Number(live.hottestSlotOrders || 0)})`;
+  } else if (fallbackHotRow) {
+    hottestText = `${String(fallbackHotRow.slot_label || '--')} (${Number(fallbackHotRow.orders || 0)})`;
+  }
   els.foodDemandLiveCompactSummary.textContent = `Active ${active} • Events ${totalEvents} in ${windowMinutes}m • Hot ${hottestText}`;
   if (els.foodDemandLiveCompact) {
     els.foodDemandLiveCompact.classList.toggle('is-live-active', totalEvents > 0);
   }
   if (els.foodDemandLiveHotBtn) {
-    const hotSlotId = Number(live?.pulses?.[0]?.slot_id || 0);
+    const hotSlotId = resolveFoodDemandHotSlotId(demandRows);
     els.foodDemandLiveHotBtn.disabled = hotSlotId <= 0;
     els.foodDemandLiveHotBtn.textContent = hotSlotId > 0 ? 'Focus hottest' : 'No hotspot';
   }
@@ -4443,6 +6758,32 @@ async function refreshAdminInsights(options = {}) {
   return payload;
 }
 
+async function refreshAdminRecoveryPlans(options = {}) {
+  const includeResolved = Boolean(
+    options?.includeResolved
+      ?? els.adminRecoveryIncludeResolved?.checked
+      ?? state.admin?.recoveryIncludeResolved
+  );
+  const limit = Math.max(20, Number(options?.limit || 120));
+  if (els.adminRecoveryIncludeResolved) {
+    els.adminRecoveryIncludeResolved.checked = includeResolved;
+  }
+  state.admin.recoveryIncludeResolved = includeResolved;
+  const payload = await api(
+    `/attendance/admin/recovery-plans?include_resolved=${includeResolved ? 'true' : 'false'}&limit=${limit}`
+  );
+  state.admin.recoveryPlans = Array.isArray(payload?.plans) ? payload.plans : [];
+  state.admin.recoveryLastUpdatedAt = payload?.last_updated_at || null;
+  renderAdminRecoveryPlans();
+  if (!options?.silent) {
+    const message = includeResolved
+      ? 'Recovery desk refreshed, including recovered plans.'
+      : 'Recovery desk refreshed.';
+    setAdminRecoveryStatus(message, false, 'success');
+  }
+  return payload;
+}
+
 function applyAdminLivePayload(payload) {
   const summary = (payload && typeof payload.summary === 'object') ? payload.summary : {};
   state.admin.summary = summary;
@@ -4480,6 +6821,90 @@ async function refreshAdminLive(options = {}) {
   const payload = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`);
   applyAdminLivePayload(payload || {});
   return payload;
+}
+
+async function recomputeAdminRecoveryScope({ studentId = null, courseId = null, limit = 1000 } = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can recompute attendance recovery scope.');
+  }
+  const payload = {
+    limit: Math.max(1, Number(limit || 1000)),
+  };
+  if (Number(studentId) > 0) {
+    payload.student_id = Number(studentId);
+  }
+  if (Number(courseId) > 0) {
+    payload.course_id = Number(courseId);
+  }
+  setAdminRecoveryStatus('Recomputing attendance recovery scope...', false, 'loading');
+  const result = await api('/attendance/recovery/recompute', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  await Promise.all([
+    refreshAdminRecoveryPlans({
+      includeResolved: state.admin?.recoveryIncludeResolved,
+      silent: true,
+    }),
+    refreshAdminLive({
+      workDate: els.workDate?.value || todayISO(),
+      mode: 'enrollment',
+    }),
+  ]);
+  const healthMetrics = computeAdministrativeHealthMetrics();
+  renderAdministrativeHealthMetrics(healthMetrics);
+  pushAdministrativeTelemetry(healthMetrics);
+  renderAdministrativeTelemetryChart();
+  renderAdminLiveIndicator();
+  renderAdminIssues();
+  setAdminRecoveryStatus(
+    `Recomputed ${Number(result?.evaluated || 0)} enrollment pair(s) and touched ${Number(result?.plans_touched || 0)} plan(s).`,
+    false,
+    'success',
+  );
+  return result;
+}
+
+async function openRecoveryPlanInRms(planId) {
+  const plans = Array.isArray(state.admin?.recoveryPlans) ? state.admin.recoveryPlans : [];
+  const plan = plans.find((item) => Number(item?.id || 0) === Number(planId || 0));
+  if (!plan) {
+    throw new Error('Recovery plan is no longer available.');
+  }
+  if (els.rmsQueryCategory) {
+    els.rmsQueryCategory.value = 'Attendance';
+  }
+  if (els.rmsQueryStatus) {
+    els.rmsQueryStatus.value = 'pending';
+  }
+  state.rms.selectedCategory = 'Attendance';
+  state.rms.selectedStatus = 'pending';
+  setActiveModule('rms');
+  await refreshRmsModule({ silent: true });
+
+  const registrationNumber = normalizedRegistrationInput(plan.registration_number || '');
+  if (registrationNumber) {
+    if (els.rmsSearchRegistration) {
+      els.rmsSearchRegistration.value = registrationNumber;
+    }
+    if (els.rmsAttendanceRegistration) {
+      els.rmsAttendanceRegistration.value = registrationNumber;
+    }
+    try {
+      await searchRmsStudentByRegistration({ silent: true });
+    } catch (_) {
+      // Keep RMS navigation resilient if student preload fails.
+    }
+    try {
+      await searchRmsAttendanceStudentContext({ silent: true });
+    } catch (_) {
+      // Attendance context is optional for the RMS landing flow.
+    }
+  }
+  setRmsStatus(
+    `Opened RMS recovery desk for ${String(plan.student_name || 'student')} in ${String(plan.course_code || 'attendance')}.`,
+    false,
+  );
 }
 
 async function refreshAttendanceData() {
@@ -4576,16 +7001,7 @@ async function refreshFoodDemandLiveTick() {
 }
 
 function syncFoodDemandLiveTicker() {
-  if (!shouldRunFoodDemandLiveTicker()) {
-    stopFoodDemandLiveTicker();
-    return;
-  }
-  if (foodDemandLiveTimer) {
-    return;
-  }
-  foodDemandLiveTimer = window.setInterval(() => {
-    void refreshFoodDemandLiveTick();
-  }, FOOD_DEMAND_LIVE_REFRESH_MS);
+  stopFoodDemandLiveTicker();
 }
 
 async function refreshCapacity() {
@@ -4594,44 +7010,51 @@ async function refreshCapacity() {
   renderCapacityChart();
 }
 
-function setFoodStatus(message, isError = false) {
+function setFoodStatus(message, isError = false, state = 'neutral') {
   if (!els.foodStatusMsg) {
     return;
   }
-  els.foodStatusMsg.textContent = String(message || '');
-  els.foodStatusMsg.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.foodStatusMsg, message, {
+    state: isError ? 'error' : state,
+  });
 }
 
 function setFoodLocationStatus(message, tone = 'warn') {
   if (!els.foodLocationStatus) {
     return;
   }
-  els.foodLocationStatus.textContent = String(message || '');
+  const stateByTone = {
+    ok: 'success',
+    warn: 'loading',
+    error: 'error',
+  };
+  setUiStateMessage(els.foodLocationStatus, message, {
+    state: stateByTone[String(tone || '').trim()] || 'neutral',
+  });
   els.foodLocationStatus.dataset.tone = tone;
 }
 
-function setFoodAdminStatus(message, isError = false) {
+function setFoodAdminStatus(message, isError = false, state = 'neutral') {
   if (!els.foodAdminStatusMsg) {
     return;
   }
-  els.foodAdminStatusMsg.textContent = String(message || '');
-  els.foodAdminStatusMsg.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.foodAdminStatusMsg, message, {
+    state: isError ? 'error' : state,
+  });
 }
 
 function normalizeFoodKey(value) {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 function shopAliasKey(name, block) {
   return `${normalizeFoodKey(name)}|${normalizeFoodKey(block)}`;
 }
-
-const FOOD_SHOP_COVER_BY_ALIAS = new Map(
-  FOOD_SHOP_DIRECTORY.map((shop) => [shopAliasKey(shop.name, shop.block), shop.cover || ''])
-);
-const FOOD_SHOP_COVER_BY_NAME = new Map(
-  FOOD_SHOP_DIRECTORY.map((shop) => [normalizeFoodKey(shop.name), shop.cover || ''])
-);
 
 function resolveShopCover(name, block) {
   const byAlias = FOOD_SHOP_COVER_BY_ALIAS.get(shopAliasKey(name, block));
@@ -4639,6 +7062,14 @@ function resolveShopCover(name, block) {
     return byAlias;
   }
   return FOOD_SHOP_COVER_BY_NAME.get(normalizeFoodKey(name)) || '';
+}
+
+function resolveShopFallbackCover(name, block) {
+  const byAlias = FOOD_SHOP_FALLBACK_BY_ALIAS.get(shopAliasKey(name, block));
+  if (byAlias) {
+    return byAlias;
+  }
+  return FOOD_SHOP_FALLBACK_BY_NAME.get(normalizeFoodKey(name)) || FOOD_COVER_FALLBACK_URL || '';
 }
 
 function deriveFoodShopGroup(blockValue) {
@@ -4670,6 +7101,7 @@ function hydrateApiShops(rawShops) {
       block: shop.block,
       group: shop.group,
       cover: shop.cover || '',
+      fallbackCover: shop.fallbackCover || FOOD_COVER_FALLBACK_URL,
       isPopular: FOOD_POPULAR_SPOT_IDS.includes(shop.id),
       rating: 4.0,
       averagePrepMinutes: 18,
@@ -4680,18 +7112,53 @@ function hydrateApiShops(rawShops) {
     const name = String(shop?.name || '').trim();
     const block = String(shop?.block || '').trim();
     const normalizedName = normalizeFoodKey(name);
+    const fallbackCover = resolveShopFallbackCover(name, block);
     return {
       id: String(shop.id),
       apiShopId: Number(shop.id),
       name,
       block,
       group: deriveFoodShopGroup(block),
-      cover: resolveShopCover(name, block),
+      cover: resolveShopCover(name, block) || fallbackCover,
+      fallbackCover,
       isPopular: Boolean(shop?.is_popular) || popularNameSet.has(normalizedName),
       rating: Number(shop?.rating || 0),
       averagePrepMinutes: Number(shop?.average_prep_minutes || 18),
     };
   });
+}
+
+function hydrateApiSlots(rawSlots) {
+  if (!Array.isArray(rawSlots) || !rawSlots.length) {
+    return FOOD_SLOT_FALLBACK.map((slot) => ({ ...slot }));
+  }
+  const normalized = rawSlots
+    .map((slot, index) => {
+      const startRaw = String(slot?.start_time || '').trim();
+      const endRaw = String(slot?.end_time || '').trim();
+      const slotStart = toMinutes(startRaw);
+      const slotEnd = toMinutes(endRaw);
+      if (!startRaw || !endRaw || !Number.isFinite(slotStart) || !Number.isFinite(slotEnd) || slotEnd <= slotStart) {
+        return null;
+      }
+      const fallbackId = index + 1;
+      const parsedId = Number(slot?.id);
+      const id = Number.isFinite(parsedId) && parsedId > 0 ? parsedId : fallbackId;
+      const label = String(slot?.label || '').trim() || `${formatTime24(startRaw)} - ${formatTime24(endRaw)}`;
+      const maxOrders = Number(slot?.max_orders || 0);
+      return {
+        id,
+        label,
+        start_time: startRaw,
+        end_time: endRaw,
+        max_orders: Number.isFinite(maxOrders) && maxOrders > 0 ? maxOrders : 250,
+      };
+    })
+    .filter(Boolean);
+  if (!normalized.length) {
+    return FOOD_SLOT_FALLBACK.map((slot) => ({ ...slot }));
+  }
+  return normalized.sort((left, right) => toMinutes(left.start_time) - toMinutes(right.start_time));
 }
 
 async function loadShopMenuItems(shopId, { force = false } = {}) {
@@ -5019,9 +7486,18 @@ function renderFoodShops() {
       }
       const ratingValue = Number(shop?.rating || 0);
       const ratingLabel = Number.isFinite(ratingValue) ? ratingValue.toFixed(1) : '0.0';
+      const fallbackCoverUrl = String(shop?.fallbackCover || '').trim() || FOOD_COVER_FALLBACK_URL;
+      const coverUrl = String(shop?.cover || '').trim() || fallbackCoverUrl;
       card.innerHTML = `
         <div class="food-shop-cover-wrap">
-          <img class="food-shop-cover" src="${escapeHtml(shop.cover || '')}" alt="${escapeHtml(shop.name)} cover" loading="lazy" referrerpolicy="no-referrer">
+          <img
+            class="food-shop-cover"
+            src="${escapeHtml(coverUrl)}"
+            alt="${escapeHtml(shop.name)} cover"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            data-fallback-src="${escapeHtml(fallbackCoverUrl)}"
+          >
           ${shopsClosed ? '<span class="food-shop-closed-badge">Closed</span>' : ''}
         </div>
         <div class="food-shop-card-body">
@@ -5034,6 +7510,16 @@ function renderFoodShops() {
           ${shop.isPopular ? '<span class="shop-popular">Popular</span>' : ''}
         </div>
       `;
+      const coverImage = card.querySelector('.food-shop-cover');
+      if (coverImage instanceof HTMLImageElement) {
+        coverImage.addEventListener('error', () => {
+          const fallback = String(coverImage.dataset.fallbackSrc || FOOD_COVER_FALLBACK_URL || '').trim();
+          if (!fallback || coverImage.src.endsWith(fallback)) {
+            return;
+          }
+          coverImage.src = fallback;
+        }, { once: true });
+      }
       if (!shopsClosed) {
         card.addEventListener('click', () => {
           void openFoodShopModal(shop.id);
@@ -5641,14 +8127,16 @@ function setFoodAiOutput(message, isError = false) {
   if (!els.foodAiOutput) {
     return;
   }
-  els.foodAiOutput.textContent = String(message || '');
-  els.foodAiOutput.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.foodAiOutput, message, {
+    state: isError ? 'error' : 'neutral',
+  });
 }
 
-function renderFoodAiQuickChips() {
+async function renderFoodAiQuickChips() {
   if (!els.foodAiQuickChips) {
     return;
   }
+  await ensureFoodCatalogLoaded({ preloadOnly: false });
   els.foodAiQuickChips.innerHTML = '';
   for (const craving of FOOD_AI_QUICK_CRAVINGS) {
     const chip = document.createElement('button');
@@ -5669,7 +8157,8 @@ function renderFoodAiQuickChips() {
   }
 }
 
-function buildChotuCatalogText() {
+async function buildChotuCatalogText() {
+  await ensureFoodCatalogLoaded({ preloadOnly: true });
   const sourceShops = state.food.shops.length ? state.food.shops : FOOD_SHOP_DIRECTORY;
   const byGroup = new Map(FOOD_SHOP_GROUPS.map((group) => [group.key, []]));
   for (const shop of sourceShops) {
@@ -5706,6 +8195,7 @@ async function askChotuFoodAssistant(cravingText = '') {
   if (!craving) {
     throw new Error('Enter your craving first so Chotu can suggest outlets.');
   }
+  await ensureFoodCatalogLoaded({ preloadOnly: true });
   const sourceShops = state.food.shops.length ? state.food.shops : FOOD_SHOP_DIRECTORY;
   if (!sourceShops.length) {
     throw new Error('Shop directory is still loading. Please retry in a moment.');
@@ -5723,7 +8213,7 @@ async function askChotuFoodAssistant(cravingText = '') {
       'You are Chotu, a friendly and practical food assistant for LPU Smart Campus Food Hall.',
       'User craving:',
       craving,
-      buildChotuCatalogText(),
+      await buildChotuCatalogText(),
       'Rules:',
       '- Suggest ONLY from the listed outlets.',
       '- Keep answer concise and readable.',
@@ -5836,28 +8326,31 @@ async function updateFoodOrderStatus() {
   await refreshFoodModule();
 }
 
-function setRemedialFacultyStatus(message, isError = false) {
+function setRemedialFacultyStatus(message, isError = false, state = 'neutral') {
   if (!els.remedialFacultyStatus) {
     return;
   }
-  els.remedialFacultyStatus.textContent = String(message || '');
-  els.remedialFacultyStatus.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.remedialFacultyStatus, message, {
+    state: isError ? 'error' : state,
+  });
 }
 
-function setRemedialStudentStatus(message, isError = false) {
+function setRemedialStudentStatus(message, isError = false, state = 'neutral') {
   if (!els.remedialStudentStatus) {
     return;
   }
-  els.remedialStudentStatus.textContent = String(message || '');
-  els.remedialStudentStatus.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.remedialStudentStatus, message, {
+    state: isError ? 'error' : state,
+  });
 }
 
-function setFacultyMessageStatus(message, isError = false) {
+function setFacultyMessageStatus(message, isError = false, state = 'neutral') {
   if (!els.facultyMessageStatus) {
     return;
   }
-  els.facultyMessageStatus.textContent = String(message || '');
-  els.facultyMessageStatus.classList.toggle('error-text', Boolean(isError));
+  setUiStateMessage(els.facultyMessageStatus, message, {
+    state: isError ? 'error' : state,
+  });
 }
 
 function geolocationErrorText(error) {
@@ -7303,10 +9796,71 @@ function syncFoodOrderActionState() {
   }
 }
 
+function buildFoodLoadWarningMessage(failures) {
+  if (!Array.isArray(failures) || !failures.length) {
+    return '';
+  }
+  const labels = Array.from(new Set(
+    failures
+      .map((entry) => String(entry?.label || '').trim())
+      .filter(Boolean)
+  ));
+  if (!labels.length) {
+    return 'Some Food Hall data could not load. Showing available data.';
+  }
+  const shortList = labels.slice(0, 3);
+  const suffix = labels.length > shortList.length ? ', ...' : '';
+  return `Some Food Hall data could not load (${shortList.join(', ')}${suffix}). Showing available data.`;
+}
+
+async function loadFoodSnapshot({ orderDate, shouldLoadCart }) {
+  const failures = [];
+  const loadWithFallback = async (label, loader, fallbackValue) => {
+    try {
+      return await loader();
+    } catch (error) {
+      if (Number(error?.status || 0) === 401) {
+        throw error;
+      }
+      failures.push({ label, error });
+      return typeof fallbackValue === 'function' ? fallbackValue() : fallbackValue;
+    }
+  };
+
+  const [items, slots, ordersForDate, orderHistory, peaks, shops, cartPayload, paymentRecovery] = await Promise.all([
+    loadWithFallback('items', () => api('/food/items'), []),
+    loadWithFallback('slots', () => api('/food/slots'), []),
+    loadWithFallback('orders', () => api(`/food/orders?order_date=${orderDate}&limit=180`), []),
+    loadWithFallback('order history', () => api('/food/orders?limit=200'), []),
+    loadWithFallback('peak times', () => api('/food/peak-times?lookback_days=14'), []),
+    loadWithFallback('shops', () => api('/food/shops?active_only=true'), []),
+    shouldLoadCart
+      ? loadWithFallback('cart', () => api('/food/cart'), null)
+      : Promise.resolve(null),
+    shouldLoadCart
+      ? loadWithFallback('payment recovery', () => api('/food/payments/recovery'), [])
+      : Promise.resolve([]),
+  ]);
+
+  return {
+    items,
+    slots,
+    ordersForDate,
+    orderHistory,
+    peaks,
+    shops,
+    cartPayload,
+    paymentRecovery,
+    failures,
+  };
+}
+
 async function refreshFoodModule() {
   if (!authState.user) {
     return;
   }
+  await ensureFoodCatalogLoaded({ preloadOnly: false });
+  setFoodStatus('Refreshing Food Hall data...', false, 'loading');
 
   if (els.foodOrderDate) {
     const currentDate = todayISO();
@@ -7330,33 +9884,49 @@ async function refreshFoodModule() {
   state.food.orderDate = orderDate;
 
   const shouldLoadCart = authState.user.role === 'student';
-  let [items, slots, ordersForDate, orderHistory, peaks, shops, cartPayload, paymentRecovery] = await Promise.all([
-    api('/food/items'),
-    api('/food/slots'),
-    api(`/food/orders?order_date=${orderDate}&limit=180`),
-    api('/food/orders?limit=200'),
-    api('/food/peak-times?lookback_days=14'),
-    api('/food/shops?active_only=true'),
-    shouldLoadCart ? api('/food/cart') : Promise.resolve(null),
-    shouldLoadCart ? api('/food/payments/recovery').catch(() => []) : Promise.resolve([]),
-  ]);
+  let snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart });
+  let {
+    items,
+    slots,
+    ordersForDate,
+    orderHistory,
+    peaks,
+    shops,
+    cartPayload,
+    paymentRecovery,
+  } = snapshot;
+  let loadFailures = Array.isArray(snapshot.failures) ? [...snapshot.failures] : [];
 
   if ((!Array.isArray(shops) || !shops.length || !Array.isArray(slots) || !slots.length) && authState.user) {
     try {
       await api('/food/bootstrap/ensure', { method: 'POST' });
-      [items, slots, ordersForDate, orderHistory, peaks, shops, cartPayload, paymentRecovery] = await Promise.all([
-        api('/food/items'),
-        api('/food/slots'),
-        api(`/food/orders?order_date=${orderDate}&limit=180`),
-        api('/food/orders?limit=200'),
-        api('/food/peak-times?lookback_days=14'),
-        api('/food/shops?active_only=true'),
-        shouldLoadCart ? api('/food/cart') : Promise.resolve(null),
-        shouldLoadCart ? api('/food/payments/recovery').catch(() => []) : Promise.resolve([]),
-      ]);
-    } catch (_) {
+      snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart });
+      ({
+        items,
+        slots,
+        ordersForDate,
+        orderHistory,
+        peaks,
+        shops,
+        cartPayload,
+        paymentRecovery,
+      } = snapshot);
+      if (Array.isArray(snapshot.failures) && snapshot.failures.length) {
+        loadFailures = loadFailures.concat(snapshot.failures);
+      }
+    } catch (error) {
+      if (Number(error?.status || 0) === 401) {
+        throw error;
+      }
+      loadFailures.push({ label: 'bootstrap', error });
       // Keep existing response handling; status banner below will surface configuration issues.
     }
+  }
+  const foodLoadWarning = buildFoodLoadWarningMessage(loadFailures);
+  for (const failure of loadFailures) {
+    const label = String(failure?.label || 'food').trim() || 'food';
+    const message = String(failure?.error?.message || 'Unknown error').trim() || 'Unknown error';
+    log(`Food data fallback (${label}): ${message}`);
   }
 
   const digestRows = Array.isArray(orderHistory) && orderHistory.length
@@ -7369,7 +9939,7 @@ async function refreshFoodModule() {
   markFoodOrdersFreshness({ changed: hasOrderDataChanged });
 
   state.food.items = Array.isArray(items) ? items : [];
-  state.food.slots = Array.isArray(slots) ? slots : [];
+  state.food.slots = hydrateApiSlots(slots);
   state.food.orders = Array.isArray(ordersForDate) ? ordersForDate : [];
   state.food.orderHistory = Array.isArray(orderHistory) ? orderHistory : [];
   state.food.paymentRecovery = Array.isArray(paymentRecovery) ? paymentRecovery : [];
@@ -7409,7 +9979,7 @@ async function refreshFoodModule() {
   renderFoodOrders();
   renderFoodPeakTimes();
   renderFoodShops();
-  renderFoodAiQuickChips();
+  await renderFoodAiQuickChips();
   renderFoodCart();
   renderFoodOrderStatusTimeline();
   renderFoodAdminOrderOptions();
@@ -7420,19 +9990,29 @@ async function refreshFoodModule() {
   if (els.workDate && !els.workDate.value) {
     els.workDate.value = orderDate;
   }
-  await Promise.all([
-    refreshDemand(orderDate),
-    refreshFoodDemandLiveSignal(orderDate, { animate: false }).catch(() => null),
-  ]);
+  try {
+    await Promise.all([
+      refreshDemand(orderDate),
+      refreshFoodDemandLiveSignal(orderDate, { animate: false }).catch(() => null),
+    ]);
+  } catch (error) {
+    log(`Food demand feed degraded: ${error?.message || 'Unknown error'}`);
+  }
 
   if (authState.user.role === 'student' && (!state.food.shops.length || !state.food.slots.length)) {
-    setFoodStatus('Shops or pickup slots are not configured yet. Please contact faculty/admin.', true);
+    if (foodLoadWarning) {
+      setFoodStatus(foodLoadWarning, true);
+    } else {
+      setFoodStatus('Shops or pickup slots are not configured yet. Please contact faculty/admin.', true);
+    }
     return;
   }
 
   if (authState.user.role !== 'student') {
     stopFoodLocationMonitoring();
-    if (authState.user.role === 'owner') {
+    if (foodLoadWarning) {
+      setFoodStatus(foodLoadWarning, true);
+    } else if (authState.user.role === 'owner') {
       setFoodStatus('Owner panel refreshed. You can manage orders for your assigned shop only.');
     } else {
       setFoodStatus('Food module refreshed. You can monitor demand and manage setup.');
@@ -7463,11 +10043,15 @@ async function refreshFoodModule() {
     } else {
       setFoodLocationStatus('Location access is required. Delivery is allowed only inside LPU campus.', 'warn');
     }
-    const orderGate = getFoodRuntimeOrderGate({ slot: getSelectedFoodSlot(), orderDate });
-    if (!orderGate.canBrowseShops || !orderGate.canOrderNow) {
-      setFoodStatus(orderGate.message, true);
+    if (foodLoadWarning) {
+      setFoodStatus(foodLoadWarning, true);
     } else {
-      setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+      const orderGate = getFoodRuntimeOrderGate({ slot: getSelectedFoodSlot(), orderDate });
+      if (!orderGate.canBrowseShops || !orderGate.canOrderNow) {
+        setFoodStatus(orderGate.message, true);
+      } else {
+        setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+      }
     }
   }
 }
@@ -7569,9 +10153,7 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
     throw new Error('Invalid payment amount received from server. Please retry checkout.');
   }
 
-  if (!window.Razorpay) {
-    throw new Error('Razorpay checkout failed to load. Refresh the page and retry.');
-  }
+  await ensureRazorpayCheckoutSdk();
 
   let checkoutResult = null;
   try {
@@ -7890,8 +10472,738 @@ function renderMongoStatus() {
   els.mongoSyncStatus.textContent = `Mongo: ${dbName}`;
 }
 
+function setRmsStatus(message, isError = false, state = 'neutral') {
+  if (!els.rmsStatusMsg) {
+    return;
+  }
+  setUiStateMessage(els.rmsStatusMsg, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setRmsStudentUpdateStatus(message, isError = false, state = 'neutral') {
+  if (!els.rmsStudentUpdateMsg) {
+    return;
+  }
+  setUiStateMessage(els.rmsStudentUpdateMsg, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setRmsThreadActionStatus(message, isError = false, state = 'neutral') {
+  if (!els.rmsThreadActionMsg) {
+    return;
+  }
+  setUiStateMessage(els.rmsThreadActionMsg, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setRmsAttendanceStatus(message, isError = false, state = 'neutral') {
+  if (!els.rmsAttendanceStatusMsg) {
+    return;
+  }
+  setUiStateMessage(els.rmsAttendanceStatusMsg, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function formatRmsActionStateLabel(rawState) {
+  const stateLabel = String(rawState || '').trim().toLowerCase();
+  if (stateLabel === 'approved') {
+    return 'Approved';
+  }
+  if (stateLabel === 'disapproved') {
+    return 'Disapproved';
+  }
+  if (stateLabel === 'scheduled') {
+    return 'Scheduled';
+  }
+  return 'No workflow action';
+}
+
+function syncRmsThreadActionForm() {
+  const action = String(els.rmsThreadAction?.value || state.rms.threadAction || 'approve').trim().toLowerCase();
+  state.rms.threadAction = action === 'schedule' ? 'schedule' : action === 'disapprove' ? 'disapprove' : 'approve';
+  const isSchedule = state.rms.threadAction === 'schedule';
+  if (els.rmsThreadScheduleWrap) {
+    setHidden(els.rmsThreadScheduleWrap, !isSchedule);
+  }
+}
+
+function renderRmsSelectedThreadSummary(thread = state.rms.selectedThread) {
+  if (!els.rmsSelectedThread) {
+    return;
+  }
+  if (!thread || Number(thread.student_id || 0) <= 0 || Number(thread.faculty_id || 0) <= 0) {
+    els.rmsSelectedThread.textContent = 'Select a thread from the list to apply workflow action.';
+    return;
+  }
+  const stateLabel = formatRmsActionStateLabel(thread.action_state);
+  const studentName = String(thread.student_name || `Student #${Number(thread.student_id || 0)}`);
+  const facultyName = String(thread.faculty_name || `Faculty #${Number(thread.faculty_id || 0)}`);
+  const category = String(thread.category || 'Other');
+  const registration = String(thread.student_registration_number || '').trim() || 'No Reg';
+  const section = String(thread.section || '').trim() || 'UNASSIGNED';
+  const scheduledFor = thread.scheduled_for ? new Date(thread.scheduled_for).toLocaleString() : '';
+  const actionByRole = String(thread.action_by_role || '').trim();
+  const actionAt = thread.action_updated_at ? new Date(thread.action_updated_at).toLocaleString() : '';
+  const actionNote = String(thread.action_note || '').trim();
+  const actionMetaParts = [stateLabel];
+  if (scheduledFor) {
+    actionMetaParts.push(`Scheduled: ${scheduledFor}`);
+  }
+  if (actionByRole) {
+    actionMetaParts.push(`By: ${actionByRole}`);
+  }
+  if (actionAt) {
+    actionMetaParts.push(`At: ${actionAt}`);
+  }
+  if (actionNote) {
+    actionMetaParts.push(`Note: ${actionNote}`);
+  }
+
+  els.rmsSelectedThread.textContent = [
+    `Student: ${studentName} (${registration})`,
+    `Faculty: ${facultyName}`,
+    `Category: ${category}`,
+    `Section: ${section}`,
+    `Workflow: ${actionMetaParts.join(' | ')}`,
+  ].join(' | ');
+}
+
+function findRmsThreadInDashboard(selectedThread, dashboard = state.rms.dashboard) {
+  if (!selectedThread || !dashboard || !Array.isArray(dashboard.categories)) {
+    return null;
+  }
+  const targetStudentId = Number(selectedThread.student_id || 0);
+  const targetFacultyId = Number(selectedThread.faculty_id || 0);
+  const targetCategory = String(selectedThread.category || '').trim().toLowerCase();
+  if (targetStudentId <= 0 || targetFacultyId <= 0 || !targetCategory) {
+    return null;
+  }
+  for (const bucket of dashboard.categories) {
+    const threads = Array.isArray(bucket?.threads) ? bucket.threads : [];
+    for (const thread of threads) {
+      if (
+        Number(thread?.student_id || 0) === targetStudentId
+        && Number(thread?.faculty_id || 0) === targetFacultyId
+        && String(thread?.category || '').trim().toLowerCase() === targetCategory
+      ) {
+        return thread;
+      }
+    }
+  }
+  return null;
+}
+
+function renderRmsStudentSummary(student = state.rms.selectedStudent) {
+  if (!els.rmsStudentSummary) {
+    return;
+  }
+  if (!student || Number(student.student_id || 0) <= 0) {
+    els.rmsStudentSummary.textContent = 'Search a student to load profile and pending query context.';
+    return;
+  }
+  const registration = String(student.registration_number || '').trim() || 'Not set';
+  const section = String(student.section || '').trim() || 'Not set';
+  const pending = Number(student.pending_query_count || 0);
+  const recent = Number(student.recent_query_count || 0);
+  const lastAt = student.last_query_at
+    ? new Date(student.last_query_at).toLocaleString()
+    : 'No query history';
+  els.rmsStudentSummary.textContent = [
+    `${String(student.name || `Student #${student.student_id}`)} (${String(student.email || 'no-email')})`,
+    `Reg: ${registration}`,
+    `Section: ${section}`,
+    `Queries: ${recent} total, ${pending} pending`,
+    `Last Query: ${lastAt}`,
+  ].join(' | ');
+}
+
+function renderRmsAttendanceResult(result = state.rms.attendanceUpdate) {
+  if (!els.rmsAttendanceResult) {
+    return;
+  }
+  if (!result || Number(result.record_id || 0) <= 0) {
+    els.rmsAttendanceResult.innerHTML = '<div class="list-item">No attendance override applied yet.</div>';
+    return;
+  }
+  const updatedStatus = statusLabel(result.updated_status || '--');
+  const previousStatus = result.previous_status ? statusLabel(result.previous_status) : 'Not marked';
+  const attendanceDate = String(result.attendance_date || '--');
+  const note = String(result.note || '').trim();
+  const meta = [
+    `Reg: ${String(result.registration_number || '--')}`,
+    `Course: ${String(result.course_code || '--')} (${String(result.course_title || 'Course')})`,
+    `Date: ${attendanceDate}`,
+    `Status: ${updatedStatus} (was ${previousStatus})`,
+    `Faculty: ${String(result.faculty_name || `#${Number(result.faculty_id || 0)}`)}`,
+    `Source: ${String(result.source || '--')}`,
+  ];
+  if (result.message_sent) {
+    meta.push('Student Notified: Yes');
+  }
+  if (note) {
+    meta.push(`Note: ${note}`);
+  }
+  els.rmsAttendanceResult.innerHTML = `<div class="list-item">${escapeHtml(meta.join(' | '))}</div>`;
+}
+
+function renderRmsAttendanceStudentSummary(context = state.rms.attendanceContext) {
+  if (!els.rmsAttendanceStudentSummary) {
+    return;
+  }
+  if (!context || typeof context !== 'object' || !context.student) {
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+    return;
+  }
+  const student = context.student;
+  const subjects = Array.isArray(context.subjects) ? context.subjects : [];
+  const dateLabel = String(context.attendance_date || '').trim() || todayISO();
+  const reg = String(student.registration_number || '').trim() || 'Not set';
+  const section = String(student.section || '').trim() || 'Not set';
+  els.rmsAttendanceStudentSummary.textContent = [
+    `${String(student.name || `Student #${Number(student.student_id || 0)}`)} (${String(student.email || 'no-email')})`,
+    `Reg: ${reg}`,
+    `Section: ${section}`,
+    `Subjects: ${subjects.length}`,
+    `Date: ${dateLabel}`,
+  ].join(' | ');
+}
+
+function resolveRmsAttendanceSelectedSubject(context = state.rms.attendanceContext) {
+  const rows = Array.isArray(context?.subjects) ? context.subjects : [];
+  if (!rows.length) {
+    return null;
+  }
+  const selectedCourseCode = String(state.rms.attendanceSelectedCourseCode || '').trim().toUpperCase();
+  if (!selectedCourseCode) {
+    return null;
+  }
+  return rows.find((row) => String(row?.course_code || '').trim().toUpperCase() === selectedCourseCode) || null;
+}
+
+function syncRmsAttendanceCurrentStatus() {
+  const selected = resolveRmsAttendanceSelectedSubject();
+  if (!els.rmsAttendanceCurrentStatus) {
+    return;
+  }
+  if (!selected) {
+    els.rmsAttendanceCurrentStatus.value = 'Not marked';
+    if (els.rmsAttendanceStatus) {
+      els.rmsAttendanceStatus.value = 'present';
+    }
+    return;
+  }
+  const statusRaw = String(selected.current_status || '').trim().toLowerCase();
+  const statusLabel = String(selected.current_status_label || '').trim() || 'Not marked';
+  els.rmsAttendanceCurrentStatus.value = statusLabel;
+  if (!els.rmsAttendanceStatus) {
+    return;
+  }
+  if (statusRaw === 'present' || statusRaw === 'absent') {
+    els.rmsAttendanceStatus.value = statusRaw;
+  } else {
+    els.rmsAttendanceStatus.value = 'present';
+  }
+}
+
+function renderRmsAttendanceSubjectOptions(context = state.rms.attendanceContext) {
+  if (!els.rmsAttendanceSubjectSelect) {
+    return;
+  }
+  const rows = Array.isArray(context?.subjects) ? context.subjects : [];
+  const hasStudentContext = Boolean(context && typeof context === 'object' && context.student);
+  els.rmsAttendanceSubjectSelect.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = rows.length ? 'Select subject' : (hasStudentContext ? 'No enrolled subjects' : 'Select subject');
+  els.rmsAttendanceSubjectSelect.appendChild(placeholder);
+
+  for (const row of rows) {
+    const courseCode = String(row?.course_code || '').trim().toUpperCase();
+    if (!courseCode) {
+      continue;
+    }
+    const labelParts = [
+      courseCode,
+      String(row?.course_title || 'Course').trim(),
+    ];
+    const statusLabel = String(row?.current_status_label || '').trim();
+    if (statusLabel) {
+      labelParts.push(`Current: ${statusLabel}`);
+    }
+    const option = document.createElement('option');
+    option.value = courseCode;
+    option.textContent = labelParts.join(' | ');
+    els.rmsAttendanceSubjectSelect.appendChild(option);
+  }
+
+  if (rows.length) {
+    const selectedCourseCode = String(state.rms.attendanceSelectedCourseCode || '').trim().toUpperCase();
+    const optionExists = rows.some(
+      (row) => String(row?.course_code || '').trim().toUpperCase() === selectedCourseCode,
+    );
+    if (selectedCourseCode && optionExists) {
+      els.rmsAttendanceSubjectSelect.value = selectedCourseCode;
+    } else {
+      const firstCode = String(rows[0]?.course_code || '').trim().toUpperCase();
+      state.rms.attendanceSelectedCourseCode = firstCode;
+      els.rmsAttendanceSubjectSelect.value = firstCode;
+    }
+  } else {
+    state.rms.attendanceSelectedCourseCode = '';
+    els.rmsAttendanceSubjectSelect.value = '';
+  }
+  syncRmsAttendanceCurrentStatus();
+}
+
+function renderRmsQueryBuckets() {
+  if (!els.rmsQueryList) {
+    return;
+  }
+  els.rmsQueryList.innerHTML = '';
+  const dashboard = state.rms.dashboard;
+  const categories = Array.isArray(dashboard?.categories) ? dashboard.categories : [];
+
+  if (!categories.length) {
+    els.rmsQueryList.innerHTML = '<div class="list-item">No RMS queries found for current filters.</div>';
+    return;
+  }
+
+  for (const bucket of categories) {
+    const category = String(bucket?.category || 'Other');
+    const total = Number(bucket?.total_threads || 0);
+    const pending = Number(bucket?.pending_threads || 0);
+    const threads = Array.isArray(bucket?.threads) ? bucket.threads : [];
+
+    const block = document.createElement('section');
+    block.className = 'rms-thread-list';
+
+    const title = document.createElement('h4');
+    title.className = 'rms-category-title';
+    title.textContent = `${category} (${total}) • Pending ${pending}`;
+    block.appendChild(title);
+
+    if (!threads.length) {
+      const empty = document.createElement('div');
+      empty.className = 'list-item';
+      empty.textContent = 'No threads in this category.';
+      block.appendChild(empty);
+      els.rmsQueryList.appendChild(block);
+      continue;
+    }
+
+    for (const thread of threads) {
+      const pendingAction = Boolean(thread?.pending_action);
+      const actionState = String(thread?.action_state || 'none').trim().toLowerCase() || 'none';
+      const threadStatusTone = pendingAction
+        ? 'pending'
+        : actionState === 'approved'
+          ? 'approved'
+          : actionState === 'disapproved'
+            ? 'disapproved'
+            : actionState === 'scheduled'
+              ? 'scheduled'
+              : 'resolved';
+      const row = document.createElement('div');
+      row.className = `rms-thread-row ${pendingAction ? 'pending' : 'resolved'} action-${actionState}`;
+
+      const studentName = String(thread?.student_name || `Student #${Number(thread?.student_id || 0)}`);
+      const studentReg = String(thread?.student_registration_number || '').trim();
+      const facultyName = String(thread?.faculty_name || `Faculty #${Number(thread?.faculty_id || 0)}`);
+      const subject = String(thread?.subject || 'General Query');
+      const message = String(thread?.last_message || '').trim() || 'No message body.';
+      const section = String(thread?.section || '').trim() || 'UNASSIGNED';
+      const threadCategory = String(thread?.category || category || 'Other');
+      const unreadFromStudent = Number(thread?.unread_from_student || 0);
+      const lastCreatedAt = thread?.last_created_at ? new Date(thread.last_created_at).toLocaleString() : '--';
+      const senderRole = String(thread?.last_sender_role || '').trim().toLowerCase() || 'student';
+      const actionLabel = formatRmsActionStateLabel(actionState);
+      const actionNote = String(thread?.action_note || '').trim();
+      const scheduledFor = thread?.scheduled_for ? new Date(thread.scheduled_for).toLocaleString() : '';
+      const actionByRole = String(thread?.action_by_role || '').trim();
+      const actionUpdatedAt = thread?.action_updated_at ? new Date(thread.action_updated_at).toLocaleString() : '';
+      const threadActionMeta = [actionLabel];
+      if (scheduledFor) {
+        threadActionMeta.push(`Scheduled: ${scheduledFor}`);
+      }
+      if (actionByRole) {
+        threadActionMeta.push(`By: ${actionByRole}`);
+      }
+      if (actionUpdatedAt) {
+        threadActionMeta.push(`At: ${actionUpdatedAt}`);
+      }
+      if (actionNote) {
+        threadActionMeta.push(`Note: ${actionNote}`);
+      }
+      const selectThreadBtn = `
+        <button
+          class="btn btn-primary"
+          type="button"
+          data-rms-select-thread="1"
+          data-rms-thread-student-id="${Number(thread?.student_id || 0)}"
+          data-rms-thread-faculty-id="${Number(thread?.faculty_id || 0)}"
+          data-rms-thread-category="${escapeHtml(threadCategory)}"
+        >Select Thread</button>
+      `;
+      const useRegBtn = studentReg
+        ? `<button class="btn btn-ghost" type="button" data-rms-use-reg="${escapeHtml(studentReg)}">Load Student</button>`
+        : '';
+      const registrationMarkup = studentReg
+        ? `<span class="rms-thread-registration">${escapeHtml(studentReg)}</span>`
+        : '';
+      const unreadBadge = unreadFromStudent > 0
+        ? `<span class="rms-thread-badge rms-thread-badge--unread">${unreadFromStudent} unread</span>`
+        : '';
+
+      row.innerHTML = `
+        <div class="rms-thread-head">
+          <div class="rms-thread-identity">
+            <div class="rms-thread-title-row">
+              <strong>${escapeHtml(studentName)}</strong>
+              ${registrationMarkup}
+            </div>
+            <div class="rms-thread-support">
+              <span class="rms-thread-chip rms-thread-chip--subject">${escapeHtml(subject)}</span>
+              <span class="rms-thread-chip">Section ${escapeHtml(section)}</span>
+              <span class="rms-thread-badge rms-thread-badge--${threadStatusTone}">${escapeHtml(actionLabel)}</span>
+              ${unreadBadge}
+            </div>
+          </div>
+          <div class="rms-thread-head-controls">${selectThreadBtn}${useRegBtn}</div>
+        </div>
+        <div class="rms-thread-message">${escapeHtml(message)}</div>
+        <div class="rms-thread-meta-grid">
+          <div class="rms-thread-meta">
+            <span class="rms-thread-meta-label">Faculty</span>
+            <span>${escapeHtml(facultyName)}</span>
+          </div>
+          <div class="rms-thread-meta">
+            <span class="rms-thread-meta-label">Latest activity</span>
+            <span>${escapeHtml(`By ${senderRole} at ${lastCreatedAt}`)}</span>
+          </div>
+          <div class="rms-thread-meta rms-thread-meta--full">
+            <span class="rms-thread-meta-label">Workflow</span>
+            <span>${escapeHtml(threadActionMeta.join(' | '))}</span>
+          </div>
+        </div>
+      `;
+      block.appendChild(row);
+    }
+    els.rmsQueryList.appendChild(block);
+  }
+}
+
+function renderRmsDashboard() {
+  const dashboard = state.rms.dashboard;
+  const totalThreads = Number(dashboard?.total_threads || 0);
+  const totalPending = Number(dashboard?.total_pending || 0);
+  const categories = Array.isArray(dashboard?.categories) ? dashboard.categories : [];
+  const activeCategories = categories.filter((bucket) => Number(bucket?.total_threads || 0) > 0).length;
+
+  if (els.rmsTotalThreads) {
+    animateNumber(els.rmsTotalThreads, totalThreads);
+  }
+  if (els.rmsTotalPending) {
+    animateNumber(els.rmsTotalPending, totalPending);
+  }
+  if (els.rmsActiveCategories) {
+    animateNumber(els.rmsActiveCategories, activeCategories);
+  }
+  renderRmsQueryBuckets();
+}
+
+async function refreshRmsModule({ silent = false } = {}) {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    return;
+  }
+  const category = String(els.rmsQueryCategory?.value || state.rms.selectedCategory || 'all').trim() || 'all';
+  const status = String(els.rmsQueryStatus?.value || state.rms.selectedStatus || 'all').trim() || 'all';
+  state.rms.selectedCategory = category;
+  state.rms.selectedStatus = status;
+
+  const payload = await api(
+    `/admin/rms/queries?category=${encodeURIComponent(category)}&status=${encodeURIComponent(status)}&limit=300`
+  );
+  state.rms.dashboard = payload && typeof payload === 'object' ? payload : null;
+  if (state.rms.selectedThread) {
+    const refreshedThread = findRmsThreadInDashboard(state.rms.selectedThread, state.rms.dashboard);
+    state.rms.selectedThread = refreshedThread || null;
+  }
+  renderRmsDashboard();
+  renderRmsSelectedThreadSummary();
+  if (!silent) {
+    setRmsStatus('RMS query buckets refreshed.');
+  }
+}
+
+async function searchRmsStudentByRegistration({ silent = false } = {}) {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    throw new Error('Only admin or faculty can use RMS student search.');
+  }
+  const registrationNumber = normalizedRegistrationInput(els.rmsSearchRegistration?.value || '');
+  if (!registrationNumber) {
+    throw new Error('Enter student registration number.');
+  }
+  if (els.rmsSearchRegistration) {
+    els.rmsSearchRegistration.value = registrationNumber;
+  }
+
+  const payload = await api(
+    `/admin/rms/students/search?registration_number=${encodeURIComponent(registrationNumber)}`
+  );
+  state.rms.selectedStudent = payload && typeof payload === 'object' ? payload : null;
+  if (els.rmsUpdateRegistration && state.rms.selectedStudent) {
+    els.rmsUpdateRegistration.value = String(state.rms.selectedStudent.registration_number || registrationNumber);
+  }
+  if (els.rmsAttendanceRegistration && state.rms.selectedStudent) {
+    els.rmsAttendanceRegistration.value = String(state.rms.selectedStudent.registration_number || registrationNumber);
+  }
+  state.rms.attendanceContext = null;
+  state.rms.attendanceSelectedCourseCode = '';
+  renderRmsAttendanceStudentSummary(null);
+  renderRmsAttendanceSubjectOptions(null);
+  if (els.rmsUpdateSection && state.rms.selectedStudent) {
+    els.rmsUpdateSection.value = String(state.rms.selectedStudent.section || '').trim().toUpperCase();
+  }
+  renderRmsStudentSummary();
+  syncVisibleVerlynQuickActions();
+  if (!silent && state.rms.selectedStudent) {
+    setRmsStatus(
+      `Loaded ${String(state.rms.selectedStudent.name || '')} for RMS approval actions.`,
+      false,
+    );
+  }
+}
+
+async function searchRmsAttendanceStudentContext({ silent = false } = {}) {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    throw new Error('Only admin or faculty can use RMS attendance controls.');
+  }
+  const registrationNumber = normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '');
+  const attendanceDate = String(els.rmsAttendanceDate?.value || '').trim() || todayISO();
+  if (!registrationNumber) {
+    throw new Error('Enter student registration number before searching subjects.');
+  }
+  if (els.rmsAttendanceRegistration) {
+    els.rmsAttendanceRegistration.value = registrationNumber;
+  }
+  if (els.rmsAttendanceDate) {
+    els.rmsAttendanceDate.value = attendanceDate;
+  }
+
+  const payload = await api(
+    `/admin/rms/attendance/student-context?registration_number=${encodeURIComponent(registrationNumber)}&attendance_date=${encodeURIComponent(attendanceDate)}`,
+  );
+  state.rms.attendanceContext = payload && typeof payload === 'object' ? payload : null;
+  state.rms.selectedStudent = state.rms.attendanceContext?.student || state.rms.selectedStudent;
+  if (state.rms.selectedStudent && els.rmsUpdateRegistration) {
+    els.rmsUpdateRegistration.value = String(state.rms.selectedStudent.registration_number || registrationNumber);
+  }
+  if (state.rms.selectedStudent && els.rmsUpdateSection) {
+    els.rmsUpdateSection.value = String(state.rms.selectedStudent.section || '').trim().toUpperCase();
+  }
+  renderRmsStudentSummary();
+  renderRmsAttendanceStudentSummary();
+  renderRmsAttendanceSubjectOptions();
+  syncVisibleVerlynQuickActions();
+  const loadedCount = Array.isArray(state.rms.attendanceContext?.subjects) ? state.rms.attendanceContext.subjects.length : 0;
+  if (!silent) {
+    setRmsAttendanceStatus(
+      loadedCount > 0
+        ? `Loaded ${loadedCount} subject(s). Select subject and apply updated status.`
+        : String(state.rms.attendanceContext?.message || 'No enrolled subjects found for this registration number.'),
+      false,
+    );
+  }
+}
+
+async function applyRmsStudentApprovalUpdate() {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    throw new Error('Only admin or faculty can apply RMS approvals.');
+  }
+  if (!state.rms.selectedStudent || Number(state.rms.selectedStudent.student_id || 0) <= 0) {
+    throw new Error('Search and load a student before applying updates.');
+  }
+
+  const studentId = Number(state.rms.selectedStudent.student_id);
+  const registrationNumber = normalizedRegistrationInput(els.rmsUpdateRegistration?.value || '');
+  const section = String(els.rmsUpdateSection?.value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+
+  const payload = {};
+  if (registrationNumber) {
+    payload.registration_number = registrationNumber;
+  }
+  if (section) {
+    payload.section = section;
+  }
+  if (!Object.keys(payload).length) {
+    throw new Error('Enter corrected registration number and/or section before applying update.');
+  }
+
+  const saved = await api(`/admin/rms/students/${studentId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  state.rms.selectedStudent = saved?.student || state.rms.selectedStudent;
+  if (els.rmsSearchRegistration && state.rms.selectedStudent?.registration_number) {
+    els.rmsSearchRegistration.value = String(state.rms.selectedStudent.registration_number);
+  }
+  if (els.rmsUpdateRegistration && state.rms.selectedStudent) {
+    els.rmsUpdateRegistration.value = String(state.rms.selectedStudent.registration_number || '');
+  }
+  if (els.rmsUpdateSection && state.rms.selectedStudent) {
+    els.rmsUpdateSection.value = String(state.rms.selectedStudent.section || '');
+  }
+  renderRmsStudentSummary();
+  syncVisibleVerlynQuickActions();
+  setRmsStudentUpdateStatus(
+    String(saved?.message || 'RMS approval update applied successfully.'),
+    false,
+  );
+  log(`RMS update applied for student ${studentId}.`);
+  await refreshRmsModule({ silent: true });
+}
+
+async function applyRmsAttendanceStatusUpdate() {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    throw new Error('Only admin or faculty can apply RMS attendance updates.');
+  }
+  const registrationNumber = normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '');
+  const courseCode = String(
+    els.rmsAttendanceSubjectSelect?.value
+      || state.rms.attendanceSelectedCourseCode
+      || '',
+  )
+    .trim()
+    .toUpperCase();
+  const attendanceDate = String(els.rmsAttendanceDate?.value || '').trim() || todayISO();
+  const status = String(els.rmsAttendanceStatus?.value || '').trim().toLowerCase();
+  const note = String(els.rmsAttendanceNote?.value || '').trim();
+
+  if (!registrationNumber) {
+    throw new Error('Enter student registration number for attendance update.');
+  }
+  if (!courseCode) {
+    throw new Error('Select enrolled subject for attendance update.');
+  }
+  if (status !== 'present' && status !== 'absent') {
+    throw new Error('Select valid attendance status.');
+  }
+
+  if (els.rmsAttendanceRegistration) {
+    els.rmsAttendanceRegistration.value = registrationNumber;
+  }
+  if (els.rmsAttendanceSubjectSelect) {
+    els.rmsAttendanceSubjectSelect.value = courseCode;
+  }
+  if (els.rmsAttendanceDate && !els.rmsAttendanceDate.value) {
+    els.rmsAttendanceDate.value = attendanceDate;
+  }
+  state.rms.attendanceSelectedCourseCode = courseCode;
+
+  const payload = {
+    registration_number: registrationNumber,
+    course_code: courseCode,
+    attendance_date: attendanceDate,
+    status,
+  };
+  if (note) {
+    payload.note = note;
+  }
+
+  const saved = await api('/admin/rms/attendance/status', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  state.rms.attendanceUpdate = saved && typeof saved === 'object' ? saved : null;
+  renderRmsAttendanceResult();
+  try {
+    await searchRmsAttendanceStudentContext({ silent: true });
+    syncRmsAttendanceCurrentStatus();
+  } catch (error) {
+    log(error?.message || 'Attendance context refresh failed after status update.');
+  }
+  const messageBits = [String(saved?.message || 'RMS attendance status updated successfully.')];
+  if (saved?.message_sent) {
+    messageBits.push('Student message sent.');
+  }
+  setRmsAttendanceStatus(
+    messageBits.join(' '),
+    false,
+  );
+  if (els.rmsAttendanceNote) {
+    els.rmsAttendanceNote.value = '';
+  }
+  log(
+    `RMS attendance updated for ${registrationNumber} (${courseCode}) on ${attendanceDate} as ${status}.`,
+  );
+}
+
+async function applyRmsQueryWorkflowAction() {
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    throw new Error('Only admin or faculty can apply RMS workflow actions.');
+  }
+  const selectedThread = state.rms.selectedThread;
+  if (!selectedThread || Number(selectedThread.student_id || 0) <= 0 || Number(selectedThread.faculty_id || 0) <= 0) {
+    throw new Error('Select an RMS thread before applying workflow action.');
+  }
+
+  const action = String(els.rmsThreadAction?.value || state.rms.threadAction || 'approve').trim().toLowerCase();
+  if (action !== 'approve' && action !== 'disapprove' && action !== 'schedule') {
+    throw new Error('Select a valid workflow action.');
+  }
+  state.rms.threadAction = action;
+
+  const note = String(els.rmsThreadNote?.value || '').trim();
+  const payload = {
+    student_id: Number(selectedThread.student_id),
+    faculty_id: Number(selectedThread.faculty_id),
+    category: String(selectedThread.category || 'Other'),
+    action,
+  };
+  if (note) {
+    payload.note = note;
+  }
+  if (action === 'schedule') {
+    const scheduledRaw = String(els.rmsThreadScheduledFor?.value || '').trim();
+    if (!scheduledRaw) {
+      throw new Error('Select schedule date/time for schedule action.');
+    }
+    const scheduledDate = new Date(scheduledRaw);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      throw new Error('Schedule date/time is invalid.');
+    }
+    payload.scheduled_for = scheduledDate.toISOString();
+  }
+
+  const saved = await api('/admin/rms/queries/action', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  state.rms.selectedThread = saved?.thread || selectedThread;
+  renderRmsSelectedThreadSummary();
+  setRmsThreadActionStatus(
+    String(saved?.message || 'RMS workflow action applied successfully.'),
+    false,
+  );
+  if (els.rmsThreadNote) {
+    els.rmsThreadNote.value = '';
+  }
+  log(
+    `RMS workflow action "${action}" applied for student ${Number(selectedThread.student_id)} and faculty ${Number(selectedThread.faculty_id)}.`,
+  );
+  await refreshRmsModule({ silent: true });
+}
+
 async function refreshAdministrativeModule() {
-  if (!authState.user) {
+  if (!authState.user || authState.user.role !== 'admin') {
     return;
   }
   if (els.workDate && !els.workDate.value) {
@@ -7901,6 +11213,8 @@ async function refreshAdministrativeModule() {
   await Promise.all([
     refreshAdminLive({ workDate, mode: 'enrollment' }),
     refreshAdminInsights({ workDate, mode: 'enrollment' }),
+    refreshAdminRecoveryPlans({ silent: true }),
+    refreshAdminIdentityCases({ silent: true }),
     refreshDemand(workDate),
     refreshAttendanceData(),
   ]);
@@ -7910,6 +11224,722 @@ async function refreshAdministrativeModule() {
   renderAdministrativeTelemetryChart();
   renderAdminLiveIndicator();
   renderAdminIssues();
+  await refreshCopilotAuditTimeline({ silent: true, force: true });
+}
+
+function setAdminCreateScheduleStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminCreateScheduleStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminCreateScheduleStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminTimetableOverrideStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminTimetableOverrideStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminTimetableOverrideStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminSectionUpdateStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminUpdateStudentSectionStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminUpdateStudentSectionStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminSearchStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminSearchStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminSearchStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminGradeStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminGradeStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminGradeStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminRecoveryStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminRecoveryStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminRecoveryStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminIdentityShieldStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminIdentityStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminIdentityStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminCopilotAuditStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminCopilotAuditStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminCopilotAuditStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function identityCaseStatusBadgeClass(statusValue) {
+  const normalized = String(statusValue || '').trim().toLowerCase();
+  if (normalized === 'verified') {
+    return 'verified';
+  }
+  if (normalized === 'in_review') {
+    return 'pending_review';
+  }
+  if (normalized === 'flagged' || normalized === 'rejected') {
+    return 'rejected';
+  }
+  return 'pending';
+}
+
+function identityRiskTone(riskValue) {
+  const normalized = String(riskValue || '').trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high') {
+    return 'bad';
+  }
+  if (normalized === 'medium') {
+    return 'pending';
+  }
+  return 'ok';
+}
+
+function renderAdminIdentityCases() {
+  if (!els.adminIdentityCasesWrap) {
+    return;
+  }
+  const cases = Array.isArray(state.admin?.identityCases) ? state.admin.identityCases : [];
+  if (!cases.length) {
+    els.adminIdentityCasesWrap.innerHTML = '<div class="list-item">No identity cases found for the current filter.</div>';
+    return;
+  }
+
+  els.adminIdentityCasesWrap.innerHTML = cases.map((item) => {
+    const workflowKey = String(item?.workflow_key || 'identity').replace(/_/g, ' ');
+    const subjectLabel = item?.student_id
+      ? `Student #${Number(item.student_id)}`
+      : (item?.applicant_email ? String(item.applicant_email) : `User #${Number(item?.auth_user_id || 0)}`);
+    const statusLabel = String(item?.status || 'pending').replace(/_/g, ' ');
+    const riskLabel = String(item?.risk_level || 'low').toUpperCase();
+    const riskScore = Number(item?.risk_score || 0).toFixed(1);
+    const updatedAt = adminTimestampLabel(item?.updated_at || item?.created_at, '--');
+    const latestReason = String(item?.latest_reason || 'No immediate issue recorded.').trim();
+    const signals = Array.isArray(item?.signals) ? item.signals.slice(0, 4) : [];
+    const completedChecks = Array.isArray(item?.completed_checks) ? item.completed_checks.slice(0, 3) : [];
+    const requestedChecks = Array.isArray(item?.requested_checks) ? item.requested_checks.slice(0, 3) : [];
+
+    return `
+      <div class="list-item ${identityRiskTone(item?.risk_level) === 'bad' ? 'warn' : (String(item?.status || '').toLowerCase() === 'verified' ? 'good' : '')}">
+        <div class="admin-identity-case-head">
+          <div>
+            <strong>${escapeHtml(workflowKey.toUpperCase())}</strong>
+            <div class="admin-identity-case-meta">${escapeHtml(subjectLabel)} • Updated ${escapeHtml(updatedAt)}</div>
+          </div>
+          <div class="admin-identity-case-badges">
+            <span class="badge ${identityCaseStatusBadgeClass(item?.status)}">${escapeHtml(statusLabel)}</span>
+            <span class="attendance-pill ${identityRiskTone(item?.risk_level)}">${escapeHtml(riskLabel)}</span>
+          </div>
+        </div>
+        <div class="admin-identity-case-reason">${escapeHtml(latestReason)}</div>
+        <div class="admin-identity-case-meta">Risk score ${escapeHtml(riskScore)} • Signals ${signals.length} • Case #${Number(item?.id || 0)}</div>
+        ${signals.length ? `
+          <div class="admin-identity-case-signals">
+            ${signals.map((signal) => `<span class="admin-identity-signal">${escapeHtml(String(signal?.signal_type || 'signal').replace(/_/g, ' '))}</span>`).join('')}
+          </div>
+        ` : ''}
+        ${(completedChecks.length || requestedChecks.length) ? `
+          <div class="admin-identity-case-checks">
+            ${completedChecks.length ? `<span>Completed: ${escapeHtml(completedChecks.join(', '))}</span>` : ''}
+            ${requestedChecks.length ? `<span>Pending: ${escapeHtml(requestedChecks.join(', '))}</span>` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function refreshAdminIdentityCases(options = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    return [];
+  }
+
+  const silent = Boolean(options?.silent);
+  const rawStudentId = String(options?.studentId || els.adminIdentityStudentId?.value || '').trim();
+  const studentId = rawStudentId ? Number(rawStudentId) : 0;
+  const params = new URLSearchParams({ limit: '12' });
+  if (Number.isFinite(studentId) && studentId > 0) {
+    params.set('student_id', String(studentId));
+  }
+
+  if (!silent) {
+    setAdminIdentityShieldStatus('Loading identity cases...', false, 'loading');
+  }
+
+  const payload = await api(`/identity-shield/cases?${params.toString()}`);
+  state.admin.identityCases = Array.isArray(payload) ? payload : [];
+  renderAdminIdentityCases();
+
+  if (!silent) {
+    const scopeNote = Number.isFinite(studentId) && studentId > 0 ? ` for student ${studentId}` : '';
+    setAdminIdentityShieldStatus(
+      `Loaded ${state.admin.identityCases.length} identity case(s)${scopeNote}.`,
+      false,
+      state.admin.identityCases.length ? 'success' : 'empty',
+    );
+  }
+
+  return state.admin.identityCases;
+}
+
+async function runAdminEnrollmentIdentityScreening() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can run identity screening from this panel.');
+  }
+
+  const studentId = Number(els.adminIdentityStudentId?.value || 0);
+  if (!Number.isFinite(studentId) || studentId <= 0) {
+    throw new Error('Enter a valid Student ID before running screening.');
+  }
+
+  setAdminIdentityShieldStatus(`Running identity screening for student ${studentId}...`, false, 'loading');
+  const saved = await api(`/identity-shield/screenings/enrollment/students/${studentId}`, {
+    method: 'POST',
+  });
+  await refreshAdminIdentityCases({ silent: true, studentId });
+  setAdminIdentityShieldStatus(
+    `Screening completed for student ${studentId}: ${String(saved?.risk_level || 'low').toUpperCase()} risk, status ${String(saved?.status || 'verified').replace(/_/g, ' ')}.`,
+    false,
+    String(saved?.status || '').toLowerCase() === 'flagged' ? 'error' : 'success',
+  );
+  return saved;
+}
+
+function renderAdminSearchResultsFromGlobal(payload) {
+  if (!els.adminSearchResults) {
+    return;
+  }
+  els.adminSearchResults.innerHTML = '';
+  const students = Array.isArray(payload?.students) ? payload.students : [];
+  const facultyRows = Array.isArray(payload?.faculty) ? payload.faculty : [];
+  const courses = Array.isArray(payload?.courses) ? payload.courses : [];
+
+  if (!students.length && !facultyRows.length && !courses.length) {
+    els.adminSearchResults.innerHTML = '<div class="list-item">No results found for this query.</div>';
+    return;
+  }
+
+  const pushRow = (text) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = text;
+    els.adminSearchResults.appendChild(row);
+  };
+
+  for (const item of students) {
+    const reg = String(item?.registration_number || '').trim() || 'NoReg';
+    const section = String(item?.section || '').trim() || 'UNASSIGNED';
+    pushRow(`Student | ${String(item?.name || '')} | ${reg} | ${section} | ${String(item?.email || '')}`);
+  }
+  for (const item of facultyRows) {
+    const identifier = String(item?.faculty_identifier || '').trim() || 'NoID';
+    const section = String(item?.section || '').trim() || 'UNASSIGNED';
+    pushRow(`Faculty | ${String(item?.name || '')} | ${identifier} | ${section} | ${String(item?.email || '')}`);
+  }
+  for (const item of courses) {
+    pushRow(
+      `Course | ${String(item?.course_code || '')} | ${String(item?.course_title || '')} | Faculty: ${String(item?.faculty_name || item?.faculty_id || '')}`,
+    );
+  }
+}
+
+function renderAdminGradeHistory(payload) {
+  if (!els.adminGradeHistoryWrap) {
+    return;
+  }
+  els.adminGradeHistoryWrap.innerHTML = '';
+  const grades = Array.isArray(payload?.grades) ? payload.grades : [];
+  if (!grades.length) {
+    els.adminGradeHistoryWrap.innerHTML = '<div class="list-item">No grade records found for this student.</div>';
+    return;
+  }
+  for (const item of grades) {
+    const marks = item?.marks_percent === null || item?.marks_percent === undefined
+      ? '--'
+      : `${Number(item.marks_percent).toFixed(2)}%`;
+    const remark = String(item?.remark || '').trim();
+    const updatedAt = item?.updated_at ? new Date(item.updated_at).toLocaleString() : '--';
+    const row = document.createElement('div');
+    row.className = 'list-item';
+    row.textContent = `${String(item?.course_code || '')} | ${String(item?.grade_letter || '')} | ${marks} | ${updatedAt}${remark ? ` | ${remark}` : ''}`;
+    els.adminGradeHistoryWrap.appendChild(row);
+  }
+}
+
+function formatCopilotAuditLabel(rawValue) {
+  const text = String(rawValue || '').trim().replaceAll('_', ' ');
+  if (!text) {
+    return '--';
+  }
+  return text.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatCopilotAuditTimestamp(rawValue) {
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return '--';
+  }
+  return parsed.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function renderCopilotAuditTimeline(rows = []) {
+  if (!els.adminCopilotAuditWrap) {
+    return;
+  }
+  els.adminCopilotAuditWrap.innerHTML = '';
+  if (!Array.isArray(rows) || !rows.length) {
+    els.adminCopilotAuditWrap.innerHTML = `
+      <div class="empty-state-row">
+        <strong>No copilot runs match the current filters.</strong>
+        <span>Try a broader search, or clear one of the governance filters above.</span>
+      </div>
+    `;
+    return;
+  }
+
+  for (const row of rows) {
+    const outcome = String(row?.outcome || '').trim().toLowerCase();
+    const explanation = Array.isArray(row?.explanation) ? row.explanation : [];
+    const evidence = Array.isArray(row?.evidence) ? row.evidence : [];
+    const actions = Array.isArray(row?.actions) ? row.actions : [];
+    const nextSteps = Array.isArray(row?.result?.next_steps) ? row.result.next_steps : [];
+    const scopeParts = [];
+    if (row?.scope) {
+      scopeParts.push(`Scope: ${String(row.scope)}`);
+    }
+    if (row?.target_section) {
+      scopeParts.push(`Section: ${String(row.target_section)}`);
+    }
+    if (row?.target_student_id) {
+      scopeParts.push(`Student ID: ${Number(row.target_student_id)}`);
+    }
+    if (row?.target_course_id) {
+      scopeParts.push(`Course ID: ${Number(row.target_course_id)}`);
+    }
+    const actorLabel = String(row?.actor_email || '').trim() || `User ${Number(row?.actor_user_id || 0)}`;
+    const details = document.createElement('details');
+    details.className = `admin-copilot-entry admin-copilot-entry--${escapeHtml(outcome || 'blocked')}`;
+    details.innerHTML = `
+      <summary>
+        <div class="admin-copilot-entry-head">
+          <div class="admin-copilot-entry-title">${escapeHtml(String(row?.query_text || row?.result?.title || 'Campus Copilot run'))}</div>
+          <div class="admin-copilot-entry-badges">
+            <span class="admin-copilot-badge">#${Number(row?.id || 0)}</span>
+            <span class="admin-copilot-badge">${escapeHtml(formatCopilotAuditLabel(row?.intent))}</span>
+            <span class="admin-copilot-badge" data-tone="${escapeHtml(outcome || 'blocked')}">${escapeHtml(formatCopilotAuditLabel(outcome))}</span>
+          </div>
+        </div>
+        <div class="admin-copilot-entry-meta">
+          <span>${escapeHtml(actorLabel)} (${escapeHtml(formatCopilotAuditLabel(row?.actor_role || '--'))})</span>
+          <span>${escapeHtml(formatCopilotAuditTimestamp(row?.created_at))}</span>
+        </div>
+        ${scopeParts.length ? `<div class="admin-copilot-entry-scope">${escapeHtml(scopeParts.join(' | '))}</div>` : ''}
+      </summary>
+      <div class="admin-copilot-entry-body">
+        <section class="admin-copilot-entry-section">
+          <strong>Explanation</strong>
+          ${explanation.length
+            ? `<ul class="admin-copilot-entry-list">${explanation.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`
+            : '<p class="admin-copilot-entry-empty">No explanation stored.</p>'}
+        </section>
+        <section class="admin-copilot-entry-section">
+          <strong>Evidence</strong>
+          ${evidence.length
+            ? `<ul class="admin-copilot-entry-list">${evidence.map((item) => `<li>[${escapeHtml(String(item?.status || 'info').toUpperCase())}] ${escapeHtml(String(item?.label || 'Item'))}: ${escapeHtml(String(item?.value || ''))}</li>`).join('')}</ul>`
+            : '<p class="admin-copilot-entry-empty">No evidence items stored.</p>'}
+        </section>
+        <section class="admin-copilot-entry-section">
+          <strong>Actions</strong>
+          ${actions.length
+            ? `<ul class="admin-copilot-entry-list">${actions.map((item) => `<li>[${escapeHtml(String(item?.status || 'preview').toUpperCase())}] ${escapeHtml(formatCopilotAuditLabel(item?.action || 'action'))}${item?.detail ? `: ${escapeHtml(String(item.detail))}` : ''}</li>`).join('')}</ul>`
+            : '<p class="admin-copilot-entry-empty">No action log stored.</p>'}
+        </section>
+        ${nextSteps.length
+          ? `<section class="admin-copilot-entry-section"><strong>Next Steps</strong><ul class="admin-copilot-entry-list">${nextSteps.map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul></section>`
+          : ''}
+      </div>
+    `;
+    els.adminCopilotAuditWrap.appendChild(details);
+  }
+}
+
+function buildCopilotAuditQueryString() {
+  const params = new URLSearchParams();
+  const limit = Number(els.adminCopilotAuditLimit?.value || 50);
+  params.set('limit', String(Number.isFinite(limit) && limit > 0 ? limit : 50));
+
+  const search = String(els.adminCopilotAuditSearch?.value || '').trim();
+  const intent = String(els.adminCopilotAuditIntent?.value || '').trim();
+  const outcome = String(els.adminCopilotAuditOutcome?.value || '').trim();
+  const actorRole = String(els.adminCopilotAuditRole?.value || '').trim();
+  const actorUserId = Number(els.adminCopilotAuditActorUserId?.value || 0) || 0;
+
+  if (search) {
+    params.set('q', search);
+  }
+  if (intent && intent !== 'all') {
+    params.set('intent', intent);
+  }
+  if (outcome && outcome !== 'all') {
+    params.set('outcome', outcome);
+  }
+  if (actorRole && actorRole !== 'all') {
+    params.set('actor_role', actorRole);
+  }
+  if (actorUserId > 0) {
+    params.set('actor_user_id', String(actorUserId));
+  }
+  return params.toString();
+}
+
+async function refreshCopilotAuditTimeline({ silent = false, force = false } = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    return;
+  }
+  if (!els.adminCopilotAuditWrap) {
+    return;
+  }
+  const ageMs = Date.now() - Number(state.admin.copilotAuditLoadedAtMs || 0);
+  if (state.admin.copilotAuditBusy) {
+    state.admin.copilotAuditQueued = true;
+    return;
+  }
+  if (!force && silent && ageMs < 30000 && els.adminCopilotAuditWrap.childElementCount) {
+    return;
+  }
+  state.admin.copilotAuditBusy = true;
+  if (!silent) {
+    setAdminCopilotAuditStatus('Loading copilot action timeline...', false, 'loading');
+  }
+  try {
+    const rows = await api(`/copilot/audit?${buildCopilotAuditQueryString()}`);
+    renderCopilotAuditTimeline(rows);
+    state.admin.copilotAuditLoadedAtMs = Date.now();
+    setAdminCopilotAuditStatus(
+      `Loaded ${Array.isArray(rows) ? rows.length : 0} copilot run${Array.isArray(rows) && rows.length === 1 ? '' : 's'}.`,
+      false,
+      'success',
+    );
+  } catch (error) {
+    setAdminCopilotAuditStatus(error?.message || 'Failed to load copilot audit timeline.', true, 'error');
+  } finally {
+    state.admin.copilotAuditBusy = false;
+    if (state.admin.copilotAuditQueued) {
+      state.admin.copilotAuditQueued = false;
+      void refreshCopilotAuditTimeline({ silent: true, force: true });
+    }
+  }
+}
+
+function resetCopilotAuditFilters() {
+  if (els.adminCopilotAuditSearch) {
+    els.adminCopilotAuditSearch.value = '';
+  }
+  if (els.adminCopilotAuditIntent) {
+    els.adminCopilotAuditIntent.value = 'all';
+  }
+  if (els.adminCopilotAuditOutcome) {
+    els.adminCopilotAuditOutcome.value = 'all';
+  }
+  if (els.adminCopilotAuditRole) {
+    els.adminCopilotAuditRole.value = 'all';
+  }
+  if (els.adminCopilotAuditActorUserId) {
+    els.adminCopilotAuditActorUserId.value = '';
+  }
+  if (els.adminCopilotAuditLimit) {
+    els.adminCopilotAuditLimit.value = '50';
+  }
+}
+
+async function fetchAdminStudentGradeHistory(registrationNumber, { silent = false } = {}) {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can fetch grade history.');
+  }
+  const normalized = normalizedRegistrationInput(registrationNumber || '');
+  if (!normalized) {
+    throw new Error('Enter student registration number.');
+  }
+  const payload = await api(`/admin/grades/students/${encodeURIComponent(normalized)}`);
+  renderAdminGradeHistory(payload);
+  if (!silent) {
+    setAdminGradeStatus(`Loaded grade history for ${normalized}.`, false);
+  }
+}
+
+async function adminSearchStudentByRegistration() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can search students from this panel.');
+  }
+  const registrationNumber = normalizedRegistrationInput(els.adminSearchStudentRegistration?.value || '');
+  if (!registrationNumber) {
+    throw new Error('Enter student registration number.');
+  }
+  if (els.adminSearchStudentRegistration) {
+    els.adminSearchStudentRegistration.value = registrationNumber;
+  }
+  const payload = await api(
+    `/admin/search/students/by-registration?registration_number=${encodeURIComponent(registrationNumber)}`
+  );
+  renderAdminSearchResultsFromGlobal({ students: [payload], faculty: [], courses: [] });
+  if (els.adminGradeStudentRegistration) {
+    els.adminGradeStudentRegistration.value = registrationNumber;
+  }
+  setAdminSearchStatus(`Student found for registration ${registrationNumber}.`, false);
+  syncVisibleVerlynQuickActions();
+  await fetchAdminStudentGradeHistory(registrationNumber, { silent: true });
+}
+
+async function adminSearchFacultyByIdentifier() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can search faculty from this panel.');
+  }
+  const facultyIdentifier = normalizedRegistrationInput(els.adminSearchFacultyIdentifier?.value || '');
+  if (!facultyIdentifier) {
+    throw new Error('Enter faculty identifier.');
+  }
+  if (els.adminSearchFacultyIdentifier) {
+    els.adminSearchFacultyIdentifier.value = facultyIdentifier;
+  }
+  const payload = await api(
+    `/admin/search/faculty/by-identifier?faculty_identifier=${encodeURIComponent(facultyIdentifier)}`
+  );
+  renderAdminSearchResultsFromGlobal({ students: [], faculty: [payload], courses: [] });
+  setAdminSearchStatus(`Faculty found for identifier ${facultyIdentifier}.`, false);
+}
+
+async function adminSearchEverything() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can run global search from this panel.');
+  }
+  const query = String(els.adminGlobalSearchQuery?.value || '').trim();
+  if (!query) {
+    throw new Error('Enter a global search query.');
+  }
+  const payload = await api(`/admin/search/everything?query=${encodeURIComponent(query)}&limit=25`);
+  renderAdminSearchResultsFromGlobal(payload);
+  setAdminSearchStatus(`Global search complete. Matches: ${Number(payload?.total_matches || 0)}.`, false);
+}
+
+async function adminUpsertStudentGrade() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can save grades from this panel.');
+  }
+  const registrationNumber = normalizedRegistrationInput(els.adminGradeStudentRegistration?.value || '');
+  const courseCode = normalizedRegistrationInput(els.adminGradeCourseCode?.value || '');
+  const gradeLetter = String(els.adminGradeLetter?.value || '').trim().toUpperCase();
+  const marksRaw = String(els.adminGradeMarks?.value || '').trim();
+  const remark = String(els.adminGradeRemark?.value || '').trim();
+
+  if (!registrationNumber || !courseCode || !gradeLetter) {
+    throw new Error('Registration number, course code, and grade are required.');
+  }
+
+  const payload = {
+    registration_number: registrationNumber,
+    course_code: courseCode,
+    grade_letter: gradeLetter,
+    marks_percent: marksRaw ? Number(marksRaw) : null,
+    remark: remark || null,
+  };
+  const saved = await api('/admin/grades/upsert', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  setAdminGradeStatus(
+    `Grade saved: ${String(saved?.registration_number || registrationNumber)} | ${String(saved?.course_code || courseCode)} -> ${String(saved?.grade_letter || gradeLetter)}.`,
+    false,
+  );
+  await fetchAdminStudentGradeHistory(registrationNumber, { silent: true });
+}
+
+async function createAdminAttendanceSchedule() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can create schedules from this panel.');
+  }
+
+  const courseId = Number(els.adminCreateScheduleCourseId?.value || 0);
+  const facultyId = Number(els.adminCreateScheduleFacultyId?.value || 0);
+  const weekday = Number(els.adminCreateScheduleWeekday?.value || 0);
+  const startTime = String(els.adminCreateScheduleStartTime?.value || '').trim();
+  const endTime = String(els.adminCreateScheduleEndTime?.value || '').trim();
+  const classroomLabel = String(els.adminCreateScheduleRoomLabel?.value || '').trim();
+
+  if (!Number.isFinite(courseId) || courseId <= 0) {
+    throw new Error('Enter a valid Course ID.');
+  }
+  if (!Number.isFinite(facultyId) || facultyId <= 0) {
+    throw new Error('Enter a valid Faculty ID.');
+  }
+  if (!Number.isFinite(weekday) || weekday < 0 || weekday > 6) {
+    throw new Error('Select a valid weekday.');
+  }
+  if (!startTime || !endTime) {
+    throw new Error('Select both start and end time.');
+  }
+
+  const payload = {
+    course_id: courseId,
+    faculty_id: facultyId,
+    weekday,
+    start_time: startTime,
+    end_time: endTime,
+    classroom_label: classroomLabel || null,
+    is_active: true,
+  };
+
+  const created = await api('/attendance/schedules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+  setAdminCreateScheduleStatus(
+    `Schedule created (ID ${Number(created?.id || 0)}) for course ${courseId} on ${DAY_LABELS[weekday]}.`,
+    false,
+  );
+  log(`Admin created schedule ${Number(created?.id || 0)} for course ${courseId}.`);
+
+  if (els.adminCreateScheduleRoomLabel) {
+    els.adminCreateScheduleRoomLabel.value = '';
+  }
+
+  await loadFacultySchedules();
+}
+
+async function saveAdminTimetableOverride() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can update timetable overrides from this panel.');
+  }
+
+  const scope = String(els.adminTimetableOverrideScope?.value || 'student').trim().toLowerCase();
+  const studentId = Number(els.adminTimetableOverrideStudentId?.value || 0);
+  const section = String(els.adminTimetableOverrideSection?.value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+  const sourceWeekday = Number(els.adminTimetableOverrideSourceWeekday?.value || 0);
+  const sourceStartTime = String(els.adminTimetableOverrideSourceStartTime?.value || '').trim();
+  const courseId = Number(els.adminTimetableOverrideCourseId?.value || 0);
+  const facultyId = Number(els.adminTimetableOverrideFacultyId?.value || 0);
+  const weekday = Number(els.adminTimetableOverrideWeekday?.value || 0);
+  const startTime = String(els.adminTimetableOverrideStartTime?.value || '').trim();
+  const endTime = String(els.adminTimetableOverrideEndTime?.value || '').trim();
+  const classroomLabel = String(els.adminTimetableOverrideRoomLabel?.value || '').trim();
+
+  if (scope !== 'student' && scope !== 'section') {
+    throw new Error('Select a valid timetable scope.');
+  }
+  if (scope === 'student' && (!Number.isFinite(studentId) || studentId <= 0)) {
+    throw new Error('Enter a valid Student ID for single-student timetable updates.');
+  }
+  if (scope === 'section' && !section) {
+    throw new Error('Enter target section for section-wide timetable updates.');
+  }
+  if (!sourceStartTime) {
+    throw new Error('Select the existing slot start time to replace.');
+  }
+  if (!Number.isFinite(courseId) || courseId <= 0) {
+    throw new Error('Enter a valid Course ID.');
+  }
+  if (!Number.isFinite(facultyId) || facultyId <= 0) {
+    throw new Error('Enter a valid Faculty ID.');
+  }
+  if (!startTime || !endTime) {
+    throw new Error('Select the new class start and end time.');
+  }
+
+  const payload = {
+    scope_type: scope,
+    student_id: scope === 'student' ? studentId : null,
+    section: scope === 'section' ? section : null,
+    source_weekday: sourceWeekday,
+    source_start_time: sourceStartTime,
+    course_id: courseId,
+    faculty_id: facultyId,
+    weekday,
+    start_time: startTime,
+    end_time: endTime,
+    classroom_label: classroomLabel || null,
+    is_active: true,
+  };
+
+  const saved = await api('/attendance/timetable-overrides', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  const scopeLabel = scope === 'student'
+    ? `student ${studentId}`
+    : `section ${String(saved?.section || section)}`;
+  setAdminTimetableOverrideStatus(
+    `Timetable override saved for ${scopeLabel}. Replaced ${DAY_LABELS[sourceWeekday]} ${sourceStartTime} with ${DAY_LABELS[weekday]} ${startTime}-${endTime}.`,
+    false,
+  );
+  log(`Admin updated timetable for ${scopeLabel}. Override ${Number(saved?.id || 0)}.`);
+}
+
+async function approveAdminStudentSectionUpdate() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can approve student section updates from this panel.');
+  }
+
+  const studentId = Number(els.adminUpdateStudentId?.value || 0);
+  const section = String(els.adminUpdateStudentSection?.value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+
+  if (!Number.isFinite(studentId) || studentId <= 0) {
+    throw new Error('Enter a valid Student ID.');
+  }
+  if (!section) {
+    throw new Error('Enter target section.');
+  }
+
+  const saved = await api(`/attendance/faculty/students/${studentId}/section`, {
+    method: 'PUT',
+    body: JSON.stringify({ section }),
+  });
+
+  setAdminSectionUpdateStatus(
+    `Section updated for student ${studentId}. New section: ${String(saved?.section || section)}.`,
+    false,
+  );
+  log(`Admin approved section update for student ${studentId} -> ${String(saved?.section || section)}.`);
 }
 
 function renderRemedialCourseOptions() {
@@ -9321,6 +13351,10 @@ async function refreshActiveModuleData() {
     await refreshAdministrativeModule();
     return;
   }
+  if (moduleKey === 'rms') {
+    await refreshRmsModule();
+    return;
+  }
   if (moduleKey === 'remedial') {
     await refreshRemedialModule();
     return;
@@ -9328,10 +13362,17 @@ async function refreshActiveModuleData() {
   if (authState.user.role === 'student') {
     await refreshStudentKpiTimetable({ forceNetwork: true });
     await loadStudentTimetable({ forceNetwork: true });
-    await loadStudentAttendanceInsights();
-    await refreshStudentMessages();
+    const results = await Promise.allSettled([
+      loadStudentAttendanceInsights(),
+      refreshStudentMessages(),
+      loadSaarthiStatus({ silent: true }),
+    ]);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') {
+      throw failed.reason;
+    }
   }
-  if (authState.user.role === 'faculty') {
+  if (authState.user.role === 'faculty' || authState.user.role === 'admin') {
     await loadFacultySchedules();
     await refreshFacultyDashboard();
     return;
@@ -9379,6 +13420,59 @@ function loadPuterSdk() {
   });
 
   return puterSdkPromise;
+}
+
+function loadRazorpayCheckoutSdk() {
+  if (window.Razorpay) {
+    return Promise.resolve(window.Razorpay);
+  }
+
+  if (razorpaySdkPromise) {
+    return razorpaySdkPromise;
+  }
+
+  razorpaySdkPromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector(`script[src="${RAZORPAY_SDK_URL}"]`);
+    if (existingScript) {
+      existingScript.addEventListener('load', () => {
+        if (window.Razorpay) {
+          resolve(window.Razorpay);
+          return;
+        }
+        reject(new Error('Razorpay checkout loaded but client is unavailable.'));
+      });
+      existingScript.addEventListener('error', () => {
+        reject(new Error('Failed to load Razorpay checkout.'));
+      });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = RAZORPAY_SDK_URL;
+    script.async = true;
+    script.onload = () => {
+      if (window.Razorpay) {
+        resolve(window.Razorpay);
+        return;
+      }
+      reject(new Error('Razorpay checkout loaded but client is unavailable.'));
+    };
+    script.onerror = () => reject(new Error('Failed to load Razorpay checkout.'));
+    document.head.appendChild(script);
+  }).catch((error) => {
+    razorpaySdkPromise = null;
+    throw error;
+  });
+
+  return razorpaySdkPromise;
+}
+
+async function ensureRazorpayCheckoutSdk() {
+  try {
+    return await loadRazorpayCheckoutSdk();
+  } catch (_) {
+    throw new Error('Razorpay checkout failed to load. Check internet and retry.');
+  }
 }
 
 async function getPuterClient() {
@@ -9618,6 +13712,62 @@ function getAttendanceWindowMinutes(item) {
   return 10;
 }
 
+function buildStudentAttendanceTimeline(source = getKpiSourceTimetable()) {
+  if (!Array.isArray(source) || !source.length) {
+    return [];
+  }
+  return source
+    .map((item) => {
+      const start = parseClassDateTimeLocal(item.class_date, item.start_time);
+      const end = parseClassDateTimeLocal(item.class_date, item.end_time);
+      if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return null;
+      }
+      return {
+        item,
+        start,
+        end,
+        windowEnd: new Date(start.getTime() + (getAttendanceWindowMinutes(item) * 60 * 1000)),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+}
+
+function isStudentAttendanceDemoEnabled() {
+  return Boolean(authState.user?.role === 'student' && state.student.demoAttendanceEnabled);
+}
+
+function findStudentDemoAttendanceState(nowArg = new Date()) {
+  if (!isStudentAttendanceDemoEnabled()) {
+    return null;
+  }
+  const now = nowArg instanceof Date ? nowArg : new Date();
+  const activeRegularSlot = buildStudentAttendanceTimeline()
+    .find((slot) => (
+      now >= slot.start
+      && now <= slot.end
+      && String(slot.item?.class_kind || 'regular').toLowerCase() !== 'remedial'
+    ));
+  if (!activeRegularSlot) {
+    return null;
+  }
+  const selected = activeRegularSlot.item;
+  return {
+    mode: 'demo',
+    schedule: selected,
+    headline: `Demo Attendance | ${selected.course_code}`,
+    subtitle: (
+      `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | `
+      + `${selected.course_code} | Demo mode keeps marking open for this full class hour only.`
+    ),
+  };
+}
+
+function findEffectiveAttendanceManagementState(nowArg = new Date()) {
+  return findStudentDemoAttendanceState(nowArg) || findAttendanceManagementState(nowArg);
+}
+
 function getSlotClass(item) {
   const status = resolveTimetableKpi(item);
   if (status.key === 'present') {
@@ -9692,23 +13842,7 @@ function findAttendanceManagementState(nowArg = new Date()) {
     };
   }
 
-  const timeline = source
-    .map((item) => {
-      const start = parseClassDateTimeLocal(item.class_date, item.start_time);
-      const end = parseClassDateTimeLocal(item.class_date, item.end_time);
-      if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-        return null;
-      }
-      return {
-        item,
-        start,
-        end,
-        windowEnd: new Date(start.getTime() + (getAttendanceWindowMinutes(item) * 60 * 1000)),
-      };
-    })
-    .filter(Boolean)
-    .sort((a, b) => a.start.getTime() - b.start.getTime());
-
+  const timeline = buildStudentAttendanceTimeline(source);
   if (!timeline.length) {
     return {
       mode: 'none',
@@ -9754,6 +13888,18 @@ function isRemedialAttendanceWindow(kpi = null) {
   const scheduleId = Number(resolved?.schedule?.schedule_id || 0);
   const classKind = String(resolved?.schedule?.class_kind || 'regular').toLowerCase();
   return resolved?.mode === 'mark' && scheduleId > 0 && classKind === 'remedial';
+}
+
+function renderStudentAttendanceDemoToggle() {
+  if (!els.studentAttendanceDemoBtn) {
+    return;
+  }
+  const enabled = Boolean(state.student.demoAttendanceEnabled);
+  els.studentAttendanceDemoBtn.dataset.active = enabled ? 'true' : 'false';
+  els.studentAttendanceDemoBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+  els.studentAttendanceDemoBtn.textContent = enabled
+    ? 'Demo Attendance ON'
+    : 'Demo Attendance OFF';
 }
 
 function normalizeTimeForMatch(value = '') {
@@ -9825,7 +13971,11 @@ async function openRemedialFromAttendance(kpi = null) {
 }
 
 async function handleStudentMarkAttendanceAction() {
-  const kpi = findAttendanceManagementState();
+  const kpi = findEffectiveAttendanceManagementState();
+  if (kpi.mode === 'demo') {
+    await startStudentDemoAttendanceFlow(kpi);
+    return;
+  }
   if (isRemedialAttendanceWindow(kpi)) {
     await openRemedialFromAttendance(kpi);
     return;
@@ -10056,9 +14206,21 @@ function renderOwnerProfileStatus() {
   updateProfileSaveState();
 }
 
+function renderAdminProfileStatus() {
+  if (!els.profileStatus) {
+    return;
+  }
+  els.profileStatus.textContent = 'Admin account is active. Use Attendance module for approvals and schedule controls.';
+  updateProfileSaveState();
+}
+
 function renderProfileStatusByRole() {
   if (authState.user?.role === 'faculty') {
     renderFacultyProfileStatus();
+    return;
+  }
+  if (authState.user?.role === 'admin') {
+    renderAdminProfileStatus();
     return;
   }
   if (authState.user?.role === 'owner') {
@@ -10505,16 +14667,21 @@ function getCalendarBounds(classes) {
 
 function updateSelectedClassState() {
   const hasProfileReady = Boolean(state.student.profilePhotoDataUrl) && Boolean(state.student.registrationNumber) && Boolean(state.student.section);
-  const kpi = findAttendanceManagementState();
+  const officialKpi = findAttendanceManagementState();
+  const kpi = findEffectiveAttendanceManagementState();
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
-  const remedialWindowOpen = isRemedialAttendanceWindow(kpi);
+  const remedialWindowOpen = isRemedialAttendanceWindow(officialKpi);
+  const demoAttendanceActive = kpi.mode === 'demo' && scheduleId > 0;
   state.student.kpiScheduleId = scheduleId || null;
+  renderStudentAttendanceDemoToggle();
 
   if (els.selectedClassLabel) {
     els.selectedClassLabel.textContent = kpi.headline;
   }
   if (els.attendanceKpiSubtitle) {
-    if (!hasProfileReady) {
+    if (demoAttendanceActive) {
+      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Demo run is local only and does not save attendance data.`;
+    } else if (!hasProfileReady) {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Complete profile setup to enable official marking.`;
     } else if (kpi.mode === 'mark' && String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Use Remedial module with faculty code (15-minute window).`;
@@ -10524,16 +14691,16 @@ function updateSelectedClassState() {
   }
 
   const isRegularMarkable = (
-    kpi.mode === 'mark'
-    && scheduleId
+    officialKpi.mode === 'mark'
+    && Number(officialKpi.schedule?.schedule_id || 0)
     && hasProfileReady
-    && String(kpi.schedule?.class_kind || 'regular').toLowerCase() !== 'remedial'
+    && String(officialKpi.schedule?.class_kind || 'regular').toLowerCase() !== 'remedial'
   );
   if (els.takeSelfieBtn) {
     els.takeSelfieBtn.textContent = remedialWindowOpen
       ? 'Open Remedial Module'
-      : 'Open Camera & Mark Attendance';
-    els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen);
+      : (demoAttendanceActive ? 'Open Camera & Run Demo Attendance' : 'Open Camera & Mark Attendance');
+    els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen || demoAttendanceActive);
   }
 }
 
@@ -11000,6 +15167,198 @@ async function loadStudentTimetable(options = {}) {
   }
 }
 
+function formatSaarthiDateTime(rawValue) {
+  const parsed = new Date(rawValue);
+  if (Number.isNaN(parsed.getTime())) {
+    return '--';
+  }
+  return parsed.toLocaleString([], {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function setSaarthiStatus(message, uiState = 'neutral') {
+  state.student.saarthiUiMessage = String(message || '');
+  state.student.saarthiUiState = normalizeUiState(uiState);
+  if (!els.saarthiStatus) {
+    return;
+  }
+  setUiStateMessage(els.saarthiStatus, state.student.saarthiUiMessage, {
+    state: state.student.saarthiUiState,
+  });
+}
+
+function isSaarthiAttendanceRow(row = {}, courseCode = '') {
+  const codeValue = String(courseCode || row?.course_code || '').trim().toUpperCase();
+  const sourceValue = String(row?.source || '').trim().toLowerCase();
+  return codeValue === 'CON111' || sourceValue.startsWith('saarthi');
+}
+
+function formatAttendanceDetailTimeRange(row = {}, courseCode = '') {
+  if (isSaarthiAttendanceRow(row, courseCode)) {
+    const sourceValue = String(row?.source || '').trim().toLowerCase();
+    if (sourceValue.includes('missed')) {
+      return 'Mandatory Sunday counselling missed';
+    }
+    return 'Weekly 1-hour counselling credit';
+  }
+  return `${formatTime24(row?.start_time)}-${formatTime24(row?.end_time)}`;
+}
+
+function renderSaarthiPanel() {
+  if (!els.studentSaarthiCard) {
+    return;
+  }
+
+  const status = state.student.saarthiStatus && typeof state.student.saarthiStatus === 'object'
+    ? state.student.saarthiStatus
+    : null;
+  const messages = Array.isArray(state.student.saarthiMessages) ? state.student.saarthiMessages : [];
+
+  if (els.saarthiMandatoryDate) {
+    if (status?.mandatory_date) {
+      els.saarthiMandatoryDate.textContent = parseISODateLocal(status.mandatory_date).toLocaleDateString([], {
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+      });
+    } else {
+      els.saarthiMandatoryDate.textContent = '--';
+    }
+  }
+
+  if (els.saarthiWeeklyCredit) {
+    if (status?.session_completed_for_week) {
+      els.saarthiWeeklyCredit.textContent = '1 hour credited';
+    } else if (status?.mandatory_date) {
+      els.saarthiWeeklyCredit.textContent = 'Pending Sunday';
+    } else {
+      els.saarthiWeeklyCredit.textContent = 'Pending';
+    }
+  }
+
+  const transientUiState = normalizeUiState(state.student.saarthiUiState || 'neutral');
+  const preferTransientMessage = transientUiState === 'loading' || transientUiState === 'error';
+  const uiMessage = preferTransientMessage
+    ? (state.student.saarthiUiMessage || status?.status_message || 'Saarthi session will appear here.')
+    : (status?.status_message || state.student.saarthiUiMessage || 'Saarthi session will appear here.');
+  const uiState = preferTransientMessage
+    ? transientUiState
+    : (
+      status
+        ? (status.session_completed_for_week ? 'success' : 'neutral')
+        : transientUiState
+    );
+  setSaarthiStatus(uiMessage, uiState);
+
+  if (els.saarthiHistory) {
+    if (!messages.length) {
+      els.saarthiHistory.innerHTML = '<div class="saarthi-empty">No chat this week yet. Your Sunday check-in here is mandatory for CON111 attendance.</div>';
+    } else {
+      els.saarthiHistory.innerHTML = messages.map((row) => {
+        const senderRole = String(row?.sender_role || '').trim().toLowerCase();
+        const mine = senderRole === 'student';
+        const senderLabel = mine ? 'You' : 'Saarthi';
+        return `
+          <article class="saarthi-message ${mine ? 'mine' : 'theirs'}">
+            <div class="saarthi-message-header">
+              <strong>${escapeHtml(senderLabel)}</strong>
+              <span>${escapeHtml(formatSaarthiDateTime(row?.created_at))}</span>
+            </div>
+            <p class="saarthi-message-text">${escapeHtml(String(row?.message || ''))}</p>
+          </article>
+        `;
+      }).join('');
+      els.saarthiHistory.scrollTop = els.saarthiHistory.scrollHeight;
+    }
+  }
+
+  if (els.saarthiComposeInput) {
+    els.saarthiComposeInput.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
+  }
+  if (els.saarthiSendBtn) {
+    els.saarthiSendBtn.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
+    els.saarthiSendBtn.textContent = state.student.saarthiSending ? 'Sending...' : 'Send to Saarthi';
+  }
+}
+
+async function loadSaarthiStatus({ silent = false } = {}) {
+  if (authState.user?.role !== 'student') {
+    state.student.saarthiStatus = null;
+    state.student.saarthiMessages = [];
+    setSaarthiStatus('Saarthi is available for students only.', 'neutral');
+    renderSaarthiPanel();
+    return null;
+  }
+
+  if (!silent) {
+    setSaarthiStatus('Loading Saarthi session...', 'loading');
+    renderSaarthiPanel();
+  }
+
+  const payload = await api('/saarthi/status');
+  state.student.saarthiStatus = payload && typeof payload === 'object' ? payload : null;
+  state.student.saarthiMessages = Array.isArray(payload?.messages) ? payload.messages : [];
+  setSaarthiStatus(
+    payload?.status_message || 'Saarthi session loaded.',
+    payload?.session_completed_for_week ? 'success' : 'neutral',
+  );
+  renderSaarthiPanel();
+  return payload;
+}
+
+async function sendSaarthiMessage() {
+  if (authState.user?.role !== 'student') {
+    throw new Error('Only students can use Saarthi.');
+  }
+
+  const message = String(els.saarthiComposeInput?.value || '').trim();
+  if (!message) {
+    throw new Error('Type your message to Saarthi first.');
+  }
+
+  state.student.saarthiSending = true;
+  setSaarthiStatus('Sending message to Saarthi...', 'loading');
+  renderSaarthiPanel();
+
+  try {
+    const payload = await api('/saarthi/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    });
+    const session = payload && typeof payload === 'object' ? payload.session || null : null;
+    if (els.saarthiComposeInput) {
+      els.saarthiComposeInput.value = '';
+    }
+    state.student.saarthiStatus = session;
+    state.student.saarthiMessages = Array.isArray(session?.messages) ? session.messages : [];
+    setSaarthiStatus(
+      session?.status_message || 'Saarthi session updated.',
+      payload?.attendance_awarded_now ? 'success' : 'neutral',
+    );
+    renderSaarthiPanel();
+
+    if (payload?.attendance_awarded_now) {
+      try {
+        await loadStudentAttendanceInsights();
+      } catch (error) {
+        log(error.message || 'Attendance ledger refresh failed after Saarthi credit was applied.');
+      }
+    }
+    return payload;
+  } catch (error) {
+    setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
+    renderSaarthiPanel();
+    throw error;
+  } finally {
+    state.student.saarthiSending = false;
+    renderSaarthiPanel();
+  }
+}
+
 function renderStudentAttendanceAggregate() {
   const aggregate = state.student.attendanceAggregate;
   if (!aggregate) {
@@ -11063,8 +15422,418 @@ function renderStudentAttendanceAggregate() {
   }
 }
 
+function recoveryRiskTone(level) {
+  const value = String(level || '').trim().toLowerCase();
+  if (value === 'critical') {
+    return 'critical';
+  }
+  if (value === 'high') {
+    return 'high';
+  }
+  return 'watch';
+}
+
+function recoveryPlanStatusTone(status) {
+  const value = String(status || '').trim().toLowerCase();
+  if (value === 'recovered') {
+    return 'completed';
+  }
+  if (value === 'escalated') {
+    return 'critical';
+  }
+  return 'pending';
+}
+
+function recoveryActionTone(status) {
+  const value = String(status || '').trim().toLowerCase();
+  if (value === 'completed') {
+    return 'completed';
+  }
+  if (value === 'acknowledged') {
+    return 'acknowledged';
+  }
+  return 'pending';
+}
+
+function isVisibleRecoveryAction(action) {
+  const status = String(action?.status || '').trim().toLowerCase();
+  return status !== 'cancelled' && status !== 'skipped';
+}
+
+function formatRecoveryDateTime(value) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return 'No due date';
+  }
+  const stamp = Date.parse(text);
+  if (Number.isNaN(stamp)) {
+    return text;
+  }
+  return new Date(stamp).toLocaleString();
+}
+
+function buildRecoveryActionButtons(action) {
+  const status = String(action?.status || '').trim().toLowerCase();
+  if (status === 'completed' || status === 'cancelled' || status === 'skipped') {
+    return '';
+  }
+  if (status === 'acknowledged') {
+    return `
+      <div class="recovery-action-buttons">
+        <button class="btn btn-primary" type="button" data-recovery-action-command="complete" data-recovery-action-id="${Number(action.id || 0)}">
+          Mark Complete
+        </button>
+      </div>
+    `;
+  }
+  return `
+    <div class="recovery-action-buttons">
+      <button class="btn" type="button" data-recovery-action-command="acknowledge" data-recovery-action-id="${Number(action.id || 0)}">
+        Acknowledge
+      </button>
+      <button class="btn btn-primary" type="button" data-recovery-action-command="complete" data-recovery-action-id="${Number(action.id || 0)}">
+        Mark Complete
+      </button>
+    </div>
+  `;
+}
+
+function renderStudentRecoveryPlans() {
+  if (!els.studentRecoveryPlans) {
+    return;
+  }
+  const plans = Array.isArray(state.student.recoveryPlans) ? state.student.recoveryPlans : [];
+  if (!plans.length) {
+    els.studentRecoveryPlans.innerHTML = '<div class="recovery-empty">No active recovery plan. If attendance risk builds up, guided interventions will appear here automatically.</div>';
+    return;
+  }
+
+  els.studentRecoveryPlans.innerHTML = plans.map((plan) => {
+    const riskTone = recoveryRiskTone(plan.risk_level);
+    const visibleActions = Array.isArray(plan.actions)
+      ? plan.actions.filter((action) => isVisibleRecoveryAction(action))
+      : [];
+    const studentActions = visibleActions
+      ? visibleActions.filter((action) => String(action?.recipient_role || '').trim().toLowerCase() === 'student')
+      : [];
+    const supportSignals = visibleActions.filter((action) => String(action?.recipient_role || '').trim().toLowerCase() !== 'student');
+    const supportText = supportSignals.length
+      ? supportSignals.map((action) => action.title || statusLabel(action.action_type || action.recipient_role || 'support')).join(' | ')
+      : 'Faculty intervention is ready when needed.';
+    const suggestedClass = plan.recommended_makeup_class;
+    const suggestedClassText = suggestedClass
+      ? `${escapeHtml(String(suggestedClass.class_date || ''))} ${escapeHtml(formatTime24(suggestedClass.start_time))}-${escapeHtml(formatTime24(suggestedClass.end_time))} • ${escapeHtml(String(suggestedClass.topic || 'Recovery topic'))}`
+      : 'Not scheduled yet';
+    const riskNote = riskTone === 'watch'
+      ? 'Soft watch active. Follow the suggested slot if useful.'
+      : riskTone === 'high'
+        ? 'Recovery acknowledgement is required.'
+        : 'Critical recovery plan. Admin escalation is active.';
+    const actionMarkup = studentActions.length
+      ? studentActions.map((action) => `
+          <article class="recovery-action-row ${recoveryActionTone(action.status)}">
+            <div class="recovery-action-head">
+              <div>
+                <p class="recovery-action-title">${escapeHtml(action.title || 'Recovery action')}</p>
+                <p class="recovery-action-description">${escapeHtml(action.description || '')}</p>
+              </div>
+              <span class="recovery-plan-risk ${recoveryActionTone(action.status)}">${escapeHtml(statusLabel(action.status || 'pending'))}</span>
+            </div>
+            <div class="recovery-action-meta">
+              <small>Due: ${escapeHtml(formatRecoveryDateTime(action.scheduled_for))}</small>
+              ${action.metadata?.mandatory ? '<small>Required action</small>' : ''}
+              ${action.metadata?.requires_acknowledgement ? '<small>Acknowledgement required</small>' : ''}
+              ${action.metadata?.structured ? '<small>Structured recovery plan</small>' : ''}
+              ${action.outcome_note ? `<small>${escapeHtml(action.outcome_note)}</small>` : ''}
+            </div>
+            ${buildRecoveryActionButtons(action)}
+          </article>
+        `).join('')
+      : '<div class="recovery-empty">No student task is pending right now. Faculty/admin interventions are still tracked for this plan.</div>';
+
+    return `
+      <article class="recovery-plan-card ${riskTone}">
+        <div class="recovery-plan-head">
+          <div>
+            <h4>${escapeHtml(plan.course_code)} - ${escapeHtml(plan.course_title)}</h4>
+            <p>${escapeHtml(plan.summary || '')}</p>
+          </div>
+          <span class="recovery-plan-risk ${riskTone}">${escapeHtml(statusLabel(plan.risk_level || 'watch'))}</span>
+        </div>
+        <p class="recovery-plan-summary">${escapeHtml(riskNote)} Recovery due by ${escapeHtml(formatRecoveryDateTime(plan.recovery_due_at))}. Suggested remedial slot: ${suggestedClassText}.</p>
+        <div class="recovery-plan-metrics">
+          <div class="recovery-metric">
+            <span>Attendance</span>
+            <strong>${Number(plan.attendance_percent || 0).toFixed(1)}%</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Consecutive Absences</span>
+            <strong>${Number(plan.consecutive_absences || 0)}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Missed Remedials</span>
+            <strong>${Number(plan.missed_remedials || 0)}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Support Signals</span>
+            <strong>${escapeHtml(supportText)}</strong>
+          </div>
+        </div>
+        <div class="recovery-actions">${actionMarkup}</div>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderFacultyRecoveryPlans() {
+  if (!els.facultyRecoveryList) {
+    return;
+  }
+  const plans = Array.isArray(state.faculty.recoveryPlans) ? state.faculty.recoveryPlans : [];
+  if (!plans.length) {
+    els.facultyRecoveryList.innerHTML = '<div class="recovery-empty">No active recovery plans for the selected faculty view.</div>';
+    return;
+  }
+
+  els.facultyRecoveryList.innerHTML = plans.map((plan) => {
+    const riskTone = recoveryRiskTone(plan.risk_level);
+    const visibleActions = Array.isArray(plan.actions)
+      ? plan.actions.filter((action) => isVisibleRecoveryAction(action))
+      : [];
+    const studentActions = visibleActions
+      .filter((action) => String(action?.recipient_role || '').trim().toLowerCase() === 'student');
+    const nextAction = studentActions.find((action) => {
+      const status = String(action?.status || '').trim().toLowerCase();
+      return status !== 'completed';
+    }) || studentActions[0] || null;
+    return `
+      <article class="recovery-plan-card ${riskTone}">
+        <div class="recovery-plan-head">
+          <div>
+            <h4>${escapeHtml(plan.student_name || 'Student')} • ${escapeHtml(plan.registration_number || 'No reg')}</h4>
+            <p>${escapeHtml(plan.course_code || '')} - ${escapeHtml(plan.course_title || '')} | Section ${escapeHtml(plan.section || '--')}</p>
+          </div>
+          <span class="recovery-plan-risk ${riskTone}">${escapeHtml(statusLabel(plan.risk_level || 'watch'))}</span>
+        </div>
+        <p class="recovery-plan-summary">${escapeHtml(plan.summary || '')}</p>
+        <div class="recovery-plan-metrics">
+          <div class="recovery-metric">
+            <span>Attendance</span>
+            <strong>${Number(plan.attendance_percent || 0).toFixed(1)}%</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Consecutive Absences</span>
+            <strong>${Number(plan.consecutive_absences || 0)}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Missed Remedials</span>
+            <strong>${Number(plan.missed_remedials || 0)}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Next Student Action</span>
+            <strong>${escapeHtml(nextAction?.title || 'Monitor current plan')}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Recovery Due</span>
+            <strong>${escapeHtml(formatRecoveryDateTime(plan.recovery_due_at))}</strong>
+          </div>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function summarizeAdminRecoveryPlans(plans = []) {
+  const summary = {
+    watch: 0,
+    high: 0,
+    critical: 0,
+    escalated: 0,
+    overdue: 0,
+    acknowledgementPending: 0,
+  };
+  const nowMs = Date.now();
+  for (const plan of plans) {
+    const risk = String(plan?.risk_level || '').trim().toLowerCase();
+    if (risk === 'critical') {
+      summary.critical += 1;
+    } else if (risk === 'high') {
+      summary.high += 1;
+    } else {
+      summary.watch += 1;
+    }
+    if (String(plan?.status || '').trim().toLowerCase() === 'escalated') {
+      summary.escalated += 1;
+    }
+    const dueStamp = Date.parse(String(plan?.recovery_due_at || '').trim());
+    if (Number.isFinite(dueStamp) && dueStamp < nowMs && String(plan?.status || '').trim().toLowerCase() !== 'recovered') {
+      summary.overdue += 1;
+    }
+    const actions = Array.isArray(plan?.actions) ? plan.actions : [];
+    if (actions.some((action) => {
+      const status = String(action?.status || '').trim().toLowerCase();
+      return status === 'pending' && Boolean(action?.metadata?.requires_acknowledgement);
+    })) {
+      summary.acknowledgementPending += 1;
+    }
+  }
+  return summary;
+}
+
+function renderAdminRecoveryPlans() {
+  if (!els.adminRecoveryList) {
+    return;
+  }
+  const plans = Array.isArray(state.admin?.recoveryPlans) ? state.admin.recoveryPlans : [];
+  const includeResolved = Boolean(state.admin?.recoveryIncludeResolved);
+  const counts = summarizeAdminRecoveryPlans(plans);
+
+  if (els.adminRecoverySummary) {
+    els.adminRecoverySummary.innerHTML = `
+      <div class="admin-recovery-stat">
+        <span>Watch</span>
+        <strong>${counts.watch}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>High Risk</span>
+        <strong>${counts.high}</strong>
+      </div>
+      <div class="admin-recovery-stat critical">
+        <span>Critical</span>
+        <strong>${counts.critical}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>Escalated</span>
+        <strong>${counts.escalated}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>Overdue</span>
+        <strong>${counts.overdue}</strong>
+      </div>
+      <div class="admin-recovery-stat">
+        <span>Ack Pending</span>
+        <strong>${counts.acknowledgementPending}</strong>
+      </div>
+    `;
+  }
+
+  if (!plans.length) {
+    els.adminRecoveryList.innerHTML = `<div class="recovery-empty">${includeResolved ? 'No recovery plans match the current filter.' : 'No active recovery plan is currently open. The autopilot will surface watch, high, and critical students here.'}</div>`;
+    return;
+  }
+
+  els.adminRecoveryList.innerHTML = plans.map((plan) => {
+    const riskTone = recoveryRiskTone(plan.risk_level);
+    const statusTone = recoveryPlanStatusTone(plan.status);
+    const visibleActions = Array.isArray(plan.actions)
+      ? plan.actions.filter((action) => isVisibleRecoveryAction(action))
+      : [];
+    const studentAction = visibleActions.find((action) => {
+      const role = String(action?.recipient_role || '').trim().toLowerCase();
+      const status = String(action?.status || '').trim().toLowerCase();
+      return role === 'student' && status !== 'completed';
+    }) || visibleActions.find((action) => String(action?.recipient_role || '').trim().toLowerCase() === 'student') || null;
+    const supportSignals = visibleActions
+      .filter((action) => String(action?.recipient_role || '').trim().toLowerCase() !== 'student')
+      .map((action) => action.title || statusLabel(action.action_type || action.recipient_role || 'support'));
+    const suggestedClass = plan.recommended_makeup_class;
+    const suggestedClassText = suggestedClass
+      ? `${escapeHtml(String(suggestedClass.class_date || ''))} ${escapeHtml(formatTime24(suggestedClass.start_time))}-${escapeHtml(formatTime24(suggestedClass.end_time))}`
+      : 'Not scheduled';
+    const dueStamp = Date.parse(String(plan.recovery_due_at || '').trim());
+    const isOverdue = Number.isFinite(dueStamp)
+      && dueStamp < Date.now()
+      && String(plan.status || '').trim().toLowerCase() !== 'recovered';
+    const rmsEscalated = String(plan.status || '').trim().toLowerCase() === 'escalated';
+    const supportSummary = supportSignals.length
+      ? supportSignals.slice(0, 3).map((label) => escapeHtml(String(label))).join(' | ')
+      : 'No support action logged yet.';
+    const parentPolicyText = plan.parent_alert_allowed
+      ? 'Parent/sponsor alert permitted by policy.'
+      : 'Parent/sponsor alert blocked by policy.';
+
+    return `
+      <article class="recovery-plan-card ${riskTone}">
+        <div class="recovery-plan-head">
+          <div>
+            <h4>${escapeHtml(plan.student_name || 'Student')} • ${escapeHtml(plan.registration_number || 'No reg')}</h4>
+            <p>${escapeHtml(plan.course_code || '')} - ${escapeHtml(plan.course_title || '')} | Section ${escapeHtml(plan.section || '--')} | Faculty ${escapeHtml(plan.faculty_name || '--')}</p>
+          </div>
+          <div class="recovery-plan-chip-row">
+            <span class="recovery-plan-risk ${riskTone}">${escapeHtml(statusLabel(plan.risk_level || 'watch'))}</span>
+            <span class="recovery-plan-risk ${statusTone}">${escapeHtml(statusLabel(plan.status || 'active'))}</span>
+          </div>
+        </div>
+        <p class="recovery-plan-summary">${escapeHtml(plan.summary || '')}</p>
+        <div class="recovery-plan-metrics">
+          <div class="recovery-metric">
+            <span>Attendance</span>
+            <strong>${Number(plan.attendance_percent || 0).toFixed(1)}%</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Due By</span>
+            <strong>${escapeHtml(formatRecoveryDateTime(plan.recovery_due_at))}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Next Student Action</span>
+            <strong>${escapeHtml(studentAction?.title || 'Monitoring only')}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Support Signals</span>
+            <strong>${supportSummary}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Suggested Remedial</span>
+            <strong>${suggestedClassText}</strong>
+          </div>
+          <div class="recovery-metric">
+            <span>Policy Gate</span>
+            <strong>${escapeHtml(parentPolicyText)}</strong>
+          </div>
+        </div>
+        <div class="recovery-action-row ${isOverdue ? 'pending' : recoveryActionTone(studentAction?.status || 'pending')}">
+          <div class="recovery-action-head">
+            <div>
+              <p class="recovery-action-title">${escapeHtml(isOverdue ? 'Recovery deadline breached' : 'Operator next step')}</p>
+              <p class="recovery-action-description">${escapeHtml(isOverdue ? 'This plan is overdue and should be reviewed immediately. Recompute the plan, verify attendance drift, and move the case through RMS if the student remains off-track.' : (studentAction?.description || 'Use recompute if attendance changed outside the normal flow, or open RMS for escalated plans.'))}</p>
+            </div>
+            <span class="recovery-plan-risk ${isOverdue ? 'high' : recoveryPlanStatusTone(plan.status)}">${escapeHtml(isOverdue ? 'Overdue' : statusLabel(plan.status || 'active'))}</span>
+          </div>
+          <div class="recovery-action-meta">
+            <small>Consecutive absences: ${Number(plan.consecutive_absences || 0)}</small>
+            <small>Missed remedials: ${Number(plan.missed_remedials || 0)}</small>
+            ${studentAction?.metadata?.requires_acknowledgement ? '<small>Student acknowledgement still required.</small>' : ''}
+            ${rmsEscalated ? '<small>RMS escalation already active.</small>' : ''}
+          </div>
+          <div class="recovery-action-buttons">
+            <button class="btn" type="button" data-admin-recovery-command="recompute-plan" data-admin-recovery-student-id="${Number(plan.student_id || 0)}" data-admin-recovery-course-id="${Number(plan.course_id || 0)}">
+              Recompute
+            </button>
+            ${rmsEscalated ? `
+              <button class="btn btn-primary" type="button" data-admin-recovery-command="open-rms" data-admin-recovery-plan-id="${Number(plan.id || 0)}">
+                Open RMS
+              </button>
+            ` : ''}
+          </div>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
 function attendanceCourseKey(courseCode, courseTitle) {
   return `${String(courseCode || '').trim().toUpperCase()}::${String(courseTitle || '').trim().toUpperCase()}`;
+}
+
+function attendanceRectificationRowKey({ courseId = 0, scheduleId = 0, classDate = '', startTime = '' }) {
+  const schedule = Number(scheduleId || 0);
+  const course = Number(courseId || 0);
+  const datePart = String(classDate || '').trim();
+  const startPart = String(startTime || '').trim();
+  if (schedule > 0) {
+    return `S:${schedule}|D:${datePart}`;
+  }
+  return `C:${course}|D:${datePart}|T:${startPart}`;
 }
 
 function sortAttendanceHistoryRows(rows = []) {
@@ -11095,11 +15864,131 @@ function indexAttendanceHistoryByCourse(rows = []) {
   return grouped;
 }
 
+function indexAttendanceRectificationRequests(rows = []) {
+  const grouped = {};
+  for (const row of rows) {
+    const key = attendanceRectificationRowKey({
+      courseId: row.course_id,
+      scheduleId: row.schedule_id,
+      classDate: row.class_date,
+      startTime: row.class_start_time,
+    });
+    const previous = grouped[key];
+    if (!previous) {
+      grouped[key] = row;
+      continue;
+    }
+    const prevTs = Date.parse(previous.requested_at || '') || 0;
+    const nextTs = Date.parse(row.requested_at || '') || 0;
+    if (nextTs >= prevTs) {
+      grouped[key] = row;
+    }
+  }
+  return grouped;
+}
+
 function closeAttendanceDetailsModal() {
   state.student.attendanceDetailsCourseKey = '';
   if (els.attendanceDetailsModal) {
     els.attendanceDetailsModal.classList.add('hidden');
   }
+  closeAttendanceRectificationModal();
+}
+
+function setAttendanceRectificationProofPreview(dataUrl = '') {
+  state.student.attendanceRectificationProofDataUrl = String(dataUrl || '');
+  if (!els.attendanceRectificationProofPreview) {
+    return;
+  }
+  if (state.student.attendanceRectificationProofDataUrl) {
+    els.attendanceRectificationProofPreview.src = state.student.attendanceRectificationProofDataUrl;
+    els.attendanceRectificationProofPreview.classList.remove('hidden');
+  } else {
+    els.attendanceRectificationProofPreview.removeAttribute('src');
+    els.attendanceRectificationProofPreview.classList.add('hidden');
+  }
+}
+
+function closeAttendanceRectificationModal() {
+  state.student.attendanceRectificationTarget = null;
+  state.student.attendanceRectificationProofDataUrl = '';
+  if (els.attendanceRectificationProofNote) {
+    els.attendanceRectificationProofNote.value = '';
+  }
+  if (els.attendanceRectificationProofPhotoInput) {
+    els.attendanceRectificationProofPhotoInput.value = '';
+  }
+  if (els.attendanceRectificationStatus) {
+    els.attendanceRectificationStatus.textContent = '';
+  }
+  setAttendanceRectificationProofPreview('');
+  if (els.attendanceRectificationModal) {
+    els.attendanceRectificationModal.classList.add('hidden');
+  }
+}
+
+function openAttendanceRectificationModal({ courseId, scheduleId, classDate, startTime, endTime, courseCode, courseTitle } = {}) {
+  if (!els.attendanceRectificationModal || !els.attendanceRectificationContext) {
+    return;
+  }
+  const key = attendanceRectificationRowKey({ courseId, scheduleId, classDate, startTime });
+  const existing = state.student.attendanceRectificationByKey?.[key] || null;
+  state.student.attendanceRectificationTarget = {
+    courseId: Number(courseId || 0),
+    scheduleId: Number(scheduleId || 0),
+    classDate: String(classDate || ''),
+    startTime: String(startTime || ''),
+  };
+
+  const classDateLabel = parseISODateLocal(classDate).toLocaleDateString('en-GB');
+  const classTimeLabel = `${formatTime24(startTime)}-${formatTime24(endTime)}`;
+  els.attendanceRectificationContext.textContent =
+    `${courseCode} - ${courseTitle} | ${classDateLabel} ${classTimeLabel}`;
+
+  if (els.attendanceRectificationProofNote) {
+    els.attendanceRectificationProofNote.value = existing?.proof_note || '';
+  }
+  if (els.attendanceRectificationStatus) {
+    const reviewNote = existing?.review_note ? ` | Faculty note: ${existing.review_note}` : '';
+    els.attendanceRectificationStatus.textContent = existing
+      ? `Current status: ${statusLabel(existing.status)}${reviewNote}`
+      : '';
+  }
+  setAttendanceRectificationProofPreview(existing?.proof_photo_data_url || '');
+  if (els.attendanceRectificationProofPhotoInput) {
+    els.attendanceRectificationProofPhotoInput.value = '';
+  }
+  els.attendanceRectificationModal.classList.remove('hidden');
+}
+
+async function submitStudentRectificationRequest() {
+  const target = state.student.attendanceRectificationTarget;
+  if (!target) {
+    throw new Error('Select a class row first.');
+  }
+
+  const proofNote = String(els.attendanceRectificationProofNote?.value || '').trim();
+  if (proofNote.length < 10) {
+    throw new Error('Please provide clear proof details (minimum 10 characters).');
+  }
+
+  await api('/attendance/student/rectification-requests', {
+    method: 'POST',
+    body: JSON.stringify({
+      course_id: target.courseId,
+      class_date: target.classDate,
+      start_time: target.startTime || null,
+      proof_note: proofNote,
+      proof_photo_data_url: state.student.attendanceRectificationProofDataUrl || null,
+    }),
+  });
+
+  log('Attendance rectification request submitted.');
+  await loadStudentAttendanceInsights();
+  if (state.student.attendanceDetailsCourseKey) {
+    renderAttendanceDetailsModal(state.student.attendanceDetailsCourseKey);
+  }
+  closeAttendanceRectificationModal();
 }
 
 function renderAttendanceDetailsModal(courseKey) {
@@ -11130,21 +16019,57 @@ function renderAttendanceDetailsModal(courseKey) {
   if (!records.length) {
     els.attendanceDetailsList.innerHTML = '<div class="list-item">No class attendance records for this subject yet.</div>';
   } else {
+    const rectificationByKey = state.student.attendanceRectificationByKey || {};
     const rowsMarkup = records
       .map((row) => {
         const statusRaw = String(row.status || '').toLowerCase();
         const isPresent = statusRaw === 'present';
-        const statusClass = isPresent ? 'present' : 'absent';
-        const statusLabelText = isPresent ? 'Present' : 'Absent';
+        const rowKey = attendanceRectificationRowKey({
+          courseId: selected.course_id,
+          scheduleId: row.schedule_id,
+          classDate: row.class_date,
+          startTime: row.start_time,
+        });
+        const rectification = rectificationByKey[rowKey] || null;
+        const rectificationStatus = String(rectification?.status || '').toLowerCase();
+        let statusClass = isPresent ? 'present' : 'absent';
+        let statusLabelText = isPresent ? 'Present' : 'Absent';
+        if (!isPresent && rectificationStatus === 'pending') {
+          statusClass = 'pending';
+          statusLabelText = 'Pending';
+        } else if (!isPresent && rectificationStatus === 'approved') {
+          statusClass = 'present';
+          statusLabelText = 'Approved';
+        } else if (!isPresent && rectificationStatus === 'rejected') {
+          statusClass = 'absent';
+          statusLabelText = 'Rejected';
+        }
         const classDate = parseISODateLocal(row.class_date).toLocaleDateString('en-GB');
-        const timeRange = `${formatTime24(row.start_time)}-${formatTime24(row.end_time)}`;
+        const timeRange = formatAttendanceDetailTimeRange(row, selected.course_code);
+        const canRequest = !isPresent && rectificationStatus !== 'approved' && !isSaarthiAttendanceRow(row, selected.course_code);
+        const requestLabel = rectificationStatus === 'rejected' ? 'Resubmit Request' : 'Request Rectification';
+        const actionMarkup = canRequest
+          ? `<button class="btn attendance-detail-proof-btn" type="button"
+              data-open-rectification="1"
+              data-rectification-course-id="${Number(selected.course_id || 0)}"
+              data-rectification-course-code="${escapeHtml(selected.course_code)}"
+              data-rectification-course-title="${escapeHtml(selected.course_title)}"
+              data-rectification-schedule-id="${Number(row.schedule_id || 0)}"
+              data-rectification-class-date="${escapeHtml(row.class_date)}"
+              data-rectification-start-time="${escapeHtml(row.start_time)}"
+              data-rectification-end-time="${escapeHtml(row.end_time)}"
+            >${requestLabel}</button>`
+          : '';
         return `
           <article class="attendance-detail-row ${statusClass}">
             <div class="attendance-detail-main">
               <strong>${escapeHtml(classDate)}</strong>
               <small>${escapeHtml(timeRange)}</small>
             </div>
-            <span class="attendance-detail-status ${statusClass}">${statusLabelText}</span>
+            <div class="attendance-detail-tail">
+              <span class="attendance-detail-status ${statusClass}">${statusLabelText}</span>
+              ${actionMarkup}
+            </div>
           </article>
         `;
       })
@@ -11161,15 +16086,77 @@ async function loadStudentAttendanceInsights() {
     return;
   }
 
-  const [aggregate, history] = await Promise.all([
+  const [aggregateRes, historyRes, rectificationRes, recoveryRes] = await Promise.allSettled([
     api('/attendance/student/attendance-aggregate'),
     api('/attendance/student/attendance-history?limit=80'),
+    api('/attendance/student/rectification-requests?limit=200'),
+    api('/attendance/student/recovery-plans?limit=12'),
   ]);
 
-  state.student.attendanceAggregate = aggregate;
-  state.student.attendanceHistory = history.records || [];
-  state.student.attendanceHistoryByCourse = indexAttendanceHistoryByCourse(state.student.attendanceHistory);
+  let primaryError = null;
+  if (aggregateRes.status === 'fulfilled') {
+    state.student.attendanceAggregate = aggregateRes.value;
+  } else {
+    primaryError = aggregateRes.reason || primaryError;
+  }
+
+  if (historyRes.status === 'fulfilled') {
+    const history = historyRes.value && typeof historyRes.value === 'object' ? historyRes.value : {};
+    state.student.attendanceHistory = Array.isArray(history.records) ? history.records : [];
+    state.student.attendanceHistoryByCourse = indexAttendanceHistoryByCourse(state.student.attendanceHistory);
+  } else {
+    primaryError = historyRes.reason || primaryError;
+  }
+
+  if (rectificationRes.status === 'fulfilled') {
+    const rectification = rectificationRes.value && typeof rectificationRes.value === 'object'
+      ? rectificationRes.value
+      : {};
+    state.student.attendanceRectificationRequests = Array.isArray(rectification.requests)
+      ? rectification.requests
+      : [];
+    state.student.attendanceRectificationByKey = indexAttendanceRectificationRequests(
+      state.student.attendanceRectificationRequests
+    );
+  } else {
+    log(rectificationRes.reason?.message || 'Rectification feed refresh failed; attendance ledger still updated.');
+  }
+
+  if (recoveryRes.status === 'fulfilled') {
+    const recovery = recoveryRes.value && typeof recoveryRes.value === 'object' ? recoveryRes.value : {};
+    state.student.recoveryPlans = Array.isArray(recovery.plans) ? recovery.plans : [];
+  } else {
+    state.student.recoveryPlans = [];
+    primaryError = recoveryRes.reason || primaryError;
+  }
+
   renderStudentAttendanceAggregate();
+  renderStudentRecoveryPlans();
+  if (primaryError) {
+    throw primaryError;
+  }
+}
+
+async function submitStudentRecoveryAction(actionId, command) {
+  const normalizedId = Number(actionId || 0);
+  const normalizedCommand = String(command || '').trim().toLowerCase();
+  if (!normalizedId) {
+    throw new Error('Recovery action is invalid.');
+  }
+  if (!['acknowledge', 'complete'].includes(normalizedCommand)) {
+    throw new Error('Unsupported recovery action.');
+  }
+
+  const endpoint = normalizedCommand === 'acknowledge'
+    ? `/attendance/student/recovery-actions/${normalizedId}/acknowledge`
+    : `/attendance/student/recovery-actions/${normalizedId}/complete`;
+
+  await api(endpoint, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  log(`Recovery action ${normalizedCommand}d.`);
+  await loadStudentAttendanceInsights();
 }
 
 function setStudentResult(text, options = {}) {
@@ -11527,7 +16514,7 @@ async function markStudentAttendance(selfieDataUrl, selfieFrames = []) {
 }
 
 async function loadFacultySchedules() {
-  if (!authState.user || authState.user.role !== 'faculty') {
+  if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     return;
   }
 
@@ -11566,6 +16553,7 @@ function renderFacultyDashboard(data) {
     animateNumber(els.facultyPending, 0);
     animateNumber(els.facultyAbsent, 0);
     els.facultySubmissionsBody.innerHTML = '<tr><td colspan="6">No submission data.</td></tr>';
+    renderFacultyRectificationQueue([]);
     return;
   }
 
@@ -11600,6 +16588,86 @@ function renderFacultyDashboard(data) {
   }
 }
 
+function renderFacultyRectificationQueue(rows = []) {
+  if (!els.facultyRectificationBody) {
+    return;
+  }
+  els.facultyRectificationBody.innerHTML = '';
+  if (!rows.length) {
+    els.facultyRectificationBody.innerHTML = '<tr><td colspan="6">No rectification requests for this class date.</td></tr>';
+    return;
+  }
+
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    const statusRaw = String(row.status || '').toLowerCase();
+    const isPending = statusRaw === 'pending';
+    const classDateText = parseISODateLocal(row.class_date).toLocaleDateString('en-GB');
+    const classTimeText = `${formatTime24(row.class_start_time)}-${formatTime24(row.class_end_time)}`;
+    const requestedAtText = row.requested_at
+      ? new Date(row.requested_at).toLocaleString()
+      : '-';
+    const proofSummary = String(row.proof_note || '').trim();
+    const proofText = proofSummary.length > 160 ? `${proofSummary.slice(0, 157)}...` : proofSummary;
+    const reviewNote = String(row.review_note || '').trim();
+    const attachedImage = row.proof_photo_data_url
+      ? `<img class="rectification-proof-thumb" src="${escapeHtml(row.proof_photo_data_url)}" alt="Proof">`
+      : '<small>No image proof</small>';
+    const actionMarkup = isPending
+      ? `
+          <div class="rectification-action-wrap">
+            <input type="text" data-rectification-note="${row.id}" placeholder="Optional note">
+            <button type="button" class="btn btn-primary" data-rectification-action="approve" data-rectification-id="${row.id}">Approve</button>
+            <button type="button" class="btn" data-rectification-action="reject" data-rectification-id="${row.id}">Reject</button>
+          </div>
+        `
+      : `<small>${escapeHtml(reviewNote || 'Reviewed')}</small>`;
+
+    tr.innerHTML = `
+      <td>${escapeHtml(row.student_name)}</td>
+      <td>${escapeHtml(classDateText)}<br><small>${escapeHtml(classTimeText)}</small></td>
+      <td><div class="rectification-proof-inline"><p>${escapeHtml(proofText || '-')}</p>${attachedImage}</div></td>
+      <td>${escapeHtml(requestedAtText)}</td>
+      <td><span class="badge ${statusRaw || 'pending'}">${escapeHtml(statusLabel(statusRaw || 'pending'))}</span></td>
+      <td>${actionMarkup}</td>
+    `;
+    els.facultyRectificationBody.appendChild(tr);
+  }
+}
+
+async function loadFacultyRectificationQueue() {
+  if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
+    return;
+  }
+  const scheduleId = Number(els.facultyScheduleSelect.value);
+  const classDate = els.facultyClassDate.value;
+  if (!scheduleId || !classDate) {
+    renderFacultyRectificationQueue([]);
+    return;
+  }
+
+  const payload = await api(
+    `/attendance/faculty/rectification-requests?schedule_id=${scheduleId}&class_date=${classDate}&include_resolved=true`
+  );
+  state.faculty.rectificationRequests = payload.requests || [];
+  renderFacultyRectificationQueue(state.faculty.rectificationRequests);
+}
+
+async function submitFacultyRectificationReview(requestId, action) {
+  const noteInput = document.querySelector(`input[data-rectification-note="${Number(requestId || 0)}"]`);
+  const note = noteInput instanceof HTMLInputElement ? noteInput.value.trim() : '';
+  const result = await api('/attendance/faculty/rectification-review', {
+    method: 'POST',
+    body: JSON.stringify({
+      request_id: Number(requestId),
+      action,
+      note: note || null,
+    }),
+  });
+  log(`Rectification reviewed: approved ${result.approved}, rejected ${result.rejected}`);
+  await refreshFacultyDashboard();
+}
+
 function syncReviewSelectionUI() {
   const pendingBoxes = [...els.facultySubmissionsBody.querySelectorAll('input.submission-check')];
   if (!pendingBoxes.length) {
@@ -11614,7 +16682,7 @@ function syncReviewSelectionUI() {
 }
 
 async function refreshFacultyDashboard() {
-  if (!authState.user || authState.user.role !== 'faculty') {
+  if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     return;
   }
 
@@ -11628,8 +16696,25 @@ async function refreshFacultyDashboard() {
   els.facultyClassDate.value = classDate;
   state.faculty.classDate = classDate;
 
-  const data = await api(`/attendance/faculty/dashboard?schedule_id=${scheduleId}&class_date=${classDate}`);
+  const [dashboardRes, recoveryRes] = await Promise.allSettled([
+    api(`/attendance/faculty/dashboard?schedule_id=${scheduleId}&class_date=${classDate}`),
+    api(`/attendance/faculty/recovery-plans?schedule_id=${scheduleId}&limit=40`),
+  ]);
+
+  if (dashboardRes.status !== 'fulfilled') {
+    throw dashboardRes.reason;
+  }
+
+  const data = dashboardRes.value;
   state.faculty.dashboard = data;
+  let recoveryLoadError = '';
+  if (recoveryRes.status === 'fulfilled') {
+    const recovery = recoveryRes.value && typeof recoveryRes.value === 'object' ? recoveryRes.value : {};
+    state.faculty.recoveryPlans = Array.isArray(recovery.plans) ? recovery.plans : [];
+  } else {
+    state.faculty.recoveryPlans = [];
+    recoveryLoadError = recoveryRes.reason?.message || 'Recovery radar failed to load.';
+  }
 
   const validPendingIds = new Set(
     (data.submissions || [])
@@ -11641,7 +16726,12 @@ async function refreshFacultyDashboard() {
   );
 
   renderFacultyDashboard(data);
+  renderFacultyRecoveryPlans();
+  if (recoveryLoadError && els.facultyRecoveryList) {
+    els.facultyRecoveryList.innerHTML = `<div class="recovery-empty">${escapeHtml(recoveryLoadError)}</div>`;
+  }
   syncReviewSelectionUI();
+  await loadFacultyRectificationQueue();
   await loadClassroomAnalysisHistory();
 }
 
@@ -11721,7 +16811,7 @@ async function analyzeClassroomWithAI(photoDataUrl) {
 }
 
 async function loadClassroomAnalysisHistory() {
-  if (!authState.user || authState.user.role !== 'faculty') {
+  if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     return;
   }
 
@@ -12000,6 +17090,27 @@ async function captureBurstFramesFromCamera(frameCount = null, intervalMs = 120,
   return captures;
 }
 
+function resolveVideoCaptureDimensions(videoElement, {
+  maxWidth = 640,
+  fallbackWidth = 1280,
+  fallbackHeight = 720,
+  minHeight = 240,
+} = {}) {
+  const sourceWidth = Math.max(1, Number(videoElement?.videoWidth || fallbackWidth));
+  const sourceHeight = Math.max(1, Number(videoElement?.videoHeight || fallbackHeight));
+  if (sourceWidth <= maxWidth) {
+    return {
+      width: sourceWidth,
+      height: Math.max(minHeight, sourceHeight),
+    };
+  }
+  const scale = maxWidth / sourceWidth;
+  return {
+    width: maxWidth,
+    height: Math.max(minHeight, Math.round(sourceHeight * scale)),
+  };
+}
+
 async function startEnrollmentGuidedCapture() {
   if (authState.user?.role !== 'student') {
     throw new Error('Enrollment video is available only for student accounts.');
@@ -12095,8 +17206,12 @@ async function startEnrollmentGuidedCapture() {
   }
 
   try {
-    const width = Math.max(640, els.enrollmentVideo.videoWidth || 1280);
-    const height = Math.max(360, els.enrollmentVideo.videoHeight || 720);
+    const { width, height } = resolveVideoCaptureDimensions(els.enrollmentVideo, {
+      maxWidth: 640,
+      fallbackWidth: 1280,
+      fallbackHeight: 720,
+      minHeight: 360,
+    });
     els.enrollmentCanvas.width = width;
     els.enrollmentCanvas.height = height;
     const ctx = els.enrollmentCanvas.getContext('2d');
@@ -12112,7 +17227,7 @@ async function startEnrollmentGuidedCapture() {
       await sleep(350);
       for (let idx = 0; idx < step.frames; idx += 1) {
         ctx.drawImage(els.enrollmentVideo, 0, 0, width, height);
-        state.student.enrollmentFrames.push(els.enrollmentCanvas.toDataURL('image/jpeg', 0.9));
+        state.student.enrollmentFrames.push(els.enrollmentCanvas.toDataURL('image/jpeg', 0.82));
         capturedCount += 1;
         if (els.enrollmentProgress) {
           const pct = Math.min(100, Math.round((capturedCount / totalTargetFrames) * 100));
@@ -12165,6 +17280,7 @@ async function saveStudentEnrollmentVideo() {
     const response = await api('/attendance/student/enrollment-video', {
       method: 'PUT',
       body: JSON.stringify({ frames_data_urls: state.student.enrollmentFrames }),
+      timeoutMs: 120000,
     });
 
     state.student.hasEnrollmentVideo = Boolean(response.has_enrollment_video);
@@ -12216,6 +17332,47 @@ async function startStudentSelfieFlow() {
     throw new Error('Complete one-time enrollment video before marking attendance.');
   }
   await startLiveAttendanceVerification();
+}
+
+async function startStudentDemoAttendanceFlow(resolvedState = null) {
+  const demoState = resolvedState?.mode === 'demo'
+    ? resolvedState
+    : findStudentDemoAttendanceState();
+  const schedule = demoState?.schedule || null;
+  const scheduleId = Number(schedule?.schedule_id || 0);
+  if (!scheduleId) {
+    throw new Error('Demo attendance is available only during a live regular class hour.');
+  }
+
+  state.student.kpiScheduleId = scheduleId;
+  state.student.selectedScheduleId = scheduleId;
+  setStudentResult('Demo attendance is active. Capture a selfie to simulate marking for this class hour. Nothing will be saved.');
+
+  await openCameraModal({
+    title: 'Demo Attendance Capture',
+    facingMode: 'user',
+    referencePhotoDataUrl: state.student.profilePhotoDataUrl || '',
+    messageOverride: 'Demo mode is active. Capture a selfie to simulate attendance for this class hour only. No data will be saved.',
+    onCapture: async (captured) => {
+      const captures = Array.isArray(captured) ? captured : [captured];
+      const selfieDataUrl = String(captures[0] || '');
+      if (selfieDataUrl) {
+        state.student.selfieDataUrl = selfieDataUrl;
+        if (els.selfiePreview) {
+          els.selfiePreview.src = selfieDataUrl;
+          els.selfiePreview.classList.remove('hidden');
+        }
+      }
+      setStudentResult(
+        [
+          'Status: DEMO VERIFIED',
+          `Message: Demo attendance simulated for ${schedule.course_code} (${formatTime(schedule.start_time)} - ${formatTime(schedule.end_time)}).`,
+          'Persistence: No data was saved to attendance records.',
+        ].join('\n')
+      );
+      log(`Student attendance demo simulated for schedule ${scheduleId}`);
+    },
+  });
 }
 
 async function startClassroomCaptureFlow() {
@@ -12460,7 +17617,7 @@ async function requestOtp() {
       body: JSON.stringify({
         email,
         password,
-        send_to_alternate: Boolean(els.authSendAltOtp?.checked),
+        send_to_alternate: false,
       }),
       skipAuth: true,
     });
@@ -12476,13 +17633,6 @@ async function requestOtp() {
       { tone: 'success', loading: false, closable: true }
     );
     setAuthMessage(`OTP sent. Valid for ${validityMinutes} minutes.`);
-
-    els.otpDebug.classList.add('hidden');
-    els.otpDebug.textContent = '';
-    if (data.otp_debug_code) {
-      els.otpDebug.classList.remove('hidden');
-      els.otpDebug.textContent = `Demo OTP: ${data.otp_debug_code}`;
-    }
 
     log('OTP requested');
   } catch (error) {
@@ -12511,6 +17661,8 @@ async function registerAccount() {
   const password = els.authSignupPassword?.value || '';
   const name = els.authName.value.trim();
   const department = els.authDepartment.value.trim();
+  const registrationNumber = normalizedRegistrationInput(els.authSignupRegistration?.value || '');
+  const facultyIdentifier = normalizedRegistrationInput(els.authSignupFacultyId?.value || '');
   const section = (els.authSignupSection?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const semesterValue = els.authSemester.value.trim();
   const parentEmail = els.authParentEmail.value.trim();
@@ -12527,12 +17679,18 @@ async function registerAccount() {
     if (!email.endsWith('@gmail.com')) {
       throw new Error('Email must end with @gmail.com');
     }
+    if (!registrationNumber) {
+      throw new Error('Registration number is required for student registration.');
+    }
     if (!section) {
       throw new Error('Section is required for student registration.');
     }
     if (!semesterValue) {
       throw new Error('Semester is required for student registration.');
     }
+  }
+  if (role === 'faculty' && !facultyIdentifier) {
+    throw new Error('Faculty identifier is required for faculty registration.');
   }
 
   const payload = {
@@ -12541,6 +17699,8 @@ async function registerAccount() {
     role,
     name,
     department,
+    registration_number: role === 'student' ? registrationNumber : null,
+    faculty_identifier: role === 'faculty' ? facultyIdentifier : null,
     section: role === 'student' ? section : null,
     semester: role === 'student' ? Number(semesterValue) : null,
     parent_email: role === 'student' ? (parentEmail || null) : null,
@@ -12567,11 +17727,15 @@ async function registerAccount() {
   if (els.authSignupPassword) {
     els.authSignupPassword.value = '';
   }
+  if (els.authSignupRegistration) {
+    els.authSignupRegistration.value = '';
+  }
+  if (els.authSignupFacultyId) {
+    els.authSignupFacultyId.value = '';
+  }
   if (els.authSignupSection) {
     els.authSignupSection.value = '';
   }
-  els.otpDebug.classList.add('hidden');
-  els.otpDebug.textContent = '';
   setAuthMode('login');
   els.authPassword.value = '';
   renderPasswordStrengthHint(els.authPasswordStrength, '');
@@ -12586,6 +17750,7 @@ async function verifyOtpAndLogin() {
   }
   const email = (els.authEmail.value.trim() || authState.pendingEmail).toLowerCase();
   const otpCode = els.authOtp.value.trim();
+  const mfaCode = String(els.authMfaCode?.value || '').trim().replace(/\s+/g, '');
 
   if (!email || !otpCode) {
     throw new Error('Email and OTP code are required.');
@@ -12596,18 +17761,38 @@ async function verifyOtpAndLogin() {
   try {
     data = await api('/auth/login/verify-otp', {
       method: 'POST',
-      body: JSON.stringify({ email, otp_code: otpCode }),
+      body: JSON.stringify({
+        email,
+        otp_code: otpCode,
+        mfa_code: mfaCode || undefined,
+      }),
       skipAuth: true,
     });
+  } catch (error) {
+    if (isMfaEnrollmentRequiredMessage(error?.message)) {
+      await maybePromptPrivilegedMfaSetup(error.message);
+    } else if (isMfaCodeRequiredMessage(error?.message)) {
+      setAuthMfaInputVisible(true, 'Enter current authenticator code (or backup code), then verify OTP again.');
+      if (els.authMfaCode) {
+        els.authMfaCode.focus();
+      }
+    }
+    throw error;
   } finally {
     setOtpVerifyInFlight(false);
   }
 
   setSession(data.access_token, data.user);
+  if (els.authMfaCode) {
+    els.authMfaCode.value = '';
+  }
+  const blockedByMfaEnrollment = await maybePromptPrivilegedMfaSetup();
+  if (blockedByMfaEnrollment) {
+    return;
+  }
   setForgotPasswordPanel(false);
   resetForgotPasswordState({ clearFields: true });
   setAuthMessage('Login successful.');
-  els.otpDebug.classList.add('hidden');
   els.authOtp.value = '';
   els.authPassword.value = '';
   renderPasswordStrengthHint(els.authPasswordStrength, '');
@@ -12633,6 +17818,12 @@ async function restoreSession() {
     setActiveModule(hashModule || defaultModuleForRole(user?.role), { updateHash: true });
     renderProfileSecurity();
     closeAuthOverlay();
+    const blockedByMfaEnrollment = await maybePromptPrivilegedMfaSetup();
+    if (blockedByMfaEnrollment) {
+      stopStudentRealtimeTicker();
+      stopModuleRealtimeTicker();
+      return true;
+    }
     if (authState.user?.role === 'student') {
       state.student.viewDate = todayISO();
       if (els.weekStartDate) {
@@ -12649,6 +17840,7 @@ async function restoreSession() {
     }
     startModuleRealtimeTicker();
     startSessionWatchdog();
+    void syncRealtimeEventBus();
     return true;
   } catch (_error) {
     clearSession();
@@ -12829,7 +18021,9 @@ async function refreshAll() {
       () => refreshStudentKpiTimetable({ forceNetwork: true }),
       () => loadStudentTimetable({ forceNetwork: true }),
       () => loadStudentAttendanceInsights(),
+      () => loadSaarthiStatus({ silent: true }),
       () => refreshRemedialMessages(),
+      () => refreshSupportDeskContext({ silent: true, refreshThread: false }),
     ];
 
     for (const step of studentSteps) {
@@ -12858,22 +18052,29 @@ async function refreshAll() {
     return;
   } else {
     const tasks = [];
-    tasks.push(refreshAdminLive({
-      workDate: els.workDate?.value || todayISO(),
-      mode: 'enrollment',
-    }));
-    if (!state.admin?.insights) {
-      tasks.push(refreshAdminInsights({
+    if (role === 'admin') {
+      tasks.push(refreshAdminLive({
         workDate: els.workDate?.value || todayISO(),
         mode: 'enrollment',
       }));
+      if (!state.admin?.insights) {
+        tasks.push(refreshAdminInsights({
+          workDate: els.workDate?.value || todayISO(),
+          mode: 'enrollment',
+        }));
+      }
     }
     tasks.push(refreshAttendanceData());
     tasks.push(refreshDemand());
 
-    if (role === 'faculty') {
-      tasks.push(loadFacultyProfile());
+    if (role === 'faculty' || role === 'admin') {
+      if (role === 'faculty') {
+        tasks.push(loadFacultyProfile());
+      }
       tasks.push(loadFacultySchedules());
+      if (role === 'faculty') {
+        tasks.push(refreshSupportDeskContext({ silent: true, refreshThread: false }));
+      }
     }
 
     const results = await Promise.allSettled(tasks);
@@ -13024,6 +18225,119 @@ function bindEvents() {
     });
   }
 
+  if (els.mfaEnrollBtn) {
+    els.mfaEnrollBtn.addEventListener('click', async () => {
+      try {
+        await enrollMfaSetup();
+      } catch (error) {
+        log(error.message || 'MFA enrollment setup failed');
+      }
+    });
+  }
+
+  if (els.mfaActivateBtn) {
+    els.mfaActivateBtn.addEventListener('click', async () => {
+      try {
+        await activateMfaSetup();
+      } catch (error) {
+        log(error.message || 'MFA activation failed');
+      }
+    });
+  }
+
+  if (els.mfaLogoutBtn) {
+    els.mfaLogoutBtn.addEventListener('click', async () => {
+      try {
+        await logout('Logged out. Login again to continue MFA setup when ready.');
+      } catch (error) {
+        log(error.message || 'Logout failed');
+      }
+    });
+  }
+
+  if (els.mfaHelpOpenBtn) {
+    els.mfaHelpOpenBtn.addEventListener('click', () => {
+      const email = String(authState.user?.email || '').trim().toLowerCase();
+      if (email) {
+        markMfaGuidePromptSeen(email);
+      }
+      setMfaHelpModal(true);
+    });
+  }
+
+  if (els.mfaHelpCloseBtn) {
+    els.mfaHelpCloseBtn.addEventListener('click', () => {
+      setMfaHelpModal(false);
+    });
+  }
+
+  if (els.mfaHelpGotItBtn) {
+    els.mfaHelpGotItBtn.addEventListener('click', () => {
+      setMfaHelpModal(false);
+      if (els.mfaEnrollBtn) {
+        els.mfaEnrollBtn.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  if (els.mfaCopySecretBtn) {
+    els.mfaCopySecretBtn.addEventListener('click', async () => {
+      const value = String(els.mfaSecret?.value || '').trim();
+      if (!value) {
+        setMfaSetupMessage('Generate MFA setup first to copy secret.', true);
+        return;
+      }
+      const copied = await copyTextToClipboard(value);
+      if (!copied) {
+        setMfaSetupMessage('Copy failed. Please paste manually from this field.', true);
+        return;
+      }
+      showMfaCopyButtonFeedback(els.mfaCopySecretBtn);
+      setMfaSetupMessage('Authenticator secret copied. Paste it into Microsoft Authenticator setup key field.', false, 'success');
+    });
+  }
+
+  if (els.mfaCopyUriBtn) {
+    els.mfaCopyUriBtn.addEventListener('click', async () => {
+      const value = String(els.mfaOtpauthUri?.value || '').trim();
+      if (!value) {
+        setMfaSetupMessage('Generate MFA setup first to copy OTPAuth URI.', true);
+        return;
+      }
+      const copied = await copyTextToClipboard(value);
+      if (!copied) {
+        setMfaSetupMessage('Copy failed. Please paste manually from this field.', true);
+        return;
+      }
+      showMfaCopyButtonFeedback(els.mfaCopyUriBtn);
+      setMfaSetupMessage('OTPAuth URI copied. Use it in apps that support URI import.', false, 'success');
+    });
+  }
+
+  if (els.mfaQrConfirm) {
+    els.mfaQrConfirm.addEventListener('change', () => {
+      setMfaActionBusyState();
+    });
+  }
+
+  if (els.mfaTotpCode) {
+    els.mfaTotpCode.addEventListener('input', () => {
+      els.mfaTotpCode.value = String(els.mfaTotpCode.value || '').replace(/\D+/g, '').slice(0, 6);
+      setMfaActionBusyState();
+    });
+    els.mfaTotpCode.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await activateMfaSetup();
+      } catch (error) {
+        log(error.message || 'MFA activation failed');
+      }
+    });
+  }
+
   els.authModeLoginBtn.addEventListener('click', () => {
     setAuthMode('login');
     setForgotPasswordPanel(false);
@@ -13048,6 +18362,14 @@ function bindEvents() {
     els.forgotPasswordPanel.addEventListener('click', (event) => {
       if (event.target === els.forgotPasswordPanel) {
         setForgotPasswordPanel(false);
+      }
+    });
+  }
+
+  if (els.mfaHelpModal) {
+    els.mfaHelpModal.addEventListener('click', (event) => {
+      if (event.target === els.mfaHelpModal) {
+        setMfaHelpModal(false);
       }
     });
   }
@@ -13077,6 +18399,18 @@ function bindEvents() {
     });
   }
 
+  if (els.authSignupRegistration) {
+    els.authSignupRegistration.addEventListener('input', () => {
+      els.authSignupRegistration.value = normalizedRegistrationInput(els.authSignupRegistration.value || '');
+    });
+  }
+
+  if (els.authSignupFacultyId) {
+    els.authSignupFacultyId.addEventListener('input', () => {
+      els.authSignupFacultyId.value = normalizedRegistrationInput(els.authSignupFacultyId.value || '');
+    });
+  }
+
   if (els.forgotRegistrationNumber) {
     els.forgotRegistrationNumber.addEventListener('input', () => {
       const value = normalizedRegistrationInput(els.forgotRegistrationNumber.value || '');
@@ -13101,6 +18435,7 @@ function bindEvents() {
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
+    els.topNavRmsBtn,
     els.topNavRemedialBtn,
   ].filter(Boolean);
   for (const button of topModuleButtons) {
@@ -13191,6 +18526,20 @@ function bindEvents() {
     els.viewProfileBtn.addEventListener('click', () => {
       closeAccountDropdown();
       openProfileModal({ required: requiresRoleProfileSetup() });
+    });
+  }
+
+  if (els.accountMfaSetupBtn) {
+    els.accountMfaSetupBtn.addEventListener('click', async () => {
+      closeAccountDropdown();
+      try {
+        await openMfaSetupFromAccountMenu();
+      } catch (error) {
+        const message = error?.message || 'Unable to open MFA setup right now.';
+        openAuthOverlay(message);
+        setAuthMessage(message, true);
+        log(message);
+      }
     });
   }
 
@@ -13418,7 +18767,7 @@ function bindEvents() {
 
   if (els.foodDemandLiveHotBtn) {
     els.foodDemandLiveHotBtn.addEventListener('click', () => {
-      const hotSlotId = Number(state.food?.demandLive?.pulses?.[0]?.slot_id || 0);
+      const hotSlotId = resolveFoodDemandHotSlotId(getFoodDemandRowsInDisplayOrder());
       if (hotSlotId <= 0) {
         return;
       }
@@ -13612,6 +18961,218 @@ function bindEvents() {
       }
     });
   }
+
+  if (els.verlynToggleBtn) {
+    els.verlynToggleBtn.addEventListener('click', () => {
+      toggleVerlynOpen();
+      if (state.ui.verlynOpen) {
+        setVerlynStatus('Supported prompts only. Every result is evidence-backed and audited.');
+        renderVerlynQuickActions();
+        if (els.verlynOutput) {
+          els.verlynOutput.textContent = getVerlynDefaultOutput();
+        }
+        els.verlynInput?.focus();
+      }
+    });
+  }
+  if (els.verlynMinimizeBtn) {
+    els.verlynMinimizeBtn.addEventListener('click', () => {
+      setVerlynOpen(false);
+    });
+  }
+  if (els.verlynAskBtn) {
+    els.verlynAskBtn.addEventListener('click', () => {
+      void askVerlyn();
+    });
+  }
+  if (els.verlynQuickActions) {
+    els.verlynQuickActions.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const actionButton = target.closest('button[data-verlyn-action]');
+      if (!(actionButton instanceof HTMLButtonElement)) {
+        return;
+      }
+      event.preventDefault();
+      const action = String(actionButton.dataset.verlynAction || '').trim().toLowerCase();
+      try {
+        if (action === 'attendance_blocker') {
+          await runVerlynCopilot({ query_text: "Why can't I mark attendance?" });
+          return;
+        }
+        if (action === 'eligibility_risk') {
+          await runVerlynCopilot({ query_text: 'What do I need to fix before I lose eligibility?' });
+          return;
+        }
+        if (action === 'open_attendance_module') {
+          setActiveModule('attendance');
+          setVerlynStatus('Attendance quick actions loaded.', false, 'neutral');
+          if (els.verlynOutput) {
+            els.verlynOutput.textContent = getVerlynDefaultOutput();
+          }
+          renderVerlynQuickActions();
+          return;
+        }
+        if (action === 'focus_audit_timeline') {
+          focusAdminCopilotAuditTimeline({ refresh: true });
+        }
+      } catch (error) {
+        setVerlynStatus(error?.message || 'Quick action failed.', true, 'error');
+      }
+    });
+    els.verlynQuickActions.addEventListener('submit', async (event) => {
+      const form = event.target;
+      if (!(form instanceof HTMLFormElement)) {
+        return;
+      }
+      const action = String(form.dataset.verlynAction || '').trim().toLowerCase();
+      event.preventDefault();
+      try {
+        if (action === 'flag_reason') {
+          await runVerlynCopilot(buildVerlynFlagPayload());
+          return;
+        }
+        if (action === 'create_remedial_plan') {
+          await runVerlynCopilot(buildVerlynRemedialPayload());
+        }
+      } catch (error) {
+        setVerlynStatus(error?.message || 'Quick action failed.', true, 'error');
+      }
+    });
+    els.verlynQuickActions.addEventListener('change', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      if (target.id === 'verlyn-remedial-mode') {
+        syncVerlynQuickActionFieldState();
+      }
+    });
+    els.verlynQuickActions.addEventListener('input', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+      if (target.id === 'verlyn-flag-registration' || target.id === 'verlyn-remedial-course-code') {
+        target.value = normalizedRegistrationInput(target.value || '');
+      }
+      if (target.id === 'verlyn-remedial-section') {
+        target.value = normalizeRemedialSections(target.value || '').join(', ');
+      }
+    });
+  }
+  if (els.verlynInput) {
+    els.verlynInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      void askVerlyn();
+    });
+  }
+  if (els.verlynSidebarWidget) {
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && state.ui.verlynOpen) {
+        setVerlynOpen(false);
+      }
+    });
+  }
+  window.addEventListener('resize', () => {
+    updateVerlynVisibility();
+  });
+
+  if (els.supportDeskToggleBtn) {
+    els.supportDeskToggleBtn.addEventListener('click', async () => {
+      if (!authState.user) {
+        return;
+      }
+      const role = authState.user.role;
+      if (role !== 'student' && role !== 'faculty') {
+        return;
+      }
+      if (!state.ui.supportDeskOpen) {
+        try {
+          await refreshSupportDeskContext({ silent: true, refreshThread: true });
+        } catch (error) {
+          setSupportDeskStatus(error.message || 'Unable to load realtime messages right now.', true);
+        }
+      }
+      toggleSupportDeskOpen();
+    });
+  }
+  if (els.supportDeskMinimizeBtn) {
+    els.supportDeskMinimizeBtn.addEventListener('click', () => {
+      setSupportDeskOpen(false);
+    });
+  }
+  if (els.supportDeskRecipientSelect) {
+    els.supportDeskRecipientSelect.addEventListener('change', async () => {
+      state.supportDesk.selectedCounterpartyId = Number(els.supportDeskRecipientSelect.value || 0) || null;
+      state.supportDesk.messages = [];
+      renderSupportDeskWidget();
+      try {
+        await refreshSupportDeskThread({ silent: true });
+      } catch (error) {
+        setSupportDeskStatus(error.message || 'Unable to open conversation.', true);
+      }
+    });
+  }
+  if (els.supportDeskCategorySelect) {
+    els.supportDeskCategorySelect.addEventListener('change', async () => {
+      state.supportDesk.selectedCategory = normalizeSupportDeskCategory(els.supportDeskCategorySelect.value);
+      state.supportDesk.messages = [];
+      renderSupportDeskWidget();
+      try {
+        await refreshSupportDeskThread({ silent: true });
+      } catch (error) {
+        setSupportDeskStatus(error.message || 'Unable to load category messages.', true);
+      }
+    });
+  }
+  if (els.supportDeskSendBtn) {
+    els.supportDeskSendBtn.addEventListener('click', async () => {
+      try {
+        await sendSupportDeskMessage();
+      } catch (error) {
+        setSupportDeskStatus(error.message || 'Failed to send support message.', true);
+      }
+    });
+  }
+  if (els.supportDeskComposeInput) {
+    els.supportDeskComposeInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await sendSupportDeskMessage();
+      } catch (error) {
+        setSupportDeskStatus(error.message || 'Failed to send support message.', true);
+      }
+    });
+  }
+  if (els.supportDeskWidget) {
+    document.addEventListener('click', (event) => {
+      if (!state.ui.supportDeskOpen || !authState.user) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (els.supportDeskWidget.contains(target)) {
+        return;
+      }
+      setSupportDeskOpen(false);
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && state.ui.supportDeskOpen) {
+        setSupportDeskOpen(false);
+      }
+    });
+  }
   if (els.foodShopModal) {
     els.foodShopModal.addEventListener('click', (event) => {
       if (event.target === els.foodShopModal) {
@@ -13648,6 +19209,7 @@ function bindEvents() {
   if (els.remedialModeSelect) {
     els.remedialModeSelect.addEventListener('change', () => {
       applyRemedialModeVisibility();
+      syncVisibleVerlynQuickActions();
     });
   }
 
@@ -13668,12 +19230,38 @@ function bindEvents() {
   if (els.remedialCourseCodeInput) {
     els.remedialCourseCodeInput.addEventListener('input', () => {
       els.remedialCourseCodeInput.value = normalizeRemedialCourseCode(els.remedialCourseCodeInput.value);
+      syncVisibleVerlynQuickActions();
     });
   }
 
   if (els.remedialCourseSelect) {
     els.remedialCourseSelect.addEventListener('change', () => {
       syncRemedialManualCourseFromSelect();
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.remedialSectionsInput) {
+    els.remedialSectionsInput.addEventListener('input', () => {
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.remedialDate) {
+    els.remedialDate.addEventListener('change', () => {
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.remedialStartTime) {
+    els.remedialStartTime.addEventListener('change', () => {
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.remedialRoomInput) {
+    els.remedialRoomInput.addEventListener('input', () => {
+      syncVisibleVerlynQuickActions();
     });
   }
 
@@ -14051,6 +19639,44 @@ function bindEvents() {
     }
   });
 
+  if (els.studentAttendanceDemoBtn) {
+    els.studentAttendanceDemoBtn.addEventListener('click', () => {
+      state.student.demoAttendanceEnabled = !state.student.demoAttendanceEnabled;
+      updateSelectedClassState();
+      if (state.student.demoAttendanceEnabled) {
+        setStudentResult('Demo attendance enabled. You can simulate attendance during the full live class hour. Nothing will be saved.');
+        log('Student attendance demo mode enabled');
+      } else {
+        setStudentResult('Demo attendance disabled. Official first-10-minute attendance window is active again.');
+        log('Student attendance demo mode disabled');
+      }
+    });
+  }
+
+  if (els.saarthiSendBtn) {
+    els.saarthiSendBtn.addEventListener('click', async () => {
+      try {
+        await sendSaarthiMessage();
+      } catch (error) {
+        setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
+      }
+    });
+  }
+
+  if (els.saarthiComposeInput) {
+    els.saarthiComposeInput.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' || event.shiftKey) {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await sendSaarthiMessage();
+      } catch (error) {
+        setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
+      }
+    });
+  }
+
   if (els.studentAggregateCourses) {
     els.studentAggregateCourses.addEventListener('click', (event) => {
       const target = event.target;
@@ -14089,6 +19715,35 @@ function bindEvents() {
     });
   }
 
+  if (els.studentRecoveryPlans) {
+    els.studentRecoveryPlans.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const button = target.closest('[data-recovery-action-command]');
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+      const actionId = Number(button.dataset.recoveryActionId || '0');
+      const command = String(button.dataset.recoveryActionCommand || '').trim().toLowerCase();
+      if (!actionId || !command) {
+        return;
+      }
+      const original = button.textContent || 'Update';
+      button.disabled = true;
+      button.textContent = command === 'complete' ? 'Saving...' : 'Updating...';
+      try {
+        await submitStudentRecoveryAction(actionId, command);
+      } catch (error) {
+        log(error.message || 'Recovery action update failed.');
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+  }
+
   if (els.attendanceDetailsCloseBtn) {
     els.attendanceDetailsCloseBtn.addEventListener('click', () => {
       closeAttendanceDetailsModal();
@@ -14099,6 +19754,78 @@ function bindEvents() {
     els.attendanceDetailsModal.addEventListener('click', (event) => {
       if (event.target === els.attendanceDetailsModal) {
         closeAttendanceDetailsModal();
+      }
+    });
+  }
+
+  if (els.attendanceDetailsList) {
+    els.attendanceDetailsList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const button = target.closest('[data-open-rectification]');
+      if (!(button instanceof HTMLElement)) {
+        return;
+      }
+      openAttendanceRectificationModal({
+        courseId: Number(button.dataset.rectificationCourseId || 0),
+        scheduleId: Number(button.dataset.rectificationScheduleId || 0),
+        classDate: String(button.dataset.rectificationClassDate || ''),
+        startTime: String(button.dataset.rectificationStartTime || ''),
+        endTime: String(button.dataset.rectificationEndTime || ''),
+        courseCode: String(button.dataset.rectificationCourseCode || ''),
+        courseTitle: String(button.dataset.rectificationCourseTitle || ''),
+      });
+    });
+  }
+
+  if (els.attendanceRectificationProofPhotoInput) {
+    els.attendanceRectificationProofPhotoInput.addEventListener('change', async () => {
+      const file = els.attendanceRectificationProofPhotoInput.files?.[0];
+      if (!file) {
+        setAttendanceRectificationProofPreview('');
+        return;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        if (!String(dataUrl || '').startsWith('data:image/')) {
+          throw new Error('Select a valid image file for proof.');
+        }
+        setAttendanceRectificationProofPreview(dataUrl);
+      } catch (error) {
+        setAttendanceRectificationProofPreview('');
+        log(error.message);
+      }
+    });
+  }
+
+  if (els.attendanceRectificationCancelBtn) {
+    els.attendanceRectificationCancelBtn.addEventListener('click', () => {
+      closeAttendanceRectificationModal();
+    });
+  }
+
+  if (els.attendanceRectificationSubmitBtn) {
+    els.attendanceRectificationSubmitBtn.addEventListener('click', async () => {
+      els.attendanceRectificationSubmitBtn.disabled = true;
+      try {
+        await submitStudentRectificationRequest();
+      } catch (error) {
+        if (els.attendanceRectificationStatus) {
+          els.attendanceRectificationStatus.textContent = error.message;
+        }
+        log(error.message);
+      } finally {
+        els.attendanceRectificationSubmitBtn.disabled = false;
+      }
+    });
+  }
+
+  if (els.attendanceRectificationModal) {
+    els.attendanceRectificationModal.addEventListener('click', (event) => {
+      if (event.target === els.attendanceRectificationModal) {
+        closeAttendanceRectificationModal();
       }
     });
   }
@@ -14121,12 +19848,20 @@ function bindEvents() {
     if (event.key !== 'Escape') {
       return;
     }
+    if (els.mfaHelpModal && !els.mfaHelpModal.classList.contains('hidden')) {
+      setMfaHelpModal(false);
+      return;
+    }
     if (isForgotPasswordPanelOpen()) {
       setForgotPasswordPanel(false);
       return;
     }
     if (els.remedialAttendanceModal && !els.remedialAttendanceModal.classList.contains('hidden')) {
       closeRemedialAttendanceModal();
+      return;
+    }
+    if (els.attendanceRectificationModal && !els.attendanceRectificationModal.classList.contains('hidden')) {
+      closeAttendanceRectificationModal();
       return;
     }
     if (els.attendanceDetailsModal && !els.attendanceDetailsModal.classList.contains('hidden')) {
@@ -14345,6 +20080,517 @@ function bindEvents() {
     }
   });
 
+  if (els.adminCreateScheduleBtn) {
+    els.adminCreateScheduleBtn.addEventListener('click', async () => {
+      try {
+        await createAdminAttendanceSchedule();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to create schedule.');
+        setAdminCreateScheduleStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminTimetableOverrideSection) {
+    els.adminTimetableOverrideSection.addEventListener('input', () => {
+      const raw = String(els.adminTimetableOverrideSection.value || '');
+      els.adminTimetableOverrideSection.value = raw.toUpperCase().replace(/\s+/g, '');
+    });
+  }
+
+  if (els.adminTimetableOverrideBtn) {
+    els.adminTimetableOverrideBtn.addEventListener('click', async () => {
+      try {
+        await saveAdminTimetableOverride();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to save timetable override.');
+        setAdminTimetableOverrideStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminUpdateStudentSection) {
+    els.adminUpdateStudentSection.addEventListener('input', () => {
+      const raw = String(els.adminUpdateStudentSection.value || '');
+      els.adminUpdateStudentSection.value = raw.toUpperCase().replace(/\s+/g, '');
+    });
+  }
+
+  if (els.adminUpdateStudentSectionBtn) {
+    els.adminUpdateStudentSectionBtn.addEventListener('click', async () => {
+      try {
+        await approveAdminStudentSectionUpdate();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to update student section.');
+        setAdminSectionUpdateStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminSearchStudentRegistration) {
+    els.adminSearchStudentRegistration.addEventListener('input', () => {
+      els.adminSearchStudentRegistration.value = normalizedRegistrationInput(els.adminSearchStudentRegistration.value || '');
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.adminSearchFacultyIdentifier) {
+    els.adminSearchFacultyIdentifier.addEventListener('input', () => {
+      els.adminSearchFacultyIdentifier.value = normalizedRegistrationInput(els.adminSearchFacultyIdentifier.value || '');
+    });
+  }
+
+  if (els.adminGradeStudentRegistration) {
+    els.adminGradeStudentRegistration.addEventListener('input', () => {
+      els.adminGradeStudentRegistration.value = normalizedRegistrationInput(els.adminGradeStudentRegistration.value || '');
+    });
+  }
+
+  if (els.adminGradeCourseCode) {
+    els.adminGradeCourseCode.addEventListener('input', () => {
+      els.adminGradeCourseCode.value = normalizedRegistrationInput(els.adminGradeCourseCode.value || '');
+    });
+  }
+
+  if (els.adminRecoveryIncludeResolved) {
+    els.adminRecoveryIncludeResolved.addEventListener('change', async () => {
+      try {
+        state.admin.recoveryIncludeResolved = Boolean(els.adminRecoveryIncludeResolved.checked);
+        await refreshAdminRecoveryPlans({
+          includeResolved: state.admin.recoveryIncludeResolved,
+        });
+      } catch (error) {
+        const message = String(error?.message || 'Failed to refresh recovery desk.');
+        setAdminRecoveryStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminRecoveryRefreshBtn) {
+    els.adminRecoveryRefreshBtn.addEventListener('click', async () => {
+      try {
+        await refreshAdminRecoveryPlans({
+          includeResolved: state.admin?.recoveryIncludeResolved,
+        });
+      } catch (error) {
+        const message = String(error?.message || 'Failed to refresh recovery desk.');
+        setAdminRecoveryStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminRecoveryRecomputeAllBtn) {
+    els.adminRecoveryRecomputeAllBtn.addEventListener('click', async () => {
+      try {
+        await recomputeAdminRecoveryScope();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to recompute attendance recovery scope.');
+        setAdminRecoveryStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminRecoveryList) {
+    els.adminRecoveryList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const button = target.closest('[data-admin-recovery-command]');
+      if (!button) {
+        return;
+      }
+      event.preventDefault();
+      const command = String(button.dataset.adminRecoveryCommand || '').trim().toLowerCase();
+      try {
+        if (command === 'recompute-plan') {
+          await recomputeAdminRecoveryScope({
+            studentId: Number(button.dataset.adminRecoveryStudentId || 0),
+            courseId: Number(button.dataset.adminRecoveryCourseId || 0),
+            limit: 1,
+          });
+          return;
+        }
+        if (command === 'open-rms') {
+          await openRecoveryPlanInRms(Number(button.dataset.adminRecoveryPlanId || 0));
+        }
+      } catch (error) {
+        const message = String(error?.message || 'Recovery action failed.');
+        setAdminRecoveryStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminSearchStudentBtn) {
+    els.adminSearchStudentBtn.addEventListener('click', async () => {
+      try {
+        await adminSearchStudentByRegistration();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to search student.');
+        setAdminSearchStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminSearchFacultyBtn) {
+    els.adminSearchFacultyBtn.addEventListener('click', async () => {
+      try {
+        await adminSearchFacultyByIdentifier();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to search faculty.');
+        setAdminSearchStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminGlobalSearchBtn) {
+    els.adminGlobalSearchBtn.addEventListener('click', async () => {
+      try {
+        await adminSearchEverything();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to run global search.');
+        setAdminSearchStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminGradeSubmitBtn) {
+    els.adminGradeSubmitBtn.addEventListener('click', async () => {
+      try {
+        await adminUpsertStudentGrade();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to save student grade.');
+        setAdminGradeStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminIdentityStudentId) {
+    els.adminIdentityStudentId.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await refreshAdminIdentityCases();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load identity cases.');
+        setAdminIdentityShieldStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminIdentityScreenBtn) {
+    els.adminIdentityScreenBtn.addEventListener('click', async () => {
+      try {
+        await runAdminEnrollmentIdentityScreening();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to run identity screening.');
+        setAdminIdentityShieldStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminIdentityRefreshBtn) {
+    els.adminIdentityRefreshBtn.addEventListener('click', async () => {
+      try {
+        await refreshAdminIdentityCases();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load identity cases.');
+        setAdminIdentityShieldStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminCopilotAuditSearch) {
+    els.adminCopilotAuditSearch.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await refreshCopilotAuditTimeline({ force: true });
+      } catch (error) {
+        setAdminCopilotAuditStatus(error?.message || 'Failed to load copilot timeline.', true, 'error');
+      }
+    });
+  }
+
+  if (els.adminCopilotAuditActorUserId) {
+    els.adminCopilotAuditActorUserId.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await refreshCopilotAuditTimeline({ force: true });
+      } catch (error) {
+        setAdminCopilotAuditStatus(error?.message || 'Failed to load copilot timeline.', true, 'error');
+      }
+    });
+  }
+
+  if (els.adminCopilotAuditSearchBtn) {
+    els.adminCopilotAuditSearchBtn.addEventListener('click', async () => {
+      try {
+        await refreshCopilotAuditTimeline({ force: true });
+      } catch (error) {
+        setAdminCopilotAuditStatus(error?.message || 'Failed to load copilot timeline.', true, 'error');
+      }
+    });
+  }
+
+  if (els.adminCopilotAuditClearBtn) {
+    els.adminCopilotAuditClearBtn.addEventListener('click', async () => {
+      resetCopilotAuditFilters();
+      try {
+        await refreshCopilotAuditTimeline({ force: true });
+      } catch (error) {
+        setAdminCopilotAuditStatus(error?.message || 'Failed to load copilot timeline.', true, 'error');
+      }
+    });
+  }
+
+  if (els.rmsSearchRegistration) {
+    els.rmsSearchRegistration.addEventListener('input', () => {
+      els.rmsSearchRegistration.value = normalizedRegistrationInput(els.rmsSearchRegistration.value || '');
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.rmsUpdateRegistration) {
+    els.rmsUpdateRegistration.addEventListener('input', () => {
+      els.rmsUpdateRegistration.value = normalizedRegistrationInput(els.rmsUpdateRegistration.value || '');
+    });
+  }
+
+  if (els.rmsUpdateSection) {
+    els.rmsUpdateSection.addEventListener('input', () => {
+      const raw = String(els.rmsUpdateSection.value || '');
+      els.rmsUpdateSection.value = raw.toUpperCase().replace(/\s+/g, '');
+    });
+  }
+
+  if (els.rmsAttendanceRegistration) {
+    els.rmsAttendanceRegistration.addEventListener('input', () => {
+      els.rmsAttendanceRegistration.value = normalizedRegistrationInput(els.rmsAttendanceRegistration.value || '');
+      state.rms.attendanceContext = null;
+      state.rms.attendanceSelectedCourseCode = '';
+      renderRmsAttendanceStudentSummary(null);
+      renderRmsAttendanceSubjectOptions(null);
+      syncVisibleVerlynQuickActions();
+    });
+  }
+
+  if (els.rmsAttendanceSearchBtn) {
+    els.rmsAttendanceSearchBtn.addEventListener('click', async () => {
+      try {
+        await searchRmsAttendanceStudentContext();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load RMS attendance subjects.');
+        setRmsAttendanceStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsAttendanceSubjectSelect) {
+    els.rmsAttendanceSubjectSelect.addEventListener('change', () => {
+      state.rms.attendanceSelectedCourseCode = String(els.rmsAttendanceSubjectSelect.value || '')
+        .trim()
+        .toUpperCase();
+      syncRmsAttendanceCurrentStatus();
+    });
+  }
+
+  if (els.rmsAttendanceDate) {
+    els.rmsAttendanceDate.addEventListener('change', async () => {
+      if (!normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '')) {
+        return;
+      }
+      try {
+        await searchRmsAttendanceStudentContext({ silent: true });
+      } catch (error) {
+        const message = String(error?.message || 'Failed to refresh attendance status for selected date.');
+        setRmsAttendanceStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsRefreshBtn) {
+    els.rmsRefreshBtn.addEventListener('click', async () => {
+      try {
+        await refreshRmsModule();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to refresh RMS.');
+        setRmsStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsQueryCategory) {
+    els.rmsQueryCategory.addEventListener('change', async () => {
+      try {
+        await refreshRmsModule();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to apply RMS category filter.');
+        setRmsStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsQueryStatus) {
+    els.rmsQueryStatus.addEventListener('change', async () => {
+      try {
+        await refreshRmsModule();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to apply RMS status filter.');
+        setRmsStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsThreadAction) {
+    els.rmsThreadAction.addEventListener('change', () => {
+      syncRmsThreadActionForm();
+    });
+  }
+
+  if (els.rmsApplyThreadActionBtn) {
+    els.rmsApplyThreadActionBtn.addEventListener('click', async () => {
+      try {
+        await applyRmsQueryWorkflowAction();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to apply RMS workflow action.');
+        setRmsThreadActionStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsStudentSearchBtn) {
+    els.rmsStudentSearchBtn.addEventListener('click', async () => {
+      try {
+        await searchRmsStudentByRegistration();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to search student.');
+        setRmsStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsApplyUpdateBtn) {
+    els.rmsApplyUpdateBtn.addEventListener('click', async () => {
+      try {
+        await applyRmsStudentApprovalUpdate();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to apply RMS student update.');
+        setRmsStudentUpdateStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsAttendanceApplyBtn) {
+    els.rmsAttendanceApplyBtn.addEventListener('click', async () => {
+      try {
+        await applyRmsAttendanceStatusUpdate();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to apply RMS attendance update.');
+        setRmsAttendanceStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.rmsQueryList) {
+    els.rmsQueryList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const threadButton = target.closest('[data-rms-select-thread]');
+      if (threadButton instanceof HTMLElement) {
+        const studentId = Number(threadButton.dataset.rmsThreadStudentId || 0);
+        const facultyId = Number(threadButton.dataset.rmsThreadFacultyId || 0);
+        const category = String(threadButton.dataset.rmsThreadCategory || '').trim();
+        const selectedThread = findRmsThreadInDashboard({
+          student_id: studentId,
+          faculty_id: facultyId,
+          category,
+        });
+        if (!selectedThread) {
+          setRmsThreadActionStatus('Thread not available in current filter result.', true);
+          return;
+        }
+        state.rms.selectedThread = selectedThread;
+        if (els.rmsThreadAction) {
+          const inferredAction = String(selectedThread.action_state || '').trim().toLowerCase();
+          if (inferredAction === 'scheduled') {
+            state.rms.threadAction = 'schedule';
+            els.rmsThreadAction.value = 'schedule';
+          }
+        }
+        if (els.rmsThreadScheduledFor) {
+          if (selectedThread.scheduled_for) {
+            const asDate = new Date(selectedThread.scheduled_for);
+            if (!Number.isNaN(asDate.getTime())) {
+              const localValue = new Date(asDate.getTime() - (asDate.getTimezoneOffset() * 60000))
+                .toISOString()
+                .slice(0, 16);
+              els.rmsThreadScheduledFor.value = localValue;
+            }
+          } else {
+            els.rmsThreadScheduledFor.value = '';
+          }
+        }
+        if (els.rmsThreadNote) {
+          els.rmsThreadNote.value = String(selectedThread.action_note || '');
+        }
+        syncRmsThreadActionForm();
+        renderRmsSelectedThreadSummary();
+        setRmsThreadActionStatus('Thread selected. Choose workflow action and apply.', false);
+      }
+      const regButton = target.closest('[data-rms-use-reg]');
+      if (!(regButton instanceof HTMLElement)) {
+        return;
+      }
+      const registration = normalizedRegistrationInput(regButton.dataset.rmsUseReg || '');
+      if (!registration || !els.rmsSearchRegistration) {
+        return;
+      }
+      els.rmsSearchRegistration.value = registration;
+      syncVisibleVerlynQuickActions();
+      try {
+        await searchRmsStudentByRegistration({ silent: true });
+        setRmsStatus(`Loaded student with registration ${registration}.`, false);
+      } catch (error) {
+        const message = String(error?.message || 'Failed to load student for this RMS thread.');
+        setRmsStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
   els.facultySubmissionsBody.addEventListener('change', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement) || !target.classList.contains('submission-check')) {
@@ -14397,6 +20643,32 @@ function bindEvents() {
     }
   });
 
+  if (els.facultyRectificationBody) {
+    els.facultyRectificationBody.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      const actionBtn = target.closest('[data-rectification-action]');
+      if (!(actionBtn instanceof HTMLElement)) {
+        return;
+      }
+      const requestId = Number(actionBtn.dataset.rectificationId || 0);
+      const action = String(actionBtn.dataset.rectificationAction || '').trim().toLowerCase();
+      if (!requestId || (action !== 'approve' && action !== 'reject')) {
+        return;
+      }
+      actionBtn.setAttribute('disabled', 'disabled');
+      try {
+        await submitFacultyRectificationReview(requestId, action);
+      } catch (error) {
+        log(error.message);
+      } finally {
+        actionBtn.removeAttribute('disabled');
+      }
+    });
+  }
+
   els.classroomPhotoInput.addEventListener('change', async () => {
     const file = els.classroomPhotoInput.files?.[0];
     if (!file) {
@@ -14447,6 +20719,31 @@ async function init() {
   els.workDate.value = todayISO();
   els.facultyClassDate.value = todayISO();
   els.weekStartDate.value = todayISO();
+  if (els.rmsQueryCategory) {
+    els.rmsQueryCategory.value = state.rms.selectedCategory;
+  }
+  if (els.rmsQueryStatus) {
+    els.rmsQueryStatus.value = state.rms.selectedStatus;
+  }
+  if (els.rmsThreadAction) {
+    els.rmsThreadAction.value = state.rms.threadAction;
+  }
+  if (els.rmsAttendanceDate) {
+    els.rmsAttendanceDate.value = todayISO();
+  }
+  if (els.rmsAttendanceStatus) {
+    els.rmsAttendanceStatus.value = 'present';
+  }
+  if (els.rmsAttendanceCurrentStatus) {
+    els.rmsAttendanceCurrentStatus.value = 'Not marked';
+  }
+  syncRmsThreadActionForm();
+  renderRmsSelectedThreadSummary(null);
+  renderRmsStudentSummary(null);
+  renderRmsAttendanceStudentSummary(null);
+  renderRmsAttendanceSubjectOptions(null);
+  renderRmsAttendanceResult(null);
+  renderRmsDashboard();
   if (els.foodOrderDate) {
     els.foodOrderDate.value = todayISO();
   }
@@ -14457,6 +20754,7 @@ async function init() {
   state.food.orderDate = els.foodOrderDate?.value || todayISO();
   state.ui.activeModule = normalizeModuleKey(moduleFromHash() || state.ui.activeModule);
   applyTheme(getInitialTheme(''), { persist: false, userEmail: '' });
+  bindStaticAssetFallbacks();
   startLiveDateTimeTicker();
   setAuthMode('login');
   if (ENABLE_DECORATIVE_MOTION) {
@@ -14466,6 +20764,7 @@ async function init() {
   initMicroInteractions();
   bindSessionActivityWatchdog();
   bindEvents();
+  initModalFocusTrapObserver();
   syncFoodOrderActionState();
   renderWorkloadChart();
   renderMongoStatus();
@@ -14474,6 +20773,9 @@ async function init() {
   renderPasswordStrengthHint(els.forgotPasswordStrength, els.forgotNewPassword?.value || '');
   renderOtpCooldown();
   renderForgotOtpCooldown();
+  setMfaActionBusyState();
+  syncMfaCopyButtonsState();
+  renderStudentAttendanceDemoToggle();
   setRegisterInFlight(false);
   setForgotPasswordPanel(false);
   updateAuthBadges();
@@ -14482,7 +20784,7 @@ async function init() {
   renderProfileSecurity();
 
   const restored = await restoreSession();
-  if (restored) {
+  if (restored && !authState.mfaSetupRequired) {
     try {
       await refreshAll();
     } catch (error) {

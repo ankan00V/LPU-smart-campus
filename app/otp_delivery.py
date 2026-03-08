@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 
 _ENV_LOADED = False
+_OTP_DELIVERY_MODES = {"smtp", "graph"}
 
 
 def _ensure_env_loaded() -> None:
@@ -28,6 +29,13 @@ def _delivery_mode() -> str:
     return (os.getenv("OTP_DELIVERY_MODE", "smtp").strip().lower() or "smtp")
 
 
+def otp_delivery_mode() -> str:
+    mode = _delivery_mode()
+    if mode not in _OTP_DELIVERY_MODES:
+        raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+    return mode
+
+
 def _smtp_host() -> str:
     _ensure_env_loaded()
     return os.getenv("OTP_SMTP_HOST", "").strip()
@@ -37,9 +45,12 @@ def _smtp_port() -> int:
     _ensure_env_loaded()
     raw = os.getenv("OTP_SMTP_PORT", "587").strip()
     try:
-        return int(raw)
-    except ValueError:
-        return 587
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError("OTP_SMTP_PORT must be a valid integer port.") from exc
+    if value < 1 or value > 65535:
+        raise RuntimeError("OTP_SMTP_PORT must be between 1 and 65535.")
+    return value
 
 
 def _smtp_username() -> str:
@@ -129,6 +140,35 @@ def _ensure_smtp_config() -> None:
         missing.append("OTP_FROM_EMAIL")
     if missing:
         raise RuntimeError(f"OTP SMTP is not configured. Missing: {', '.join(missing)}")
+    if _smtp_use_ssl() and _smtp_starttls():
+        raise RuntimeError("OTP SMTP config is invalid. Enable either SSL or STARTTLS, not both.")
+
+
+def _verify_smtp_connection() -> None:
+    _ensure_smtp_config()
+    host = _smtp_host()
+    port = _smtp_port()
+    username = _smtp_username()
+    password = _smtp_password()
+    try:
+        if _smtp_use_ssl():
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+                server.login(username, password)
+                code, _ = server.noop()
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                if _smtp_starttls():
+                    context = ssl.create_default_context()
+                    server.starttls(context=context)
+                    server.ehlo()
+                server.login(username, password)
+                code, _ = server.noop()
+        if int(code) != 250:
+            raise RuntimeError(f"SMTP server health probe returned unexpected status code {code}.")
+    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        raise RuntimeError(f"OTP SMTP verification failed: {exc}") from exc
 
 
 def _send_via_smtp(destination_email: str, otp_code: str) -> None:
@@ -244,26 +284,52 @@ def _send_via_graph(destination_email: str, otp_code: str) -> None:
         raise RuntimeError(f"Graph sendMail failed: HTTP {exc.code} {raw}") from exc
 
 
+def _verify_graph_connection() -> None:
+    token = _graph_access_token()
+    sender_user = quote(_graph_sender_user())
+    check_url = f"https://graph.microsoft.com/v1.0/users/{sender_user}?$select=id,mail,userPrincipalName"
+    request = Request(check_url, method="GET")
+    request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        raise RuntimeError(f"OTP Graph verification failed: HTTP {exc.code} {raw}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"OTP Graph verification failed: {exc}") from exc
+    if not payload.get("id"):
+        raise RuntimeError("OTP Graph verification failed: sender user lookup returned no id.")
+
+
+def assert_otp_delivery_ready(*, verify_connection: bool = False) -> str:
+    mode = otp_delivery_mode()
+    if mode == "smtp":
+        _ensure_smtp_config()
+        if verify_connection:
+            _verify_smtp_connection()
+        return mode
+    if mode == "graph":
+        _ensure_graph_config()
+        if verify_connection:
+            _verify_graph_connection()
+        return mode
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+
+
 def send_login_otp(destination_email: str, otp_code: str) -> dict:
-    mode = _delivery_mode()
-    if mode == "debug":
-        return {
-            "channel": "debug-local",
-            "otp_debug_code": otp_code,
-        }
+    mode = otp_delivery_mode()
 
     if mode == "smtp":
         _send_via_smtp(destination_email, otp_code)
         return {
             "channel": "smtp-email",
-            "otp_debug_code": None,
         }
 
     if mode == "graph":
         _send_via_graph(destination_email, otp_code)
         return {
             "channel": "graph-email",
-            "otp_debug_code": None,
         }
 
-    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'debug'.")
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")

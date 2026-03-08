@@ -1,14 +1,27 @@
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode
+from urllib.parse import SplitResult
 
 from pymongo import ASCENDING, MongoClient, ReturnDocument
 from pymongo.errors import PyMongoError
+
+from .enterprise_controls import apply_pii_encryption_policy
+from .realtime_bus import infer_topics, publish_domain_event
+from .runtime_infra import is_remote_service_host, normalize_host, split_url
 
 _mongo_client: MongoClient | None = None
 _mongo_db = None
 _mongo_error: str | None = None
 _last_init_attempt: datetime | None = None
+LOGGER = logging.getLogger(__name__)
+
+try:
+    import dns.resolver as dns_resolver
+except Exception:  # noqa: BLE001
+    dns_resolver = None
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -39,6 +52,128 @@ def _mongo_db_name() -> str:
         or os.getenv("MONGODB_DB_NAME")
         or "lpu_smart_campus"
     ).strip() or "lpu_smart_campus"
+
+
+def _mongo_dns_nameservers() -> list[str]:
+    raw = (os.getenv("MONGO_DNS_NAMESERVERS") or "1.1.1.1,8.8.8.8").strip()
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
+def _mongo_dns_resolver():
+    if dns_resolver is None:
+        return None
+    resolver = dns_resolver.Resolver(configure=False)
+    nameservers = _mongo_dns_nameservers()
+    if nameservers:
+        resolver.nameservers = nameservers
+    resolver.lifetime = max(1.0, float(_int_env("MONGO_DNS_LIFETIME_SECONDS", 10, minimum=1)))
+    resolver.timeout = max(1.0, float(_int_env("MONGO_DNS_TIMEOUT_SECONDS", 5, minimum=1)))
+    return resolver
+
+
+def _merge_query_params(*parts: str) -> str:
+    merged: dict[str, str] = {}
+    for part in parts:
+        for key, value in parse_qsl(str(part or "").strip(), keep_blank_values=True):
+            merged[key] = value
+    if "tls" not in merged and "ssl" not in merged:
+        merged["tls"] = "true"
+    return urlencode(merged)
+
+
+def _mongo_hostname_fallback_uri(uri: str) -> str | None:
+    raw_uri = str(uri or "").strip()
+    if not raw_uri:
+        return None
+    parts = _mongo_url_parts(raw_uri)
+    if str(parts.scheme or "").strip().lower() != "mongodb+srv":
+        return None
+
+    netloc = str(parts.netloc or "")
+    if "@" in netloc:
+        userinfo, host = netloc.rsplit("@", 1)
+        userinfo = f"{userinfo}@"
+    else:
+        userinfo = ""
+        host = netloc
+    host = normalize_host(host)
+    if not host:
+        return None
+
+    resolver = _mongo_dns_resolver()
+    if resolver is None:
+        return None
+
+    try:
+        srv_records = resolver.resolve(f"_mongodb._tcp.{host}", "SRV")
+    except Exception:
+        return None
+
+    hosts: list[str] = []
+    for record in srv_records:
+        target = normalize_host(str(getattr(record, "target", "")).rstrip("."))
+        port = int(getattr(record, "port", 27017) or 27017)
+        if target:
+            hosts.append(f"{target}:{port}")
+    if not hosts:
+        return None
+
+    txt_query = ""
+    try:
+        txt_records = resolver.resolve(host, "TXT")
+        txt_parts: list[str] = []
+        for record in txt_records:
+            if hasattr(record, "strings"):
+                txt_parts.extend(
+                    chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                    for chunk in record.strings
+                )
+            elif hasattr(record, "to_text"):
+                txt_parts.append(str(record.to_text()).strip('"'))
+        txt_query = "&".join(part for part in txt_parts if part)
+    except Exception:
+        txt_query = ""
+
+    query = _merge_query_params(txt_query, parts.query)
+    path = parts.path or ""
+    return f"mongodb://{userinfo}{','.join(hosts)}{path}?{query}"
+
+
+def _strict_runtime_enabled() -> bool:
+    return _bool_env("APP_RUNTIME_STRICT", default=True)
+
+
+def _mongo_url_parts(value: str | None = None) -> SplitResult:
+    return split_url(value if value is not None else _mongo_uri())
+
+
+def _mongo_scheme(value: str | None = None) -> str | None:
+    scheme = str(_mongo_url_parts(value).scheme or "").strip().lower()
+    return scheme or None
+
+
+def _mongo_hosts(value: str | None = None) -> list[str]:
+    netloc = str(_mongo_url_parts(value).netloc or "")
+    if "@" in netloc:
+        netloc = netloc.rsplit("@", 1)[-1]
+    hosts: list[str] = []
+    for segment in netloc.split(","):
+        chunk = segment.strip()
+        if not chunk:
+            continue
+        host = chunk
+        if chunk.startswith("[") and "]" in chunk:
+            host = chunk[1:].split("]", 1)[0]
+        elif ":" in chunk:
+            host = chunk.split(":", 1)[0]
+        normalized = normalize_host(host)
+        if normalized:
+            hosts.append(normalized)
+    return hosts
+
+
+def _mongo_tls_enabled() -> bool:
+    return True
 
 
 def _ensure_indexes(db) -> None:
@@ -98,6 +233,13 @@ def _ensure_indexes(db) -> None:
     db["attendance_records"].create_index(
         [("student_id", ASCENDING), ("course_id", ASCENDING), ("attendance_date", ASCENDING)],
         unique=True,
+    )
+    db["attendance_records"].create_index([("updated_at", ASCENDING)])
+    db["attendance_records"].create_index([("computed_from_event_id", ASCENDING)])
+    db["attendance_events"].create_index([("id", ASCENDING)], unique=True)
+    db["attendance_events"].create_index([("event_key", ASCENDING)], unique=True)
+    db["attendance_events"].create_index(
+        [("student_id", ASCENDING), ("course_id", ASCENDING), ("attendance_date", ASCENDING), ("created_at", ASCENDING)]
     )
 
     db["notification_logs"].create_index([("id", ASCENDING)], unique=True)
@@ -183,8 +325,20 @@ def _ensure_indexes(db) -> None:
         [("schedule_id", ASCENDING), ("student_id", ASCENDING), ("class_date", ASCENDING)],
         unique=True,
     )
+    db["attendance_rectification_requests"].create_index([("id", ASCENDING)], unique=True)
+    db["attendance_rectification_requests"].create_index(
+        [("student_id", ASCENDING), ("schedule_id", ASCENDING), ("class_date", ASCENDING)],
+        unique=True,
+    )
+    db["attendance_rectification_requests"].create_index(
+        [("faculty_id", ASCENDING), ("schedule_id", ASCENDING), ("status", ASCENDING), ("requested_at", ASCENDING)]
+    )
 
     db["classroom_analyses"].create_index([("id", ASCENDING)], unique=True)
+    db["student_grades"].create_index([("id", ASCENDING)], unique=True)
+    db["student_grades"].create_index([("student_id", ASCENDING), ("course_id", ASCENDING)], unique=True)
+    db["student_grades"].create_index([("faculty_id", ASCENDING), ("graded_at", ASCENDING)])
+    db["student_grades"].create_index([("grade_letter", ASCENDING), ("graded_at", ASCENDING)])
 
     db["auth_users"].create_index([("id", ASCENDING)], unique=True)
     db["auth_users"].create_index([("email", ASCENDING)], unique=True)
@@ -192,6 +346,11 @@ def _ensure_indexes(db) -> None:
         [("alternate_email", ASCENDING)],
         unique=True,
         partialFilterExpression={"alternate_email": {"$type": "string"}},
+    )
+    db["auth_users"].create_index(
+        [("alternate_email_hash", ASCENDING)],
+        unique=True,
+        partialFilterExpression={"alternate_email_hash": {"$type": "string"}},
     )
 
     # Replace old sparse unique indexes so multiple admin/faculty/student-null docs are allowed.
@@ -212,6 +371,28 @@ def _ensure_indexes(db) -> None:
         [("faculty_id", ASCENDING)],
         unique=True,
         partialFilterExpression={"faculty_id": {"$type": "int"}},
+    )
+    db["auth_sessions"].create_index([("sid", ASCENDING)], unique=True)
+    db["auth_sessions"].create_index([("user_id", ASCENDING), ("revoked_at", ASCENDING), ("refresh_expires_at", ASCENDING)])
+    db["auth_sessions"].create_index(
+        [("refresh_expires_at", ASCENDING)],
+        expireAfterSeconds=0,
+        name="auth_session_expiry_ttl",
+    )
+    db["auth_token_revocations"].create_index([("jti", ASCENDING)], unique=True)
+    db["auth_token_revocations"].create_index([("sid", ASCENDING), ("created_at", ASCENDING)])
+    db["auth_token_revocations"].create_index(
+        [("expires_at", ASCENDING)],
+        expireAfterSeconds=0,
+        name="auth_token_revocation_expiry_ttl",
+    )
+    db["auth_role_invites"].create_index([("id", ASCENDING)], unique=True)
+    db["auth_role_invites"].create_index([("token_hash", ASCENDING), ("token_salt", ASCENDING)])
+    db["auth_role_invites"].create_index([("email", ASCENDING), ("role", ASCENDING), ("used_at", ASCENDING)])
+    db["auth_role_invites"].create_index(
+        [("expires_at", ASCENDING)],
+        expireAfterSeconds=0,
+        name="auth_role_invite_expiry_ttl",
     )
 
     db["auth_otps"].create_index([("id", ASCENDING)], unique=True)
@@ -236,7 +417,35 @@ def _ensure_indexes(db) -> None:
         name="password_reset_expiry_ttl",
     )
 
+    db["identity_verification_cases"].create_index([("id", ASCENDING)], unique=True)
+    db["identity_verification_cases"].create_index([("workflow_key", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)])
+    db["identity_verification_cases"].create_index([("student_id", ASCENDING), ("created_at", ASCENDING)])
+    db["identity_verification_cases"].create_index([("auth_user_id", ASCENDING), ("created_at", ASCENDING)])
+
+    db["identity_risk_signals"].create_index([("id", ASCENDING)], unique=True)
+    db["identity_risk_signals"].create_index([("case_id", ASCENDING), ("created_at", ASCENDING)])
+    db["identity_risk_signals"].create_index([("signal_type", ASCENDING), ("severity", ASCENDING), ("created_at", ASCENDING)])
+
+    db["identity_device_profiles"].create_index([("device_fingerprint", ASCENDING)], unique=True)
+    db["identity_device_profiles"].create_index([("linked_user_ids", ASCENDING), ("updated_at", ASCENDING)])
+    db["identity_device_profiles"].create_index([("linked_student_ids", ASCENDING), ("updated_at", ASCENDING)])
+
     db["event_stream"].create_index([("created_at", ASCENDING)])
+    db["compliance_retention_runs"].create_index([("id", ASCENDING)], unique=True)
+    db["compliance_retention_runs"].create_index([("created_at", ASCENDING)])
+    db["compliance_deletion_requests"].create_index([("id", ASCENDING)], unique=True)
+    db["compliance_deletion_requests"].create_index([("email", ASCENDING), ("created_at", ASCENDING)])
+    db["compliance_deletion_requests"].create_index([("status", ASCENDING), ("created_at", ASCENDING)])
+    db["compliance_deletion_requests"].create_index([("legal_hold", ASCENDING), ("created_at", ASCENDING)])
+    db["compliance_evidence_packages"].create_index([("id", ASCENDING)], unique=True)
+    db["compliance_evidence_packages"].create_index([("created_at", ASCENDING)])
+    db["security_key_rotation_runs"].create_index([("id", ASCENDING)], unique=True)
+    db["security_key_rotation_runs"].create_index([("created_at", ASCENDING)])
+    db["dr_backups"].create_index([("id", ASCENDING)], unique=True)
+    db["dr_backups"].create_index([("backup_id", ASCENDING)], unique=True)
+    db["dr_backups"].create_index([("created_at", ASCENDING)])
+    db["dr_restore_drills"].create_index([("id", ASCENDING)], unique=True)
+    db["dr_restore_drills"].create_index([("started_at", ASCENDING)])
     db["static_assets"].create_index([("key", ASCENDING)], unique=True)
 
 
@@ -270,6 +479,9 @@ def init_mongo(force: bool = False) -> bool:
     uri_candidates: list[str] = []
     if uri:
         uri_candidates.append(uri)
+        hostname_fallback = _mongo_hostname_fallback_uri(uri)
+        if hostname_fallback and hostname_fallback not in uri_candidates:
+            uri_candidates.append(hostname_fallback)
     if fallback_uri and fallback_uri not in uri_candidates:
         uri_candidates.append(fallback_uri)
 
@@ -343,6 +555,24 @@ def close_mongo() -> None:
     _last_init_attempt = None
 
 
+def invalidate_mongo_connection(exc: Exception | None = None) -> None:
+    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt
+
+    if exc is not None:
+        _mongo_error = str(exc)
+        LOGGER.warning("MongoDB connection invalidated after operation failure: %s", exc)
+
+    if _mongo_client is not None:
+        try:
+            _mongo_client.close()
+        except Exception:
+            pass
+
+    _mongo_client = None
+    _mongo_db = None
+    _last_init_attempt = datetime.now(timezone.utc)
+
+
 def _get_mongo_db():
     if _mongo_db is None:
         init_mongo()
@@ -358,11 +588,57 @@ def get_mongo_db(required: bool = False):
 
 def mongo_status() -> dict[str, Any]:
     enabled = _get_mongo_db() is not None
+    hosts = _mongo_hosts()
+    remote_host = bool(hosts) and all(is_remote_service_host(host) for host in hosts)
     return {
         "enabled": enabled,
         "database": _mongo_db_name() if enabled else None,
+        "uri_scheme": _mongo_scheme(),
+        "host": hosts[0] if hosts else None,
+        "hosts": hosts,
+        "remote_host": remote_host,
+        "tls_enabled": _mongo_tls_enabled(),
         "error": None if enabled else _mongo_error,
     }
+
+
+def _sql_outbox_enabled() -> bool:
+    raw = (os.getenv("SQL_OUTBOX_ENABLED", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _enqueue_sql_outbox(
+    collection_name: str,
+    payload: dict[str, Any],
+    *,
+    upsert_filter: dict[str, Any] | None,
+    required: bool,
+) -> None:
+    if not _sql_outbox_enabled():
+        return
+
+    try:
+        from .database import SessionLocal
+        from .outbox import dispatch_outbox_batch, enqueue_mongo_upsert
+    except Exception:
+        return
+
+    session = SessionLocal()
+    try:
+        enqueue_mongo_upsert(
+            session,
+            collection_name=collection_name,
+            payload=payload,
+            upsert_filter=upsert_filter,
+            required=required,
+        )
+        session.commit()
+        dispatch_outbox_batch(session, limit=20)
+        session.commit()
+    except Exception:
+        session.rollback()
+    finally:
+        session.close()
 
 
 def mirror_document(
@@ -371,16 +647,26 @@ def mirror_document(
     *,
     required: bool | None = None,
     upsert_filter: dict[str, Any] | None = None,
+    allow_outbox: bool = True,
 ) -> bool:
     global _mongo_error
 
     must_persist = mongo_persistence_required() if required is None else bool(required)
+    if _strict_runtime_enabled() and mongo_persistence_required():
+        must_persist = True
+    doc = apply_pii_encryption_policy(collection_name, payload)
+    doc.setdefault("synced_at", datetime.now(timezone.utc))
+
     db = get_mongo_db(required=must_persist)
     if db is None:
+        if allow_outbox:
+            _enqueue_sql_outbox(
+                collection_name,
+                dict(doc),
+                upsert_filter=upsert_filter,
+                required=must_persist,
+            )
         return False
-
-    doc = dict(payload)
-    doc.setdefault("synced_at", datetime.now(timezone.utc))
 
     try:
         if upsert_filter:
@@ -389,7 +675,14 @@ def mirror_document(
             db[collection_name].insert_one(doc)
         return True
     except PyMongoError as exc:
-        _mongo_error = str(exc)
+        invalidate_mongo_connection(exc)
+        if allow_outbox:
+            _enqueue_sql_outbox(
+                collection_name,
+                doc,
+                upsert_filter=upsert_filter,
+                required=must_persist,
+            )
         if must_persist:
             raise RuntimeError(_mongo_error) from exc
         return False
@@ -432,14 +725,32 @@ def mirror_event(
     actor: dict[str, Any] | None = None,
     required: bool | None = None,
 ) -> bool:
-    return mirror_document(
+    actor_payload = actor or {}
+    realtime_scopes: set[str] = {"role:admin"}
+    actor_user_id = actor_payload.get("user_id")
+    try:
+        if actor_user_id is not None:
+            realtime_scopes.add(f"user:{int(actor_user_id)}")
+    except (TypeError, ValueError):
+        pass
+
+    mirrored = mirror_document(
         "event_stream",
         {
             "event_type": event_type,
             "source": source,
-            "actor": actor or {},
+            "actor": actor_payload,
             "payload": payload or {},
             "created_at": datetime.now(timezone.utc),
         },
         required=required,
     )
+    publish_domain_event(
+        event_type,
+        payload=payload or {},
+        actor=actor_payload,
+        source=source,
+        scopes=realtime_scopes,
+        topics=infer_topics(event_type),
+    )
+    return mirrored

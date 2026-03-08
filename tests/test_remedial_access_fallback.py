@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
-from app.routers.makeup import mark_remedial_attendance, validate_remedial_code
+from app.routers.remedial import mark_remedial_attendance, validate_remedial_code
 
 
 class RemedialAccessFallbackTests(unittest.TestCase):
@@ -113,10 +113,10 @@ class RemedialAccessFallbackTests(unittest.TestCase):
         self.assertTrue(validate_out.valid)
         self.assertEqual(validate_out.class_id, 1)
 
-        with patch("app.routers.makeup.mirror_document", return_value=None), patch(
-            "app.routers.makeup.mirror_event", return_value=None
+        with patch("app.routers.remedial.mirror_document", return_value=None), patch(
+            "app.routers.remedial.mirror_event", return_value=None
         ), patch(
-            "app.routers.makeup._verify_remedial_face_payload",
+            "app.routers.remedial._verify_remedial_face_payload",
             return_value=("data:image/jpeg;base64,AAAA", 0.98, "opencv-embedding", "verified"),
         ):
             mark_out = mark_remedial_attendance(
@@ -156,8 +156,8 @@ class RemedialAccessFallbackTests(unittest.TestCase):
         self.assertEqual(validate_err.exception.status_code, 403)
 
         with self.assertRaises(HTTPException) as mark_err:
-            with patch("app.routers.makeup.mirror_document", return_value=None), patch(
-                "app.routers.makeup.mirror_event", return_value=None
+            with patch("app.routers.remedial.mirror_document", return_value=None), patch(
+                "app.routers.remedial.mirror_event", return_value=None
             ):
                 mark_remedial_attendance(
                     payload=schemas.RemedialAttendanceMark(remedial_code="4C5X5OSK", student_id=2),

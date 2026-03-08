@@ -6,20 +6,43 @@ import os
 import re
 from datetime import date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pymongo.errors import DuplicateKeyError
+from sqlalchemy import or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..attendance_recovery import (
+    evaluate_attendance_recovery,
+    get_admin_recovery_plans,
+    get_faculty_recovery_plans,
+    get_student_recovery_plans,
+    get_plan_actions,
+    recompute_attendance_recovery_scope,
+    update_student_recovery_action,
+)
+from ..attendance_ledger import append_event_and_recompute, recompute_attendance_scope
 from ..auth_utils import get_current_user, require_roles
 from ..database import get_db
 from ..default_timetable import DEFAULT_TIMETABLE_BLUEPRINT
+from ..enterprise_controls import apply_pii_encryption_policy
 from ..face_verification import (
     build_enrollment_template_from_frames,
     build_profile_face_template,
     verify_face_sequence_opencv,
 )
+from ..identity_shield import run_student_enrollment_screening
+from ..media_storage import (
+    data_url_for_object,
+    mark_media_deleted,
+    signed_url_for_object,
+    store_data_url_object,
+)
 from ..mongo import get_mongo_db, mirror_document
+from ..realtime_bus import publish_domain_event
+from ..saarthi_service import materialize_saarthi_attendance
+from ..workers import enqueue_face_reverification, enqueue_recompute
 
 router = APIRouter(prefix="/attendance", tags=["Attendance Management"])
 logger = logging.getLogger(__name__)
@@ -46,6 +69,8 @@ FACE_MATCH_PASS_THRESHOLD = max(
     min(0.99, float(os.getenv("FACE_MATCH_PASS_THRESHOLD", "0.80"))),
 )
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
+PROFILE_MEDIA_RETENTION_DAYS = max(30, int(os.getenv("PROFILE_MEDIA_RETENTION_DAYS", "365")))
+ATTENDANCE_MEDIA_RETENTION_DAYS = max(7, int(os.getenv("ATTENDANCE_MEDIA_RETENTION_DAYS", "120")))
 ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
 
@@ -56,6 +81,131 @@ def _academic_start_date() -> date:
         return date.fromisoformat(raw)
     except ValueError:
         return date.fromisoformat(ACADEMIC_START_DATE_DEFAULT)
+
+
+def _parse_recovery_action_metadata(raw_value: str | None) -> dict[str, object]:
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _serialize_recovery_plan_rows(
+    db: Session,
+    plans: list[models.AttendanceRecoveryPlan],
+) -> list[schemas.AttendanceRecoveryPlanOut]:
+    if not plans:
+        return []
+
+    student_ids = {int(plan.student_id) for plan in plans}
+    course_ids = {int(plan.course_id) for plan in plans}
+    faculty_ids = {int(plan.faculty_id) for plan in plans if plan.faculty_id}
+    makeup_class_ids = {int(plan.recommended_makeup_class_id) for plan in plans if plan.recommended_makeup_class_id}
+    plan_ids = [int(plan.id) for plan in plans]
+
+    students = {
+        int(row.id): row
+        for row in db.query(models.Student).filter(models.Student.id.in_(student_ids)).all()
+    }
+    courses = {
+        int(row.id): row
+        for row in db.query(models.Course).filter(models.Course.id.in_(course_ids)).all()
+    }
+    faculty_ids.update(int(course.faculty_id) for course in courses.values() if course.faculty_id)
+    faculties = {
+        int(row.id): row
+        for row in db.query(models.Faculty).filter(models.Faculty.id.in_(faculty_ids)).all()
+    } if faculty_ids else {}
+    makeup_classes = {
+        int(row.id): row
+        for row in db.query(models.MakeUpClass).filter(models.MakeUpClass.id.in_(makeup_class_ids)).all()
+    } if makeup_class_ids else {}
+    actions_by_plan: dict[int, list[models.AttendanceRecoveryAction]] = {}
+    if plan_ids:
+        action_rows = (
+            db.query(models.AttendanceRecoveryAction)
+            .filter(models.AttendanceRecoveryAction.plan_id.in_(plan_ids))
+            .order_by(
+                models.AttendanceRecoveryAction.scheduled_for.asc(),
+                models.AttendanceRecoveryAction.id.asc(),
+            )
+            .all()
+        )
+        for action in action_rows:
+            actions_by_plan.setdefault(int(action.plan_id), []).append(action)
+
+    out: list[schemas.AttendanceRecoveryPlanOut] = []
+    for plan in plans:
+        course = courses.get(int(plan.course_id))
+        student = students.get(int(plan.student_id))
+        faculty = faculties.get(int(plan.faculty_id or 0))
+        if faculty is None and course is not None and course.faculty_id:
+            faculty = faculties.get(int(course.faculty_id))
+        makeup_class = makeup_classes.get(int(plan.recommended_makeup_class_id or 0))
+        actions = [
+            schemas.AttendanceRecoveryActionOut(
+                id=int(action.id),
+                action_type=action.action_type,
+                status=action.status,
+                title=action.title,
+                description=action.description,
+                recipient_role=action.recipient_role,
+                recipient_user_id=action.recipient_user_id,
+                recipient_email=action.recipient_email,
+                target_makeup_class_id=action.target_makeup_class_id,
+                scheduled_for=action.scheduled_for,
+                completed_at=action.completed_at,
+                outcome_note=action.outcome_note,
+                metadata=_parse_recovery_action_metadata(action.metadata_json),
+            )
+            for action in actions_by_plan.get(int(plan.id), [])
+        ]
+        out.append(
+            schemas.AttendanceRecoveryPlanOut(
+                id=int(plan.id),
+                student_id=int(plan.student_id),
+                student_name=student.name if student else f"Student {plan.student_id}",
+                registration_number=student.registration_number if student else None,
+                section=student.section if student else None,
+                course_id=int(plan.course_id),
+                course_code=course.code if course else f"C-{plan.course_id}",
+                course_title=course.title if course else "Unknown Course",
+                faculty_id=int(plan.faculty_id) if plan.faculty_id else (int(course.faculty_id) if course and course.faculty_id else None),
+                faculty_name=faculty.name if faculty else None,
+                risk_level=plan.risk_level,
+                status=plan.status,
+                attendance_percent=float(plan.attendance_percent or 0.0),
+                present_count=int(plan.present_count or 0),
+                absent_count=int(plan.absent_count or 0),
+                delivered_count=int(plan.delivered_count or 0),
+                consecutive_absences=int(plan.consecutive_absences or 0),
+                missed_remedials=int(plan.missed_remedials or 0),
+                parent_alert_allowed=bool(plan.parent_alert_allowed),
+                recovery_due_at=plan.recovery_due_at,
+                summary=plan.summary,
+                last_absent_on=plan.last_absent_on,
+                last_evaluated_at=plan.last_evaluated_at,
+                recommended_makeup_class=(
+                    schemas.AttendanceRecoverySuggestedClassOut(
+                        makeup_class_id=int(makeup_class.id),
+                        class_date=makeup_class.class_date,
+                        start_time=makeup_class.start_time,
+                        end_time=makeup_class.end_time,
+                        topic=makeup_class.topic,
+                        class_mode=makeup_class.class_mode,
+                        room_number=makeup_class.room_number,
+                        online_link=makeup_class.online_link,
+                    )
+                    if makeup_class is not None
+                    else None
+                ),
+                actions=actions,
+            )
+        )
+    return out
 
 
 def _time_from_hhmm(value: str) -> time:
@@ -189,6 +339,38 @@ def _normalize_person_name(value: str) -> str:
     return normalized
 
 
+def _public_media_reference(object_key: str | None, legacy_data_url: str | None) -> str | None:
+    if object_key:
+        return signed_url_for_object(object_key)
+    value = str(legacy_data_url or "").strip()
+    return value or None
+
+
+def _media_data_url_for_processing(db: Session, *, object_key: str | None, legacy_data_url: str | None) -> str | None:
+    if object_key:
+        restored = data_url_for_object(db, object_key)
+        if restored:
+            return restored
+    value = str(legacy_data_url or "").strip()
+    return value or None
+
+
+def _student_profile_photo_data_url(db: Session, student: models.Student) -> str | None:
+    return _media_data_url_for_processing(
+        db,
+        object_key=student.profile_photo_object_key,
+        legacy_data_url=student.profile_photo_data_url,
+    )
+
+
+def _faculty_profile_photo_data_url(db: Session, faculty: models.Faculty) -> str | None:
+    return _media_data_url_for_processing(
+        db,
+        object_key=faculty.profile_photo_object_key,
+        legacy_data_url=faculty.profile_photo_data_url,
+    )
+
+
 def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
     _upsert_mongo_by_id(
         "students",
@@ -198,7 +380,9 @@ def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
             "email": student.email,
             "registration_number": student.registration_number,
             "parent_email": student.parent_email,
-            "profile_photo_data_url": student.profile_photo_data_url,
+            "profile_photo_data_url": None,
+            "profile_photo_object_key": student.profile_photo_object_key,
+            "profile_photo_url": _public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
             "profile_photo_updated_at": student.profile_photo_updated_at,
             "profile_photo_locked_until": student.profile_photo_locked_until,
             "profile_face_template_json": student.profile_face_template_json,
@@ -226,7 +410,9 @@ def _sync_faculty_to_mongo(faculty: models.Faculty, *, source: str) -> None:
             "faculty_identifier": faculty.faculty_identifier,
             "section": faculty.section,
             "section_updated_at": faculty.section_updated_at,
-            "profile_photo_data_url": faculty.profile_photo_data_url,
+            "profile_photo_data_url": None,
+            "profile_photo_object_key": faculty.profile_photo_object_key,
+            "profile_photo_url": _public_media_reference(faculty.profile_photo_object_key, faculty.profile_photo_data_url),
             "profile_photo_updated_at": faculty.profile_photo_updated_at,
             "profile_photo_locked_until": faculty.profile_photo_locked_until,
             "department": faculty.department,
@@ -240,6 +426,7 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
     section_change_window_open, section_locked_until, section_lock_minutes_remaining = _student_section_lock_state(student)
     has_section = bool(re.sub(r"\s+", "", str(student.section or "").strip()))
+    has_photo = bool(student.profile_photo_object_key or student.profile_photo_data_url)
     return schemas.StudentProfileOut(
         student_id=student.id,
         name=student.name,
@@ -250,8 +437,8 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
         section_updated_at=student.section_updated_at,
         department=student.department,
         semester=student.semester,
-        has_profile_photo=bool(student.profile_photo_data_url),
-        photo_data_url=student.profile_photo_data_url,
+        has_profile_photo=has_photo,
+        photo_data_url=_public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
         can_update_photo_now=can_update_now,
         photo_locked_until=locked_until,
         photo_lock_days_remaining=lock_days_remaining,
@@ -264,9 +451,10 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
 
 def _student_photo_out(student: models.Student) -> schemas.StudentProfilePhotoOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
+    has_photo = bool(student.profile_photo_object_key or student.profile_photo_data_url)
     return schemas.StudentProfilePhotoOut(
-        has_profile_photo=bool(student.profile_photo_data_url),
-        photo_data_url=student.profile_photo_data_url,
+        has_profile_photo=has_photo,
+        photo_data_url=_public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
         can_update_now=can_update_now,
         locked_until=locked_until,
         lock_days_remaining=lock_days_remaining,
@@ -333,20 +521,27 @@ def _apply_student_profile_update(
             raise HTTPException(status_code=400, detail="photo_data_url must be an image data URL")
 
         can_update_now, _, _ = _photo_lock_state(student, now_dt)
-        existing_photo = (student.profile_photo_data_url or "").strip()
-        if existing_photo and incoming_photo != existing_photo and not can_update_now:
+        has_existing_photo = bool(student.profile_photo_object_key or student.profile_photo_data_url)
+        if has_existing_photo and not can_update_now:
             raise HTTPException(status_code=423, detail=PROFILE_PHOTO_LOCK_MESSAGE)
 
-        if incoming_photo != existing_photo:
-            if existing_photo:
-                # Replace policy: drop the previous snapshot before persisting the new one.
-                student.profile_photo_data_url = None
-                db.flush()
-            student.profile_photo_data_url = incoming_photo
-            student.profile_photo_updated_at = now_dt
-            student.profile_photo_locked_until = now_dt + timedelta(days=PROFILE_PHOTO_LOCK_DAYS)
-            changed = True
-            photo_changed = True
+        previous_key = str(student.profile_photo_object_key or "").strip() or None
+        media = store_data_url_object(
+            db,
+            owner_table="students",
+            owner_id=int(student.id),
+            media_kind="student-profile-photo",
+            data_url=incoming_photo,
+            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
+        )
+        student.profile_photo_object_key = media.object_key
+        student.profile_photo_data_url = None
+        student.profile_photo_updated_at = now_dt
+        student.profile_photo_locked_until = now_dt + timedelta(days=PROFILE_PHOTO_LOCK_DAYS)
+        if previous_key and previous_key != media.object_key:
+            mark_media_deleted(db, previous_key)
+        changed = True
+        photo_changed = True
 
     return changed, photo_changed
 
@@ -406,6 +601,7 @@ def _student_section_lock_state(
 def _faculty_profile_out(faculty: models.Faculty) -> schemas.FacultyProfileOut:
     can_update_photo_now, photo_locked_until, photo_lock_days_remaining = _faculty_photo_lock_state(faculty)
     can_update_section_now, section_locked_until, section_lock_minutes_remaining = _faculty_section_lock_state(faculty)
+    has_photo = bool(faculty.profile_photo_object_key or faculty.profile_photo_data_url)
     return schemas.FacultyProfileOut(
         faculty_id=faculty.id,
         name=faculty.name,
@@ -414,8 +610,8 @@ def _faculty_profile_out(faculty: models.Faculty) -> schemas.FacultyProfileOut:
         faculty_identifier=faculty.faculty_identifier,
         section=faculty.section,
         section_updated_at=faculty.section_updated_at,
-        has_profile_photo=bool(faculty.profile_photo_data_url),
-        photo_data_url=faculty.profile_photo_data_url,
+        has_profile_photo=has_photo,
+        photo_data_url=_public_media_reference(faculty.profile_photo_object_key, faculty.profile_photo_data_url),
         can_update_photo_now=can_update_photo_now,
         photo_locked_until=photo_locked_until,
         photo_lock_days_remaining=photo_lock_days_remaining,
@@ -486,19 +682,27 @@ def _apply_faculty_profile_update(
             raise HTTPException(status_code=400, detail="photo_data_url must be an image data URL")
 
         can_update_photo_now, _, _ = _faculty_photo_lock_state(faculty, now_dt)
-        existing_photo = (faculty.profile_photo_data_url or "").strip()
-        if existing_photo and incoming_photo != existing_photo and not can_update_photo_now:
+        has_existing_photo = bool(faculty.profile_photo_object_key or faculty.profile_photo_data_url)
+        if has_existing_photo and not can_update_photo_now:
             raise HTTPException(status_code=423, detail=FACULTY_PHOTO_LOCK_MESSAGE)
 
-        if incoming_photo != existing_photo:
-            if existing_photo:
-                faculty.profile_photo_data_url = None
-                db.flush()
-            faculty.profile_photo_data_url = incoming_photo
-            faculty.profile_photo_updated_at = now_dt
-            faculty.profile_photo_locked_until = now_dt + timedelta(days=FACULTY_PHOTO_LOCK_DAYS)
-            changed = True
-            photo_changed = True
+        previous_key = str(faculty.profile_photo_object_key or "").strip() or None
+        media = store_data_url_object(
+            db,
+            owner_table="faculty",
+            owner_id=int(faculty.id),
+            media_kind="faculty-profile-photo",
+            data_url=incoming_photo,
+            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
+        )
+        faculty.profile_photo_object_key = media.object_key
+        faculty.profile_photo_data_url = None
+        faculty.profile_photo_updated_at = now_dt
+        faculty.profile_photo_locked_until = now_dt + timedelta(days=FACULTY_PHOTO_LOCK_DAYS)
+        if previous_key and previous_key != media.object_key:
+            mark_media_deleted(db, previous_key)
+        changed = True
+        photo_changed = True
 
     return changed, photo_changed
 
@@ -550,14 +754,15 @@ def _merge_face_templates(primary: dict | None, secondary: dict | None) -> dict 
     return base
 
 
-def _rebuild_profile_face_template(student: models.Student) -> None:
-    if not student.profile_photo_data_url:
+def _rebuild_profile_face_template(db: Session, student: models.Student) -> None:
+    profile_photo_data_url = _student_profile_photo_data_url(db, student)
+    if not profile_photo_data_url:
         student.profile_face_template_json = None
         student.profile_face_template_updated_at = None
         return
 
     try:
-        template = build_profile_face_template(student.profile_photo_data_url)
+        template = build_profile_face_template(profile_photo_data_url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid enrollment face photo: {exc}") from exc
 
@@ -565,13 +770,43 @@ def _rebuild_profile_face_template(student: models.Student) -> None:
     student.profile_face_template_updated_at = datetime.utcnow()
 
 
-def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
+def _maybe_run_identity_screening_for_student(
+    db: Session,
+    student: models.Student,
+    *,
+    trigger: str,
+) -> None:
     try:
-        mongo_db = get_mongo_db(required=True)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        case = run_student_enrollment_screening(db, student_id=int(student.id))
+    except Exception:
+        logger.exception(
+            "identity_enrollment_screening_failed student_id=%s trigger=%s",
+            getattr(student, "id", None),
+            trigger,
+        )
+        return
+    logger.info(
+        "identity_enrollment_screening_completed student_id=%s case_id=%s risk_level=%s trigger=%s",
+        getattr(student, "id", None),
+        case.id,
+        case.risk_level.value,
+        trigger,
+    )
+
+
+def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
     body = dict(payload)
     body["id"] = doc_id
+    body = apply_pii_encryption_policy(collection, body)
+    mongo_db = get_mongo_db(required=False)
+    if mongo_db is None:
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
+        )
+        return
     try:
         mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
     except DuplicateKeyError as exc:
@@ -587,7 +822,7 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
         fallback_body.pop("id", None)
         result = mongo_db[collection].update_one(conflict_filter, {"$set": fallback_body}, upsert=False)
         if result.matched_count:
-            logger.warning(
+            logger.debug(
                 "Resolved duplicate-key upsert for collection=%s id=%s via filter=%s",
                 collection,
                 doc_id,
@@ -600,7 +835,297 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
             doc_id,
             conflict_filter,
         )
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
+        )
         return
+    except Exception:
+        mirror_document(
+            collection,
+            body,
+            upsert_filter={"id": doc_id},
+            required=False,
+        )
+        return
+
+
+def _upsert_class_schedule_document(schedule: models.ClassSchedule, *, source: str) -> None:
+    _upsert_mongo_by_id(
+        "class_schedules",
+        schedule.id,
+        {
+            "course_id": schedule.course_id,
+            "faculty_id": schedule.faculty_id,
+            "weekday": schedule.weekday,
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "classroom_label": schedule.classroom_label,
+            "is_active": schedule.is_active,
+            "source": source,
+            "created_at": schedule.created_at,
+        },
+    )
+
+
+def _resolve_or_create_timetable_schedule(
+    db: Session,
+    *,
+    payload: schemas.TimetableOverrideUpsertRequest,
+    current_user: models.AuthUser,
+) -> tuple[models.ClassSchedule, bool]:
+    course = db.get(models.Course, payload.course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.faculty_id != payload.faculty_id:
+        raise HTTPException(status_code=400, detail="Faculty is not assigned to this course")
+
+    existing = (
+        db.query(models.ClassSchedule)
+        .filter(
+            models.ClassSchedule.course_id == payload.course_id,
+            models.ClassSchedule.weekday == payload.weekday,
+            models.ClassSchedule.start_time == payload.start_time,
+        )
+        .first()
+    )
+    if existing:
+        schedule_changed = False
+        if existing.faculty_id != payload.faculty_id:
+            raise HTTPException(
+                status_code=409,
+                detail="A schedule already exists for this course/time with a different faculty assignment",
+            )
+        if existing.end_time != payload.end_time:
+            raise HTTPException(
+                status_code=409,
+                detail="A schedule already exists for this course/time with a different end time",
+            )
+        incoming_room = str(payload.classroom_label or "").strip()
+        existing_room = str(existing.classroom_label or "").strip()
+        if incoming_room and existing_room and incoming_room != existing_room:
+            raise HTTPException(
+                status_code=409,
+                detail="A schedule already exists for this course/time with a different classroom label",
+            )
+        if incoming_room and not existing_room:
+            existing.classroom_label = incoming_room
+            schedule_changed = True
+        if not existing.is_active:
+            existing.is_active = True
+            schedule_changed = True
+        if schedule_changed:
+            _upsert_class_schedule_document(existing, source="attendance.timetable_override")
+        return existing, False
+
+    assignment = (
+        db.query(models.CourseClassroom)
+        .filter(models.CourseClassroom.course_id == payload.course_id)
+        .first()
+    )
+    if not assignment and not payload.classroom_label:
+        raise HTTPException(
+            status_code=400,
+            detail="Assign a classroom to this course or provide classroom_label before creating a timetable override",
+        )
+
+    classroom = db.get(models.Classroom, assignment.classroom_id) if assignment else None
+    classroom_label = payload.classroom_label or (
+        f"{classroom.block}-{classroom.room_number}" if classroom else None
+    )
+
+    weekday_schedules = (
+        db.query(models.ClassSchedule)
+        .filter(
+            models.ClassSchedule.is_active.is_(True),
+            models.ClassSchedule.weekday == payload.weekday,
+        )
+        .all()
+    )
+    room_by_course = {
+        int(row.course_id): int(row.classroom_id)
+        for row in db.query(models.CourseClassroom).all()
+    }
+    new_room_id = int(assignment.classroom_id) if assignment else None
+    for row in weekday_schedules:
+        if not _time_ranges_overlap(payload.start_time, payload.end_time, row.start_time, row.end_time):
+            continue
+
+        if int(row.faculty_id) == int(payload.faculty_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Timetable override failed: faculty has overlapping class (schedule {row.id})",
+            )
+
+        existing_room_id = room_by_course.get(int(row.course_id))
+        if new_room_id and existing_room_id and existing_room_id == new_room_id:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Timetable override failed: classroom has overlapping class (schedule {row.id})",
+            )
+
+    schedule = models.ClassSchedule(
+        course_id=payload.course_id,
+        faculty_id=payload.faculty_id,
+        weekday=payload.weekday,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        classroom_label=classroom_label,
+        is_active=True,
+    )
+    db.add(schedule)
+    db.flush()
+
+    _upsert_class_schedule_document(schedule, source="attendance.timetable_override")
+    if assignment:
+        mirror_document(
+            "resource_allocations",
+            {
+                "course_id": int(payload.course_id),
+                "classroom_id": int(assignment.classroom_id),
+                "classroom_label": classroom_label,
+                "faculty_id": int(payload.faculty_id),
+                "updated_at": datetime.utcnow(),
+                "source": "attendance.timetable_override",
+            },
+            upsert_filter={"course_id": int(payload.course_id)},
+            required=False,
+        )
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": "timetable_override_schedule_created",
+            "schedule_id": int(schedule.id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "weekday": int(schedule.weekday),
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "classroom_label": schedule.classroom_label,
+            "created_at": datetime.utcnow(),
+            "source": "attendance.timetable_override",
+            "actor_user_id": current_user.id,
+            "actor_role": current_user.role.value,
+        },
+        required=False,
+    )
+    return schedule, True
+
+
+def _serialize_timetable_override(
+    override: models.TimetableOverride,
+    schedule: models.ClassSchedule,
+) -> schemas.TimetableOverrideOut:
+    return schemas.TimetableOverrideOut(
+        id=override.id,
+        scope_type=schemas.TimetableOverrideScope(override.scope_type),
+        student_id=override.student_id,
+        section=override.section,
+        source_weekday=override.source_weekday,
+        source_start_time=override.source_start_time,
+        schedule_id=override.schedule_id,
+        course_id=schedule.course_id,
+        faculty_id=schedule.faculty_id,
+        weekday=schedule.weekday,
+        start_time=schedule.start_time,
+        end_time=schedule.end_time,
+        classroom_label=schedule.classroom_label,
+        is_active=override.is_active,
+        created_at=override.created_at,
+        updated_at=override.updated_at,
+    )
+
+
+def _build_timetable_class_item(
+    db: Session,
+    *,
+    student_id: int,
+    current_week_start: date,
+    academic_start: date,
+    now_dt: datetime,
+    schedule: models.ClassSchedule,
+) -> schemas.TimetableClassOut | None:
+    course = db.get(models.Course, schedule.course_id)
+    if not course:
+        return None
+
+    class_date = current_week_start + timedelta(days=schedule.weekday)
+    if class_date < academic_start:
+        return None
+
+    is_open_now, is_active_now, is_ended_now = _window_flags(
+        schedule,
+        now_dt,
+        class_date,
+        course=course,
+    )
+    submission = (
+        db.query(models.AttendanceSubmission)
+        .filter(
+            models.AttendanceSubmission.schedule_id == schedule.id,
+            models.AttendanceSubmission.student_id == student_id,
+            models.AttendanceSubmission.class_date == class_date,
+        )
+        .first()
+    )
+    attendance_status = submission.status.value if submission else None
+    if not attendance_status:
+        fallback_record = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == student_id,
+                models.AttendanceRecord.course_id == schedule.course_id,
+                models.AttendanceRecord.attendance_date == class_date,
+            )
+            .first()
+        )
+        if fallback_record:
+            attendance_status = fallback_record.status.value
+
+    return schemas.TimetableClassOut(
+        schedule_id=schedule.id,
+        course_id=schedule.course_id,
+        course_code=course.code,
+        course_title=course.title,
+        weekday=schedule.weekday,
+        start_time=schedule.start_time,
+        end_time=schedule.end_time,
+        classroom_label=schedule.classroom_label,
+        class_date=class_date,
+        is_open_now=is_open_now,
+        is_active_now=is_active_now,
+        is_ended_now=is_ended_now,
+        attendance_status=attendance_status,
+    )
+
+
+def _record_attendance_status(
+    db: Session,
+    *,
+    student_id: int,
+    course_id: int,
+    faculty_id: int,
+    class_date: date,
+    status: models.AttendanceStatus,
+    source: str,
+) -> models.AttendanceRecord | None:
+    _, aggregate = append_event_and_recompute(
+        db,
+        student_id=int(student_id),
+        course_id=int(course_id),
+        attendance_date=class_date,
+        status=status,
+        source=source,
+        actor_faculty_id=int(faculty_id),
+    )
+    evaluate_attendance_recovery(
+        db,
+        student_id=int(student_id),
+        course_id=int(course_id),
+    )
+    return aggregate
 
 
 def _upsert_present_attendance(
@@ -611,32 +1136,181 @@ def _upsert_present_attendance(
     faculty_id: int,
     class_date: date,
     source: str,
-) -> None:
-    existing = (
-        db.query(models.AttendanceRecord)
+) -> models.AttendanceRecord | None:
+    return _record_attendance_status(
+        db,
+        student_id=student_id,
+        course_id=course_id,
+        faculty_id=faculty_id,
+        class_date=class_date,
+        status=models.AttendanceStatus.PRESENT,
+        source=source,
+    )
+
+
+def _resolve_schedule_for_rectification(
+    *,
+    db: Session,
+    course_id: int,
+    class_date: date,
+    preferred_start_time: time | None = None,
+) -> models.ClassSchedule:
+    weekday = class_date.weekday()
+    schedule_query = (
+        db.query(models.ClassSchedule)
         .filter(
-            models.AttendanceRecord.student_id == student_id,
-            models.AttendanceRecord.course_id == course_id,
-            models.AttendanceRecord.attendance_date == class_date,
+            models.ClassSchedule.course_id == course_id,
+            models.ClassSchedule.weekday == weekday,
+            models.ClassSchedule.is_active.is_(True),
+        )
+    )
+    if preferred_start_time is not None:
+        by_start = schedule_query.filter(models.ClassSchedule.start_time == preferred_start_time).first()
+        if by_start:
+            return by_start
+    schedule = schedule_query.order_by(models.ClassSchedule.start_time.asc()).first()
+    if schedule:
+        return schedule
+    raise HTTPException(status_code=400, detail="No active schedule found for this subject on selected date")
+
+
+def _upsert_approved_submission_for_rectification(
+    *,
+    db: Session,
+    schedule: models.ClassSchedule,
+    student_id: int,
+    class_date: date,
+    faculty_id: int,
+    review_note: str | None,
+) -> models.AttendanceSubmission:
+    submission = (
+        db.query(models.AttendanceSubmission)
+        .filter(
+            models.AttendanceSubmission.schedule_id == schedule.id,
+            models.AttendanceSubmission.student_id == student_id,
+            models.AttendanceSubmission.class_date == class_date,
         )
         .first()
     )
-
-    if existing:
-        existing.status = models.AttendanceStatus.PRESENT
-        existing.source = source
-        existing.marked_by_faculty_id = faculty_id
-        return
-
-    db.add(
-        models.AttendanceRecord(
+    if submission is None:
+        submission = models.AttendanceSubmission(
+            schedule_id=schedule.id,
+            course_id=schedule.course_id,
+            faculty_id=schedule.faculty_id,
             student_id=student_id,
-            course_id=course_id,
-            marked_by_faculty_id=faculty_id,
-            attendance_date=class_date,
-            status=models.AttendanceStatus.PRESENT,
-            source=source,
+            class_date=class_date,
+            selfie_photo_data_url=None,
+            ai_match=True,
+            ai_confidence=1.0,
+            ai_model="faculty-rectification",
+            ai_reason="Attendance rectified by faculty with proof verification",
+            status=models.AttendanceSubmissionStatus.APPROVED,
+            submitted_at=datetime.utcnow(),
+            reviewed_by_faculty_id=faculty_id,
+            reviewed_at=datetime.utcnow(),
+            review_note=review_note,
         )
+        db.add(submission)
+        db.flush()
+        return submission
+
+    submission.status = models.AttendanceSubmissionStatus.APPROVED
+    submission.ai_match = True
+    if not submission.ai_model:
+        submission.ai_model = "faculty-rectification"
+    if not submission.ai_reason:
+        submission.ai_reason = "Attendance rectified by faculty with proof verification"
+    submission.reviewed_by_faculty_id = faculty_id
+    submission.reviewed_at = datetime.utcnow()
+    submission.review_note = review_note
+    db.flush()
+    return submission
+
+
+def _sync_rectification_request_to_mongo(
+    request: models.AttendanceRectificationRequest,
+    *,
+    source: str,
+) -> None:
+    _upsert_mongo_by_id(
+        "attendance_rectification_requests",
+        request.id,
+        {
+            "student_id": request.student_id,
+            "faculty_id": request.faculty_id,
+            "course_id": request.course_id,
+            "schedule_id": request.schedule_id,
+            "class_date": request.class_date.isoformat(),
+            "class_start_time": request.class_start_time.isoformat(),
+            "class_end_time": request.class_end_time.isoformat(),
+            "proof_note": request.proof_note,
+            "proof_photo_object_key": request.proof_photo_object_key,
+            "proof_photo_fingerprint": _photo_fingerprint(
+                request.proof_photo_object_key or request.proof_photo_data_url
+            ),
+            "status": request.status.value,
+            "requested_at": request.requested_at,
+            "reviewed_at": request.reviewed_at,
+            "reviewed_by_faculty_id": request.reviewed_by_faculty_id,
+            "review_note": request.review_note,
+            "source": source,
+        },
+    )
+
+
+def _student_rectification_out(
+    request: models.AttendanceRectificationRequest,
+    *,
+    course: models.Course | None,
+    faculty: models.Faculty | None,
+) -> schemas.StudentAttendanceRectificationOut:
+    return schemas.StudentAttendanceRectificationOut(
+        id=request.id,
+        course_id=request.course_id,
+        course_code=course.code if course else f"C-{request.course_id}",
+        course_title=course.title if course else "Unknown Course",
+        faculty_name=faculty.name if faculty else "Faculty",
+        schedule_id=request.schedule_id,
+        class_date=request.class_date,
+        class_start_time=request.class_start_time,
+        class_end_time=request.class_end_time,
+        proof_note=request.proof_note,
+        proof_photo_data_url=_public_media_reference(
+            request.proof_photo_object_key,
+            request.proof_photo_data_url,
+        ),
+        status=request.status,
+        requested_at=request.requested_at,
+        reviewed_at=request.reviewed_at,
+        review_note=request.review_note,
+    )
+
+
+def _faculty_rectification_out(
+    request: models.AttendanceRectificationRequest,
+    *,
+    student: models.Student | None,
+    course: models.Course | None,
+) -> schemas.FacultyAttendanceRectificationOut:
+    return schemas.FacultyAttendanceRectificationOut(
+        id=request.id,
+        student_id=request.student_id,
+        student_name=student.name if student else f"Student #{request.student_id}",
+        course_id=request.course_id,
+        course_code=course.code if course else f"C-{request.course_id}",
+        course_title=course.title if course else "Unknown Course",
+        class_date=request.class_date,
+        class_start_time=request.class_start_time,
+        class_end_time=request.class_end_time,
+        proof_note=request.proof_note,
+        proof_photo_data_url=_public_media_reference(
+            request.proof_photo_object_key,
+            request.proof_photo_data_url,
+        ),
+        status=request.status,
+        requested_at=request.requested_at,
+        reviewed_at=request.reviewed_at,
+        review_note=request.review_note,
     )
 
 
@@ -658,6 +1332,30 @@ def _is_submission_credited(status_value: models.AttendanceSubmissionStatus | st
     except ValueError:
         return False
     return normalized in _CREDITED_SUBMISSION_STATUSES
+
+
+def _submission_to_attendance_status(
+    status_value: models.AttendanceSubmissionStatus | str | None,
+) -> models.AttendanceStatus | None:
+    if status_value is None:
+        return None
+    try:
+        normalized = (
+            status_value
+            if isinstance(status_value, models.AttendanceSubmissionStatus)
+            else models.AttendanceSubmissionStatus(str(status_value))
+        )
+    except ValueError:
+        return None
+    if normalized in (
+        models.AttendanceSubmissionStatus.VERIFIED,
+        models.AttendanceSubmissionStatus.APPROVED,
+        models.AttendanceSubmissionStatus.PENDING_REVIEW,
+    ):
+        return models.AttendanceStatus.PRESENT
+    if normalized == models.AttendanceSubmissionStatus.REJECTED:
+        return models.AttendanceStatus.ABSENT
+    return None
 
 
 def _photo_lock_state(student: models.Student, now_dt: datetime | None = None) -> tuple[bool, datetime | None, int]:
@@ -705,6 +1403,7 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
         "removed_enrollments": 0,
         "purged_attendance_records": 0,
         "purged_attendance_submissions": 0,
+        "purged_attendance_events": 0,
         "total_classes": len(DEFAULT_TIMETABLE_BLUEPRINT),
     }
     default_course_ids: set[int] = set()
@@ -731,7 +1430,12 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
                 "faculty_identifier": faculty.faculty_identifier,
                 "section": faculty.section,
                 "section_updated_at": faculty.section_updated_at,
-                "profile_photo_data_url": faculty.profile_photo_data_url,
+                "profile_photo_data_url": None,
+                "profile_photo_object_key": faculty.profile_photo_object_key,
+                "profile_photo_url": _public_media_reference(
+                    faculty.profile_photo_object_key,
+                    faculty.profile_photo_data_url,
+                ),
                 "profile_photo_updated_at": faculty.profile_photo_updated_at,
                 "profile_photo_locked_until": faculty.profile_photo_locked_until,
                 "department": faculty.department,
@@ -944,15 +1648,22 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             .filter(models.AttendanceRecord.student_id == student.id)
             .delete(synchronize_session=False)
         )
+        reset_event_count = (
+            db.query(models.AttendanceEvent)
+            .filter(models.AttendanceEvent.student_id == student.id)
+            .delete(synchronize_session=False)
+        )
         reset_submission_count = (
             db.query(models.AttendanceSubmission)
             .filter(models.AttendanceSubmission.student_id == student.id)
             .delete(synchronize_session=False)
         )
         created["purged_attendance_records"] += int(reset_record_count or 0)
+        created["purged_attendance_events"] += int(reset_event_count or 0)
         created["purged_attendance_submissions"] += int(reset_submission_count or 0)
         if mongo_db is not None:
             mongo_db["attendance_records"].delete_many({"student_id": student.id})
+            mongo_db["attendance_events"].delete_many({"student_id": student.id})
             mongo_db["attendance_submissions"].delete_many({"student_id": student.id})
     elif stale_schedule_ids:
         stale_submission_count = (
@@ -993,6 +1704,14 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             )
             .delete(synchronize_session=False)
         )
+        stale_event_count = (
+            db.query(models.AttendanceEvent)
+            .filter(
+                models.AttendanceEvent.student_id == student.id,
+                models.AttendanceEvent.course_id.in_(stale_course_ids),
+            )
+            .delete(synchronize_session=False)
+        )
         stale_submission_count = (
             db.query(models.AttendanceSubmission)
             .filter(
@@ -1002,6 +1721,7 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             .delete(synchronize_session=False)
         )
         created["purged_attendance_records"] += int(stale_record_count or 0)
+        created["purged_attendance_events"] += int(stale_event_count or 0)
         created["purged_attendance_submissions"] += int(stale_submission_count or 0)
 
         if mongo_db is not None:
@@ -1012,6 +1732,12 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
                 }
             )
             mongo_db["attendance_records"].delete_many(
+                {
+                    "student_id": student.id,
+                    "course_id": {"$in": stale_course_ids},
+                }
+            )
+            mongo_db["attendance_events"].delete_many(
                 {
                     "student_id": student.id,
                     "course_id": {"$in": stale_course_ids},
@@ -1260,6 +1986,165 @@ def list_schedules(
     return query.order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc()).all()
 
 
+@router.post("/timetable-overrides", response_model=schemas.TimetableOverrideOut, status_code=status.HTTP_201_CREATED)
+def upsert_timetable_override(
+    payload: schemas.TimetableOverrideUpsertRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    student_id: int | None = None
+    section: str | None = None
+    affected_student_ids: list[int] = []
+    if payload.scope_type == schemas.TimetableOverrideScope.STUDENT:
+        student = db.get(models.Student, payload.student_id)
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found")
+        student_id = int(student.id)
+        affected_student_ids = [student_id]
+        scope_key = f"student:{student_id}"
+        scope_type = schemas.TimetableOverrideScope.STUDENT.value
+    else:
+        section = _normalize_section_token(payload.section)
+        section_student_rows = (
+            db.query(models.Student.id)
+            .filter(models.Student.section == section)
+            .all()
+        )
+        affected_student_ids = sorted({int(row.id) for row in section_student_rows if row and row.id})
+        if not affected_student_ids:
+            raise HTTPException(status_code=404, detail="No students found for the selected section")
+        scope_key = f"section:{section}"
+        scope_type = schemas.TimetableOverrideScope.SECTION.value
+
+    schedule, _ = _resolve_or_create_timetable_schedule(
+        db,
+        payload=payload,
+        current_user=current_user,
+    )
+
+    override = (
+        db.query(models.TimetableOverride)
+        .filter(
+            models.TimetableOverride.scope_key == scope_key,
+            models.TimetableOverride.source_weekday == payload.source_weekday,
+            models.TimetableOverride.source_start_time == payload.source_start_time,
+        )
+        .first()
+    )
+    now_dt = datetime.utcnow()
+    if override:
+        override.scope_type = scope_type
+        override.scope_key = scope_key
+        override.student_id = student_id
+        override.section = section
+        override.schedule_id = schedule.id
+        override.is_active = payload.is_active
+        override.updated_by_user_id = current_user.id
+        override.updated_at = now_dt
+        status_code = status.HTTP_200_OK
+    else:
+        override = models.TimetableOverride(
+            scope_type=scope_type,
+            scope_key=scope_key,
+            student_id=student_id,
+            section=section,
+            source_weekday=payload.source_weekday,
+            source_start_time=payload.source_start_time,
+            schedule_id=schedule.id,
+            is_active=payload.is_active,
+            updated_by_user_id=current_user.id,
+            created_at=now_dt,
+            updated_at=now_dt,
+        )
+        db.add(override)
+        status_code = status.HTTP_201_CREATED
+
+    db.commit()
+    db.refresh(override)
+    db.refresh(schedule)
+    response.status_code = status_code
+
+    _upsert_mongo_by_id(
+        "timetable_overrides",
+        override.id,
+        {
+            "scope_type": override.scope_type,
+            "scope_key": override.scope_key,
+            "student_id": override.student_id,
+            "section": override.section,
+            "source_weekday": override.source_weekday,
+            "source_start_time": str(override.source_start_time),
+            "schedule_id": override.schedule_id,
+            "is_active": override.is_active,
+            "updated_by_user_id": override.updated_by_user_id,
+            "created_at": override.created_at,
+            "updated_at": override.updated_at,
+            "source": "attendance.timetable_override",
+        },
+    )
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": "timetable_override_upserted",
+            "override_id": int(override.id),
+            "scope_type": override.scope_type,
+            "scope_key": override.scope_key,
+            "student_id": override.student_id,
+            "section": override.section,
+            "source_weekday": int(override.source_weekday),
+            "source_start_time": str(override.source_start_time),
+            "schedule_id": int(override.schedule_id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "weekday": int(schedule.weekday),
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "classroom_label": schedule.classroom_label,
+            "created_at": now_dt,
+            "source": "attendance.timetable_override",
+            "actor_user_id": current_user.id,
+            "actor_role": current_user.role.value,
+            "write_mode": "update" if status_code == status.HTTP_200_OK else "create",
+        },
+        required=False,
+    )
+    event_scopes = {
+        "role:admin",
+        f"faculty:{int(schedule.faculty_id)}",
+    }
+    for sid in affected_student_ids:
+        event_scopes.add(f"student:{int(sid)}")
+    publish_domain_event(
+        "attendance.timetable.updated",
+        payload={
+            "override_id": int(override.id),
+            "scope_type": override.scope_type,
+            "student_id": override.student_id,
+            "section": override.section,
+            "source_weekday": int(override.source_weekday),
+            "source_start_time": str(override.source_start_time),
+            "schedule_id": int(override.schedule_id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "weekday": int(schedule.weekday),
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "classroom_label": schedule.classroom_label,
+            "affected_student_ids": affected_student_ids,
+        },
+        scopes=event_scopes,
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+
+    return _serialize_timetable_override(override, schedule)
+
+
 @router.post("/student/default-timetable", response_model=schemas.DefaultTimetableLoadResponse)
 def load_default_student_timetable(
     db: Session = Depends(get_db),
@@ -1363,8 +2248,11 @@ def update_faculty_profile(
             "faculty_identifier": faculty.faculty_identifier,
             "section": faculty.section,
             "section_updated_at": faculty.section_updated_at,
-            "profile_photo_fingerprint": _photo_fingerprint(faculty.profile_photo_data_url),
-            "profile_photo_size": len(faculty.profile_photo_data_url or ""),
+            "profile_photo_object_key": faculty.profile_photo_object_key,
+            "profile_photo_fingerprint": _photo_fingerprint(
+                faculty.profile_photo_object_key or faculty.profile_photo_data_url
+            ),
+            "profile_photo_size": len(faculty.profile_photo_object_key or faculty.profile_photo_data_url or ""),
             "profile_photo_updated_at": faculty.profile_photo_updated_at,
             "profile_photo_locked_until": faculty.profile_photo_locked_until,
             "source": "faculty-portal",
@@ -1394,7 +2282,8 @@ def faculty_update_student_section(
 
     now_dt = datetime.utcnow()
     can_change_section_now, _, section_lock_minutes_remaining = _student_section_lock_state(student, now_dt)
-    if current_section and not can_change_section_now:
+    is_admin_actor = current_user.role == models.UserRole.ADMIN
+    if current_section and not can_change_section_now and not is_admin_actor:
         raise HTTPException(
             status_code=423,
             detail=(
@@ -1419,11 +2308,6 @@ def faculty_update_student_section(
             raise HTTPException(
                 status_code=403,
                 detail="Faculty can update students only to their own section scope.",
-            )
-        if current_section and current_section not in allowed_sections:
-            raise HTTPException(
-                status_code=403,
-                detail="Faculty can approve updates only for students in their section scope.",
             )
 
     student.section = target_section
@@ -1492,6 +2376,9 @@ def update_student_profile(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
+    had_registration_number = bool((student.registration_number or "").strip())
+    had_enrollment_video = bool(student.enrollment_video_template_json)
+
     if (
         payload.name is None
         and payload.registration_number is None
@@ -1502,7 +2389,7 @@ def update_student_profile(
 
     changed, photo_changed = _apply_student_profile_update(student, payload, db=db)
     if photo_changed:
-        _rebuild_profile_face_template(student)
+        _rebuild_profile_face_template(db, student)
         changed = True
     if changed:
         db.commit()
@@ -1526,8 +2413,11 @@ def update_student_profile(
             "student_id": student.id,
             "name": student.name,
             "registration_number": student.registration_number,
-            "profile_photo_fingerprint": _photo_fingerprint(student.profile_photo_data_url),
-            "profile_photo_size": len(student.profile_photo_data_url or ""),
+            "profile_photo_object_key": student.profile_photo_object_key,
+            "profile_photo_fingerprint": _photo_fingerprint(
+                student.profile_photo_object_key or student.profile_photo_data_url
+            ),
+            "profile_photo_size": len(student.profile_photo_object_key or student.profile_photo_data_url or ""),
             "profile_photo_updated_at": student.profile_photo_updated_at,
             "profile_photo_locked_until": student.profile_photo_locked_until,
             "profile_face_template_fingerprint": _photo_fingerprint(student.profile_face_template_json),
@@ -1537,6 +2427,14 @@ def update_student_profile(
         },
         upsert_filter={"student_id": student.id},
     )
+
+    registration_completed_now = (not had_registration_number) and bool((student.registration_number or "").strip())
+    if had_enrollment_video and (photo_changed or registration_completed_now):
+        _maybe_run_identity_screening_for_student(
+            db,
+            student,
+            trigger="student_profile_update",
+        )
 
     return _student_profile_out(student)
 
@@ -1554,13 +2452,15 @@ def update_student_profile_photo(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
+    had_enrollment_video = bool(student.enrollment_video_template_json)
+
     changed, photo_changed = _apply_student_profile_update(
         student,
         schemas.StudentProfileUpdateRequest(photo_data_url=payload.photo_data_url),
         db=db,
     )
     if photo_changed:
-        _rebuild_profile_face_template(student)
+        _rebuild_profile_face_template(db, student)
         changed = True
     if changed:
         db.commit()
@@ -1573,8 +2473,11 @@ def update_student_profile_photo(
         "student_profile_faces",
         {
             "student_id": student.id,
-            "profile_photo_fingerprint": _photo_fingerprint(student.profile_photo_data_url),
-            "profile_photo_size": len(student.profile_photo_data_url or ""),
+            "profile_photo_object_key": student.profile_photo_object_key,
+            "profile_photo_fingerprint": _photo_fingerprint(
+                student.profile_photo_object_key or student.profile_photo_data_url
+            ),
+            "profile_photo_size": len(student.profile_photo_object_key or student.profile_photo_data_url or ""),
             "profile_photo_updated_at": student.profile_photo_updated_at,
             "profile_photo_locked_until": student.profile_photo_locked_until,
             "profile_face_template_fingerprint": _photo_fingerprint(student.profile_face_template_json),
@@ -1584,6 +2487,13 @@ def update_student_profile_photo(
         },
         upsert_filter={"student_id": student.id},
     )
+
+    if had_enrollment_video and photo_changed:
+        _maybe_run_identity_screening_for_student(
+            db,
+            student,
+            trigger="student_profile_photo_update",
+        )
 
     return _student_photo_out(student)
 
@@ -1601,7 +2511,7 @@ def update_student_enrollment_video(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    if not student.registration_number or not student.profile_photo_data_url:
+    if not student.registration_number or not _student_profile_photo_data_url(db, student):
         raise HTTPException(
             status_code=400,
             detail="Complete profile setup (registration number + face photo) before enrollment video",
@@ -1615,19 +2525,44 @@ def update_student_enrollment_video(
     if len(payload.frames_data_urls) < 8:
         raise HTTPException(status_code=400, detail="At least 8 frames are required for enrollment")
 
-    template = build_enrollment_template_from_frames(payload.frames_data_urls)
-    valid_frames = int(template.get("valid_frames", 0))
-    if valid_frames < 8:
+    try:
+        template = build_enrollment_template_from_frames(payload.frames_data_urls)
+    except ValueError as exc:
+        detail = str(exc).strip() or "Unable to process enrollment video"
+        status_code = 503 if "opencv not installed" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    template_quality = template.get("quality", {}) if isinstance(template, dict) else {}
+    valid_frames_total = int(
+        template_quality.get("valid_frames_total")
+        or template_quality.get("valid_frames_used")
+        or len(template.get("embeddings", []))
+    )
+    valid_frames_used = int(
+        template_quality.get("valid_frames_used")
+        or min(valid_frames_total, len(template.get("embeddings", [])))
+    )
+    if valid_frames_total < 8:
         raise HTTPException(
             status_code=400,
-            detail=f"Insufficient valid enrollment frames ({valid_frames}/8). Ensure one clear face with slight head movement.",
+            detail=(
+                f"Insufficient valid enrollment frames ({valid_frames_total}/8). "
+                "Ensure one clear face with slight head movement."
+            ),
         )
 
     student.enrollment_video_template_json = json.dumps(template)
     student.enrollment_video_updated_at = now_dt
     student.enrollment_video_locked_until = now_dt + timedelta(days=ENROLLMENT_VIDEO_LOCK_DAYS)
 
-    db.commit()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("student_enrollment_video_persist_failed student_id=%s", student.id)
+        raise HTTPException(
+            status_code=500,
+            detail="Enrollment video could not be persisted. Retry after checking database storage health.",
+        ) from exc
 
     _sync_student_to_mongo(student, source="student-enrollment-video")
 
@@ -1635,7 +2570,7 @@ def update_student_enrollment_video(
         "student_enrollment_videos",
         {
             "student_id": student.id,
-            "valid_frames": valid_frames,
+            "valid_frames": valid_frames_total,
             "total_frames_received": len(payload.frames_data_urls),
             "enrollment_template_fingerprint": _photo_fingerprint(student.enrollment_video_template_json),
             "enrollment_video_updated_at": student.enrollment_video_updated_at,
@@ -1646,6 +2581,12 @@ def update_student_enrollment_video(
         upsert_filter={"student_id": student.id},
     )
 
+    _maybe_run_identity_screening_for_student(
+        db,
+        student,
+        trigger="student_enrollment_video_update",
+    )
+
     return schemas.StudentEnrollmentVideoOut(
         has_enrollment_video=True,
         can_update_now=False,
@@ -1653,7 +2594,7 @@ def update_student_enrollment_video(
         lock_days_remaining=math.ceil((student.enrollment_video_locked_until - now_dt).total_seconds() / 86400),
         enrollment_updated_at=student.enrollment_video_updated_at,
         message="Enrollment video captured successfully",
-        valid_frames_used=valid_frames,
+        valid_frames_used=valid_frames_used,
         total_frames_received=len(payload.frames_data_urls),
     )
 
@@ -1693,12 +2634,21 @@ def get_student_weekly_timetable(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    created = _ensure_default_timetable_for_student(db, student)
-    has_default_timetable_changes = any(
-        value for key, value in created.items() if key != "total_classes"
+    has_existing_enrollment = (
+        db.query(models.Enrollment.id)
+        .filter(models.Enrollment.student_id == current_user.student_id)
+        .first()
+        is not None
     )
-    if has_default_timetable_changes:
-        db.commit()
+    if not has_existing_enrollment:
+        created = _ensure_default_timetable_for_student(db, student)
+        has_default_timetable_changes = any(
+            value for key, value in created.items() if key != "total_classes"
+        )
+        if has_default_timetable_changes:
+            db.commit()
+        else:
+            db.flush()
     else:
         db.flush()
 
@@ -1729,51 +2679,87 @@ def get_student_weekly_timetable(
 
     now_dt = datetime.now()
     result: list[schemas.TimetableClassOut] = []
+    student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    applicable_overrides: list[models.TimetableOverride] = []
+    override_filters = [
+        (
+            (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.STUDENT.value)
+            & (models.TimetableOverride.student_id == current_user.student_id)
+        ),
+    ]
+    if student_section:
+        override_filters.append(
+            (
+                (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.SECTION.value)
+                & (models.TimetableOverride.section == student_section)
+            )
+        )
+    if override_filters:
+        applicable_overrides = (
+            db.query(models.TimetableOverride)
+            .filter(
+                models.TimetableOverride.is_active.is_(True),
+                or_(*override_filters),
+            )
+            .order_by(models.TimetableOverride.created_at.asc(), models.TimetableOverride.id.asc())
+            .all()
+        )
+
+    override_schedule_ids = sorted({int(item.schedule_id) for item in applicable_overrides if item.schedule_id})
+    override_schedules_by_id = (
+        {
+            int(row.id): row
+            for row in db.query(models.ClassSchedule)
+            .filter(models.ClassSchedule.id.in_(override_schedule_ids))
+            .all()
+        }
+        if override_schedule_ids
+        else {}
+    )
+    section_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.SECTION.value]
+    student_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.STUDENT.value]
+    effective_overrides_by_source: dict[tuple[int, time], tuple[models.TimetableOverride, models.ClassSchedule]] = {}
+    for bucket in (section_overrides, student_overrides):
+        for override in bucket:
+            schedule = override_schedules_by_id.get(int(override.schedule_id))
+            if not schedule or not schedule.is_active:
+                continue
+            source_key = (int(override.source_weekday), override.source_start_time)
+            effective_overrides_by_source[source_key] = (override, schedule)
+
+    suppressed_regular_slots = set(effective_overrides_by_source.keys())
+    effective_override_targets: dict[tuple[int, time], tuple[models.TimetableOverride, models.ClassSchedule]] = {}
+    for override, schedule in effective_overrides_by_source.values():
+        target_key = (int(schedule.weekday), schedule.start_time)
+        effective_override_targets[target_key] = (override, schedule)
 
     for schedule in schedules:
-        course = db.get(models.Course, schedule.course_id)
-        if not course:
+        schedule_key = (int(schedule.weekday), schedule.start_time)
+        if schedule_key in suppressed_regular_slots or schedule_key in effective_override_targets:
             continue
-
-        class_date = current_week_start + timedelta(days=schedule.weekday)
-        if class_date < academic_start:
-            continue
-        is_open_now, is_active_now, is_ended_now = _window_flags(
-            schedule,
-            now_dt,
-            class_date,
-            course=course,
+        item = _build_timetable_class_item(
+            db,
+            student_id=current_user.student_id,
+            current_week_start=current_week_start,
+            academic_start=academic_start,
+            now_dt=now_dt,
+            schedule=schedule,
         )
+        if item:
+            result.append(item)
 
-        submission = (
-            db.query(models.AttendanceSubmission)
-            .filter(
-                models.AttendanceSubmission.schedule_id == schedule.id,
-                models.AttendanceSubmission.student_id == current_user.student_id,
-                models.AttendanceSubmission.class_date == class_date,
-            )
-            .first()
+    for _, schedule in effective_override_targets.values():
+        item = _build_timetable_class_item(
+            db,
+            student_id=current_user.student_id,
+            current_week_start=current_week_start,
+            academic_start=academic_start,
+            now_dt=now_dt,
+            schedule=schedule,
         )
+        if item:
+            result.append(item)
 
-        result.append(
-            schemas.TimetableClassOut(
-                schedule_id=schedule.id,
-                course_id=schedule.course_id,
-                course_code=course.code,
-                course_title=course.title,
-                weekday=schedule.weekday,
-                start_time=schedule.start_time,
-                end_time=schedule.end_time,
-                classroom_label=schedule.classroom_label,
-                class_date=class_date,
-                is_open_now=is_open_now,
-                is_active_now=is_active_now,
-                is_ended_now=is_ended_now,
-                attendance_status=submission.status.value if submission else None,
-            )
-        )
-
-    student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
     targeted_remedial_class_ids = {
         int(row[0])
         for row in (
@@ -1884,13 +2870,20 @@ def get_student_attendance_history(
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
     academic_start = _academic_start_date()
-    today = date.today()
+    now_dt = datetime.now()
+    today = now_dt.date()
+    materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=academic_start,
+        today=today,
+    )
+    db.commit()
     fetch_limit = min(365, max(limit * 3, 80))
     submissions = (
         db.query(models.AttendanceSubmission)
         .filter(
             models.AttendanceSubmission.student_id == current_user.student_id,
-            models.AttendanceSubmission.status.in_(_CREDITED_SUBMISSION_STATUSES),
             models.AttendanceSubmission.class_date >= academic_start,
             models.AttendanceSubmission.class_date <= today,
         )
@@ -1903,7 +2896,6 @@ def get_student_attendance_history(
         .all()
     )
 
-    submission_course_day_keys = {(item.course_id, item.class_date) for item in submissions}
     records = (
         db.query(models.AttendanceRecord)
         .filter(
@@ -1915,19 +2907,14 @@ def get_student_attendance_history(
         .limit(fetch_limit)
         .all()
     )
-    fallback_records = [
-        item
-        for item in records
-        if (item.course_id, item.attendance_date) not in submission_course_day_keys
-    ]
 
-    if not submissions and not fallback_records:
+    if not submissions and not records:
         return schemas.StudentAttendanceHistoryOut(records=[])
 
     course_ids = sorted(
         {
             *[item.course_id for item in submissions],
-            *[item.course_id for item in fallback_records],
+            *[item.course_id for item in records],
         }
     )
     courses = (
@@ -1939,7 +2926,7 @@ def get_student_attendance_history(
     faculty_ids = sorted(
         {
             *[item.faculty_id for item in submissions if item.faculty_id is not None],
-            *[item.marked_by_faculty_id for item in fallback_records if item.marked_by_faculty_id is not None],
+            *[item.marked_by_faculty_id for item in records if item.marked_by_faculty_id is not None],
             *[course.faculty_id for course in courses.values() if course.faculty_id is not None],
         }
     )
@@ -1966,9 +2953,17 @@ def get_student_attendance_history(
         if course_ids
         else []
     )
-    schedule_map: dict[tuple[int, int], models.ClassSchedule] = {}
+    schedules_by_course_weekday: dict[tuple[int, int], list[models.ClassSchedule]] = {}
     for schedule in fallback_schedules:
-        schedule_map.setdefault((schedule.course_id, schedule.weekday), schedule)
+        schedules_by_course_weekday.setdefault((schedule.course_id, schedule.weekday), []).append(schedule)
+    for key in list(schedules_by_course_weekday.keys()):
+        schedules_by_course_weekday[key].sort(key=lambda item: (item.start_time, item.id))
+
+    submission_keys = {
+        (int(item.course_id), item.class_date, int(item.schedule_id))
+        for item in submissions
+    }
+    submission_course_date_keys = {(int(item.course_id), item.class_date) for item in submissions}
 
     items: list[schemas.StudentAttendanceHistoryItemOut] = []
     for submission in submissions:
@@ -1981,29 +2976,65 @@ def get_student_attendance_history(
         )
         start_t = schedule.start_time if schedule else time(0, 0)
         end_t = schedule.end_time if schedule else time(0, 0)
+        status_value = _submission_to_attendance_status(submission.status) or models.AttendanceStatus.ABSENT
 
         items.append(
             schemas.StudentAttendanceHistoryItemOut(
+                schedule_id=submission.schedule_id,
                 class_date=submission.class_date,
                 start_time=start_t,
                 end_time=end_t,
                 course_code=course.code if course else f"C-{submission.course_id}",
                 course_title=course.title if course else "Unknown Course",
                 faculty_name=faculty.name if faculty else "Faculty",
-                status=models.AttendanceStatus.PRESENT,
+                status=status_value,
                 source="attendance-management",
             )
         )
 
-    for record in fallback_records:
+    for record in records:
         course = courses.get(record.course_id)
         faculty = faculties.get(record.marked_by_faculty_id)
-        schedule = schedule_map.get((record.course_id, record.attendance_date.weekday()))
+        candidate_schedules = [
+            schedule
+            for schedule in schedules_by_course_weekday.get(
+                (int(record.course_id), int(record.attendance_date.weekday())),
+                [],
+            )
+            if record.attendance_date < today
+            or (record.attendance_date == today and now_dt.time() >= schedule.start_time)
+        ]
+        added_schedule_fallback = False
+        for schedule in candidate_schedules:
+            key = (int(record.course_id), record.attendance_date, int(schedule.id))
+            if key in submission_keys:
+                continue
+            items.append(
+                schemas.StudentAttendanceHistoryItemOut(
+                    schedule_id=schedule.id,
+                    class_date=record.attendance_date,
+                    start_time=schedule.start_time,
+                    end_time=schedule.end_time,
+                    course_code=course.code if course else f"C-{record.course_id}",
+                    course_title=course.title if course else "Unknown Course",
+                    faculty_name=faculty.name if faculty else "Faculty",
+                    status=record.status,
+                    source=record.source,
+                )
+            )
+            added_schedule_fallback = True
+
+        if added_schedule_fallback:
+            continue
+        if (int(record.course_id), record.attendance_date) in submission_course_date_keys:
+            continue
+
         items.append(
             schemas.StudentAttendanceHistoryItemOut(
+                schedule_id=None,
                 class_date=record.attendance_date,
-                start_time=schedule.start_time if schedule else time(0, 0),
-                end_time=schedule.end_time if schedule else time(0, 0),
+                start_time=time(0, 0),
+                end_time=time(0, 0),
                 course_code=course.code if course else f"C-{record.course_id}",
                 course_title=course.title if course else "Unknown Course",
                 faculty_name=faculty.name if faculty else "Faculty",
@@ -2035,13 +3066,49 @@ def get_student_attendance_aggregate(
     academic_start = _academic_start_date()
     now_dt = datetime.now()
     today = now_dt.date()
+    materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=academic_start,
+        today=today,
+    )
+    db.commit()
 
     enrollments = (
         db.query(models.Enrollment)
         .filter(models.Enrollment.student_id == current_user.student_id)
         .all()
     )
-    course_ids = sorted({item.course_id for item in enrollments})
+    enrolled_course_ids = {item.course_id for item in enrollments}
+    extra_submission_course_ids = {
+        int(row[0])
+        for row in (
+            db.query(models.AttendanceSubmission.course_id)
+            .filter(
+                models.AttendanceSubmission.student_id == current_user.student_id,
+                models.AttendanceSubmission.class_date >= academic_start,
+                models.AttendanceSubmission.class_date <= today,
+            )
+            .distinct()
+            .all()
+        )
+        if row and row[0]
+    }
+    extra_record_course_ids = {
+        int(row[0])
+        for row in (
+            db.query(models.AttendanceRecord.course_id)
+            .filter(
+                models.AttendanceRecord.student_id == current_user.student_id,
+                models.AttendanceRecord.attendance_date >= academic_start,
+                models.AttendanceRecord.attendance_date <= today,
+            )
+            .distinct()
+            .all()
+        )
+        if row and row[0]
+    }
+    course_ids = sorted(enrolled_course_ids | extra_submission_course_ids | extra_record_course_ids)
     if not course_ids:
         return schemas.StudentAttendanceAggregateOut(
             aggregate_percent=0.0,
@@ -2082,17 +3149,27 @@ def get_student_attendance_aggregate(
         .all()
     )
     delivered_submission_keys: dict[int, set[tuple[int, date]]] = {}
-    delivered_submission_dates: dict[int, set[date]] = {}
     credited_submission_keys: dict[int, set[tuple[int, date]]] = {}
+    submission_schedule_ids_by_course_date: dict[tuple[int, date], set[int]] = {}
     last_attended_map: dict[int, date] = {}
     for course_id, schedule_id, class_date, status_value in submission_rows:
-        delivered_submission_keys.setdefault(course_id, set()).add((schedule_id, class_date))
-        delivered_submission_dates.setdefault(course_id, set()).add(class_date)
-        if _is_submission_credited(status_value):
-            credited_submission_keys.setdefault(course_id, set()).add((schedule_id, class_date))
-            prev_last = last_attended_map.get(course_id)
+        normalized_course_id = int(course_id)
+        normalized_schedule_id = int(schedule_id)
+        delivered_submission_keys.setdefault(normalized_course_id, set()).add(
+            (normalized_schedule_id, class_date)
+        )
+        submission_schedule_ids_by_course_date.setdefault(
+            (normalized_course_id, class_date),
+            set(),
+        ).add(normalized_schedule_id)
+        submission_status = _submission_to_attendance_status(status_value)
+        if submission_status == models.AttendanceStatus.PRESENT:
+            credited_submission_keys.setdefault(normalized_course_id, set()).add(
+                (normalized_schedule_id, class_date)
+            )
+            prev_last = last_attended_map.get(normalized_course_id)
             if prev_last is None or class_date > prev_last:
-                last_attended_map[course_id] = class_date
+                last_attended_map[normalized_course_id] = class_date
 
     record_rows = (
         db.query(
@@ -2110,15 +3187,42 @@ def get_student_attendance_aggregate(
     )
     delivered_record_dates: dict[int, set[date]] = {}
     attended_record_fallback_counts: dict[int, int] = {}
-    for course_id, status_value, attendance_date in record_rows:
-        delivered_record_dates.setdefault(course_id, set()).add(attendance_date)
-        if status_value == models.AttendanceStatus.PRESENT:
-            if attendance_date in delivered_submission_dates.get(course_id, set()):
+    delivered_schedule_ids_cache: dict[tuple[int, date], set[int]] = {}
+
+    def delivered_schedule_ids(course_id: int, class_date: date) -> set[int]:
+        key = (int(course_id), class_date)
+        cached = delivered_schedule_ids_cache.get(key)
+        if cached is not None:
+            return cached
+        out: set[int] = set()
+        for schedule in schedules_by_course.get(int(course_id), []):
+            if int(schedule.weekday) != int(class_date.weekday()):
                 continue
-            attended_record_fallback_counts[course_id] = attended_record_fallback_counts.get(course_id, 0) + 1
-            prev_last = last_attended_map.get(course_id)
+            if class_date < today or (class_date == today and now_dt.time() >= schedule.start_time):
+                out.add(int(schedule.id))
+        delivered_schedule_ids_cache[key] = out
+        return out
+
+    for course_id, status_value, attendance_date in record_rows:
+        normalized_course_id = int(course_id)
+        delivered_record_dates.setdefault(normalized_course_id, set()).add(attendance_date)
+        submission_schedule_ids = submission_schedule_ids_by_course_date.get(
+            (normalized_course_id, attendance_date),
+            set(),
+        )
+        delivered_schedule_ids_for_day = delivered_schedule_ids(normalized_course_id, attendance_date)
+        missing_schedule_ids = delivered_schedule_ids_for_day.difference(submission_schedule_ids)
+        fallback_slots = len(missing_schedule_ids)
+        if not delivered_schedule_ids_for_day and not submission_schedule_ids:
+            fallback_slots = 1
+
+        if status_value == models.AttendanceStatus.PRESENT and fallback_slots > 0:
+            attended_record_fallback_counts[normalized_course_id] = (
+                attended_record_fallback_counts.get(normalized_course_id, 0) + fallback_slots
+            )
+            prev_last = last_attended_map.get(normalized_course_id)
             if prev_last is None or attendance_date > prev_last:
-                last_attended_map[course_id] = attendance_date
+                last_attended_map[normalized_course_id] = attendance_date
 
     course_rows: list[schemas.StudentCourseAttendanceAggregateOut] = []
     attended_total = 0
@@ -2136,6 +3240,8 @@ def get_student_attendance_aggregate(
         delivered_by_submissions = len(delivered_submission_keys.get(course_id, set()))
         delivered_by_records = len(delivered_record_dates.get(course_id, set()))
         delivered = max(delivered_by_schedule, delivered_by_submissions, delivered_by_records)
+        if delivered <= 0:
+            continue
 
         attended = (
             len(credited_submission_keys.get(course_id, set()))
@@ -2173,6 +3279,340 @@ def get_student_attendance_aggregate(
     )
 
 
+@router.get("/student/recovery-plans", response_model=schemas.AttendanceRecoveryPlanListOut)
+def get_student_recovery_plan_list(
+    include_resolved: bool = Query(default=False),
+    limit: int = Query(default=12, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    plans = get_student_recovery_plans(
+        db,
+        student_id=int(current_user.student_id),
+        include_resolved=bool(include_resolved),
+        limit=int(limit),
+    )
+    return schemas.AttendanceRecoveryPlanListOut(
+        plans=_serialize_recovery_plan_rows(db, plans),
+        last_updated_at=datetime.utcnow(),
+    )
+
+
+@router.post(
+    "/student/recovery-actions/{action_id}/acknowledge",
+    response_model=schemas.AttendanceRecoveryActionUpdateOut,
+)
+def acknowledge_student_recovery_action(
+    action_id: int,
+    payload: schemas.AttendanceRecoveryActionUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+    try:
+        action = update_student_recovery_action(
+            db,
+            action_id=int(action_id),
+            student_id=int(current_user.student_id),
+            new_status=models.AttendanceRecoveryActionStatus.ACKNOWLEDGED,
+            note=payload.note,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.commit()
+    publish_domain_event(
+        "attendance.recovery.acknowledged",
+        payload={
+            "action_id": int(action.id),
+            "plan_id": int(action.plan_id),
+            "student_id": int(current_user.student_id),
+        },
+        scopes={
+            f"student:{int(current_user.student_id)}",
+            "role:admin",
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    return schemas.AttendanceRecoveryActionUpdateOut(
+        action_id=int(action.id),
+        status=action.status,
+        completed_at=action.completed_at,
+        outcome_note=action.outcome_note,
+    )
+
+
+@router.post(
+    "/student/recovery-actions/{action_id}/complete",
+    response_model=schemas.AttendanceRecoveryActionUpdateOut,
+)
+def complete_student_recovery_action(
+    action_id: int,
+    payload: schemas.AttendanceRecoveryActionUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+    try:
+        action = update_student_recovery_action(
+            db,
+            action_id=int(action_id),
+            student_id=int(current_user.student_id),
+            new_status=models.AttendanceRecoveryActionStatus.COMPLETED,
+            note=payload.note,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    db.commit()
+    publish_domain_event(
+        "attendance.recovery.completed",
+        payload={
+            "action_id": int(action.id),
+            "plan_id": int(action.plan_id),
+            "student_id": int(current_user.student_id),
+        },
+        scopes={
+            f"student:{int(current_user.student_id)}",
+            "role:admin",
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    return schemas.AttendanceRecoveryActionUpdateOut(
+        action_id=int(action.id),
+        status=action.status,
+        completed_at=action.completed_at,
+        outcome_note=action.outcome_note,
+    )
+
+
+@router.get(
+    "/student/rectification-requests",
+    response_model=schemas.StudentAttendanceRectificationListOut,
+)
+def list_student_rectification_requests(
+    limit: int = Query(default=80, ge=1, le=300),
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    rows = (
+        db.query(models.AttendanceRectificationRequest)
+        .filter(models.AttendanceRectificationRequest.student_id == current_user.student_id)
+        .order_by(
+            models.AttendanceRectificationRequest.requested_at.desc(),
+            models.AttendanceRectificationRequest.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return schemas.StudentAttendanceRectificationListOut(requests=[])
+
+    course_ids = sorted({item.course_id for item in rows})
+    courses = (
+        {row.id: row for row in db.query(models.Course).filter(models.Course.id.in_(course_ids)).all()}
+        if course_ids
+        else {}
+    )
+    faculty_ids = sorted(
+        {
+            *[item.faculty_id for item in rows],
+            *[course.faculty_id for course in courses.values()],
+        }
+    )
+    faculties = (
+        {row.id: row for row in db.query(models.Faculty).filter(models.Faculty.id.in_(faculty_ids)).all()}
+        if faculty_ids
+        else {}
+    )
+
+    requests: list[schemas.StudentAttendanceRectificationOut] = []
+    for item in rows:
+        course = courses.get(item.course_id)
+        fallback_faculty_id = course.faculty_id if course else None
+        faculty = faculties.get(item.faculty_id) or faculties.get(fallback_faculty_id)
+        requests.append(
+            _student_rectification_out(
+                item,
+                course=course,
+                faculty=faculty,
+            )
+        )
+    return schemas.StudentAttendanceRectificationListOut(requests=requests)
+
+
+@router.post(
+    "/student/rectification-requests",
+    response_model=schemas.StudentAttendanceRectificationOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_student_rectification_request(
+    payload: schemas.AttendanceRectificationRequestCreate,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    student = db.get(models.Student, current_user.student_id)
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    course = db.get(models.Course, payload.course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    is_enrolled = (
+        db.query(models.Enrollment.id)
+        .filter(
+            models.Enrollment.student_id == current_user.student_id,
+            models.Enrollment.course_id == payload.course_id,
+        )
+        .first()
+        is not None
+    )
+    if not is_enrolled:
+        raise HTTPException(status_code=403, detail="Student is not enrolled in this subject")
+
+    today = date.today()
+    if payload.class_date > today:
+        raise HTTPException(status_code=400, detail="Rectification request cannot be created for future classes")
+
+    schedule = _resolve_schedule_for_rectification(
+        db=db,
+        course_id=payload.course_id,
+        class_date=payload.class_date,
+        preferred_start_time=payload.start_time,
+    )
+
+    already_present_submission = (
+        db.query(models.AttendanceSubmission.id)
+        .filter(
+            models.AttendanceSubmission.student_id == current_user.student_id,
+            models.AttendanceSubmission.course_id == payload.course_id,
+            models.AttendanceSubmission.class_date == payload.class_date,
+            models.AttendanceSubmission.status.in_(_CREDITED_SUBMISSION_STATUSES),
+        )
+        .first()
+        is not None
+    )
+    already_present_record = (
+        db.query(models.AttendanceRecord.id)
+        .filter(
+            models.AttendanceRecord.student_id == current_user.student_id,
+            models.AttendanceRecord.course_id == payload.course_id,
+            models.AttendanceRecord.attendance_date == payload.class_date,
+            models.AttendanceRecord.status == models.AttendanceStatus.PRESENT,
+        )
+        .first()
+        is not None
+    )
+    if already_present_submission or already_present_record:
+        raise HTTPException(status_code=400, detail="Attendance is already marked present for this class")
+
+    proof_note = str(payload.proof_note or "").strip()
+    if len(proof_note) < 10:
+        raise HTTPException(status_code=400, detail="Please provide proper proof details for rectification")
+    proof_photo = (payload.proof_photo_data_url or "").strip() or None
+    if proof_photo and not proof_photo.startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="proof_photo_data_url must be an image data URL")
+    proof_photo_object_key: str | None = None
+    if proof_photo:
+        proof_media = store_data_url_object(
+            db,
+            owner_table="attendance_rectification_requests",
+            owner_id=int(current_user.student_id),
+            media_kind="attendance-rectification-proof",
+            data_url=proof_photo,
+            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+        )
+        proof_photo_object_key = proof_media.object_key
+
+    request = (
+        db.query(models.AttendanceRectificationRequest)
+        .filter(
+            models.AttendanceRectificationRequest.student_id == current_user.student_id,
+            models.AttendanceRectificationRequest.schedule_id == schedule.id,
+            models.AttendanceRectificationRequest.class_date == payload.class_date,
+        )
+        .first()
+    )
+
+    source = "student-rectification-request-create"
+    if request is None:
+        request = models.AttendanceRectificationRequest(
+            student_id=current_user.student_id,
+            faculty_id=schedule.faculty_id,
+            course_id=schedule.course_id,
+            schedule_id=schedule.id,
+            class_date=payload.class_date,
+            class_start_time=schedule.start_time,
+            class_end_time=schedule.end_time,
+            proof_note=proof_note,
+            proof_photo_data_url=None,
+            proof_photo_object_key=proof_photo_object_key,
+            status=models.AttendanceRectificationStatus.PENDING,
+        )
+        db.add(request)
+    else:
+        if request.status == models.AttendanceRectificationStatus.APPROVED:
+            raise HTTPException(status_code=400, detail="Rectification already approved for this class")
+        request.faculty_id = schedule.faculty_id
+        request.course_id = schedule.course_id
+        request.class_start_time = schedule.start_time
+        request.class_end_time = schedule.end_time
+        request.proof_note = proof_note
+        previous_key = str(request.proof_photo_object_key or "").strip() or None
+        request.proof_photo_data_url = None
+        request.proof_photo_object_key = proof_photo_object_key
+        if previous_key and previous_key != proof_photo_object_key:
+            mark_media_deleted(db, previous_key)
+        request.status = models.AttendanceRectificationStatus.PENDING
+        request.requested_at = datetime.utcnow()
+        request.reviewed_at = None
+        request.reviewed_by_faculty_id = None
+        request.review_note = None
+        source = "student-rectification-request-refresh"
+
+    db.commit()
+    db.refresh(request)
+
+    _sync_rectification_request_to_mongo(request, source=source)
+    faculty = db.get(models.Faculty, request.faculty_id)
+
+    return _student_rectification_out(
+        request,
+        course=course,
+        faculty=faculty,
+    )
+
+
 def _resolve_student_schedule_context(
     *,
     db: Session,
@@ -2189,7 +3629,7 @@ def _resolve_student_schedule_context(
     if not student.registration_number:
         raise HTTPException(status_code=400, detail="Complete profile setup with registration number before attendance")
 
-    if not student.profile_photo_data_url:
+    if not (student.profile_photo_object_key or student.profile_photo_data_url):
         raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
     if not student.enrollment_video_template_json:
         raise HTTPException(status_code=400, detail="Complete one-time enrollment video before marking attendance")
@@ -2201,6 +3641,51 @@ def _resolve_student_schedule_context(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found for schedule")
 
+    student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    override_filters = [
+        (
+            (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.STUDENT.value)
+            & (models.TimetableOverride.student_id == current_user.student_id)
+        ),
+    ]
+    if student_section:
+        override_filters.append(
+            (
+                (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.SECTION.value)
+                & (models.TimetableOverride.section == student_section)
+            )
+        )
+    applicable_overrides = (
+        db.query(models.TimetableOverride)
+        .filter(
+            models.TimetableOverride.is_active.is_(True),
+            or_(*override_filters),
+        )
+        .order_by(models.TimetableOverride.created_at.asc(), models.TimetableOverride.id.asc())
+        .all()
+    )
+    section_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.SECTION.value]
+    student_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.STUDENT.value]
+    effective_overrides_by_source: dict[tuple[int, time], models.TimetableOverride] = {}
+    for bucket in (section_overrides, student_overrides):
+        for override in bucket:
+            effective_overrides_by_source[(int(override.source_weekday), override.source_start_time)] = override
+
+    schedule_key = (int(schedule.weekday), schedule.start_time)
+    slot_suppressed = False
+    allowed_via_override = False
+    for source_key, override in effective_overrides_by_source.items():
+        target_schedule = db.get(models.ClassSchedule, override.schedule_id)
+        if not target_schedule or not target_schedule.is_active:
+            continue
+        if source_key == schedule_key and int(target_schedule.id) != int(schedule.id):
+            slot_suppressed = True
+        if int(target_schedule.id) == int(schedule.id):
+            allowed_via_override = True
+
+    if slot_suppressed and not allowed_via_override:
+        raise HTTPException(status_code=403, detail="This class slot is not assigned in the student's active timetable")
+
     is_enrolled = (
         db.query(models.Enrollment)
         .filter(
@@ -2209,7 +3694,7 @@ def _resolve_student_schedule_context(
         )
         .first()
     )
-    if not is_enrolled:
+    if not is_enrolled and not allowed_via_override:
         raise HTTPException(status_code=403, detail="Student is not enrolled in this class")
 
     return student, schedule, course
@@ -2217,6 +3702,7 @@ def _resolve_student_schedule_context(
 
 def _verify_student_face_payload(
     *,
+    db: Session,
     student: models.Student,
     schedule: models.ClassSchedule,
     payload: schemas.RealtimeAttendanceMarkRequest,
@@ -2239,25 +3725,28 @@ def _verify_student_face_payload(
     enrollment_template = _parse_face_template(student.enrollment_video_template_json)
     profile_template = _parse_face_template(student.profile_face_template_json)
     combined_template = _merge_face_templates(enrollment_template, profile_template)
+    profile_photo_data_url = _student_profile_photo_data_url(db, student)
+    if not profile_photo_data_url:
+        raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
     if combined_template is None:
         raise HTTPException(
             status_code=400,
             detail="Complete one-time enrollment video before marking attendance",
         )
-    if profile_template is None and student.profile_photo_data_url:
+    if profile_template is None and profile_photo_data_url:
         logger.warning(
             "profile_template_missing_or_invalid student=%s rebuilding-on-the-fly",
             student.email,
         )
         try:
-            profile_template = build_profile_face_template(student.profile_photo_data_url)
+            profile_template = build_profile_face_template(profile_photo_data_url)
         except ValueError:
             profile_template = None
         combined_template = _merge_face_templates(enrollment_template, profile_template)
 
     # Backend OpenCV verification is mandatory for attendance marking.
     opencv_verdict = verify_face_sequence_opencv(
-        student.profile_photo_data_url,
+        profile_photo_data_url,
         selfie_frames,
         subject_label=student.email,
         profile_template=combined_template,
@@ -2366,6 +3855,7 @@ def mark_realtime_attendance(
     if not is_open_now:
         raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
     primary_selfie, final_confidence, final_engine, status_value, final_reason = _verify_student_face_payload(
+        db=db,
         student=student,
         schedule=schedule,
         payload=payload,
@@ -2383,13 +3873,22 @@ def mark_realtime_attendance(
     )
 
     if not submission:
+        selfie_media = store_data_url_object(
+            db,
+            owner_table="attendance_submissions",
+            owner_id=int(current_user.student_id or 0),
+            media_kind="attendance-selfie",
+            data_url=primary_selfie,
+            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+        )
         submission = models.AttendanceSubmission(
             schedule_id=schedule.id,
             course_id=schedule.course_id,
             faculty_id=schedule.faculty_id,
             student_id=current_user.student_id,
             class_date=today,
-            selfie_photo_data_url=primary_selfie,
+            selfie_photo_data_url=None,
+            selfie_photo_object_key=selfie_media.object_key,
             ai_match=final_match,
             ai_confidence=final_confidence,
             ai_model=final_engine,
@@ -2412,7 +3911,19 @@ def mark_realtime_attendance(
                 verification_reason=submission.ai_reason,
             )
 
-        submission.selfie_photo_data_url = primary_selfie
+        previous_selfie_key = str(submission.selfie_photo_object_key or "").strip() or None
+        selfie_media = store_data_url_object(
+            db,
+            owner_table="attendance_submissions",
+            owner_id=int(current_user.student_id or 0),
+            media_kind="attendance-selfie",
+            data_url=primary_selfie,
+            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+        )
+        submission.selfie_photo_data_url = None
+        submission.selfie_photo_object_key = selfie_media.object_key
+        if previous_selfie_key and previous_selfie_key != selfie_media.object_key:
+            mark_media_deleted(db, previous_selfie_key)
         submission.ai_match = final_match
         submission.ai_confidence = final_confidence
         submission.ai_model = final_engine
@@ -2451,10 +3962,53 @@ def mark_realtime_attendance(
             "ai_confidence": submission.ai_confidence,
             "ai_model": submission.ai_model,
             "ai_reason": submission.ai_reason,
-            "selfie_photo_fingerprint": _photo_fingerprint(submission.selfie_photo_data_url),
+            "selfie_photo_object_key": submission.selfie_photo_object_key,
+            "selfie_photo_fingerprint": _photo_fingerprint(
+                submission.selfie_photo_object_key or submission.selfie_photo_data_url
+            ),
             "submitted_at": submission.submitted_at,
             "source": "attendance-management",
         },
+    )
+    publish_domain_event(
+        "attendance.marked",
+        payload={
+            "submission_id": int(submission.id),
+            "student_id": int(submission.student_id),
+            "faculty_id": int(submission.faculty_id),
+            "schedule_id": int(submission.schedule_id),
+            "course_id": int(submission.course_id),
+            "class_date": submission.class_date.isoformat(),
+            "status": submission.status.value,
+            "ai_confidence": float(submission.ai_confidence or 0.0),
+        },
+        scopes={
+            f"student:{int(submission.student_id)}",
+            f"faculty:{int(submission.faculty_id)}",
+            "role:admin",
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "student_id": int(current_user.student_id or 0),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    enqueue_face_reverification(
+        {
+            "submission_id": int(submission.id),
+            "student_id": int(submission.student_id),
+            "schedule_id": int(submission.schedule_id),
+            "class_date": submission.class_date.isoformat(),
+        }
+    )
+    enqueue_recompute(
+        {
+            "entity": "student_attendance_aggregate",
+            "student_id": int(submission.student_id),
+            "source": "attendance.marked",
+        }
     )
 
     return schemas.RealtimeAttendanceMarkResponse(
@@ -2502,11 +4056,15 @@ def get_faculty_dashboard(
     if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
         raise HTTPException(status_code=403, detail="Faculty can only access their own class dashboard")
 
-    total_students = (
-        db.query(models.Enrollment)
-        .filter(models.Enrollment.course_id == schedule.course_id)
-        .count()
-    )
+    enrolled_student_ids = [
+        row[0]
+        for row in (
+            db.query(models.Enrollment.student_id)
+            .filter(models.Enrollment.course_id == schedule.course_id)
+            .all()
+        )
+    ]
+    total_students = len(enrolled_student_ids)
 
     submissions = (
         db.query(models.AttendanceSubmission)
@@ -2518,12 +4076,32 @@ def get_faculty_dashboard(
         .all()
     )
 
-    present = sum(
-        1
+    present_student_ids = {
+        item.student_id
         for item in submissions
         if item.status in (models.AttendanceSubmissionStatus.VERIFIED, models.AttendanceSubmissionStatus.APPROVED)
-    )
-    pending = sum(1 for item in submissions if item.status == models.AttendanceSubmissionStatus.PENDING_REVIEW)
+    }
+    pending_student_ids = {
+        item.student_id
+        for item in submissions
+        if item.status == models.AttendanceSubmissionStatus.PENDING_REVIEW
+    }
+    if enrolled_student_ids:
+        record_present_rows = (
+            db.query(models.AttendanceRecord.student_id)
+            .filter(
+                models.AttendanceRecord.course_id == schedule.course_id,
+                models.AttendanceRecord.attendance_date == class_date,
+                models.AttendanceRecord.status == models.AttendanceStatus.PRESENT,
+                models.AttendanceRecord.student_id.in_(enrolled_student_ids),
+            )
+            .all()
+        )
+        present_student_ids.update({row[0] for row in record_present_rows})
+    pending_student_ids.difference_update(present_student_ids)
+
+    present = len(present_student_ids)
+    pending = len(pending_student_ids)
     absent = max(total_students - present - pending, 0)
 
     response_items: list[schemas.AttendanceSubmissionOut] = []
@@ -2549,6 +4127,245 @@ def get_faculty_dashboard(
         pending_review=pending,
         absent=absent,
         submissions=response_items,
+    )
+
+
+@router.get("/faculty/recovery-plans", response_model=schemas.AttendanceRecoveryPlanListOut)
+def get_faculty_recovery_plan_list(
+    schedule_id: int | None = Query(default=None),
+    include_resolved: bool = Query(default=False),
+    limit: int = Query(default=40, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    course_id: int | None = None
+    if schedule_id is not None:
+        schedule = db.get(models.ClassSchedule, int(schedule_id))
+        if not schedule:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+        if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
+            raise HTTPException(status_code=403, detail="Faculty can only access their own class recovery queue")
+        course_id = int(schedule.course_id)
+
+    if current_user.role == models.UserRole.FACULTY:
+        if not current_user.faculty_id:
+            raise HTTPException(status_code=403, detail="Faculty account is not linked correctly")
+        plans = get_faculty_recovery_plans(
+            db,
+            faculty_id=int(current_user.faculty_id),
+            course_id=course_id,
+            include_resolved=bool(include_resolved),
+            limit=int(limit),
+        )
+    else:
+        plans = get_admin_recovery_plans(
+            db,
+            include_resolved=bool(include_resolved),
+            limit=int(limit),
+        )
+        if course_id is not None:
+            plans = [plan for plan in plans if int(plan.course_id) == int(course_id)]
+
+    return schemas.AttendanceRecoveryPlanListOut(
+        plans=_serialize_recovery_plan_rows(db, plans),
+        last_updated_at=datetime.utcnow(),
+    )
+
+
+@router.get(
+    "/faculty/rectification-requests",
+    response_model=schemas.FacultyAttendanceRectificationListOut,
+)
+def list_faculty_rectification_requests(
+    schedule_id: int,
+    class_date: date | None = Query(default=None),
+    include_resolved: bool = Query(default=False),
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    class_date = class_date or date.today()
+
+    schedule = db.get(models.ClassSchedule, schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+    if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
+        raise HTTPException(status_code=403, detail="Faculty can only access their own rectification queue")
+
+    query = (
+        db.query(models.AttendanceRectificationRequest)
+        .filter(
+            models.AttendanceRectificationRequest.schedule_id == schedule_id,
+            models.AttendanceRectificationRequest.class_date == class_date,
+        )
+    )
+    if not include_resolved:
+        query = query.filter(
+            models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING
+        )
+    requests = query.order_by(
+        models.AttendanceRectificationRequest.requested_at.desc(),
+        models.AttendanceRectificationRequest.id.desc(),
+    ).all()
+
+    student_ids = sorted({item.student_id for item in requests})
+    students = (
+        {row.id: row for row in db.query(models.Student).filter(models.Student.id.in_(student_ids)).all()}
+        if student_ids
+        else {}
+    )
+    course = db.get(models.Course, schedule.course_id)
+
+    payload = [
+        _faculty_rectification_out(
+            item,
+            student=students.get(item.student_id),
+            course=course,
+        )
+        for item in requests
+    ]
+    return schemas.FacultyAttendanceRectificationListOut(
+        schedule_id=schedule_id,
+        class_date=class_date,
+        requests=payload,
+    )
+
+
+@router.post(
+    "/faculty/rectification-review",
+    response_model=schemas.FacultyRectificationReviewResponse,
+)
+def faculty_rectification_review(
+    payload: schemas.FacultyRectificationReviewRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    request = db.get(models.AttendanceRectificationRequest, payload.request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Rectification request not found")
+
+    schedule = db.get(models.ClassSchedule, request.schedule_id)
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Schedule not found for rectification request")
+
+    if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
+        raise HTTPException(status_code=403, detail="Faculty can only review requests for their own subject")
+
+    if request.status != models.AttendanceRectificationStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Only pending rectification requests can be reviewed")
+
+    reviewer_faculty_id = schedule.faculty_id if current_user.role == models.UserRole.ADMIN else current_user.faculty_id
+    review_note = (payload.note or "").strip() or None
+    approved = 0
+    rejected = 0
+    submission: models.AttendanceSubmission | None = None
+
+    request.reviewed_by_faculty_id = reviewer_faculty_id
+    request.reviewed_at = datetime.utcnow()
+    request.review_note = review_note
+
+    if payload.action == schemas.FacultyRectificationReviewAction.APPROVE:
+        request.status = models.AttendanceRectificationStatus.APPROVED
+        _upsert_present_attendance(
+            db,
+            student_id=request.student_id,
+            course_id=request.course_id,
+            faculty_id=reviewer_faculty_id or request.faculty_id,
+            class_date=request.class_date,
+            source="faculty-rectification-approved",
+        )
+        submission = _upsert_approved_submission_for_rectification(
+            db=db,
+            schedule=schedule,
+            student_id=request.student_id,
+            class_date=request.class_date,
+            faculty_id=reviewer_faculty_id or request.faculty_id,
+            review_note=review_note,
+        )
+        approved = 1
+    else:
+        request.status = models.AttendanceRectificationStatus.REJECTED
+        rejected = 1
+
+    db.commit()
+    db.refresh(request)
+
+    _sync_rectification_request_to_mongo(request, source="faculty-rectification-review")
+    if submission is not None:
+        _upsert_mongo_by_id(
+            "attendance_submissions",
+            submission.id,
+            {
+                "schedule_id": submission.schedule_id,
+                "course_id": submission.course_id,
+                "faculty_id": submission.faculty_id,
+                "student_id": submission.student_id,
+                "class_date": submission.class_date.isoformat(),
+                "status": submission.status.value,
+                "ai_match": submission.ai_match,
+                "ai_confidence": submission.ai_confidence,
+                "ai_model": submission.ai_model,
+                "ai_reason": submission.ai_reason,
+                "selfie_photo_object_key": submission.selfie_photo_object_key,
+                "selfie_photo_fingerprint": _photo_fingerprint(
+                    submission.selfie_photo_object_key or submission.selfie_photo_data_url
+                ),
+                "submitted_at": submission.submitted_at,
+                "reviewed_at": submission.reviewed_at,
+                "reviewed_by_faculty_id": submission.reviewed_by_faculty_id,
+                "review_note": submission.review_note,
+                "source": "faculty-rectification-review",
+            },
+        )
+    mirror_document(
+        "attendance_rectification_reviews",
+        {
+            "request_id": request.id,
+            "schedule_id": request.schedule_id,
+            "course_id": request.course_id,
+            "student_id": request.student_id,
+            "class_date": request.class_date.isoformat(),
+            "action": payload.action.value,
+            "review_note": review_note,
+            "reviewed_by_faculty_id": reviewer_faculty_id,
+            "reviewed_at": datetime.utcnow(),
+            "source": "faculty-rectification-review",
+        },
+    )
+    publish_domain_event(
+        "attendance.rectification.updated",
+        payload={
+            "request_id": int(request.id),
+            "student_id": int(request.student_id),
+            "faculty_id": int(reviewer_faculty_id or request.faculty_id or 0),
+            "schedule_id": int(request.schedule_id),
+            "class_date": request.class_date.isoformat(),
+            "action": payload.action.value,
+        },
+        scopes={
+            f"student:{int(request.student_id)}",
+            f"faculty:{int(reviewer_faculty_id or request.faculty_id or 0)}",
+            "role:admin",
+        },
+        topics={"attendance", "messages"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    enqueue_recompute(
+        {
+            "entity": "student_attendance_aggregate",
+            "student_id": int(request.student_id),
+            "source": "attendance.rectification.updated",
+        }
+    )
+
+    return schemas.FacultyRectificationReviewResponse(
+        updated=1,
+        approved=approved,
+        rejected=rejected,
     )
 
 
@@ -2625,6 +4442,37 @@ def faculty_batch_review(
             "reviewed_at": datetime.utcnow(),
         },
     )
+    publish_domain_event(
+        "attendance.reviewed",
+        payload={
+            "schedule_id": int(payload.schedule_id),
+            "class_date": payload.class_date.isoformat(),
+            "action": payload.action.value,
+            "updated_submission_ids": [int(item.id) for item in pending_submissions],
+            "approved": int(approved),
+            "rejected": int(rejected),
+            "faculty_id": int(reviewer_faculty_id or 0),
+        },
+        scopes={
+            f"faculty:{int(reviewer_faculty_id or 0)}",
+            "role:admin",
+            "role:student",
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    for submission in pending_submissions:
+        enqueue_recompute(
+            {
+                "entity": "student_attendance_aggregate",
+                "student_id": int(submission.student_id),
+                "source": "attendance.reviewed",
+            }
+        )
 
     return schemas.FacultyBatchReviewResponse(
         updated=len(pending_submissions),
@@ -2646,12 +4494,25 @@ def create_classroom_analysis(
     if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
         raise HTTPException(status_code=403, detail="Faculty can only analyze their own classes")
 
+    analysis_photo_object_key: str | None = None
+    if payload.photo_data_url:
+        media = store_data_url_object(
+            db,
+            owner_table="classroom_analyses",
+            owner_id=int(schedule.id),
+            media_kind="classroom-analysis-photo",
+            data_url=payload.photo_data_url,
+            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+        )
+        analysis_photo_object_key = media.object_key
+
     analysis = models.ClassroomAnalysis(
         schedule_id=payload.schedule_id,
         course_id=schedule.course_id,
         faculty_id=schedule.faculty_id,
         class_date=payload.class_date,
-        photo_data_url=payload.photo_data_url,
+        photo_data_url=None,
+        photo_object_key=analysis_photo_object_key,
         estimated_headcount=payload.estimated_headcount,
         engagement_level=payload.engagement_level,
         ai_summary=payload.ai_summary,
@@ -2674,7 +4535,8 @@ def create_classroom_analysis(
             "engagement_level": analysis.engagement_level,
             "ai_summary": analysis.ai_summary,
             "ai_model": analysis.ai_model,
-            "photo_fingerprint": _photo_fingerprint(analysis.photo_data_url),
+            "photo_object_key": analysis.photo_object_key,
+            "photo_fingerprint": _photo_fingerprint(analysis.photo_object_key or analysis.photo_data_url),
             "created_at": analysis.created_at,
             "source": "faculty-classroom-analysis",
         },
@@ -2737,32 +4599,15 @@ def mark_attendance_bulk(
     for enrollment in enrollments:
         student_id = enrollment.student_id
         status_value = override_map.get(student_id, payload.default_status)
-
-        existing = (
-            db.query(models.AttendanceRecord)
-            .filter(
-                models.AttendanceRecord.student_id == student_id,
-                models.AttendanceRecord.course_id == payload.course_id,
-                models.AttendanceRecord.attendance_date == payload.attendance_date,
-            )
-            .first()
+        _record_attendance_status(
+            db,
+            student_id=student_id,
+            course_id=payload.course_id,
+            faculty_id=payload.faculty_id,
+            class_date=payload.attendance_date,
+            status=status_value,
+            source=payload.source,
         )
-
-        if existing:
-            existing.status = status_value
-            existing.source = payload.source
-            existing.marked_by_faculty_id = payload.faculty_id
-        else:
-            db.add(
-                models.AttendanceRecord(
-                    student_id=student_id,
-                    course_id=payload.course_id,
-                    marked_by_faculty_id=payload.faculty_id,
-                    attendance_date=payload.attendance_date,
-                    status=status_value,
-                    source=payload.source,
-                )
-            )
 
         if status_value == models.AttendanceStatus.ABSENT:
             absent_student_ids.append(student_id)
@@ -2823,6 +4668,29 @@ def mark_attendance_bulk(
         absent_student_ids=absent_student_ids,
         notifications_sent=notifications_sent,
     )
+
+
+@router.post(
+    "/admin/recompute-aggregate",
+    response_model=schemas.AttendanceAggregateRecomputeResponse,
+)
+def recompute_attendance_aggregate(
+    payload: schemas.AttendanceAggregateRecomputeRequest,
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    if payload.from_date and payload.to_date and payload.from_date > payload.to_date:
+        raise HTTPException(status_code=400, detail="from_date cannot be after to_date")
+    result = recompute_attendance_scope(
+        db,
+        student_id=payload.student_id,
+        course_id=payload.course_id,
+        from_date=payload.from_date,
+        to_date=payload.to_date,
+        limit=payload.limit,
+    )
+    db.commit()
+    return schemas.AttendanceAggregateRecomputeResponse(**result)
 
 
 @router.get("/absentees", response_model=list[schemas.StudentOut])
@@ -2914,4 +4782,53 @@ def list_notifications(
         .order_by(models.NotificationLog.created_at.desc())
         .limit(200)
         .all()
+    )
+
+
+@router.get("/admin/recovery-plans", response_model=schemas.AttendanceRecoveryPlanListOut)
+def get_admin_recovery_plan_list(
+    include_resolved: bool = Query(default=False),
+    limit: int = Query(default=80, ge=1, le=300),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    plans = get_admin_recovery_plans(
+        db,
+        include_resolved=bool(include_resolved),
+        limit=int(limit),
+    )
+    return schemas.AttendanceRecoveryPlanListOut(
+        plans=_serialize_recovery_plan_rows(db, plans),
+        last_updated_at=datetime.utcnow(),
+    )
+
+
+@router.post("/recovery/recompute", response_model=schemas.AttendanceRecoveryRecomputeOut)
+def recompute_recovery_plans(
+    payload: schemas.AttendanceRecoveryRecomputeRequest,
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    result = recompute_attendance_recovery_scope(
+        db,
+        student_id=payload.student_id,
+        course_id=payload.course_id,
+        limit=payload.limit,
+    )
+    db.commit()
+    publish_domain_event(
+        "attendance.recovery.recomputed",
+        payload={
+            "student_id": payload.student_id,
+            "course_id": payload.course_id,
+            "evaluated": int(result.get("evaluated", 0)),
+            "plans_touched": int(result.get("plans_touched", 0)),
+        },
+        scopes={"role:admin"},
+        topics={"attendance", "admin"},
+        source="attendance",
+    )
+    return schemas.AttendanceRecoveryRecomputeOut(
+        evaluated=int(result.get("evaluated", 0)),
+        plans_touched=int(result.get("plans_touched", 0)),
     )

@@ -11,9 +11,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..attendance_recovery import complete_remedial_recovery_action, evaluate_attendance_recovery
 from ..auth_utils import require_roles
 from ..database import get_db
 from ..face_verification import build_profile_face_template, verify_face_sequence_opencv
+from ..media_storage import data_url_for_object
 from ..mongo import get_mongo_db, mirror_document, mirror_event
 
 router = APIRouter(prefix="/makeup", tags=["Make-Up & Remedial Code"])
@@ -69,9 +71,28 @@ def _parse_sections_json(raw_value: str | None) -> list[str]:
     return output
 
 
+def _student_profile_photo_data_url(db: Session, student: models.Student) -> str | None:
+    object_key = str(student.profile_photo_object_key or "").strip()
+    if object_key:
+        restored = data_url_for_object(db, object_key)
+        if restored:
+            return restored
+    legacy = str(student.profile_photo_data_url or "").strip()
+    return legacy or None
+
+
 def _mongo_read_preferred() -> bool:
     raw = (os.getenv("MONGO_READ_PREFERRED", "true") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _strict_runtime_enabled() -> bool:
+    raw = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _mongo_read_required() -> bool:
+    return _mongo_read_preferred() and _strict_runtime_enabled()
 
 
 def _coerce_mongo_datetime(value) -> datetime | None:
@@ -479,6 +500,7 @@ def _public_face_rejection_message(reason: str, confidence: float | None = None)
 
 def _verify_remedial_face_payload(
     *,
+    db: Session,
     student: models.Student,
     payload: schemas.RemedialAttendanceMark,
     class_row: models.MakeUpClass,
@@ -500,12 +522,14 @@ def _verify_remedial_face_payload(
             ),
         )
 
+    profile_photo_data_url = _student_profile_photo_data_url(db, student)
+
     if not student.registration_number:
         raise HTTPException(
             status_code=400,
             detail="Complete profile setup with registration number before attendance",
         )
-    if not student.profile_photo_data_url:
+    if not profile_photo_data_url:
         raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
     if not student.enrollment_video_template_json:
         raise HTTPException(
@@ -521,15 +545,15 @@ def _verify_remedial_face_payload(
             status_code=400,
             detail="Complete one-time enrollment video before marking attendance",
         )
-    if profile_template is None and student.profile_photo_data_url:
+    if profile_template is None and profile_photo_data_url:
         try:
-            profile_template = build_profile_face_template(student.profile_photo_data_url)
+            profile_template = build_profile_face_template(profile_photo_data_url)
         except ValueError:
             profile_template = None
         combined_template = _merge_face_templates(enrollment_template, profile_template)
 
     opencv_verdict = verify_face_sequence_opencv(
-        student.profile_photo_data_url,
+        profile_photo_data_url,
         selfie_frames,
         subject_label=student.email,
         profile_template=combined_template,
@@ -557,7 +581,6 @@ def _verify_remedial_face_payload(
         final_reason,
     )
     return primary_selfie, final_confidence, final_engine, final_reason
-
 
 def _resolve_makeup_course(payload: schemas.MakeUpClassCreate, db: Session) -> tuple[models.Course, bool]:
     if payload.course_id:
@@ -1087,7 +1110,7 @@ def get_student_remedial_messages(
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
     if _mongo_read_preferred():
-        mongo_db = get_mongo_db(required=False)
+        mongo_db = get_mongo_db(required=_mongo_read_required())
         if mongo_db is not None:
             try:
                 mongo_rows = _get_student_remedial_messages_from_mongo(
@@ -1095,9 +1118,11 @@ def get_student_remedial_messages(
                     student_id=int(current_user.student_id),
                     limit=limit,
                 )
-                if mongo_rows:
+                if mongo_rows or _mongo_read_required():
                     return mongo_rows
             except Exception as exc:
+                if _mongo_read_required():
+                    raise HTTPException(status_code=503, detail=f"Mongo remedial message read failed: {exc}") from exc
                 logger.warning("Mongo remedial message read fallback to SQL: %s", exc)
 
     fetch_limit = min(max(int(limit) * 4, int(limit)), 500)
@@ -1307,6 +1332,7 @@ def mark_remedial_attendance(
     source = "remedial-code"
     if current_user.role == models.UserRole.STUDENT:
         _, verification_confidence, verification_engine, verification_reason = _verify_remedial_face_payload(
+            db=db,
             student=student,
             payload=payload,
             class_row=class_row,
@@ -1319,6 +1345,17 @@ def mark_remedial_attendance(
         source=source,
     )
     db.add(attendance_row)
+    db.flush()
+    complete_remedial_recovery_action(
+        db,
+        student_id=int(payload.student_id),
+        makeup_class_id=int(class_row.id),
+    )
+    evaluate_attendance_recovery(
+        db,
+        student_id=int(payload.student_id),
+        course_id=int(class_row.course_id),
+    )
     db.commit()
     db.refresh(attendance_row)
 

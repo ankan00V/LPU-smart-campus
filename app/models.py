@@ -15,6 +15,7 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import relationship
 
 from .database import Base
@@ -53,6 +54,80 @@ class AttendanceSubmissionStatus(str, enum.Enum):
     REJECTED = "rejected"
 
 
+class AttendanceRectificationStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class AttendanceRecoveryRiskLevel(str, enum.Enum):
+    WATCH = "watch"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class AttendanceRecoveryPlanStatus(str, enum.Enum):
+    ACTIVE = "active"
+    ESCALATED = "escalated"
+    RECOVERED = "recovered"
+    CANCELLED = "cancelled"
+
+
+class AttendanceRecoveryActionType(str, enum.Enum):
+    REMEDIAL_SLOT = "remedial_slot"
+    FACULTY_NUDGE = "faculty_nudge"
+    OFFICE_HOUR_INVITE = "office_hour_invite"
+    CATCH_UP_TASK = "catch_up_task"
+    PARENT_ALERT = "parent_alert"
+
+
+class AttendanceRecoveryActionStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    ACKNOWLEDGED = "acknowledged"
+    COMPLETED = "completed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+class RMSCaseStatus(str, enum.Enum):
+    NEW = "new"
+    TRIAGE = "triage"
+    ASSIGNED = "assigned"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CLOSED = "closed"
+
+
+class RMSCasePriority(str, enum.Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class RMSAttendanceCorrectionStatus(str, enum.Enum):
+    PENDING_ADMIN_APPROVAL = "pending_admin_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    APPLIED = "applied"
+
+
+class FraudRiskLevel(str, enum.Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class IdentityVerificationStatus(str, enum.Enum):
+    PENDING = "pending"
+    IN_REVIEW = "in_review"
+    VERIFIED = "verified"
+    FLAGGED = "flagged"
+    REJECTED = "rejected"
+
+
 class Student(Base):
     __tablename__ = "students"
 
@@ -64,11 +139,12 @@ class Student(Base):
     section = Column(String(80), nullable=True, index=True)
     section_updated_at = Column(DateTime, nullable=True)
     profile_photo_data_url = Column(Text, nullable=True)
+    profile_photo_object_key = Column(String(240), nullable=True, index=True)
     profile_photo_updated_at = Column(DateTime, nullable=True)
     profile_photo_locked_until = Column(DateTime, nullable=True)
-    profile_face_template_json = Column(Text, nullable=True)
+    profile_face_template_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
     profile_face_template_updated_at = Column(DateTime, nullable=True)
-    enrollment_video_template_json = Column(Text, nullable=True)
+    enrollment_video_template_json = Column(Text().with_variant(LONGTEXT(), "mysql"), nullable=True)
     enrollment_video_updated_at = Column(DateTime, nullable=True)
     enrollment_video_locked_until = Column(DateTime, nullable=True)
     department = Column(String(100), nullable=False)
@@ -88,6 +164,7 @@ class Faculty(Base):
     section = Column(String(80), nullable=True)
     section_updated_at = Column(DateTime, nullable=True)
     profile_photo_data_url = Column(Text, nullable=True)
+    profile_photo_object_key = Column(String(240), nullable=True, index=True)
     profile_photo_updated_at = Column(DateTime, nullable=True)
     profile_photo_locked_until = Column(DateTime, nullable=True)
     department = Column(String(100), nullable=False)
@@ -154,6 +231,28 @@ class AttendanceRecord(Base):
     status = Column(Enum(AttendanceStatus), nullable=False)
     source = Column(String(50), nullable=False, default="faculty-web", server_default="faculty-web")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    computed_from_event_id = Column(Integer, ForeignKey("attendance_events.id"), nullable=True, index=True)
+
+
+class AttendanceEvent(Base):
+    __tablename__ = "attendance_events"
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uq_attendance_event_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_key = Column(String(80), nullable=False, unique=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    attendance_date = Column(Date, nullable=False, index=True)
+    status = Column(Enum(AttendanceStatus), nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    actor_faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True, index=True)
+    actor_role = Column(String(20), nullable=True, index=True)
+    source = Column(String(80), nullable=False, default="attendance-event", index=True)
+    note = Column(String(600), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class NotificationLog(Base):
@@ -165,6 +264,62 @@ class NotificationLog(Base):
     channel = Column(String(50), nullable=False, default="simulated")
     sent_to = Column(String(120), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AttendanceRecoveryPlan(Base):
+    __tablename__ = "attendance_recovery_plans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True, index=True)
+    risk_level = Column(Enum(AttendanceRecoveryRiskLevel), nullable=False, index=True)
+    status = Column(
+        Enum(AttendanceRecoveryPlanStatus),
+        nullable=False,
+        default=AttendanceRecoveryPlanStatus.ACTIVE,
+        index=True,
+    )
+    attendance_percent = Column(Float, nullable=False, default=0.0)
+    present_count = Column(Integer, nullable=False, default=0)
+    absent_count = Column(Integer, nullable=False, default=0)
+    delivered_count = Column(Integer, nullable=False, default=0)
+    consecutive_absences = Column(Integer, nullable=False, default=0)
+    missed_remedials = Column(Integer, nullable=False, default=0)
+    recommended_makeup_class_id = Column(Integer, ForeignKey("makeup_classes.id"), nullable=True, index=True)
+    parent_alert_allowed = Column(Boolean, nullable=False, default=False)
+    recovery_due_at = Column(DateTime, nullable=True, index=True)
+    summary = Column(String(700), nullable=False)
+    last_absent_on = Column(Date, nullable=True, index=True)
+    last_evaluated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AttendanceRecoveryAction(Base):
+    __tablename__ = "attendance_recovery_actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    plan_id = Column(Integer, ForeignKey("attendance_recovery_plans.id"), nullable=False, index=True)
+    action_type = Column(Enum(AttendanceRecoveryActionType), nullable=False, index=True)
+    status = Column(
+        Enum(AttendanceRecoveryActionStatus),
+        nullable=False,
+        default=AttendanceRecoveryActionStatus.PENDING,
+        index=True,
+    )
+    title = Column(String(160), nullable=False)
+    description = Column(String(900), nullable=False)
+    recipient_role = Column(String(30), nullable=False, index=True)
+    recipient_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    recipient_email = Column(String(120), nullable=True, index=True)
+    target_makeup_class_id = Column(Integer, ForeignKey("makeup_classes.id"), nullable=True, index=True)
+    scheduled_for = Column(DateTime, nullable=True, index=True)
+    completed_at = Column(DateTime, nullable=True, index=True)
+    outcome_note = Column(String(600), nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class FoodItem(Base):
@@ -376,6 +531,51 @@ class FacultyMessage(Base):
     read_at = Column(DateTime, nullable=True)
 
 
+class SupportQueryMessage(Base):
+    __tablename__ = "support_query_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    section = Column(String(80), nullable=False, index=True)
+    category = Column(String(30), nullable=False, default="Attendance")
+    subject = Column(String(140), nullable=False)
+    message = Column(String(1000), nullable=False)
+    sender_role = Column(String(20), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    read_at = Column(DateTime, nullable=True, index=True)
+
+
+class SaarthiSession(Base):
+    __tablename__ = "saarthi_sessions"
+    __table_args__ = (
+        UniqueConstraint("student_id", "week_start_date", name="uq_saarthi_student_week"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    week_start_date = Column(Date, nullable=False, index=True)
+    mandatory_date = Column(Date, nullable=False, index=True)
+    attendance_credit_minutes = Column(Integer, nullable=False, default=0)
+    attendance_marked_at = Column(DateTime, nullable=True, index=True)
+    attendance_record_id = Column(Integer, ForeignKey("attendance_records.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    last_message_at = Column(DateTime, nullable=True, index=True)
+
+
+class SaarthiMessage(Base):
+    __tablename__ = "saarthi_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("saarthi_sessions.id"), nullable=False, index=True)
+    sender_role = Column(String(20), nullable=False, index=True)
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class ClassSchedule(Base):
     __tablename__ = "class_schedules"
     __table_args__ = (
@@ -393,6 +593,31 @@ class ClassSchedule(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class TimetableOverride(Base):
+    __tablename__ = "timetable_overrides"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_key",
+            "source_weekday",
+            "source_start_time",
+            name="uq_timetable_override_scope_source_slot",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope_type = Column(String(20), nullable=False, index=True)
+    scope_key = Column(String(120), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=True, index=True)
+    section = Column(String(80), nullable=True, index=True)
+    source_weekday = Column(Integer, nullable=False, index=True)
+    source_start_time = Column(Time, nullable=False)
+    schedule_id = Column(Integer, ForeignKey("class_schedules.id"), nullable=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    updated_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class AttendanceSubmission(Base):
     __tablename__ = "attendance_submissions"
     __table_args__ = (
@@ -406,6 +631,7 @@ class AttendanceSubmission(Base):
     student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
     class_date = Column(Date, nullable=False, index=True)
     selfie_photo_data_url = Column(Text, nullable=True)
+    selfie_photo_object_key = Column(String(240), nullable=True, index=True)
     ai_match = Column(Boolean, nullable=False, default=False)
     ai_confidence = Column(Float, nullable=False, default=0.0)
     ai_model = Column(String(80), nullable=True)
@@ -417,6 +643,35 @@ class AttendanceSubmission(Base):
     review_note = Column(String(300), nullable=True)
 
 
+class AttendanceRectificationRequest(Base):
+    __tablename__ = "attendance_rectification_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "student_id",
+            "schedule_id",
+            "class_date",
+            name="uq_attendance_rectification_per_class",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    schedule_id = Column(Integer, ForeignKey("class_schedules.id"), nullable=False, index=True)
+    class_date = Column(Date, nullable=False, index=True)
+    class_start_time = Column(Time, nullable=False)
+    class_end_time = Column(Time, nullable=False)
+    proof_note = Column(String(1200), nullable=False)
+    proof_photo_data_url = Column(Text, nullable=True)
+    proof_photo_object_key = Column(String(240), nullable=True, index=True)
+    status = Column(Enum(AttendanceRectificationStatus), nullable=False, index=True)
+    requested_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    reviewed_at = Column(DateTime, nullable=True, index=True)
+    reviewed_by_faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True)
+    review_note = Column(String(600), nullable=True)
+
+
 class ClassroomAnalysis(Base):
     __tablename__ = "classroom_analyses"
 
@@ -426,11 +681,31 @@ class ClassroomAnalysis(Base):
     faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
     class_date = Column(Date, nullable=False, index=True)
     photo_data_url = Column(Text, nullable=True)
+    photo_object_key = Column(String(240), nullable=True, index=True)
     estimated_headcount = Column(Integer, nullable=False)
     engagement_level = Column(String(80), nullable=False)
     ai_summary = Column(String(800), nullable=True)
     ai_model = Column(String(80), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class StudentGrade(Base):
+    __tablename__ = "student_grades"
+    __table_args__ = (
+        UniqueConstraint("student_id", "course_id", name="uq_student_grade_course"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True, index=True)
+    grade_letter = Column(String(8), nullable=False, index=True)
+    grade_points = Column(Float, nullable=True)
+    marks_percent = Column(Float, nullable=True)
+    remark = Column(String(400), nullable=True)
+    graded_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    graded_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class AuthUser(Base):
@@ -473,3 +748,255 @@ class AuthOTPDelivery(Base):
     otp_code = Column(String(10), nullable=False)
     channel = Column(String(40), nullable=False, default="simulated-email")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sid = Column(String(120), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    device_id = Column(String(120), nullable=True, index=True)
+    user_agent = Column(String(300), nullable=True)
+    ip_address = Column(String(80), nullable=True)
+    current_refresh_hash = Column(String(256), nullable=False)
+    current_refresh_salt = Column(String(64), nullable=False)
+    previous_refresh_hash = Column(String(256), nullable=True)
+    previous_refresh_salt = Column(String(64), nullable=True)
+    refresh_expires_at = Column(DateTime, nullable=False, index=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    rotated_at = Column(DateTime, nullable=True, index=True)
+    revoked_at = Column(DateTime, nullable=True, index=True)
+    revoked_reason = Column(String(200), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AuthTokenRevocation(Base):
+    __tablename__ = "auth_token_revocations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    jti = Column(String(120), nullable=False, unique=True, index=True)
+    sid = Column(String(120), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    token_type = Column(String(20), nullable=False, default="access", index=True)
+    reason = Column(String(200), nullable=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class IdentityVerificationCase(Base):
+    __tablename__ = "identity_verification_cases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_key = Column(String(80), nullable=False, index=True)
+    subject_role = Column(String(30), nullable=False, index=True)
+    auth_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=True, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True, index=True)
+    applicant_email = Column(String(120), nullable=True, index=True)
+    external_subject_key = Column(String(120), nullable=True, index=True)
+    status = Column(
+        Enum(IdentityVerificationStatus),
+        nullable=False,
+        default=IdentityVerificationStatus.PENDING,
+        index=True,
+    )
+    risk_score = Column(Float, nullable=False, default=0.0, index=True)
+    risk_level = Column(
+        Enum(FraudRiskLevel),
+        nullable=False,
+        default=FraudRiskLevel.LOW,
+        index=True,
+    )
+    requested_checks_json = Column(Text, nullable=False, default="[]")
+    completed_checks_json = Column(Text, nullable=False, default="[]")
+    latest_reason = Column(String(500), nullable=True)
+    graph_summary_json = Column(Text, nullable=False, default="{}")
+    evidence_json = Column(Text, nullable=False, default="{}")
+    reviewed_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    reviewed_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    signals = relationship("IdentityRiskSignal", back_populates="case", cascade="all, delete-orphan")
+
+
+class IdentityRiskSignal(Base):
+    __tablename__ = "identity_risk_signals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, ForeignKey("identity_verification_cases.id"), nullable=False, index=True)
+    signal_type = Column(String(80), nullable=False, index=True)
+    severity = Column(Enum(FraudRiskLevel), nullable=False, default=FraudRiskLevel.LOW, index=True)
+    score_delta = Column(Float, nullable=False, default=0.0)
+    is_blocking = Column(Boolean, nullable=False, default=False, index=True)
+    reason = Column(String(500), nullable=False)
+    evidence_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    case = relationship("IdentityVerificationCase", back_populates="signals")
+
+
+class MediaObject(Base):
+    __tablename__ = "media_objects"
+
+    id = Column(Integer, primary_key=True, index=True)
+    object_key = Column(String(240), nullable=False, unique=True, index=True)
+    bucket = Column(String(80), nullable=False, default="profile-media", index=True)
+    owner_table = Column(String(80), nullable=False, index=True)
+    owner_id = Column(Integer, nullable=True, index=True)
+    media_kind = Column(String(80), nullable=False, index=True)
+    content_type = Column(String(120), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    checksum_sha256 = Column(String(64), nullable=False, index=True)
+    retention_until = Column(DateTime, nullable=True, index=True)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class OutboxEvent(Base):
+    __tablename__ = "outbox_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    destination = Column(String(40), nullable=False, default="mongo", index=True)
+    collection_name = Column(String(120), nullable=False, index=True)
+    operation = Column(String(20), nullable=False, default="upsert")
+    payload_json = Column(Text, nullable=False)
+    upsert_filter_json = Column(Text, nullable=True)
+    required = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    available_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    processed_at = Column(DateTime, nullable=True, index=True)
+    last_error = Column(String(900), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RMSCase(Base):
+    __tablename__ = "rms_cases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True, index=True)
+    section = Column(String(80), nullable=False, index=True)
+    category = Column(String(30), nullable=False, default="Other", index=True)
+    subject = Column(String(140), nullable=False)
+    status = Column(Enum(RMSCaseStatus), nullable=False, default=RMSCaseStatus.NEW, index=True)
+    priority = Column(Enum(RMSCasePriority), nullable=False, default=RMSCasePriority.MEDIUM, index=True)
+    assigned_to_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    created_from_message_id = Column(Integer, ForeignKey("support_query_messages.id"), nullable=True, index=True)
+    first_response_due_at = Column(DateTime, nullable=True, index=True)
+    resolution_due_at = Column(DateTime, nullable=True, index=True)
+    first_responded_at = Column(DateTime, nullable=True)
+    last_message_at = Column(DateTime, nullable=True)
+    is_escalated = Column(Boolean, nullable=False, default=False, index=True)
+    escalated_at = Column(DateTime, nullable=True, index=True)
+    escalation_reason = Column(String(400), nullable=True)
+    closed_at = Column(DateTime, nullable=True, index=True)
+    reopened_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RMSCaseAuditLog(Base):
+    __tablename__ = "rms_case_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, ForeignKey("rms_cases.id"), nullable=False, index=True)
+    actor_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    actor_role = Column(String(20), nullable=True, index=True)
+    action = Column(String(80), nullable=False, index=True)
+    from_status = Column(Enum(RMSCaseStatus), nullable=True)
+    to_status = Column(Enum(RMSCaseStatus), nullable=True)
+    note = Column(String(600), nullable=True)
+    evidence_ref = Column(Text, nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RMSAttendanceCorrectionRequest(Base):
+    __tablename__ = "rms_attendance_corrections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    attendance_date = Column(Date, nullable=False, index=True)
+    requested_status = Column(Enum(AttendanceStatus), nullable=False, index=True)
+    previous_status = Column(Enum(AttendanceStatus), nullable=True)
+    reason = Column(String(600), nullable=False)
+    evidence_ref = Column(Text, nullable=False)
+    requested_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    requested_by_role = Column(String(20), nullable=False, index=True)
+    status = Column(
+        Enum(RMSAttendanceCorrectionStatus),
+        nullable=False,
+        default=RMSAttendanceCorrectionStatus.PENDING_ADMIN_APPROVAL,
+        index=True,
+    )
+    review_note = Column(String(600), nullable=True)
+    reviewed_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    reviewed_at = Column(DateTime, nullable=True, index=True)
+    applied_record_id = Column(Integer, ForeignKey("attendance_records.id"), nullable=True, index=True)
+    applied_at = Column(DateTime, nullable=True, index=True)
+    is_high_impact = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class CopilotAuditLog(Base):
+    __tablename__ = "copilot_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    actor_role = Column(String(20), nullable=False, index=True)
+    session_id = Column(String(120), nullable=True, index=True)
+    query_text = Column(String(1000), nullable=False)
+    intent = Column(String(80), nullable=False, index=True)
+    outcome = Column(String(20), nullable=False, index=True)
+    scope = Column(String(160), nullable=True, index=True)
+    target_student_id = Column(Integer, ForeignKey("students.id"), nullable=True, index=True)
+    target_course_id = Column(Integer, ForeignKey("courses.id"), nullable=True, index=True)
+    target_section = Column(String(80), nullable=True, index=True)
+    explanation_json = Column(Text, nullable=False, default="[]")
+    evidence_json = Column(Text, nullable=False, default="[]")
+    actions_json = Column(Text, nullable=False, default="[]")
+    result_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AdminPolicySetting(Base):
+    __tablename__ = "admin_policy_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(120), nullable=False, unique=True, index=True)
+    value_json = Column(Text, nullable=False, default="{}")
+    updated_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RoleDelegationLog(Base):
+    __tablename__ = "role_delegation_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    target_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    from_role = Column(Enum(UserRole), nullable=True)
+    to_role = Column(Enum(UserRole), nullable=False)
+    delegated_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    reason = Column(String(400), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class BreakGlassAccessLog(Base):
+    __tablename__ = "break_glass_access_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    actor_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=False, index=True)
+    actor_email = Column(String(120), nullable=False, index=True)
+    scope = Column(String(200), nullable=False, default="global")
+    reason = Column(String(500), nullable=False)
+    ticket_ref = Column(String(80), nullable=True, index=True)
+    expires_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
