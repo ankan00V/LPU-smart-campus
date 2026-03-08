@@ -197,6 +197,137 @@ class EnterpriseControlsTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_validate_production_secrets_accepts_openrouter_saarthi_secret_from_file_provider(self):
+        keys = [
+            "APP_ENV",
+            "APP_SECRETS_PROVIDER",
+            "APP_SECRETS_FILE",
+            "APP_FIELD_ENCRYPTION_REQUIRED",
+            "APP_COOKIE_SECURE",
+            "APP_RUNTIME_STRICT",
+            "APP_MANAGED_SERVICES_REQUIRED",
+            "REDIS_REQUIRED",
+            "WORKER_REQUIRED",
+            "WORKER_INLINE_FALLBACK_ENABLED",
+            "MONGO_PERSISTENCE_REQUIRED",
+            "MONGO_STARTUP_STRICT",
+            "APP_FIELD_ENCRYPTION_KEYS_JSON",
+            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID",
+            "SAARTHI_LLM_PROVIDER",
+            "SAARTHI_LLM_REQUIRED",
+        ]
+        backup = {key: os.environ.get(key) for key in keys}
+        secret_file = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                tmp.write(
+                    json.dumps(
+                        {
+                            "APP_AUTH_SECRET": "prod-auth-secret-123",
+                            "SCIM_BEARER_TOKEN": "prod-scim-token-123",
+                            "APP_LOOKUP_HASH_SECRET": "prod-lookup-secret-123",
+                            "APP_FIELD_ENCRYPTION_KEYS_JSON": json.dumps(
+                                {"k1": base64.urlsafe_b64encode(b"a" * 32).decode("utf-8")}
+                            ),
+                            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID": "k1",
+                            "OPENROUTER_API_KEY": "sk-or-v1-test-openrouter-key",
+                        }
+                    )
+                )
+                secret_file = tmp.name
+            os.environ["APP_ENV"] = "production"
+            os.environ["APP_SECRETS_PROVIDER"] = "file"
+            os.environ["APP_SECRETS_FILE"] = secret_file
+            os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
+            os.environ["APP_COOKIE_SECURE"] = "true"
+            os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+            os.environ["REDIS_REQUIRED"] = "true"
+            os.environ["WORKER_REQUIRED"] = "true"
+            os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
+            os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
+            os.environ["MONGO_STARTUP_STRICT"] = "true"
+            os.environ["SAARTHI_LLM_PROVIDER"] = "openrouter"
+            os.environ["SAARTHI_LLM_REQUIRED"] = "true"
+
+            validate_production_secrets()
+        finally:
+            if secret_file:
+                try:
+                    os.unlink(secret_file)
+                except FileNotFoundError:
+                    pass
+            for key, value in backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_validate_production_secrets_accepts_gemini_key_pool_with_openrouter_fallback(self):
+        keys = [
+            "APP_ENV",
+            "APP_SECRETS_PROVIDER",
+            "APP_SECRETS_FILE",
+            "APP_FIELD_ENCRYPTION_REQUIRED",
+            "APP_COOKIE_SECURE",
+            "APP_RUNTIME_STRICT",
+            "APP_MANAGED_SERVICES_REQUIRED",
+            "REDIS_REQUIRED",
+            "WORKER_REQUIRED",
+            "WORKER_INLINE_FALLBACK_ENABLED",
+            "MONGO_PERSISTENCE_REQUIRED",
+            "MONGO_STARTUP_STRICT",
+            "SAARTHI_LLM_PROVIDER",
+            "SAARTHI_LLM_REQUIRED",
+        ]
+        backup = {key: os.environ.get(key) for key in keys}
+        secret_file = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                tmp.write(
+                    json.dumps(
+                        {
+                            "APP_AUTH_SECRET": "prod-auth-secret-123",
+                            "SCIM_BEARER_TOKEN": "prod-scim-token-123",
+                            "APP_LOOKUP_HASH_SECRET": "prod-lookup-secret-123",
+                            "APP_FIELD_ENCRYPTION_KEYS_JSON": json.dumps(
+                                {"k1": base64.urlsafe_b64encode(b"a" * 32).decode("utf-8")}
+                            ),
+                            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID": "k1",
+                            "GEMINI_API_KEYS_JSON": json.dumps(["gemini-key-1", "gemini-key-2"]),
+                            "OPENROUTER_API_KEY": "sk-or-v1-test-openrouter-key",
+                        }
+                    )
+                )
+                secret_file = tmp.name
+            os.environ["APP_ENV"] = "production"
+            os.environ["APP_SECRETS_PROVIDER"] = "file"
+            os.environ["APP_SECRETS_FILE"] = secret_file
+            os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
+            os.environ["APP_COOKIE_SECURE"] = "true"
+            os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+            os.environ["REDIS_REQUIRED"] = "true"
+            os.environ["WORKER_REQUIRED"] = "true"
+            os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
+            os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
+            os.environ["MONGO_STARTUP_STRICT"] = "true"
+            os.environ["SAARTHI_LLM_PROVIDER"] = "gemini"
+            os.environ["SAARTHI_LLM_REQUIRED"] = "true"
+
+            validate_production_secrets()
+        finally:
+            if secret_file:
+                try:
+                    os.unlink(secret_file)
+                except FileNotFoundError:
+                    pass
+            for key, value in backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_encrypt_pii_in_production_does_not_fallback_to_plaintext(self):
         keys = [
             "APP_ENV",

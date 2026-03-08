@@ -75,6 +75,25 @@ def _json_loads(value: str | None) -> dict[str, Any]:
     return {}
 
 
+def _json_or_csv_list(value: str | None) -> list[str]:
+    raw = _normalize_text(value)
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+    items: list[str] = []
+    for line in raw.replace("\r", "\n").split("\n"):
+        for part in line.split(","):
+            token = str(part or "").strip()
+            if token:
+                items.append(token)
+    return items
+
+
 @lru_cache(maxsize=4)
 def _load_secrets_blob(provider: str, source: str) -> dict[str, Any]:
     if provider == "file":
@@ -162,6 +181,36 @@ def validate_production_secrets() -> None:
     provider = (_normalize_text(os.getenv("APP_SECRETS_PROVIDER")) or "env").lower()
     if provider not in {"file", "aws_secrets_manager"}:
         raise RuntimeError("Production requires APP_SECRETS_PROVIDER to be file or aws_secrets_manager.")
+
+    saarthi_provider = _normalize_text(os.getenv("SAARTHI_LLM_PROVIDER")).lower()
+    saarthi_required = _bool_env("SAARTHI_LLM_REQUIRED", default=False)
+    if saarthi_required and not saarthi_provider:
+        raise RuntimeError("Production requires SAARTHI_LLM_PROVIDER when SAARTHI_LLM_REQUIRED=true.")
+    if saarthi_provider:
+        if saarthi_provider not in {"gemini", "openrouter"}:
+            raise RuntimeError("SAARTHI_LLM_PROVIDER must be 'gemini' or 'openrouter' in production.")
+        if not saarthi_required:
+            raise RuntimeError("Production requires SAARTHI_LLM_REQUIRED=true when Saarthi LLM is enabled.")
+        if saarthi_provider == "gemini":
+            gemini_key = _normalize_text(resolve_secret("GEMINI_API_KEY", default=""))
+            if gemini_key.startswith("sk-or-v1-"):
+                raise RuntimeError(
+                    "GEMINI_API_KEY appears to be an OpenRouter key. "
+                    "Use OPENROUTER_API_KEY only as the final fallback secret."
+                )
+            gemini_keys = _json_or_csv_list(resolve_secret("GEMINI_API_KEYS_JSON", default=""))
+            if gemini_key:
+                gemini_keys.append(gemini_key)
+            gemini_keys = [token for token in gemini_keys if token and not token.startswith("sk-or-v1-")]
+            if not gemini_keys:
+                raise RuntimeError(
+                    "Production Saarthi Gemini configuration requires GEMINI_API_KEYS_JSON "
+                    "or GEMINI_API_KEY in secrets."
+                )
+        if saarthi_provider == "openrouter":
+            openrouter_key = _normalize_text(resolve_secret("OPENROUTER_API_KEY", default=""))
+            if not openrouter_key:
+                raise RuntimeError("Production Saarthi OpenRouter configuration requires OPENROUTER_API_KEY in secrets.")
 
     if not _bool_env("APP_FIELD_ENCRYPTION_REQUIRED", default=True):
         raise RuntimeError("Production requires APP_FIELD_ENCRYPTION_REQUIRED=true.")

@@ -1,0 +1,34 @@
+name: Enterprise Release Readiness
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Staging or production candidate base URL"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  staging-readiness:
+    name: Release Readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run readiness checks
+        env:
+          ADMIN_TOKEN: ${{ secrets.ENTERPRISE_ADMIN_TOKEN }}
+          BASE_URL: ${{ inputs.base_url }}
+        run: |
+          python scripts/release_readiness_check.py \
+            --base-url "${BASE_URL}" \
+            --admin-token "${ADMIN_TOKEN}"
