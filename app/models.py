@@ -266,6 +266,43 @@ class NotificationLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class NotificationDeliveryAttempt(Base):
+    __tablename__ = "notification_delivery_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=True, index=True)
+    recovery_action_id = Column(
+        Integer,
+        ForeignKey("attendance_recovery_actions.id"),
+        nullable=True,
+        index=True,
+    )
+    notification_type = Column(String(80), nullable=False, index=True)
+    recipient_email = Column(String(120), nullable=False, index=True)
+    channel = Column(String(50), nullable=False, default="worker-email", index=True)
+    status = Column(String(24), nullable=False, default="pending", index=True)
+    attempt_number = Column(Integer, nullable=False, default=1)
+    error_message = Column(String(600), nullable=True)
+    metadata_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class SchedulerLease(Base):
+    __tablename__ = "scheduler_leases"
+
+    job_name = Column(String(120), primary_key=True, index=True)
+    owner_id = Column(String(120), nullable=False, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    next_due_at = Column(DateTime, nullable=True, index=True)
+    heartbeat_at = Column(DateTime, nullable=True, index=True)
+    last_started_at = Column(DateTime, nullable=True, index=True)
+    last_completed_at = Column(DateTime, nullable=True, index=True)
+    last_status = Column(String(24), nullable=False, default="pending", index=True)
+    last_error = Column(String(600), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class AttendanceRecoveryPlan(Base):
     __tablename__ = "attendance_recovery_plans"
 
@@ -819,6 +856,7 @@ class IdentityVerificationCase(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     signals = relationship("IdentityRiskSignal", back_populates="case", cascade="all, delete-orphan")
+    artifacts = relationship("IdentityVerificationArtifact", back_populates="case", cascade="all, delete-orphan")
 
 
 class IdentityRiskSignal(Base):
@@ -835,6 +873,27 @@ class IdentityRiskSignal(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     case = relationship("IdentityVerificationCase", back_populates="signals")
+
+
+class IdentityVerificationArtifact(Base):
+    __tablename__ = "identity_verification_artifacts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    case_id = Column(Integer, ForeignKey("identity_verification_cases.id"), nullable=False, index=True)
+    artifact_type = Column(String(80), nullable=False, index=True)
+    media_object_key = Column(String(240), nullable=False, index=True)
+    content_type = Column(String(120), nullable=False)
+    size_bytes = Column(Integer, nullable=False, default=0)
+    checksum_sha256 = Column(String(64), nullable=False, index=True)
+    verification_state = Column(String(40), nullable=False, default="submitted", index=True)
+    document_match_score = Column(Float, nullable=True)
+    face_match_confidence = Column(Float, nullable=True)
+    liveness_passed = Column(Boolean, nullable=True)
+    note = Column(String(500), nullable=True)
+    extracted_identity_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    case = relationship("IdentityVerificationCase", back_populates="artifacts")
 
 
 class MediaObject(Base):

@@ -124,6 +124,34 @@ class IdentityRiskSignalOut(BaseModel):
     created_at: datetime
 
 
+class IdentityVerificationArtifactUpload(BaseModel):
+    artifact_type: str = Field(min_length=3, max_length=80)
+    data_url: str = Field(min_length=20)
+    note: Optional[str] = Field(default=None, max_length=500)
+    verification_state: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    extracted_identity: dict[str, Any] = Field(default_factory=dict)
+    document_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    face_match_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    liveness_passed: Optional[bool] = None
+
+
+class IdentityVerificationArtifactOut(BaseModel):
+    id: int
+    artifact_type: str
+    media_object_key: str
+    media_url: Optional[str] = None
+    content_type: str
+    size_bytes: int
+    checksum_sha256: str
+    verification_state: str
+    document_match_score: Optional[float] = None
+    face_match_confidence: Optional[float] = None
+    liveness_passed: Optional[bool] = None
+    note: Optional[str] = None
+    extracted_identity: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
 class IdentityVerificationCaseOut(BaseModel):
     id: int
     workflow_key: str
@@ -146,6 +174,7 @@ class IdentityVerificationCaseOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     signals: list[IdentityRiskSignalOut] = Field(default_factory=list)
+    artifacts: list[IdentityVerificationArtifactOut] = Field(default_factory=list)
 
 
 class ApplicantRiskAssessmentRequest(BaseModel):
@@ -156,11 +185,13 @@ class ApplicantRiskAssessmentRequest(BaseModel):
     device_id: Optional[str] = Field(default=None, max_length=120)
     user_agent: Optional[str] = Field(default=None, max_length=300)
     ip_address: Optional[str] = Field(default=None, max_length=120)
+    external_subject_key: Optional[str] = Field(default=None, max_length=120)
     document_reference: Optional[str] = Field(default=None, max_length=160)
     document_match_score: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     face_match_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     liveness_passed: Optional[bool] = None
     suspicious_flags: list[str] = Field(default_factory=list, max_length=12)
+    evidence_uploads: list[IdentityVerificationArtifactUpload] = Field(default_factory=list, max_length=8)
 
 
 class IdentityGraphNodeOut(BaseModel):
@@ -1873,6 +1904,76 @@ class SaarthiChatResponse(BaseModel):
     session: SaarthiStatusOut
 
 
+class SaarthiAdminDepartmentOut(BaseModel):
+    department: str
+    total_students: int
+    completed_students: int
+    pending_students: int
+    due_today_students: int = 0
+    missed_students: int
+    engaged_students: int = 0
+    completion_rate_percent: float
+    average_messages_per_engaged_student: float = 0.0
+
+
+class SaarthiAdminStudentWeekOut(BaseModel):
+    student_id: int
+    name: str
+    registration_number: Optional[str] = None
+    section: Optional[str] = None
+    department: str
+    week_status: str
+    message_count: int = 0
+    attendance_credit_minutes: int = 0
+    attendance_awarded_on: Optional[datetime] = None
+    last_message_at: Optional[datetime] = None
+
+
+class SaarthiAdminOverviewOut(BaseModel):
+    reference_date: date
+    week_start_date: date
+    mandatory_date: date
+    total_students: int
+    completed_students: int
+    pending_students: int
+    due_today_students: int
+    missed_students: int
+    engaged_students: int
+    completion_rate_percent: float
+    total_messages: int = 0
+    total_attendance_hours: float = 0.0
+    departments: list[SaarthiAdminDepartmentOut] = Field(default_factory=list)
+    missed_alerts: list[AdminAlertItem] = Field(default_factory=list)
+    recent_completed: list[SaarthiAdminStudentWeekOut] = Field(default_factory=list)
+    waiting_students: list[SaarthiAdminStudentWeekOut] = Field(default_factory=list)
+    last_updated_at: datetime
+
+
+class SaarthiAdminTranscriptRecordOut(BaseModel):
+    student: SaarthiAdminStudentWeekOut
+    session_id: Optional[int] = None
+    attendance_record_id: Optional[int] = None
+    attendance_status: Optional[AttendanceStatus] = None
+    attendance_source: Optional[str] = None
+    attendance_note: Optional[str] = None
+    attendance_event_id: Optional[int] = None
+    attendance_event_source: Optional[str] = None
+    attendance_event_created_at: Optional[datetime] = None
+    transcript: list[SaarthiMessageOut] = Field(default_factory=list)
+
+
+class SaarthiAdminExportOut(BaseModel):
+    file_name: str
+    generated_at: datetime
+    reference_date: date
+    week_start_date: date
+    mandatory_date: date
+    checksum_sha256: str
+    record_count: int
+    overview: SaarthiAdminOverviewOut
+    records: list[SaarthiAdminTranscriptRecordOut] = Field(default_factory=list)
+
+
 class AttendanceRecoverySuggestedClassOut(BaseModel):
     makeup_class_id: int
     class_date: date
@@ -1930,6 +2031,33 @@ class AttendanceRecoveryPlanOut(BaseModel):
 
 class AttendanceRecoveryPlanListOut(BaseModel):
     plans: list[AttendanceRecoveryPlanOut] = Field(default_factory=list)
+    last_updated_at: datetime
+
+
+class NotificationDeliveryAttemptOut(BaseModel):
+    id: int
+    student_id: Optional[int] = None
+    recovery_action_id: Optional[int] = None
+    notification_type: str
+    recipient_email: str
+    channel: str
+    status: str
+    attempt_number: int
+    error_message: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class AttendanceRecoveryDeliverySummaryOut(BaseModel):
+    total_attempts: int = 0
+    sent: int = 0
+    failed: int = 0
+    already_sent: int = 0
+
+
+class AttendanceRecoveryDeliveryLogOut(BaseModel):
+    attempts: list[NotificationDeliveryAttemptOut] = Field(default_factory=list)
+    summary: AttendanceRecoveryDeliverySummaryOut
     last_updated_at: datetime
 
 

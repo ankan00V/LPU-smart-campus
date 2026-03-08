@@ -1,10 +1,16 @@
+import json
 import logging
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from datetime import datetime
 from typing import Any
 from urllib.parse import SplitResult
 
-from .otp_delivery import send_login_otp
+from . import models
+from .database import SessionLocal, add_after_commit_hook
+from .observability import record_notification_delivery_attempt
+from .otp_delivery import send_login_otp, send_transactional_email
 from .runtime_infra import (
     is_remote_service_host,
     managed_services_required,
@@ -160,9 +166,508 @@ def _send_login_otp_task(destination_email: str, otp_code: str) -> dict[str, Any
     return send_login_otp(destination_email, otp_code)
 
 
-def _send_notification_task(payload: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Notification task processed", extra={"payload": payload})
-    return {"status": "sent", "payload": payload}
+def _compact_text(value: Any, *, default: str = "", max_len: int | None = None) -> str:
+    text = str(value or "").strip() or default
+    if max_len is not None:
+        return text[:max_len]
+    return text
+
+
+def _parse_iso_datetime(raw: Any) -> datetime | None:
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+
+
+def _format_datetime_label(raw: Any, *, default: str = "Not scheduled") -> str:
+    dt = _parse_iso_datetime(raw)
+    if dt is None:
+        return _compact_text(raw, default=default)
+    return dt.strftime("%d %b %Y %I:%M %p")
+
+
+def _format_attendance_percent(raw: Any) -> str:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return "0.0%"
+    return f"{value:.1f}%"
+
+
+def _write_notification_log(
+    db,
+    *,
+    student_id: int,
+    sent_to: str,
+    channel: str,
+    message: str,
+) -> models.NotificationLog:
+    row = models.NotificationLog(
+        student_id=int(student_id),
+        message=_compact_text(message, max_len=500),
+        channel=_compact_text(channel, default="worker-email", max_len=50),
+        sent_to=_compact_text(sent_to, max_len=120),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _mark_recovery_action_sent(db, *, action_id: int | None) -> None:
+    if not action_id:
+        return
+    action = db.get(models.AttendanceRecoveryAction, int(action_id))
+    if action is None:
+        return
+    if action.status in {
+        models.AttendanceRecoveryActionStatus.CANCELLED,
+        models.AttendanceRecoveryActionStatus.COMPLETED,
+        models.AttendanceRecoveryActionStatus.SKIPPED,
+    }:
+        return
+    action.status = models.AttendanceRecoveryActionStatus.SENT
+    action.updated_at = datetime.utcnow()
+    db.flush()
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_notification_status(value: Any, *, default: str = "unknown") -> str:
+    normalized = str(value or default).strip().lower().replace("-", "_")
+    return normalized or default
+
+
+def _notification_attempt_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in (
+        "student_name",
+        "registration_number",
+        "course_id",
+        "course_code",
+        "course_title",
+        "risk_level",
+        "attendance_percent",
+        "consecutive_absences",
+        "missed_remedials",
+        "summary",
+        "recovery_due_at",
+        "suggested_remedial",
+        "office_hour_at",
+        "message",
+        "log_channel",
+    ):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if not cleaned:
+                continue
+            metadata[key] = cleaned
+            continue
+        metadata[key] = value
+    return metadata
+
+
+def _write_notification_delivery_attempt(
+    db,
+    *,
+    payload: dict[str, Any],
+    status: str,
+    channel: str,
+    attempt_number: int,
+    error_message: str | None = None,
+) -> models.NotificationDeliveryAttempt:
+    row = models.NotificationDeliveryAttempt(
+        student_id=_positive_int(payload.get("student_id")),
+        recovery_action_id=_positive_int(payload.get("action_id")),
+        notification_type=_compact_text(payload.get("type"), default="unknown", max_len=80),
+        recipient_email=_compact_text(payload.get("recipient_email"), default="unknown@example.invalid", max_len=120),
+        channel=_compact_text(channel, default="transactional-email", max_len=50),
+        status=_normalize_notification_status(status),
+        attempt_number=max(1, int(attempt_number or 1)),
+        error_message=_compact_text(error_message, max_len=600) or None,
+        metadata_json=json.dumps(
+            _notification_attempt_metadata(payload),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _recovery_notification_subject(payload: dict[str, Any]) -> str:
+    notification_type = _compact_text(payload.get("type"))
+    student_name = _compact_text(payload.get("student_name"), default="Student")
+    course_code = _compact_text(payload.get("course_code"), default="Course")
+    if notification_type == "attendance_recovery_parent_alert":
+        return f"Attendance recovery escalation for {student_name} - {course_code}"
+    return f"Attendance recovery action required for {student_name} - {course_code}"
+
+
+def _recovery_notification_body(payload: dict[str, Any]) -> str:
+    notification_type = _compact_text(payload.get("type"))
+    student_name = _compact_text(payload.get("student_name"), default="Student")
+    registration_number = _compact_text(payload.get("registration_number"), default="Not available")
+    course_code = _compact_text(payload.get("course_code"), default="Course")
+    course_title = _compact_text(payload.get("course_title"), default="Untitled course")
+    risk_level = _compact_text(payload.get("risk_level"), default="watch").upper()
+    attendance_percent = _format_attendance_percent(payload.get("attendance_percent"))
+    consecutive_absences = int(payload.get("consecutive_absences") or 0)
+    missed_remedials = int(payload.get("missed_remedials") or 0)
+    summary = _compact_text(payload.get("summary"), default="Recovery plan has been updated.")
+    suggested_remedial = _compact_text(
+        payload.get("suggested_remedial"),
+        default="No remedial slot is currently assigned.",
+    )
+    office_hour_at = _compact_text(
+        payload.get("office_hour_at"),
+        default="No office-hour check-in is currently scheduled.",
+    )
+    recovery_due_at = _format_datetime_label(payload.get("recovery_due_at"), default="No due date assigned")
+    action_message = _compact_text(payload.get("message"), default=summary)
+
+    intro = [
+        "An attendance recovery intervention has been triggered.",
+        "",
+        f"Student: {student_name}",
+        f"Registration: {registration_number}",
+        f"Course: {course_code} - {course_title}",
+        f"Risk level: {risk_level}",
+        f"Attendance: {attendance_percent}",
+        f"Consecutive absences: {consecutive_absences}",
+        f"Missed remedials: {missed_remedials}",
+        f"Recovery due by: {recovery_due_at}",
+        "",
+        f"Plan summary: {summary}",
+        f"Recommended remedial slot: {suggested_remedial}",
+        f"Suggested office-hour follow-up: {office_hour_at}",
+        "",
+        f"Action: {action_message}",
+    ]
+    if notification_type == "attendance_recovery_parent_alert":
+        intro.extend(
+            [
+                "",
+                "This alert was generated because the student has moved into a policy-approved critical attendance recovery state.",
+                "Please coordinate with the student and the assigned faculty advisor to complete the recovery steps on time.",
+            ]
+        )
+    else:
+        intro.extend(
+            [
+                "",
+                "Please review the recovery plan, follow up with the student, and confirm the next intervention step in the portal.",
+            ]
+        )
+    return "\n".join(intro)
+
+
+def _send_recovery_notification(payload: dict[str, Any], *, attempt_number: int = 1) -> dict[str, Any]:
+    recipient_email = _compact_text(payload.get("recipient_email"))
+    if not recipient_email:
+        raise RuntimeError("Attendance recovery notification payload is missing recipient_email.")
+
+    student_id = int(payload.get("student_id") or 0)
+    if student_id <= 0:
+        raise RuntimeError("Attendance recovery notification payload is missing student_id.")
+
+    subject = _recovery_notification_subject(payload)
+    body = _recovery_notification_body(payload)
+    log_channel = _compact_text(
+        payload.get("log_channel"),
+        default="attendance-recovery-email",
+        max_len=50,
+    )
+    log_message = _compact_text(payload.get("message"), default=subject, max_len=500)
+
+    with SessionLocal() as db:
+        existing_log = (
+            db.query(models.NotificationLog)
+            .filter(
+                models.NotificationLog.student_id == student_id,
+                models.NotificationLog.sent_to == recipient_email,
+                models.NotificationLog.channel == log_channel,
+                models.NotificationLog.message == log_message,
+            )
+            .order_by(models.NotificationLog.id.desc())
+            .first()
+        )
+        if existing_log is not None:
+            _mark_recovery_action_sent(db, action_id=payload.get("action_id"))
+            _write_notification_delivery_attempt(
+                db,
+                payload=payload,
+                status="already_sent",
+                channel=log_channel,
+                attempt_number=attempt_number,
+            )
+            db.commit()
+            return {
+                "status": "already_sent",
+                "channel": log_channel,
+                "recipient_email": recipient_email,
+            }
+
+    try:
+        delivery = send_transactional_email(recipient_email, subject=subject, body=body)
+    except Exception as exc:
+        with SessionLocal() as db:
+            _write_notification_delivery_attempt(
+                db,
+                payload=payload,
+                status="failed",
+                channel="transactional-email",
+                attempt_number=attempt_number,
+                error_message=str(exc),
+            )
+            db.commit()
+        raise
+
+    with SessionLocal() as db:
+        _mark_recovery_action_sent(db, action_id=payload.get("action_id"))
+        _write_notification_log(
+            db,
+            student_id=student_id,
+            sent_to=recipient_email,
+            channel=log_channel,
+            message=log_message,
+        )
+        _write_notification_delivery_attempt(
+            db,
+            payload=payload,
+            status="sent",
+            channel=_compact_text(delivery.get("channel"), default="transactional-email", max_len=50),
+            attempt_number=attempt_number,
+        )
+        db.commit()
+
+    return {
+        "status": "sent",
+        "channel": _compact_text(delivery.get("channel"), default=log_channel),
+        "recipient_email": recipient_email,
+    }
+
+
+def _saarthi_notification_subject(payload: dict[str, Any]) -> str:
+    notification_type = _compact_text(payload.get("type"))
+    student_name = _compact_text(payload.get("student_name"), default="Student")
+    mandatory_date = _compact_text(payload.get("mandatory_date"), default="scheduled Sunday")
+    course_code = _compact_text(payload.get("course_code"), default="CON111")
+    if notification_type == "saarthi_missed_admin_alert":
+        return f"Saarthi escalation required for {student_name} - {course_code} - {mandatory_date}"
+    return f"Missed mandatory Saarthi counselling - {course_code} - {mandatory_date}"
+
+
+def _saarthi_notification_body(payload: dict[str, Any]) -> str:
+    notification_type = _compact_text(payload.get("type"))
+    student_name = _compact_text(payload.get("student_name"), default="Student")
+    registration_number = _compact_text(payload.get("registration_number"), default="Not available")
+    course_code = _compact_text(payload.get("course_code"), default="CON111")
+    course_title = _compact_text(payload.get("course_title"), default="Councelling and Happiness")
+    faculty_name = _compact_text(payload.get("faculty_name"), default="Saarthi (AI Mentor)")
+    mandatory_date = _compact_text(payload.get("mandatory_date"), default="scheduled Sunday")
+    week_start_date = _compact_text(payload.get("week_start_date"), default="this week")
+    section = _compact_text(payload.get("section"), default="Unknown")
+    department = _compact_text(payload.get("department"), default="Unknown")
+    message_count = int(payload.get("message_count") or 0)
+    last_message_at = _format_datetime_label(payload.get("last_message_at"), default="No prior messages recorded")
+
+    if notification_type == "saarthi_missed_admin_alert":
+        return "\n".join(
+            [
+                "A student missed the mandatory Saarthi Sunday counselling check-in.",
+                "",
+                f"Student: {student_name}",
+                f"Registration: {registration_number}",
+                f"Department/Section: {department} / {section}",
+                f"Course: {course_code} - {course_title}",
+                f"Faculty: {faculty_name}",
+                f"Week start: {week_start_date}",
+                f"Mandatory Sunday: {mandatory_date}",
+                f"Transcript activity this week: {message_count} message(s)",
+                f"Last Saarthi activity: {last_message_at}",
+                "",
+                "Attendance impact: the student has been marked absent for this week's mandatory CON111 counselling slot.",
+                "Action: review the student's engagement and follow up if additional intervention is required.",
+            ]
+        )
+
+    return "\n".join(
+        [
+            f"You missed the mandatory Saarthi Sunday counselling check-in on {mandatory_date}.",
+            "",
+            f"Course: {course_code} - {course_title}",
+            f"Faculty: {faculty_name}",
+            f"Week start: {week_start_date}",
+            "",
+            "Attendance impact: CON111 has been marked absent for that Sunday. Chatting with Saarthi on other days is still available, but attendance can only be credited once on the mandatory Sunday.",
+            "Next step: complete the next Sunday Saarthi session to secure the next weekly 1-hour attendance credit.",
+        ]
+    )
+
+
+def _send_saarthi_notification(payload: dict[str, Any], *, attempt_number: int = 1) -> dict[str, Any]:
+    recipient_email = _compact_text(payload.get("recipient_email"))
+    if not recipient_email:
+        raise RuntimeError("Saarthi notification payload is missing recipient_email.")
+
+    student_id = int(payload.get("student_id") or 0)
+    if student_id <= 0:
+        raise RuntimeError("Saarthi notification payload is missing student_id.")
+
+    subject = _saarthi_notification_subject(payload)
+    body = _saarthi_notification_body(payload)
+    log_channel = _compact_text(
+        payload.get("log_channel"),
+        default="saarthi-missed-email",
+        max_len=50,
+    )
+    log_message = _compact_text(payload.get("message"), default=subject, max_len=500)
+
+    with SessionLocal() as db:
+        existing_log = (
+            db.query(models.NotificationLog)
+            .filter(
+                models.NotificationLog.student_id == student_id,
+                models.NotificationLog.sent_to == recipient_email,
+                models.NotificationLog.channel == log_channel,
+                models.NotificationLog.message == log_message,
+            )
+            .order_by(models.NotificationLog.id.desc())
+            .first()
+        )
+        if existing_log is not None:
+            _write_notification_delivery_attempt(
+                db,
+                payload=payload,
+                status="already_sent",
+                channel=log_channel,
+                attempt_number=attempt_number,
+            )
+            db.commit()
+            return {
+                "status": "already_sent",
+                "channel": log_channel,
+                "recipient_email": recipient_email,
+            }
+
+    try:
+        delivery = send_transactional_email(recipient_email, subject=subject, body=body)
+    except Exception as exc:
+        with SessionLocal() as db:
+            _write_notification_delivery_attempt(
+                db,
+                payload=payload,
+                status="failed",
+                channel="transactional-email",
+                attempt_number=attempt_number,
+                error_message=str(exc),
+            )
+            db.commit()
+        raise
+
+    with SessionLocal() as db:
+        _write_notification_log(
+            db,
+            student_id=student_id,
+            sent_to=recipient_email,
+            channel=log_channel,
+            message=log_message,
+        )
+        _write_notification_delivery_attempt(
+            db,
+            payload=payload,
+            status="sent",
+            channel=_compact_text(delivery.get("channel"), default="transactional-email", max_len=50),
+            attempt_number=attempt_number,
+        )
+        db.commit()
+
+    return {
+        "status": "sent",
+        "channel": _compact_text(delivery.get("channel"), default=log_channel),
+        "recipient_email": recipient_email,
+    }
+
+
+def _send_notification_task(payload: dict[str, Any], *, attempt_number: int = 1) -> dict[str, Any]:
+    notification_type = _compact_text(payload.get("type"))
+    if notification_type in {
+        "attendance_recovery_faculty_alert",
+        "attendance_recovery_parent_alert",
+    }:
+        started = time.perf_counter()
+        try:
+            result = _send_recovery_notification(payload, attempt_number=max(1, int(attempt_number or 1)))
+        except Exception:
+            record_notification_delivery_attempt(
+                notification_type=notification_type,
+                channel="transactional-email",
+                status="failed",
+                duration_seconds=time.perf_counter() - started,
+            )
+            logger.exception(
+                "Attendance recovery notification delivery failed",
+                extra={"payload": payload, "attempt_number": attempt_number},
+            )
+            raise
+        record_notification_delivery_attempt(
+            notification_type=notification_type,
+            channel=_compact_text(result.get("channel"), default="transactional-email"),
+            status=_normalize_notification_status(result.get("status"), default="sent"),
+            duration_seconds=time.perf_counter() - started,
+        )
+        logger.info(
+            "Attendance recovery notification delivered",
+            extra={"payload": payload, "result": result, "attempt_number": attempt_number},
+        )
+        return result
+    if notification_type in {
+        "saarthi_missed_student_alert",
+        "saarthi_missed_admin_alert",
+    }:
+        started = time.perf_counter()
+        try:
+            result = _send_saarthi_notification(payload, attempt_number=max(1, int(attempt_number or 1)))
+        except Exception:
+            record_notification_delivery_attempt(
+                notification_type=notification_type,
+                channel="transactional-email",
+                status="failed",
+                duration_seconds=time.perf_counter() - started,
+            )
+            logger.exception(
+                "Saarthi missed notification delivery failed",
+                extra={"payload": payload, "attempt_number": attempt_number},
+            )
+            raise
+        record_notification_delivery_attempt(
+            notification_type=notification_type,
+            channel=_compact_text(result.get("channel"), default="transactional-email"),
+            status=_normalize_notification_status(result.get("status"), default="sent"),
+            duration_seconds=time.perf_counter() - started,
+        )
+        logger.info(
+            "Saarthi missed notification delivered",
+            extra={"payload": payload, "result": result, "attempt_number": attempt_number},
+        )
+        return result
+    logger.info("Notification task accepted without external delivery handler", extra={"payload": payload})
+    return {"status": "accepted", "payload": payload}
 
 
 def _face_reverify_task(payload: dict[str, Any]) -> dict[str, Any]:
@@ -247,6 +752,21 @@ def enqueue_notification(payload: dict[str, Any]) -> str:
     return "inline-thread"
 
 
+def enqueue_notification_after_commit(db, payload: dict[str, Any]) -> None:
+    frozen_payload = dict(payload)
+
+    def _dispatch() -> None:
+        try:
+            enqueue_notification(frozen_payload)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Post-commit notification enqueue failed",
+                extra={"payload": frozen_payload},
+            )
+
+    add_after_commit_hook(db, _dispatch)
+
+
 def enqueue_face_reverification(payload: dict[str, Any]) -> str:
     enabled = _bool_env("WORKER_ENABLE_FACE_REVERIFY", default=True)
     required = worker_required()
@@ -288,9 +808,20 @@ if celery_app is not None:
     def send_login_otp_task(destination_email: str, otp_code: str) -> dict[str, Any]:
         return _send_login_otp_task(destination_email, otp_code)
 
-    @celery_app.task(name=TASK_NOTIFY)
-    def send_notification_task(payload: dict[str, Any]) -> dict[str, Any]:
-        return _send_notification_task(payload)
+    @celery_app.task(
+        name=TASK_NOTIFY,
+        bind=True,
+        autoretry_for=(Exception,),
+        retry_backoff=max(1, int(os.getenv("WORKER_NOTIFICATION_RETRY_BACKOFF_SECONDS", "30"))),
+        retry_backoff_max=max(30, int(os.getenv("WORKER_NOTIFICATION_RETRY_BACKOFF_MAX_SECONDS", "300"))),
+        retry_jitter=True,
+        retry_kwargs={
+            "max_retries": max(0, int(os.getenv("WORKER_NOTIFICATION_MAX_RETRIES", "3"))),
+        },
+    )
+    def send_notification_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        attempt_number = int(getattr(getattr(self, "request", None), "retries", 0) or 0) + 1
+        return _send_notification_task(payload, attempt_number=attempt_number)
 
     @celery_app.task(name=TASK_FACE_REVERIFY)
     def face_reverify_task(payload: dict[str, Any]) -> dict[str, Any]:

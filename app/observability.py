@@ -124,6 +124,42 @@ REQUEST_DURATION = (
     if Histogram is not None
     else None
 )
+NOTIFICATION_ATTEMPT_COUNTER = (
+    Counter(
+        "smartcampus_notification_delivery_attempts_total",
+        "Notification delivery attempts",
+        ["notification_type", "channel", "status"],
+    )
+    if Counter is not None
+    else None
+)
+NOTIFICATION_DURATION = (
+    Histogram(
+        "smartcampus_notification_delivery_duration_seconds",
+        "Notification delivery duration",
+        ["notification_type", "channel"],
+    )
+    if Histogram is not None
+    else None
+)
+SCHEDULER_JOB_COUNTER = (
+    Counter(
+        "smartcampus_scheduler_jobs_total",
+        "Scheduler job executions",
+        ["job_name", "status"],
+    )
+    if Counter is not None
+    else None
+)
+SCHEDULER_JOB_DURATION = (
+    Histogram(
+        "smartcampus_scheduler_job_duration_seconds",
+        "Scheduler job execution duration",
+        ["job_name", "status"],
+    )
+    if Histogram is not None
+    else None
+)
 
 error_budget_tracker = ErrorBudgetTracker()
 _last_alert_state = "healthy"
@@ -185,6 +221,45 @@ def metrics_as_text() -> str:
 
 def metrics_response() -> PlainTextResponse:
     return PlainTextResponse(metrics_as_text(), media_type=CONTENT_TYPE_LATEST)
+
+
+def record_notification_delivery_attempt(
+    *,
+    notification_type: str,
+    channel: str,
+    status: str,
+    duration_seconds: float | None = None,
+) -> None:
+    type_label = str(notification_type or "unknown").strip() or "unknown"
+    channel_label = str(channel or "unknown").strip() or "unknown"
+    status_label = str(status or "unknown").strip() or "unknown"
+    if NOTIFICATION_ATTEMPT_COUNTER is not None:
+        NOTIFICATION_ATTEMPT_COUNTER.labels(
+            notification_type=type_label,
+            channel=channel_label,
+            status=status_label,
+        ).inc()
+    if duration_seconds is not None and NOTIFICATION_DURATION is not None:
+        NOTIFICATION_DURATION.labels(
+            notification_type=type_label,
+            channel=channel_label,
+        ).observe(max(0.0, float(duration_seconds)))
+
+
+def record_scheduler_job_run(
+    *,
+    job_name: str,
+    status: str,
+    duration_seconds: float | None = None,
+) -> None:
+    job_label = str(job_name or "unknown").strip() or "unknown"
+    status_label = str(status or "unknown").strip() or "unknown"
+    if SCHEDULER_JOB_COUNTER is not None:
+        SCHEDULER_JOB_COUNTER.labels(job_name=job_label, status=status_label).inc()
+    if duration_seconds is not None and SCHEDULER_JOB_DURATION is not None:
+        SCHEDULER_JOB_DURATION.labels(job_name=job_label, status=status_label).observe(
+            max(0.0, float(duration_seconds))
+        )
 
 
 def configure_logging() -> None:

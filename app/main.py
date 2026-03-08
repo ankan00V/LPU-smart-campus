@@ -33,6 +33,7 @@ from .mongo import (
     next_sequence,
 )
 from .outbox import dispatch_outbox_batch
+from .internal_scheduler import scheduler_status, start_internal_scheduler, stop_internal_scheduler
 from .observability import install_observability, metrics_response, observability_router
 from .otp_delivery import assert_otp_delivery_ready
 from .performance import record_request_metric
@@ -134,6 +135,7 @@ def _build_health_payload() -> dict[str, Any]:
             "inline_fallback_enabled": worker_inline_fallback_enabled(),
             "transport": worker_transport_status(),
         },
+        "scheduler": scheduler_status(),
     }
 
 
@@ -896,11 +898,13 @@ async def startup_event() -> None:
         logger.warning("Startup SQL->Mongo sync skipped due to non-fatal error: %s", exc)
     finally:
         db.close()
+    start_internal_scheduler()
     _store_health_payload(_build_health_payload())
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    stop_internal_scheduler()
     await realtime_hub.stop()
     close_redis()
     close_mongo()

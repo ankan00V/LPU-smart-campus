@@ -1,15 +1,20 @@
+import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from .runtime_infra import is_remote_service_host, managed_services_required
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
+
+logger = logging.getLogger(__name__)
+_AFTER_COMMIT_HOOKS_KEY = "smartcampus_after_commit_hooks"
 
 
 def _strict_runtime_enabled() -> bool:
@@ -231,6 +236,33 @@ def database_status() -> dict:
         "connected": connected,
         "error": error,
     }
+
+
+def add_after_commit_hook(db: Session, callback: Callable[[], None]) -> None:
+    hooks = db.info.setdefault(_AFTER_COMMIT_HOOKS_KEY, [])
+    hooks.append(callback)
+
+
+def _drain_after_commit_hooks(session: Session) -> list[Callable[[], None]]:
+    hooks = session.info.pop(_AFTER_COMMIT_HOOKS_KEY, [])
+    if not isinstance(hooks, list):
+        return []
+    return [hook for hook in hooks if callable(hook)]
+
+
+@event.listens_for(Session, "after_commit")
+def _run_after_commit_hooks(session: Session) -> None:
+    for callback in _drain_after_commit_hooks(session):
+        try:
+            callback()
+        except Exception:  # noqa: BLE001
+            logger.exception("After-commit hook failed.")
+
+
+@event.listens_for(Session, "after_rollback")
+@event.listens_for(Session, "after_soft_rollback")
+def _clear_after_commit_hooks(session: Session, *_args) -> None:
+    session.info.pop(_AFTER_COMMIT_HOOKS_KEY, None)
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,

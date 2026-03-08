@@ -8,6 +8,7 @@ _TEST_DB_PATH = Path(__file__).resolve().parent.parent / ".codex_tmp" / "pytest-
 _TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 os.environ["APP_RUNTIME_STRICT"] = "false"
 os.environ["SQLALCHEMY_DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+os.environ["APP_INTERNAL_SCHEDULER_ENABLED"] = "false"
 os.environ.pop("POSTGRES_ADMIN_DATABASE_URL", None)
 
 
@@ -15,6 +16,7 @@ os.environ.pop("POSTGRES_ADMIN_DATABASE_URL", None)
 def _runtime_defaults_per_test():
     keys = (
         "APP_RUNTIME_STRICT",
+        "APP_INTERNAL_SCHEDULER_ENABLED",
         "MONGO_PERSISTENCE_REQUIRED",
         "MONGO_READ_PREFERRED",
         "REDIS_REQUIRED",
@@ -25,6 +27,7 @@ def _runtime_defaults_per_test():
     backup = {key: os.environ.get(key) for key in keys}
 
     os.environ["APP_RUNTIME_STRICT"] = "false"
+    os.environ["APP_INTERNAL_SCHEDULER_ENABLED"] = "false"
     os.environ["MONGO_PERSISTENCE_REQUIRED"] = "false"
     os.environ["MONGO_READ_PREFERRED"] = "false"
     os.environ["REDIS_REQUIRED"] = "false"

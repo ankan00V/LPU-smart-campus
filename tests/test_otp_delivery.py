@@ -39,3 +39,31 @@ class OTPDeliveryTests(unittest.TestCase):
         server.starttls.assert_called_once()
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
         server.noop.assert_called_once()
+
+    @mock.patch("app.otp_delivery.smtplib.SMTP")
+    def test_send_transactional_email_uses_smtp_transport(self, smtp_cls):
+        os.environ["OTP_DELIVERY_MODE"] = "smtp"
+        os.environ["OTP_SMTP_HOST"] = "smtp.gmail.com"
+        os.environ["OTP_SMTP_PORT"] = "587"
+        os.environ["OTP_SMTP_USERNAME"] = "campus@example.com"
+        os.environ["OTP_SMTP_PASSWORD"] = "abcdefghijklmnop"
+        os.environ["OTP_SMTP_STARTTLS"] = "true"
+        os.environ["OTP_SMTP_USE_SSL"] = "false"
+        os.environ["OTP_FROM_EMAIL"] = "campus@example.com"
+
+        server = smtp_cls.return_value.__enter__.return_value
+
+        result = otp_delivery.send_transactional_email(
+            "faculty@example.com",
+            subject="Attendance recovery action required",
+            body="Review the recovery plan.",
+        )
+
+        self.assertEqual(result, {"channel": "smtp-email"})
+        smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
+        server.starttls.assert_called_once()
+        server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
+        server.send_message.assert_called_once()
+        message = server.send_message.call_args.args[0]
+        self.assertEqual(message["To"], "faculty@example.com")
+        self.assertEqual(message["Subject"], "Attendance recovery action required")

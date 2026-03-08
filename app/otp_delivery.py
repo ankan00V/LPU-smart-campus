@@ -117,6 +117,25 @@ def _otp_mail_body(otp_code: str) -> str:
     )
 
 
+def _build_message(destination_email: str, *, subject: str, body: str) -> EmailMessage:
+    recipient = str(destination_email or "").strip()
+    clean_subject = str(subject or "").strip()
+    clean_body = str(body or "").strip()
+    if not recipient:
+        raise RuntimeError("Destination email is required.")
+    if not clean_subject:
+        raise RuntimeError("Email subject is required.")
+    if not clean_body:
+        raise RuntimeError("Email body is required.")
+
+    message = EmailMessage()
+    message["From"] = _from_email()
+    message["To"] = recipient
+    message["Subject"] = clean_subject
+    message.set_content(clean_body)
+    return message
+
+
 def _ensure_smtp_config() -> None:
     def is_placeholder(value: str) -> bool:
         return value.strip() in {
@@ -171,14 +190,9 @@ def _verify_smtp_connection() -> None:
         raise RuntimeError(f"OTP SMTP verification failed: {exc}") from exc
 
 
-def _send_via_smtp(destination_email: str, otp_code: str) -> None:
+def _send_smtp_message(destination_email: str, *, subject: str, body: str) -> None:
     _ensure_smtp_config()
-
-    message = EmailMessage()
-    message["From"] = _from_email()
-    message["To"] = destination_email
-    message["Subject"] = _otp_mail_subject()
-    message.set_content(_otp_mail_body(otp_code))
+    message = _build_message(destination_email, subject=subject, body=body)
 
     host = _smtp_host()
     port = _smtp_port()
@@ -198,6 +212,14 @@ def _send_via_smtp(destination_email: str, otp_code: str) -> None:
             server.starttls(context=context)
         server.login(username, password)
         server.send_message(message)
+
+
+def _send_via_smtp(destination_email: str, otp_code: str) -> None:
+    _send_smtp_message(
+        destination_email,
+        subject=_otp_mail_subject(),
+        body=_otp_mail_body(otp_code),
+    )
 
 
 def _graph_tenant_id() -> str:
@@ -259,15 +281,15 @@ def _graph_access_token() -> str:
         raise RuntimeError(f"Graph token request failed: HTTP {exc.code} {raw}") from exc
 
 
-def _send_via_graph(destination_email: str, otp_code: str) -> None:
+def _send_graph_message(destination_email: str, *, subject: str, body: str) -> None:
     token = _graph_access_token()
     sender_user = quote(_graph_sender_user())
     send_url = f"https://graph.microsoft.com/v1.0/users/{sender_user}/sendMail"
 
     payload = {
         "message": {
-            "subject": _otp_mail_subject(),
-            "body": {"contentType": "Text", "content": _otp_mail_body(otp_code)},
+            "subject": str(subject or "").strip(),
+            "body": {"contentType": "Text", "content": str(body or "").strip()},
             "toRecipients": [{"emailAddress": {"address": destination_email}}],
         },
         "saveToSentItems": False,
@@ -282,6 +304,14 @@ def _send_via_graph(destination_email: str, otp_code: str) -> None:
     except HTTPError as exc:
         raw = exc.read().decode("utf-8")
         raise RuntimeError(f"Graph sendMail failed: HTTP {exc.code} {raw}") from exc
+
+
+def _send_via_graph(destination_email: str, otp_code: str) -> None:
+    _send_graph_message(
+        destination_email,
+        subject=_otp_mail_subject(),
+        body=_otp_mail_body(otp_code),
+    )
 
 
 def _verify_graph_connection() -> None:
@@ -318,16 +348,31 @@ def assert_otp_delivery_ready(*, verify_connection: bool = False) -> str:
 
 
 def send_login_otp(destination_email: str, otp_code: str) -> dict:
+    return send_transactional_email(
+        destination_email,
+        subject=_otp_mail_subject(),
+        body=_otp_mail_body(otp_code),
+    )
+
+
+def send_transactional_email(destination_email: str, *, subject: str, body: str) -> dict:
+    if not str(destination_email or "").strip():
+        raise RuntimeError("Destination email is required.")
+    if not str(subject or "").strip():
+        raise RuntimeError("Email subject is required.")
+    if not str(body or "").strip():
+        raise RuntimeError("Email body is required.")
+
     mode = otp_delivery_mode()
 
     if mode == "smtp":
-        _send_via_smtp(destination_email, otp_code)
+        _send_smtp_message(destination_email, subject=subject, body=body)
         return {
             "channel": "smtp-email",
         }
 
     if mode == "graph":
-        _send_via_graph(destination_email, otp_code)
+        _send_graph_message(destination_email, subject=subject, body=body)
         return {
             "channel": "graph-email",
         }
