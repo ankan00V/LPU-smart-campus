@@ -787,6 +787,20 @@ class AuthOTPDelivery(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class AuthOTPDeliveryReceipt(Base):
+    __tablename__ = "auth_otp_delivery_receipts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    delivery_token = Column(String(10), nullable=False, unique=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    destination = Column(String(120), nullable=False)
+    purpose = Column(String(40), nullable=False, default="login", index=True)
+    channel = Column(String(40), nullable=False, default="worker-pending")
+    error_message = Column(String(600), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class AuthSession(Base):
     __tablename__ = "auth_sessions"
 

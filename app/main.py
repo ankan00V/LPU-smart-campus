@@ -9,7 +9,6 @@ from pathlib import Path
 import time as pytime
 from typing import Any
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +20,7 @@ from . import models
 from .attendance_ledger import append_attendance_event, recompute_attendance_record
 from .auth_utils import hash_password, require_roles
 from .database import Base, SessionLocal, database_status, engine
+from .env_loader import load_app_env
 from .enterprise_controls import validate_production_secrets
 from .food_bootstrap import bootstrap_food_hall_catalog
 from .mongo import (
@@ -67,7 +67,7 @@ from .routers import (
 from .routers.assets import build_static_asset_response, seed_static_assets_to_mongo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_app_env()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -116,6 +116,13 @@ def _health_worker_live_timeout_seconds() -> float:
     except ValueError:
         value = 0.8
     return max(0.2, min(5.0, value))
+
+
+def _otp_verify_connection_on_startup() -> bool:
+    raw = (os.getenv("OTP_VERIFY_CONNECTION_ON_STARTUP") or "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return _strict_runtime_mode_enabled()
 
 
 def _build_health_payload() -> dict[str, Any]:
@@ -820,8 +827,8 @@ def apple_touch_icon_precomposed():
 async def startup_event() -> None:
     _assert_strict_runtime_contract()
     validate_production_secrets()
-    assert_otp_delivery_ready(verify_connection=True)
-    redis_ok = init_redis(force=True)
+    assert_otp_delivery_ready(verify_connection=_otp_verify_connection_on_startup())
+    redis_ok = init_redis(force=False)
     if not redis_ok and redis_required():
         raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup.")
     assert_worker_ready()
@@ -848,7 +855,7 @@ async def startup_event() -> None:
     ok = False
     last_reason = ""
     for attempt in range(1, max_attempts + 1):
-        ok = init_mongo(force=True)
+        ok = get_mongo_db(required=False) is not None or init_mongo(force=(attempt == 1))
         if ok:
             break
         status = mongo_status()

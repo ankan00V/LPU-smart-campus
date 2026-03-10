@@ -22,6 +22,8 @@ def _bucket_for_path(path: str) -> str:
         return "attendance"
     if path.startswith("/food"):
         return "food"
+    if path.startswith("/enterprise") or path.startswith("/admin"):
+        return "ops"
     return "default"
 
 
@@ -48,6 +50,7 @@ def get_sla_targets_ms() -> dict[str, float]:
         "auth": 250.0,
         "attendance": 400.0,
         "food": 600.0,
+        "ops": 5000.0,
         "default": 500.0,
     }
     raw = (os.getenv("APP_SLA_TARGETS_MS_JSON") or "").strip()

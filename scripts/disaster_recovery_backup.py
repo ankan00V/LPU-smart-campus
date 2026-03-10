@@ -2,20 +2,25 @@
 import argparse
 import hashlib
 import json
-import subprocess
 import shutil
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
+from _bootstrap import PROJECT_ROOT
 
 from app.database import POSTGRES_ADMIN_LIBPQ_URL, SQLALCHEMY_DATABASE_URL, postgres_libpq_url  # noqa: E402
-from app.mongo import get_mongo_db, init_mongo  # noqa: E402
-from app.postgres_tools import require_postgres_command  # noqa: E402
+from app.mongo import get_mongo_db, init_mongo, next_sequence  # noqa: E402
+from app.postgres_backup import create_postgresql_backup_artifact  # noqa: E402
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _jsonable(value: Any) -> Any:
@@ -64,27 +69,7 @@ def _backup_relational_artifact(out_dir: Path, manifest: dict[str, Any]) -> None
         return
 
     if _is_postgres_url():
-        pg_dump = require_postgres_command("pg_dump")
-        dump_path = out_dir / "postgres.sql"
-        subprocess.run(
-            [
-                pg_dump,
-                "--dbname",
-                _pg_dump_url(),
-                "--file",
-                str(dump_path),
-                "--format=plain",
-                "--no-owner",
-                "--no-privileges",
-            ],
-            check=True,
-        )
-        manifest["artifacts"]["relational:postgresql"] = {
-            "backend": "postgresql",
-            "path": str(dump_path),
-            "size_bytes": dump_path.stat().st_size,
-            "sha256": hashlib.sha256(dump_path.read_bytes()).hexdigest(),
-        }
+        manifest["artifacts"]["relational:postgresql"] = create_postgresql_backup_artifact(out_dir, _pg_dump_url())
         return
 
     raise RuntimeError("No supported relational database backend configured for DR backup")
@@ -121,9 +106,11 @@ def main() -> None:
     parser.add_argument("--output-dir", default=str(PROJECT_ROOT / "backups"), help="Backup root directory")
     parser.add_argument("--label", default="", help="Optional backup label suffix")
     parser.add_argument("--skip-mongo", action="store_true", help="Skip Mongo export")
+    parser.add_argument("--created-by", default="automation", help="Audit label for persisted DR evidence")
     args = parser.parse_args()
 
-    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    run_ts = _utc_now()
+    run_id = run_ts.strftime("%Y%m%dT%H%M%SZ")
     if args.label:
         safe_label = "".join(ch for ch in args.label if ch.isalnum() or ch in {"-", "_"}).strip("-_")
         if safe_label:
@@ -133,9 +120,10 @@ def main() -> None:
     out_dir = out_root / run_id
     out_dir.mkdir(parents=True, exist_ok=False)
 
-    manifest: dict[str, Any] = {"backup_id": run_id, "created_at": datetime.utcnow().isoformat(), "artifacts": {}}
+    manifest: dict[str, Any] = {"backup_id": run_id, "created_at": run_ts.isoformat(), "artifacts": {}}
     _backup_relational_artifact(out_dir, manifest)
 
+    mongo_db = None
     if not args.skip_mongo:
         init_mongo(force=True)
         mongo_db = get_mongo_db(required=False)
@@ -156,6 +144,18 @@ def main() -> None:
 
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if mongo_db is not None:
+        mongo_db["dr_backups"].insert_one(
+            {
+                "id": next_sequence("dr_backups"),
+                "backup_id": run_id,
+                "created_by_user_id": None,
+                "created_by_email": str(args.created_by or "automation"),
+                "created_at": run_ts,
+                "location": str(out_dir),
+                "manifest": manifest,
+            }
+        )
     print(json.dumps({"backup_id": run_id, "output": str(out_dir), "manifest": str(manifest_path)}, indent=2))
 
 

@@ -1,17 +1,16 @@
 import logging
 import os
+import socket
 from collections.abc import Callable
-from pathlib import Path
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+from .env_loader import PROJECT_ROOT, load_app_env
 from .runtime_infra import is_remote_service_host, managed_services_required
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+load_app_env()
 
 logger = logging.getLogger(__name__)
 _AFTER_COMMIT_HOOKS_KEY = "smartcampus_after_commit_hooks"
@@ -122,6 +121,43 @@ def _database_application_name() -> str | None:
     return value or None
 
 
+def _database_prefer_ipv4() -> bool:
+    explicit = _explicit_bool_env("DATABASE_PREFER_IPV4")
+    if explicit is not None:
+        return explicit
+    return _is_postgresql
+
+
+def _database_hostaddr() -> str | None:
+    explicit = (os.getenv("DATABASE_HOSTADDR") or "").strip()
+    if explicit:
+        return explicit
+    if not _database_prefer_ipv4():
+        return None
+    try:
+        safe_url = make_url(SQLALCHEMY_DATABASE_URL)
+    except Exception:  # noqa: BLE001
+        return None
+    host = str(safe_url.host or "").strip()
+    if not host:
+        return None
+    try:
+        addrinfo = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return None
+    seen: set[str] = set()
+    for entry in addrinfo:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        candidate = str(sockaddr[0] or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        return candidate
+    return None
+
+
 SQLALCHEMY_DATABASE_URL = _normalized_database_url()
 POSTGRES_ADMIN_DATABASE_URL = _normalized_admin_database_url()
 POSTGRES_ADMIN_LIBPQ_URL = postgres_libpq_url(POSTGRES_ADMIN_DATABASE_URL)
@@ -176,6 +212,9 @@ def _engine_options() -> dict:
         application_name = _database_application_name()
         if application_name:
             connect_args["application_name"] = application_name
+        hostaddr = _database_hostaddr()
+        if hostaddr:
+            connect_args["hostaddr"] = hostaddr
         if _database_disable_prepared_statements():
             # Pooled PostgreSQL endpoints (for example PgBouncer/Neon poolers) are safer
             # when psycopg automatic prepared statements are disabled.
@@ -197,6 +236,7 @@ def database_status() -> dict:
     driver = str(safe_url.get_driver_name() or "").strip().lower() or None
     database = None
     host = None
+    hostaddr = None
     ssl_mode = None
     tls_enabled = False
     remote_host = False
@@ -207,6 +247,7 @@ def database_status() -> dict:
     else:
         database = str(safe_url.database or "")
         host = str(safe_url.host or "") or None
+        hostaddr = _database_hostaddr()
         remote_host = is_remote_service_host(host)
         if backend == "postgresql":
             ssl_mode = _database_ssl_mode()
@@ -228,6 +269,7 @@ def database_status() -> dict:
         "driver": driver,
         "database": database,
         "host": host,
+        "hostaddr": hostaddr,
         "remote_host": remote_host,
         "ssl_mode": ssl_mode,
         "tls_enabled": tls_enabled,

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
+from _bootstrap import PROJECT_ROOT
 from app.performance import build_capacity_plan
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 
 def main() -> None:
@@ -27,7 +28,9 @@ def main() -> None:
         safety_factor=float(args.safety_factor),
     )
     if args.output:
-        output_path = Path(args.output).expanduser().resolve()
+        output_path = Path(args.output).expanduser()
+        if not output_path.is_absolute():
+            output_path = (PROJECT_ROOT / output_path).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps({"written_to": str(output_path), "recommended_nodes": report["recommended_nodes"]}, indent=2))

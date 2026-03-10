@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260308c">
-    <script src="/web/app.js?v=20260308d" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260309b">
+    <script src="/web/app.js?v=20260309b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -368,7 +368,7 @@
                 <div class="hero-summary">
                     <div class="hero-kpi">
                         <span>Live Modules</span>
-                        <strong>5 Active Workstreams</strong>
+                        <strong>6 Active Workstreams</strong>
                     </div>
                     <a class="btn btn-primary hero-primary-cta" href="#attendance">Open Attendance Hub</a>
                 </div>
@@ -383,6 +383,10 @@
                     <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">
                         <span class="module-glyph" aria-hidden="true">FD</span>
                         <span class="module-label">Food Hall</span>
+                    </button>
+                    <button id="top-nav-saarthi" class="ums-module-btn" data-module="saarthi" type="button">
+                        <span class="module-glyph" aria-hidden="true">SA</span>
+                        <span class="module-label">Saarthi</span>
                     </button>
                     <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">
                         <span class="module-glyph" aria-hidden="true">AD</span>
@@ -897,17 +901,13 @@
                             <span>Verification Video</span>
                             <input id="admin-applicant-video-file" type="file" accept="video/*">
                         </label>
-                        <label class="field field-checkbox">
-                            <span>Liveness Passed</span>
-                            <input id="admin-applicant-liveness" type="checkbox">
-                        </label>
                         <label class="field field-full">
                             <span>Suspicion Flags</span>
                             <input id="admin-applicant-flags" type="text" placeholder="comma separated flags">
                         </label>
                         <button id="admin-applicant-screen-btn" class="btn btn-primary" type="button">Run Applicant Workflow</button>
                     </div>
-                    <p id="admin-applicant-status" class="helper-text">Run a document/video-backed applicant identity workflow from admin.</p>
+                    <p id="admin-applicant-status" class="helper-text">Run a document/video-backed applicant identity workflow from admin. Uploaded verification video is auto-scored for liveness by the backend.</p>
                 </article>
 
                 <article class="ops-card glass tilt" data-tilt>
@@ -932,8 +932,19 @@
                     </div>
                     <p id="admin-identity-graph-status" class="helper-text">Load a device/account graph to inspect suspicious identity clusters.</p>
                     <div id="admin-identity-graph-summary" class="admin-identity-graph-summary"></div>
+                    <div class="admin-identity-graph-toolbar">
+                        <div id="admin-identity-graph-clusters" class="admin-identity-graph-clusters" role="tablist" aria-label="Identity graph clusters"></div>
+                        <div class="admin-identity-graph-controls" aria-label="Identity graph controls">
+                            <button id="admin-identity-graph-zoom-out" class="btn btn-ghost" type="button" aria-label="Zoom out graph">-</button>
+                            <button id="admin-identity-graph-reset" class="btn btn-ghost" type="button">Reset</button>
+                            <button id="admin-identity-graph-zoom-in" class="btn btn-ghost" type="button" aria-label="Zoom in graph">+</button>
+                        </div>
+                    </div>
                     <div class="admin-identity-graph-shell">
-                        <svg id="admin-identity-graph-canvas" class="admin-identity-graph-canvas" viewBox="0 0 720 420" preserveAspectRatio="xMidYMid meet" aria-label="Identity graph viewer"></svg>
+                        <svg id="admin-identity-graph-canvas" class="admin-identity-graph-canvas" viewBox="0 0 920 560" preserveAspectRatio="xMidYMid meet" aria-label="Identity graph viewer"></svg>
+                    </div>
+                    <div id="admin-identity-graph-details" class="admin-identity-graph-details">
+                        <p>Select a cluster or a node to inspect suspicious device/account relationships.</p>
                     </div>
                 </article>
             </section>
@@ -1207,38 +1218,6 @@
                 <div id="student-messages-list" class="list-wrap"></div>
             </article>
 
-            <article id="student-saarthi-card" class="ops-card glass tilt nav-anchor" data-tilt>
-                <div class="panel-head">
-                    <h3>Saarthi</h3>
-                    <small>Mandatory weekly AI counselling for CON111. Sunday check-in counts once for 1 hour only.</small>
-                </div>
-                <p id="saarthi-status" class="helper-text">Loading Saarthi session...</p>
-                <section class="saarthi-chip-grid">
-                    <div class="saarthi-chip">
-                        <span>Mandatory Sunday</span>
-                        <strong id="saarthi-mandatory-date">--</strong>
-                    </div>
-                    <div class="saarthi-chip">
-                        <span>This Week</span>
-                        <strong id="saarthi-weekly-credit">Pending</strong>
-                    </div>
-                </section>
-                <div id="saarthi-history" class="saarthi-history" role="log" aria-live="polite"></div>
-                <label class="field saarthi-compose-field">
-                    <span>Private message to Saarthi</span>
-                    <textarea
-                        id="saarthi-compose-input"
-                        rows="4"
-                        maxlength="2000"
-                        placeholder="Share what is worrying you today. Attendance is credited only once on Sunday."
-                    ></textarea>
-                </label>
-                <div class="inline-controls saarthi-actions">
-                    <small class="helper-text">Only the mandatory Sunday chat updates attendance. Other days remain counselling-only.</small>
-                    <button id="saarthi-send-btn" class="btn btn-primary" type="button">Send to Saarthi</button>
-                </div>
-            </article>
-
             <article id="student-ledger-card" class="ops-card glass tilt" data-tilt>
                 <div class="panel-head">
                     <h3>Attendance Ledger</h3>
@@ -1263,6 +1242,183 @@
                     <div id="student-recovery-plans" class="attendance-recovery-list"></div>
                 </section>
                 <div id="student-aggregate-courses" class="list-wrap"></div>
+            </article>
+        </section>
+
+        <section id="saarthi-section" class="role-section hidden module-panel" data-module="saarthi" data-module-role="student">
+            <article id="student-saarthi-card" class="ops-card glass tilt nav-anchor saarthi-module-card" data-tilt>
+                <div class="saarthi-module-shell">
+                    <section class="saarthi-affirmation-band" aria-label="Words of affirmation">
+                        <div class="saarthi-affirmation-head">
+                            <span>Quiet reminders for the day</span>
+                            <strong>You are allowed to breathe, reset, and begin again.</strong>
+                        </div>
+                        <div class="saarthi-affirmation-window">
+                            <div class="saarthi-affirmation-track">
+                                <span class="saarthi-affirmation-pill">You are doing better than you think.</span>
+                                <span class="saarthi-affirmation-pill">One calm step is still progress.</span>
+                                <span class="saarthi-affirmation-pill">You do not have to carry everything at once.</span>
+                                <span class="saarthi-affirmation-pill">Rest is part of recovery, not a reward.</span>
+                                <span class="saarthi-affirmation-pill">Your pace can be gentle and still be strong.</span>
+                                <span class="saarthi-affirmation-pill">It is okay to ask for support.</span>
+                                <span class="saarthi-affirmation-pill">Small wins still count.</span>
+                                <span class="saarthi-affirmation-pill">You can restart this day from here.</span>
+                                <span class="saarthi-affirmation-pill">You are not behind, you are human.</span>
+                                <span class="saarthi-affirmation-pill">Your feelings deserve space and care.</span>
+                                <span class="saarthi-affirmation-pill">You are doing better than you think.</span>
+                                <span class="saarthi-affirmation-pill">One calm step is still progress.</span>
+                                <span class="saarthi-affirmation-pill">You do not have to carry everything at once.</span>
+                                <span class="saarthi-affirmation-pill">Rest is part of recovery, not a reward.</span>
+                                <span class="saarthi-affirmation-pill">Your pace can be gentle and still be strong.</span>
+                                <span class="saarthi-affirmation-pill">It is okay to ask for support.</span>
+                                <span class="saarthi-affirmation-pill">Small wins still count.</span>
+                                <span class="saarthi-affirmation-pill">You can restart this day from here.</span>
+                                <span class="saarthi-affirmation-pill">You are not behind, you are human.</span>
+                                <span class="saarthi-affirmation-pill">Your feelings deserve space and care.</span>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="saarthi-hero-band">
+                        <div class="saarthi-hero-grid">
+                            <div class="saarthi-hero-story">
+                                <p id="saarthi-header-copy" class="saarthi-kicker">Empathetic mentor and Sunday check-in space</p>
+                                <div class="panel-head saarthi-hero-title-row">
+                                    <div>
+                                        <h3>Saarthi Studio</h3>
+                                        <small>Supportive AI mentor for calm reflection, practical next steps, and Sunday check-ins.</small>
+                                    </div>
+                                </div>
+                                <div class="saarthi-status-card">
+                                    <span class="saarthi-status-avatar" aria-hidden="true"></span>
+                                    <p id="saarthi-status" class="helper-text">Loading Saarthi session...</p>
+                                </div>
+                                <div class="saarthi-course-ribbon" aria-label="Saarthi course summary">
+                                    <div class="saarthi-meta-chip">
+                                        <span>Course</span>
+                                        <strong id="saarthi-course-code">CON111</strong>
+                                    </div>
+                                    <div class="saarthi-meta-chip wide">
+                                        <span>Focus</span>
+                                        <strong id="saarthi-course-title">Councelling and Happiness</strong>
+                                    </div>
+                                    <div class="saarthi-meta-chip">
+                                        <span>Mentor</span>
+                                        <strong id="saarthi-faculty-name">Saarthi (AI Mentor)</strong>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="saarthi-hero-glance">
+                                <div class="saarthi-hero-visual-card">
+                                    <div class="saarthi-hero-visual-top">
+                                        <div class="saarthi-hero-stat saarthi-hero-stat-status">
+                                            <span>Session State</span>
+                                            <span id="saarthi-status-pill" class="saarthi-status-pill" data-state="pending">Pending Sunday</span>
+                                        </div>
+                                        <div class="saarthi-orb-cluster" aria-hidden="true">
+                                            <span class="saarthi-orb orb-a"></span>
+                                            <span class="saarthi-orb orb-b"></span>
+                                            <span class="saarthi-orb orb-c"></span>
+                                        </div>
+                                    </div>
+                                    <div class="saarthi-hero-stat-grid">
+                                        <div class="saarthi-hero-stat">
+                                            <span>This Week</span>
+                                            <strong id="saarthi-message-count">0 messages</strong>
+                                            <small>messages exchanged</small>
+                                        </div>
+                                        <div class="saarthi-hero-stat">
+                                            <span>Style</span>
+                                            <strong>Private support</strong>
+                                            <small>attendance stays separate</small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="saarthi-module-grid">
+                        <section class="saarthi-chat-card saarthi-chat-card-primary">
+                            <div class="panel-head panel-head-compact saarthi-chat-head">
+                                <div>
+                                    <h4>Talk to Saarthi</h4>
+                                    <small>Private one-to-one space for support, reflection, and your Sunday CON111 check-in.</small>
+                                </div>
+                                <span class="saarthi-chat-note">Talk freely here. Saarthi is here to listen, support, and help you reflect.</span>
+                            </div>
+                            <div id="saarthi-history" class="saarthi-history" role="log" aria-live="polite"></div>
+                            <div class="saarthi-compose-shell">
+                                <label class="field saarthi-compose-field">
+                                    <span>Private message to Saarthi</span>
+                                    <textarea
+                                        id="saarthi-compose-input"
+                                        rows="5"
+                                        maxlength="2000"
+                                        placeholder="Hi, I'm Saarthi. Share anything on your mind."
+                                    ></textarea>
+                                </label>
+                                <div class="inline-controls saarthi-actions">
+                                    <p id="saarthi-attendance-note" class="helper-text">Attendance is counted once on Sunday for CON111. The rest of the week stays open for support.</p>
+                                    <div class="saarthi-action-buttons">
+                                        <button id="saarthi-new-chat-btn" class="btn btn-ghost saarthi-new-chat-btn" type="button">New chat</button>
+                                        <button id="saarthi-send-btn" class="btn btn-primary saarthi-send-btn" type="button">Send to Saarthi</button>
+                                    </div>
+                                </div>
+                                <div class="saarthi-compose-meta">
+                                    <span>Press `Enter` to send</span>
+                                    <span>Use `Shift + Enter` for a new line</span>
+                                </div>
+                            </div>
+                        </section>
+
+                        <aside class="saarthi-side-stack">
+                            <section class="saarthi-side-card saarthi-progress-card">
+                                <div class="panel-head panel-head-compact">
+                                    <h4>Sunday Attendance Snapshot</h4>
+                                    <small>Weekly status stays visible without taking over the conversation.</small>
+                                </div>
+                                <div class="saarthi-progress-wrap">
+                                    <div class="saarthi-progress-head">
+                                        <span>Weekly Progress</span>
+                                        <strong id="saarthi-weekly-progress-label">Awaiting Sunday check-in</strong>
+                                    </div>
+                                    <div class="saarthi-progress-track" aria-hidden="true">
+                                        <span id="saarthi-weekly-progress-fill" class="saarthi-progress-fill"></span>
+                                    </div>
+                                </div>
+                                <div class="saarthi-stat-grid">
+                                    <div class="saarthi-mini-stat">
+                                        <span>Mandatory Sunday</span>
+                                        <strong id="saarthi-mandatory-date">--</strong>
+                                    </div>
+                                    <div class="saarthi-mini-stat">
+                                        <span>Attendance Credit</span>
+                                        <strong id="saarthi-weekly-credit">Pending</strong>
+                                    </div>
+                                    <div class="saarthi-mini-stat">
+                                        <span>Session Mode</span>
+                                        <strong id="saarthi-session-mode">Counselling only</strong>
+                                    </div>
+                                    <div class="saarthi-mini-stat">
+                                        <span>Awarded On</span>
+                                        <strong id="saarthi-awarded-on">Not yet awarded</strong>
+                                    </div>
+                                </div>
+                            </section>
+
+                            <section class="saarthi-side-card">
+                                <div class="panel-head panel-head-compact">
+                                    <h4>Weekly Checkpoints</h4>
+                                    <small>What counts for attendance this week</small>
+                                </div>
+                                <div id="saarthi-checkpoint-list" class="saarthi-checkpoint-list"></div>
+                            </section>
+                        </aside>
+                    </div>
+
+                </div>
             </article>
         </section>
 

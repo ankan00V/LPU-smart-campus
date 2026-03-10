@@ -2,7 +2,9 @@ import base64
 import logging
 import os
 import shutil
+import tempfile
 import threading
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +19,11 @@ try:
 except Exception:  # noqa: BLE001
     cv2 = None
 
+try:
+    import onnxruntime as ort
+except Exception:  # noqa: BLE001
+    ort = None
+
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +33,9 @@ _CASCADE_ERROR: dict[str, str] = {}
 _DNN_RUNTIME_CACHE: dict[str, Any] = {}
 _DNN_RUNTIME_LOCK = threading.Lock()
 _DNN_INFERENCE_LOCK = threading.Lock()
+_ARCFACE_RUNTIME_CACHE: dict[str, Any] = {}
+_ARCFACE_RUNTIME_LOCK = threading.Lock()
+_ARCFACE_INFERENCE_LOCK = threading.Lock()
 
 _YUNET_MODEL_URL = (
     os.getenv("FACE_YUNET_MODEL_URL")
@@ -35,6 +45,16 @@ _SFACE_MODEL_URL = (
     os.getenv("FACE_SFACE_MODEL_URL")
     or "https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx"
 ).strip()
+_ARCFACE_MODEL_PACK = (os.getenv("FACE_ARCFACE_MODEL_PACK") or "buffalo_l").strip() or "buffalo_l"
+_ARCFACE_MODEL_FILENAME = (
+    os.getenv("FACE_ARCFACE_MODEL_FILENAME")
+    or "w600k_r50.onnx"
+).strip() or "w600k_r50.onnx"
+_ARCFACE_MODEL_PACK_URL = (
+    os.getenv("FACE_ARCFACE_MODEL_PACK_URL")
+    or f"https://github.com/deepinsight/insightface/releases/download/v0.7/{_ARCFACE_MODEL_PACK}.zip"
+).strip()
+_ARCFACE_FALLBACK_ENGINE = f"arcface-onnx-{_ARCFACE_MODEL_PACK}-fallback-v1"
 
 
 @dataclass(slots=True)
@@ -100,7 +120,7 @@ def _load_config() -> FaceVerificationConfig:
         "FACE_MATCH_MIN_SIMILARITY",
         _env_float("FACE_MATCH_PASS_THRESHOLD", 0.80),
     )
-    min_similarity = max(0.80, min(1.0, requested_similarity))
+    min_similarity = max(0.78, min(1.0, requested_similarity))
     min_frames = max(5, _env_int("FACE_MATCH_MIN_FRAMES", 5))
     max_frames = max(min_frames, _env_int("FACE_MATCH_MAX_FRAMES", 12))
     return FaceVerificationConfig(
@@ -147,6 +167,52 @@ def _dnn_model_path(env_name: str, default_name: str) -> Path:
     if raw:
         return Path(raw).expanduser().resolve()
     return _dnn_model_cache_dir() / default_name
+
+
+def _arcface_fallback_enabled() -> bool:
+    return _env_bool("FACE_ARCFACE_FALLBACK_ENABLED", default=True)
+
+
+def _arcface_model_cache_dir() -> Path:
+    raw = (os.getenv("FACE_ARCFACE_MODEL_CACHE_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return PROJECT_ROOT / ".model_cache" / "insightface" / _ARCFACE_MODEL_PACK
+
+
+def _arcface_model_path() -> Path:
+    raw = (os.getenv("FACE_ARCFACE_MODEL_PATH") or "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _arcface_model_cache_dir() / _ARCFACE_MODEL_FILENAME
+
+
+def _arcface_model_pack_archive_path() -> Path:
+    return _arcface_model_cache_dir().parent / f"{_ARCFACE_MODEL_PACK}.zip"
+
+
+def _arcface_similarity_threshold(config: FaceVerificationConfig) -> float:
+    requested = _env_float(
+        "FACE_ARCFACE_MIN_SIMILARITY",
+        max(0.74, config.min_similarity - 0.02),
+    )
+    return max(0.72, min(1.0, requested))
+
+
+def _infer_onnx_spatial_size(shape: Sequence[Any] | None, default: int = 112) -> tuple[int, int]:
+    if not shape or len(shape) < 4:
+        return default, default
+    dims = list(shape)
+    height = dims[-2]
+    width = dims[-1]
+    try:
+        height_value = int(height)
+        width_value = int(width)
+        if height_value > 0 and width_value > 0:
+            return width_value, height_value
+    except (TypeError, ValueError):
+        pass
+    return default, default
 
 
 def _download_file(url: str, target_path: Path) -> None:
@@ -217,6 +283,135 @@ def _load_dnn_runtime() -> tuple[dict[str, Any] | None, str | None]:
             return None, error
 
 
+def _extract_arcface_model_from_archive(archive_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_suffix(target_path.suffix + ".tmp")
+    try:
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            candidates = [
+                member
+                for member in archive.namelist()
+                if Path(member).name.lower() == _ARCFACE_MODEL_FILENAME.lower()
+            ]
+            if not candidates:
+                available = [Path(member).name for member in archive.namelist() if member.lower().endswith(".onnx")]
+                raise RuntimeError(
+                    f"ArcFace ONNX model '{_ARCFACE_MODEL_FILENAME}' not found in model pack. "
+                    f"Available models: {', '.join(sorted(set(available))[:8])}"
+                )
+            member_name = sorted(candidates)[0]
+            with archive.open(member_name, "r") as source, temp_path.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+        if temp_path.stat().st_size < 4096:
+            raise RuntimeError(f"Extracted ArcFace model is too small: {target_path.name}")
+        temp_path.replace(target_path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def _ensure_arcface_model_file(path: Path) -> Path:
+    if path.exists() and path.stat().st_size >= 4096:
+        return path
+    if not _env_bool("FACE_ARCFACE_AUTO_DOWNLOAD", default=True):
+        raise RuntimeError(f"Missing ArcFace ONNX model file: {path}")
+    if not _ARCFACE_MODEL_PACK_URL:
+        raise RuntimeError("Missing ArcFace model-pack URL")
+
+    archive_path = _arcface_model_pack_archive_path()
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if not archive_path.exists() or archive_path.stat().st_size < 4096:
+            _download_file(_ARCFACE_MODEL_PACK_URL, archive_path)
+        _extract_arcface_model_from_archive(archive_path, path)
+    except (URLError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise RuntimeError(f"Unable to prepare ArcFace ONNX model: {exc}") from exc
+    return path
+
+
+def _load_arcface_runtime() -> tuple[dict[str, Any] | None, str | None]:
+    if not _arcface_fallback_enabled():
+        return None, "ArcFace fallback disabled"
+    if ort is None:
+        return None, "onnxruntime is not installed"
+    if cv2 is None:
+        return None, "OpenCV is not installed"
+
+    with _ARCFACE_RUNTIME_LOCK:
+        cached = _ARCFACE_RUNTIME_CACHE.get("runtime")
+        cached_error = _ARCFACE_RUNTIME_CACHE.get("error")
+        if cached or cached_error:
+            return cached, cached_error
+
+        model_path = _arcface_model_path()
+        try:
+            model_path = _ensure_arcface_model_file(model_path)
+            session_options = ort.SessionOptions()
+            session_options.log_severity_level = 3
+            session = ort.InferenceSession(
+                str(model_path),
+                sess_options=session_options,
+                providers=["CPUExecutionProvider"],
+            )
+            input_meta = session.get_inputs()[0]
+            output_meta = session.get_outputs()[0]
+            runtime = {
+                "session": session,
+                "model_path": str(model_path),
+                "input_name": str(input_meta.name),
+                "output_name": str(output_meta.name),
+                "input_size": _infer_onnx_spatial_size(input_meta.shape, default=112),
+            }
+            _ARCFACE_RUNTIME_CACHE["runtime"] = runtime
+            _ARCFACE_RUNTIME_CACHE["error"] = None
+            return runtime, None
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc).strip() or "Unable to initialize ArcFace ONNX runtime"
+            _ARCFACE_RUNTIME_CACHE["runtime"] = None
+            _ARCFACE_RUNTIME_CACHE["error"] = error
+            return None, error
+
+
+def _arcface_embedding_from_aligned_bgr(
+    aligned_bgr: np.ndarray,
+    *,
+    runtime: dict[str, Any],
+) -> tuple[np.ndarray | None, str | None]:
+    if cv2 is None:
+        return None, "OpenCV not installed"
+    if aligned_bgr is None or not isinstance(aligned_bgr, np.ndarray) or aligned_bgr.size == 0:
+        return None, "Aligned facial crop missing"
+
+    input_width, input_height = runtime.get("input_size", (112, 112))
+    resized = cv2.resize(aligned_bgr, (int(input_width), int(input_height)), interpolation=cv2.INTER_LINEAR)
+    blob = cv2.dnn.blobFromImage(
+        resized,
+        scalefactor=1.0 / 127.5,
+        size=(int(input_width), int(input_height)),
+        mean=(127.5, 127.5, 127.5),
+        swapRB=True,
+    ).astype(np.float32)
+
+    session = runtime.get("session")
+    input_name = str(runtime.get("input_name") or "")
+    output_name = str(runtime.get("output_name") or "")
+    if session is None or not input_name or not output_name:
+        return None, "ArcFace runtime session is invalid"
+
+    try:
+        with _ARCFACE_INFERENCE_LOCK:
+            outputs = session.run([output_name], {input_name: blob})
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc).strip() or "ArcFace inference failed"
+
+    if not outputs:
+        return None, "ArcFace inference returned no output"
+    embedding = _l2_normalize(np.asarray(outputs[0], dtype=np.float32).ravel())
+    if embedding.size < 16:
+        return None, "ArcFace embedding extraction failed"
+    return embedding, None
+
+
 def _resolve_active_provider(*, strict: bool = False) -> tuple[str, str | None]:
     provider = _face_provider()
     if provider == "heuristic":
@@ -254,6 +449,31 @@ def _relaxed_enrollment_config(config: FaceVerificationConfig) -> FaceVerificati
     )
 
 
+def _relaxed_attendance_verification_config(config: FaceVerificationConfig) -> FaceVerificationConfig:
+    # Live attendance runs on noisier webcam/mobile captures than enrollment.
+    # Keep embedding thresholds intact, but soften capture quality and liveness gates.
+    return FaceVerificationConfig(
+        min_similarity=config.min_similarity,
+        min_consecutive_frames=config.min_consecutive_frames,
+        max_frames=max(config.max_frames, 10),
+        min_frame_width=max(180, int(config.min_frame_width * 0.90)),
+        min_frame_height=max(180, int(config.min_frame_height * 0.90)),
+        blur_threshold=max(30.0, config.blur_threshold * 0.45),
+        min_face_area_ratio=max(0.05, config.min_face_area_ratio * 0.72),
+        max_center_offset_ratio=min(0.48, config.max_center_offset_ratio + 0.10),
+        min_eye_distance_ratio=max(0.10, config.min_eye_distance_ratio * 0.78),
+        min_lower_texture_ratio=max(0.10, config.min_lower_texture_ratio * 0.60),
+        min_contrast=max(8.0, config.min_contrast * 0.55),
+        min_liveness_motion=max(0.001, config.min_liveness_motion * 0.55),
+        min_liveness_pose_delta=max(0.001, config.min_liveness_pose_delta * 0.55),
+        min_liveness_yaw_range=max(0.002, config.min_liveness_yaw_range * 0.65),
+        min_liveness_pitch_range=max(0.002, config.min_liveness_pitch_range * 0.65),
+        min_liveness_texture_jitter=max(0.0001, config.min_liveness_texture_jitter * 0.60),
+        min_liveness_contrast_jitter=max(0.05, config.min_liveness_contrast_jitter * 0.50),
+        min_primary_face_dominance_ratio=max(1.4, config.min_primary_face_dominance_ratio * 0.72),
+    )
+
+
 def _decode_data_url_to_bgr(image_data_url: str) -> np.ndarray | None:
     if not image_data_url or "," not in image_data_url:
         return None
@@ -266,6 +486,88 @@ def _decode_data_url_to_bgr(image_data_url: str) -> np.ndarray | None:
         return cv2.imdecode(arr, cv2.IMREAD_COLOR)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _decode_data_url_bytes(data_url: str) -> tuple[str, bytes] | None:
+    raw = str(data_url or "").strip()
+    if not raw or "," not in raw:
+        return None
+    try:
+        header, payload = raw.split(",", 1)
+        content_type = ""
+        if header.startswith("data:"):
+            content_type = header[5:].split(";", 1)[0].strip().lower()
+        return content_type, base64.b64decode(payload, validate=False)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _video_file_suffix(content_type: str) -> str:
+    normalized = str(content_type or "").strip().lower()
+    if normalized.endswith("webm"):
+        return ".webm"
+    if normalized.endswith("quicktime") or normalized.endswith("mov"):
+        return ".mov"
+    if normalized.endswith("avi"):
+        return ".avi"
+    return ".mp4"
+
+
+def _sample_video_frames_bgr(
+    video_data_url: str,
+    *,
+    max_frames: int,
+) -> tuple[list[np.ndarray], int]:
+    decoded = _decode_data_url_bytes(video_data_url)
+    if decoded is None:
+        raise ValueError("Invalid video payload")
+    content_type, payload = decoded
+    if cv2 is None:
+        raise ValueError("OpenCV not installed")
+    if not payload:
+        raise ValueError("Uploaded video payload is empty")
+
+    temp_path: str | None = None
+    capture = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=_video_file_suffix(content_type)) as handle:
+            handle.write(payload)
+            temp_path = handle.name
+        capture = cv2.VideoCapture(temp_path)
+        if not capture.isOpened():
+            raise ValueError("Uploaded verification video could not be decoded")
+
+        total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        sampled: list[np.ndarray] = []
+        desired = max(6, int(max_frames))
+        if total_frames > 0:
+            indices = sorted({
+                int(round(value))
+                for value in np.linspace(0, max(total_frames - 1, 0), num=min(desired, total_frames))
+            })
+            for index in indices:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, float(index))
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    sampled.append(frame)
+        else:
+            read_count = 0
+            while len(sampled) < desired and read_count < desired * 8:
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    break
+                if read_count % 2 == 0:
+                    sampled.append(frame)
+                read_count += 1
+        return sampled, total_frames
+    finally:
+        if capture is not None:
+            capture.release()
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _load_cascade(filename: str) -> tuple[Any | None, str | None]:
@@ -779,6 +1081,7 @@ def _extract_embedding_bundle_dnn(
     *,
     config: FaceVerificationConfig,
     strict_anti_spoof: bool,
+    include_aligned_bgr: bool = False,
 ) -> dict[str, Any]:
     if cv2 is None:
         return {"ok": False, "reason": "OpenCV not installed"}
@@ -881,7 +1184,7 @@ def _extract_embedding_bundle_dnn(
         if texture_ratio < config.min_lower_texture_ratio:
             return {"ok": False, "reason": "Face appears covered", "texture_ratio": texture_ratio}
 
-    return {
+    payload = {
         "ok": True,
         "embedding": embedding,
         "face_area_ratio": face_area_ratio,
@@ -897,6 +1200,9 @@ def _extract_embedding_bundle_dnn(
         "pitch_proxy": pitch_proxy,
         "detection_score": detection_score,
     }
+    if include_aligned_bgr:
+        payload["aligned_bgr"] = aligned_bgr
+    return payload
 
 
 def _as_profile_embedding_list(profile_embedding: np.ndarray | Sequence[np.ndarray]) -> list[np.ndarray]:
@@ -1091,6 +1397,43 @@ def _template_embeddings_from_payload(profile_template: dict[str, Any] | None) -
         if arr.size:
             embeddings.append(_l2_normalize(arr))
     return embeddings
+
+
+def _template_arcface_embeddings_from_payload(profile_template: dict[str, Any] | None) -> list[np.ndarray]:
+    if not isinstance(profile_template, dict):
+        return []
+    embeddings_raw = profile_template.get("arcface_embeddings")
+    embeddings: list[np.ndarray] = []
+    if isinstance(embeddings_raw, list):
+        for item in embeddings_raw:
+            arr = np.asarray(item, dtype=np.float32).ravel()
+            if arr.size:
+                embeddings.append(_l2_normalize(arr))
+    signature_raw = profile_template.get("arcface_signature")
+    if not embeddings and isinstance(signature_raw, list):
+        arr = np.asarray(signature_raw, dtype=np.float32).ravel()
+        if arr.size:
+            embeddings.append(_l2_normalize(arr))
+    return embeddings
+
+
+def _should_attempt_arcface_fallback(
+    *,
+    total_frames: int,
+    match: bool,
+    liveness_ok: bool,
+    fatal_reason: str,
+) -> bool:
+    if not _arcface_fallback_enabled():
+        return False
+    if match:
+        return False
+    if not liveness_ok:
+        return False
+    if fatal_reason:
+        return False
+    min_frames = max(1, _env_int("FACE_ARCFACE_FALLBACK_MIN_FRAMES", 8))
+    return int(total_frames) >= min_frames
 
 
 def _embedding_to_list(vector: np.ndarray) -> list[float]:
@@ -1409,6 +1752,225 @@ def build_enrollment_template_from_frames(
     }
 
 
+def _verify_face_sequence_arcface_fallback(
+    profile_photo_data_url: str,
+    selfie_frames_data_urls: Sequence[str],
+    *,
+    subject_label: str,
+    verification_config: FaceVerificationConfig,
+    profile_template: dict[str, Any] | None,
+) -> dict[str, Any]:
+    runtime, runtime_error = _load_arcface_runtime()
+    if runtime is None:
+        return {
+            "available": False,
+            "match": False,
+            "confidence": 0.0,
+            "engine": _ARCFACE_FALLBACK_ENGINE,
+            "reason": runtime_error or "ArcFace fallback unavailable",
+        }
+
+    profile_embeddings = _template_arcface_embeddings_from_payload(profile_template)
+    if not profile_embeddings:
+        profile_bgr = _decode_data_url_to_bgr(profile_photo_data_url)
+        if profile_bgr is None:
+            return {
+                "available": False,
+                "match": False,
+                "confidence": 0.0,
+                "engine": _ARCFACE_FALLBACK_ENGINE,
+                "reason": "Invalid profile photo payload",
+            }
+
+        profile_variants = [
+            profile_bgr,
+            cv2.convertScaleAbs(profile_bgr, alpha=1.03, beta=4),
+            cv2.convertScaleAbs(profile_bgr, alpha=0.97, beta=-4),
+        ]
+        for variant in profile_variants:
+            profile_bundle = _extract_embedding_bundle_dnn(
+                variant,
+                config=verification_config,
+                strict_anti_spoof=False,
+                include_aligned_bgr=True,
+            )
+            if not profile_bundle.get("ok"):
+                continue
+            aligned_bgr = profile_bundle.get("aligned_bgr")
+            if not isinstance(aligned_bgr, np.ndarray) or aligned_bgr.size == 0:
+                continue
+            embedding, embedding_error = _arcface_embedding_from_aligned_bgr(
+                aligned_bgr,
+                runtime=runtime,
+            )
+            if embedding_error or embedding is None:
+                continue
+            profile_embeddings.append(embedding)
+            if len(profile_embeddings) >= 3:
+                break
+
+    if not profile_embeddings:
+        return {
+            "available": False,
+            "match": False,
+            "confidence": 0.0,
+            "engine": _ARCFACE_FALLBACK_ENGINE,
+            "reason": "ArcFace fallback could not build profile reference embedding",
+        }
+
+    frames = list(selfie_frames_data_urls[: verification_config.max_frames])
+    frame_embeddings: list[np.ndarray] = []
+    frame_valid_flags: list[bool] = []
+    frame_reasons: list[str] = []
+    frame_timestamps: list[str] = []
+    frame_live_meta: list[dict[str, float]] = []
+    rejection_reasons: list[str] = []
+    zero_vector = np.zeros_like(profile_embeddings[0], dtype=np.float32)
+
+    for frame_data_url in frames:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        frame_timestamps.append(timestamp)
+
+        selfie_bgr = _decode_data_url_to_bgr(frame_data_url)
+        if selfie_bgr is None:
+            frame_embeddings.append(zero_vector)
+            frame_valid_flags.append(False)
+            frame_reasons.append("Invalid frame payload")
+            rejection_reasons.append("Invalid frame payload")
+            continue
+
+        frame_bundle = _extract_embedding_bundle_dnn(
+            selfie_bgr,
+            config=verification_config,
+            strict_anti_spoof=True,
+            include_aligned_bgr=True,
+        )
+        if not frame_bundle.get("ok"):
+            reason = str(frame_bundle.get("reason", "Face not recognized"))
+            frame_embeddings.append(zero_vector)
+            frame_valid_flags.append(False)
+            frame_reasons.append(reason)
+            rejection_reasons.append(reason)
+            continue
+
+        aligned_bgr = frame_bundle.get("aligned_bgr")
+        if not isinstance(aligned_bgr, np.ndarray) or aligned_bgr.size == 0:
+            frame_embeddings.append(zero_vector)
+            frame_valid_flags.append(False)
+            frame_reasons.append("Embedding extraction failed")
+            rejection_reasons.append("Embedding extraction failed")
+            continue
+
+        embedding, embedding_error = _arcface_embedding_from_aligned_bgr(
+            aligned_bgr,
+            runtime=runtime,
+        )
+        if embedding_error or embedding is None:
+            error_reason = embedding_error or "Embedding extraction failed"
+            frame_embeddings.append(zero_vector)
+            frame_valid_flags.append(False)
+            frame_reasons.append(error_reason)
+            rejection_reasons.append(error_reason)
+            continue
+
+        frame_embeddings.append(embedding)
+        frame_valid_flags.append(True)
+        frame_reasons.append("")
+        frame_live_meta.append(
+            {
+                "center_x": float(frame_bundle.get("center_x", 0.0)),
+                "center_y": float(frame_bundle.get("center_y", 0.0)),
+                "yaw_proxy": float(frame_bundle.get("yaw_proxy", 0.0)),
+                "pitch_proxy": float(frame_bundle.get("pitch_proxy", 0.0)),
+                "texture_ratio": float(frame_bundle.get("texture_ratio", 0.0)),
+                "contrast": float(frame_bundle.get("contrast", 0.0)),
+            }
+        )
+
+    similarity_threshold = _arcface_similarity_threshold(verification_config)
+    sequence = evaluate_embedding_sequence(
+        profile_embeddings,
+        frame_embeddings,
+        min_similarity=similarity_threshold,
+        min_consecutive_frames=verification_config.min_consecutive_frames,
+        frame_valid_flags=frame_valid_flags,
+        frame_reasons=frame_reasons,
+        frame_timestamps=frame_timestamps,
+    )
+    liveness = evaluate_liveness_sequence(
+        frame_live_meta,
+        config=verification_config,
+        min_frames=max(4, verification_config.min_consecutive_frames - 1),
+    )
+    frame_audit = sequence["frame_audit"]
+
+    fatal_reasons = {
+        "Multiple faces detected",
+        "Face not centered",
+        "Low resolution frame",
+        "Poor lighting or low contrast",
+        "Face appears covered",
+        "Face is blurry",
+        "No face detected",
+    }
+    fatal_reason = next((reason for reason in rejection_reasons if reason in fatal_reasons), "")
+
+    match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason
+    confidence = float(sequence["confidence"])
+    if not match:
+        confidence = min(confidence, max(0.0, confidence * 0.70))
+
+    if match:
+        reason = (
+            f"Verified with {sequence['best_streak']} consecutive frames "
+            f"and {sequence.get('accepted_frames', 0)}/{sequence.get('total_frames', 0)} accepted "
+            f"(arcface_similarity>={similarity_threshold:.2f}, liveness=pass)"
+        )
+    elif fatal_reason:
+        reason = fatal_reason
+    elif not liveness["ok"]:
+        reason = str(liveness.get("reason") or "Liveness check failed")
+    elif not bool(sequence.get("majority_met", False)):
+        reason = (
+            "Face match consistency failed across frames "
+            f"({sequence.get('accepted_frames', 0)}/{sequence.get('total_frames', 0)} accepted)"
+        )
+    else:
+        reason = _frame_reason_bucket(frame_audit)
+        if not reason:
+            reason = rejection_reasons[0] if rejection_reasons else "Face not recognized"
+        if reason == "ok":
+            reason = "Face not recognized"
+
+    logger.info(
+        "face_verification_arcface_fallback subject=%s match=%s confidence=%.4f streak=%s/%s accepted=%s/%s liveness=%s reason=%s",
+        subject_label,
+        match,
+        confidence,
+        sequence.get("best_streak", 0),
+        verification_config.min_consecutive_frames,
+        sequence.get("accepted_frames", 0),
+        sequence.get("total_frames", 0),
+        bool(liveness.get("ok")),
+        reason,
+    )
+
+    return {
+        "available": True,
+        "match": bool(match),
+        "confidence": _clamp01(confidence),
+        "engine": _ARCFACE_FALLBACK_ENGINE,
+        "reason": reason,
+        "required_consecutive_frames": verification_config.min_consecutive_frames,
+        "consecutive_frames_matched": int(sequence["best_streak"]),
+        "accepted_frames": int(sequence.get("accepted_frames", 0)),
+        "total_frames": int(sequence.get("total_frames", len(frames))),
+        "majority_required": int(sequence.get("majority_required", verification_config.min_consecutive_frames)),
+        "frame_audit": frame_audit,
+        "liveness": liveness,
+    }
+
+
 def _verify_face_sequence_dnn(
     profile_photo_data_url: str,
     selfie_frames_data_urls: Sequence[str],
@@ -1420,6 +1982,7 @@ def _verify_face_sequence_dnn(
     config = _load_config()
     if min_consecutive_frames is not None:
         config.min_consecutive_frames = max(1, int(min_consecutive_frames))
+    verification_config = _relaxed_attendance_verification_config(config)
 
     if not selfie_frames_data_urls:
         return {
@@ -1430,15 +1993,15 @@ def _verify_face_sequence_dnn(
             "reason": "No live frames provided",
         }
 
-    frames = list(selfie_frames_data_urls[: config.max_frames])
-    if len(frames) < config.min_consecutive_frames:
+    frames = list(selfie_frames_data_urls[: verification_config.max_frames])
+    if len(frames) < verification_config.min_consecutive_frames:
         return {
             "available": True,
             "match": False,
             "confidence": 0.0,
             "engine": "opencv-dnn-yunet-sface-v1",
             "reason": "Insufficient frames for verification",
-            "required_consecutive_frames": config.min_consecutive_frames,
+            "required_consecutive_frames": verification_config.min_consecutive_frames,
             "consecutive_frames_matched": 0,
             "frame_audit": [],
         }
@@ -1485,7 +2048,11 @@ def _verify_face_sequence_dnn(
             rejection_reasons.append("Invalid frame payload")
             continue
 
-        frame_bundle = _extract_embedding_bundle_dnn(selfie_bgr, config=config, strict_anti_spoof=True)
+        frame_bundle = _extract_embedding_bundle_dnn(
+            selfie_bgr,
+            config=verification_config,
+            strict_anti_spoof=True,
+        )
         if not frame_bundle.get("ok"):
             reason = str(frame_bundle.get("reason", "Face not recognized"))
             frame_embeddings.append(zero_vector)
@@ -1513,16 +2080,16 @@ def _verify_face_sequence_dnn(
     sequence = evaluate_embedding_sequence(
         profile_embeddings,
         frame_embeddings,
-        min_similarity=config.min_similarity,
-        min_consecutive_frames=config.min_consecutive_frames,
+        min_similarity=verification_config.min_similarity,
+        min_consecutive_frames=verification_config.min_consecutive_frames,
         frame_valid_flags=frame_valid_flags,
         frame_reasons=frame_reasons,
         frame_timestamps=frame_timestamps,
     )
     liveness = evaluate_liveness_sequence(
         frame_live_meta,
-        config=config,
-        min_frames=config.min_consecutive_frames,
+        config=verification_config,
+        min_frames=max(4, verification_config.min_consecutive_frames - 1),
     )
 
     frame_audit = sequence["frame_audit"]
@@ -1549,6 +2116,11 @@ def _verify_face_sequence_dnn(
 
     match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason
     confidence = float(sequence["confidence"])
+    final_engine = "opencv-dnn-yunet-sface-v1"
+    fallback_attempted = False
+    fallback_available = False
+    fallback_reason: str | None = None
+
     if not match:
         confidence = min(confidence, max(0.0, confidence * 0.65))
 
@@ -1556,7 +2128,7 @@ def _verify_face_sequence_dnn(
         reason = (
             f"Verified with {sequence['best_streak']} consecutive frames "
             f"and {sequence.get('accepted_frames', 0)}/{sequence.get('total_frames', 0)} accepted "
-            f"(similarity>={config.min_similarity:.2f}, liveness=pass)"
+            f"(similarity>={verification_config.min_similarity:.2f}, liveness=pass)"
         )
     elif fatal_reason:
         reason = fatal_reason
@@ -1574,16 +2146,72 @@ def _verify_face_sequence_dnn(
         if reason == "ok":
             reason = "Face not recognized"
 
+    if _should_attempt_arcface_fallback(
+        total_frames=len(frames),
+        match=match,
+        liveness_ok=bool(liveness.get("ok")),
+        fatal_reason=fatal_reason,
+    ):
+        fallback_attempted = True
+        arcface_verdict = _verify_face_sequence_arcface_fallback(
+            profile_photo_data_url,
+            frames,
+            subject_label=subject_label,
+            verification_config=verification_config,
+            profile_template=profile_template,
+        )
+        fallback_available = bool(arcface_verdict.get("available"))
+        fallback_reason = str(arcface_verdict.get("reason") or "") or None
+        if fallback_available and bool(arcface_verdict.get("match")):
+            match = True
+            confidence = max(confidence, float(arcface_verdict.get("confidence", 0.0)))
+            reason = str(arcface_verdict.get("reason") or reason)
+            final_engine = str(arcface_verdict.get("engine") or _ARCFACE_FALLBACK_ENGINE)
+            fallback_reason = None
+            frame_audit = list(arcface_verdict.get("frame_audit") or frame_audit)
+            liveness = dict(arcface_verdict.get("liveness") or liveness)
+            sequence = {
+                "best_streak": int(
+                    arcface_verdict.get(
+                        "consecutive_frames_matched",
+                        sequence.get("best_streak", 0),
+                    )
+                ),
+                "accepted_frames": int(
+                    arcface_verdict.get(
+                        "accepted_frames",
+                        sequence.get("accepted_frames", 0),
+                    )
+                ),
+                "total_frames": int(
+                    arcface_verdict.get(
+                        "total_frames",
+                        sequence.get("total_frames", len(frames)),
+                    )
+                ),
+                "majority_required": int(
+                    arcface_verdict.get(
+                        "majority_required",
+                        sequence.get(
+                            "majority_required",
+                            verification_config.min_consecutive_frames,
+                        ),
+                    )
+                ),
+            }
+        elif fallback_available and not match and fallback_reason and "not recognized" in reason.lower():
+            reason = fallback_reason
+
     logger.info(
         "face_verification_summary subject=%s match=%s confidence=%.4f streak=%s/%s accepted=%s/%s majority_required=%s liveness=%s reason=%s",
         subject_label,
         match,
         confidence,
         sequence.get("best_streak", 0),
-        config.min_consecutive_frames,
+        verification_config.min_consecutive_frames,
         sequence.get("accepted_frames", 0),
         sequence.get("total_frames", 0),
-        sequence.get("majority_required", config.min_consecutive_frames),
+        sequence.get("majority_required", verification_config.min_consecutive_frames),
         bool(liveness.get("ok")),
         reason,
     )
@@ -1592,15 +2220,18 @@ def _verify_face_sequence_dnn(
         "available": True,
         "match": bool(match),
         "confidence": _clamp01(confidence),
-        "engine": "opencv-dnn-yunet-sface-v1",
+        "engine": final_engine,
         "reason": reason,
-        "required_consecutive_frames": config.min_consecutive_frames,
+        "required_consecutive_frames": verification_config.min_consecutive_frames,
         "consecutive_frames_matched": int(sequence["best_streak"]),
         "accepted_frames": int(sequence.get("accepted_frames", 0)),
         "total_frames": int(sequence.get("total_frames", len(frames))),
-        "majority_required": int(sequence.get("majority_required", config.min_consecutive_frames)),
+        "majority_required": int(sequence.get("majority_required", verification_config.min_consecutive_frames)),
         "frame_audit": frame_audit,
         "liveness": liveness,
+        "fallback_attempted": fallback_attempted,
+        "fallback_available": fallback_available,
+        "fallback_reason": fallback_reason,
     }
 
 
@@ -1632,6 +2263,7 @@ def verify_face_sequence_opencv(
     config = _load_config()
     if min_consecutive_frames is not None:
         config.min_consecutive_frames = max(1, int(min_consecutive_frames))
+    verification_config = _relaxed_attendance_verification_config(config)
     if cv2 is None:
         return {
             "available": False,
@@ -1650,15 +2282,15 @@ def verify_face_sequence_opencv(
             "reason": "No live frames provided",
         }
 
-    frames = list(selfie_frames_data_urls[: config.max_frames])
-    if len(frames) < config.min_consecutive_frames:
+    frames = list(selfie_frames_data_urls[: verification_config.max_frames])
+    if len(frames) < verification_config.min_consecutive_frames:
         return {
             "available": True,
             "match": False,
             "confidence": 0.0,
             "engine": "opencv-embedding-v4",
             "reason": "Insufficient frames for verification",
-            "required_consecutive_frames": config.min_consecutive_frames,
+            "required_consecutive_frames": verification_config.min_consecutive_frames,
             "consecutive_frames_matched": 0,
             "frame_audit": [],
         }
@@ -1706,7 +2338,11 @@ def verify_face_sequence_opencv(
             rejection_reasons.append("Invalid frame payload")
             continue
 
-        frame_bundle = _extract_embedding_bundle(selfie_bgr, config=config, strict_anti_spoof=True)
+        frame_bundle = _extract_embedding_bundle(
+            selfie_bgr,
+            config=verification_config,
+            strict_anti_spoof=True,
+        )
         if not frame_bundle.get("ok"):
             reason = str(frame_bundle.get("reason", "Face not recognized"))
             frame_embeddings.append(zero_vector)
@@ -1734,8 +2370,8 @@ def verify_face_sequence_opencv(
     sequence = evaluate_embedding_sequence(
         profile_embeddings,
         frame_embeddings,
-        min_similarity=config.min_similarity,
-        min_consecutive_frames=config.min_consecutive_frames,
+        min_similarity=verification_config.min_similarity,
+        min_consecutive_frames=verification_config.min_consecutive_frames,
         frame_valid_flags=frame_valid_flags,
         frame_reasons=frame_reasons,
         frame_timestamps=frame_timestamps,
@@ -1743,8 +2379,8 @@ def verify_face_sequence_opencv(
 
     liveness = evaluate_liveness_sequence(
         frame_live_meta,
-        config=config,
-        min_frames=config.min_consecutive_frames,
+        config=verification_config,
+        min_frames=max(4, verification_config.min_consecutive_frames - 1),
     )
 
     frame_audit = sequence["frame_audit"]
@@ -1778,7 +2414,7 @@ def verify_face_sequence_opencv(
         reason = (
             f"Verified with {sequence['best_streak']} consecutive frames "
             f"and {sequence.get('accepted_frames', 0)}/{sequence.get('total_frames', 0)} accepted "
-            f"(similarity>={config.min_similarity:.2f}, liveness=pass)"
+            f"(similarity>={verification_config.min_similarity:.2f}, liveness=pass)"
         )
     elif fatal_reason:
         reason = fatal_reason
@@ -1802,10 +2438,10 @@ def verify_face_sequence_opencv(
         match,
         confidence,
         sequence.get("best_streak", 0),
-        config.min_consecutive_frames,
+        verification_config.min_consecutive_frames,
         sequence.get("accepted_frames", 0),
         sequence.get("total_frames", 0),
-        sequence.get("majority_required", config.min_consecutive_frames),
+        sequence.get("majority_required", verification_config.min_consecutive_frames),
         bool(liveness.get("ok")),
         reason,
     )
@@ -1816,13 +2452,206 @@ def verify_face_sequence_opencv(
         "confidence": _clamp01(confidence),
         "engine": "opencv-embedding-v4",
         "reason": reason,
-        "required_consecutive_frames": config.min_consecutive_frames,
+        "required_consecutive_frames": verification_config.min_consecutive_frames,
         "consecutive_frames_matched": int(sequence["best_streak"]),
         "accepted_frames": int(sequence.get("accepted_frames", 0)),
         "total_frames": int(sequence.get("total_frames", len(frames))),
-        "majority_required": int(sequence.get("majority_required", config.min_consecutive_frames)),
+        "majority_required": int(sequence.get("majority_required", verification_config.min_consecutive_frames)),
         "frame_audit": frame_audit,
         "liveness": liveness,
+    }
+
+
+def score_uploaded_video_liveness(
+    video_data_url: str,
+    *,
+    subject_label: str = "uploaded-video",
+    min_valid_frames: int = 6,
+) -> dict[str, Any]:
+    provider, provider_error = _resolve_active_provider()
+    if _face_provider() == "dnn" and provider_error:
+        return {
+            "available": False,
+            "liveness_passed": False,
+            "score": 0.0,
+            "engine": "opencv-dnn-yunet-sface-v1-video-liveness",
+            "reason": provider_error,
+            "metrics": {},
+            "sampled_frames": 0,
+            "total_video_frames": 0,
+        }
+    if cv2 is None:
+        return {
+            "available": False,
+            "liveness_passed": False,
+            "score": 0.0,
+            "engine": "opencv-video-liveness",
+            "reason": "OpenCV not installed",
+            "metrics": {},
+            "sampled_frames": 0,
+            "total_video_frames": 0,
+        }
+
+    config = _load_config()
+    enrollment_config = _relaxed_enrollment_config(config)
+    try:
+        frames, total_video_frames = _sample_video_frames_bgr(
+            video_data_url,
+            max_frames=max(config.max_frames * 2, 14),
+        )
+    except ValueError as exc:
+        return {
+            "available": True,
+            "liveness_passed": False,
+            "score": 0.0,
+            "engine": "opencv-video-liveness",
+            "reason": str(exc),
+            "metrics": {},
+            "sampled_frames": 0,
+            "total_video_frames": 0,
+        }
+
+    if len(frames) < min_valid_frames:
+        return {
+            "available": True,
+            "liveness_passed": False,
+            "score": 0.0,
+            "engine": "opencv-video-liveness",
+            "reason": "Uploaded verification video does not contain enough readable frames",
+            "metrics": {},
+            "sampled_frames": len(frames),
+            "total_video_frames": total_video_frames,
+        }
+
+    live_meta: list[dict[str, float]] = []
+    invalid_reasons: list[str] = []
+    accepted_modes: list[str] = []
+
+    for frame_bgr in frames:
+        if provider == "dnn":
+            acceptance_mode = "dnn_strict"
+            bundle = _extract_embedding_bundle_dnn(frame_bgr, config=config, strict_anti_spoof=True)
+            if not bundle.get("ok"):
+                acceptance_mode = "dnn_relaxed"
+                bundle = _extract_embedding_bundle_dnn(
+                    frame_bgr,
+                    config=enrollment_config,
+                    strict_anti_spoof=False,
+                )
+        else:
+            acceptance_mode = "strict"
+            bundle = _extract_embedding_bundle(frame_bgr, config=config, strict_anti_spoof=True)
+            if not bundle.get("ok"):
+                acceptance_mode = "relaxed_strict"
+                bundle = _extract_embedding_bundle(
+                    frame_bgr,
+                    config=enrollment_config,
+                    strict_anti_spoof=True,
+                )
+            if not bundle.get("ok"):
+                acceptance_mode = "relaxed_fallback"
+                bundle = _extract_embedding_bundle(
+                    frame_bgr,
+                    config=enrollment_config,
+                    strict_anti_spoof=False,
+                    allow_landmark_fallback=True,
+                )
+                if bundle.get("ok") and not _passes_relaxed_enrollment_quality(bundle, config=enrollment_config):
+                    bundle = {"ok": False, "reason": "Low detection confidence"}
+
+        if not bundle.get("ok"):
+            invalid_reasons.append(str(bundle.get("reason") or "Face not recognized"))
+            continue
+
+        live_meta.append(
+            {
+                "center_x": float(bundle.get("center_x", 0.0)),
+                "center_y": float(bundle.get("center_y", 0.0)),
+                "yaw_proxy": float(bundle.get("yaw_proxy", 0.0)),
+                "pitch_proxy": float(bundle.get("pitch_proxy", 0.0)),
+                "texture_ratio": float(bundle.get("texture_ratio", 0.0)),
+                "contrast": float(bundle.get("contrast", 0.0)),
+            }
+        )
+        accepted_modes.append(acceptance_mode)
+
+    if len(live_meta) < min_valid_frames:
+        return {
+            "available": True,
+            "liveness_passed": False,
+            "score": 0.0,
+            "engine": "opencv-video-liveness",
+            "reason": (
+                f"Insufficient valid facial frames ({len(live_meta)}/{min_valid_frames}). "
+                f"Top rejection: {_most_common_reason(invalid_reasons)}"
+            ),
+            "metrics": {
+                "top_rejection_reason": _most_common_reason(invalid_reasons),
+            },
+            "sampled_frames": len(frames),
+            "total_video_frames": total_video_frames,
+        }
+
+    liveness = evaluate_liveness_sequence(
+        live_meta,
+        config=enrollment_config,
+        min_frames=max(4, min_valid_frames),
+    )
+    metrics = dict(liveness.get("metrics") or {})
+
+    yaw_values = np.array([item["yaw_proxy"] for item in live_meta], dtype=np.float32)
+    pitch_values = np.array([item["pitch_proxy"] for item in live_meta], dtype=np.float32)
+    yaw_range = float(np.ptp(yaw_values)) if yaw_values.size else 0.0
+    pitch_range = float(np.ptp(pitch_values)) if pitch_values.size else 0.0
+    metrics["yaw_range"] = yaw_range
+    metrics["pitch_range"] = pitch_range
+    metrics["valid_frames"] = int(len(live_meta))
+    metrics["sampled_frames"] = int(len(frames))
+    metrics["acceptance_modes"] = {
+        mode: int(accepted_modes.count(mode))
+        for mode in sorted(set(accepted_modes))
+    }
+    metrics["top_rejection_reason"] = _most_common_reason(invalid_reasons)
+
+    reason = str(liveness.get("reason") or "ok")
+    if yaw_range < 0.02 or pitch_range < 0.01:
+        reason = "Liveness check failed: head movement challenge incomplete"
+        liveness = {"ok": False, "reason": reason, "metrics": metrics}
+
+    ratios = [
+        float(metrics.get("center_motion", 0.0)) / max(enrollment_config.min_liveness_motion, 1e-6),
+        float(metrics.get("pose_motion", 0.0)) / max(enrollment_config.min_liveness_pose_delta, 1e-6),
+        float(metrics.get("yaw_range", 0.0)) / max(enrollment_config.min_liveness_yaw_range, 1e-6),
+        float(metrics.get("pitch_range", 0.0)) / max(enrollment_config.min_liveness_pitch_range, 1e-6),
+        max(
+            float(metrics.get("texture_jitter", 0.0)) / max(enrollment_config.min_liveness_texture_jitter, 1e-6),
+            float(metrics.get("contrast_jitter", 0.0)) / max(enrollment_config.min_liveness_contrast_jitter, 1e-6),
+        ),
+    ]
+    score = _clamp01(sum(min(1.4, max(0.0, value)) / 1.4 for value in ratios) / max(len(ratios), 1))
+    passed = bool(liveness.get("ok"))
+
+    logger.info(
+        "video_liveness_summary subject=%s passed=%s score=%.4f valid_frames=%s sampled_frames=%s total_video_frames=%s reason=%s",
+        subject_label,
+        passed,
+        score,
+        len(live_meta),
+        len(frames),
+        total_video_frames,
+        reason,
+    )
+
+    return {
+        "available": True,
+        "liveness_passed": passed,
+        "score": score,
+        "engine": "opencv-dnn-yunet-sface-v1-video-liveness" if provider == "dnn" else "opencv-embedding-v4-video-liveness",
+        "reason": reason,
+        "metrics": metrics,
+        "sampled_frames": len(frames),
+        "valid_frames": len(live_meta),
+        "total_video_frames": total_video_frames,
     }
 
 

@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from app.database import SessionLocal, database_status  # noqa: E402
 from app.main import sync_sql_snapshot_to_mongo  # noqa: E402

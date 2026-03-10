@@ -40,7 +40,11 @@ from ..media_storage import (
 )
 from ..mongo import get_mongo_db, mirror_document
 from ..realtime_bus import publish_domain_event
-from ..saarthi_service import materialize_saarthi_attendance
+from ..saarthi_service import (
+    ensure_saarthi_bundle,
+    materialize_saarthi_attendance,
+    saarthi_mandatory_date,
+)
 from ..workers import enqueue_face_reverification, enqueue_recompute
 
 router = APIRouter(prefix="/attendance", tags=["Attendance Management"])
@@ -64,7 +68,7 @@ PROFILE_NAME_IMMUTABLE_MESSAGE = (
     "Full name can be set once from profile setup and then changed only by admin."
 )
 FACE_MATCH_PASS_THRESHOLD = max(
-    0.80,
+    0.78,
     min(0.99, float(os.getenv("FACE_MATCH_PASS_THRESHOLD", "0.80"))),
 )
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
@@ -1134,6 +1138,55 @@ def _build_timetable_class_item(
         is_active_now=is_active_now,
         is_ended_now=is_ended_now,
         attendance_status=attendance_status,
+    )
+
+
+def _build_saarthi_timetable_item(
+    db: Session,
+    *,
+    student_id: int,
+    current_week_start: date,
+    academic_start: date,
+    now_dt: datetime,
+) -> schemas.TimetableClassOut | None:
+    bundle = ensure_saarthi_bundle(db, student_id=int(student_id))
+    mandatory_day = saarthi_mandatory_date(current_week_start)
+    if mandatory_day < academic_start:
+        return None
+
+    record = (
+        db.query(models.AttendanceRecord)
+        .filter(
+            models.AttendanceRecord.student_id == int(student_id),
+            models.AttendanceRecord.course_id == int(bundle.course.id),
+            models.AttendanceRecord.attendance_date == mandatory_day,
+        )
+        .first()
+    )
+
+    start_time = time(0, 0)
+    end_time = time(23, 59)
+    class_start = datetime.combine(mandatory_day, start_time)
+    class_end = datetime.combine(mandatory_day, end_time)
+
+    return schemas.TimetableClassOut(
+        schedule_id=-(1_000_000 + int(bundle.course.id)),
+        course_id=int(bundle.course.id),
+        course_code=str(bundle.course.code or ""),
+        course_title=str(bundle.course.title or ""),
+        weekday=mandatory_day.weekday(),
+        start_time=start_time,
+        end_time=end_time,
+        classroom_label="Saarthi Studio | Sunday all-day window",
+        class_date=mandatory_day,
+        is_open_now=class_start <= now_dt <= class_end,
+        is_active_now=class_start <= now_dt <= class_end,
+        is_ended_now=now_dt > class_end,
+        attendance_status=(record.status.value if record is not None else None),
+        class_kind="saarthi",
+        attendance_window_minutes=24 * 60,
+        remedial_class_id=None,
+        remedial_code_required=False,
     )
 
 
@@ -2690,6 +2743,13 @@ def get_student_weekly_timetable(
 
     today = date.today()
     academic_start = _academic_start_date()
+    materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=academic_start,
+        today=today,
+    )
+    db.commit()
     min_week_start = _week_start_for(academic_start)
     requested_week_start = _week_start_for(week_start or today)
     current_week_start = max(requested_week_start, min_week_start)
@@ -2878,6 +2938,16 @@ def get_student_weekly_timetable(
                 remedial_code_required=True,
             )
         )
+
+    saarthi_item = _build_saarthi_timetable_item(
+        db,
+        student_id=int(current_user.student_id),
+        current_week_start=current_week_start,
+        academic_start=academic_start,
+        now_dt=now_dt,
+    )
+    if saarthi_item is not None and current_week_start <= saarthi_item.class_date <= current_week_end:
+        result.append(saarthi_item)
 
     result.sort(
         key=lambda item: (
@@ -3649,12 +3719,11 @@ def create_student_rectification_request(
     )
 
 
-def _resolve_student_schedule_context(
+def _resolve_student_face_context(
     *,
     db: Session,
     current_user: models.AuthUser,
-    schedule_id: int,
-) -> tuple[models.Student, models.ClassSchedule, models.Course]:
+) -> models.Student:
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
@@ -3669,6 +3738,20 @@ def _resolve_student_schedule_context(
         raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
     if not student.enrollment_video_template_json:
         raise HTTPException(status_code=400, detail="Complete one-time enrollment video before marking attendance")
+
+    return student
+
+
+def _resolve_student_schedule_context(
+    *,
+    db: Session,
+    current_user: models.AuthUser,
+    schedule_id: int,
+) -> tuple[models.Student, models.ClassSchedule, models.Course]:
+    student = _resolve_student_face_context(
+        db=db,
+        current_user=current_user,
+    )
 
     schedule = db.get(models.ClassSchedule, schedule_id)
     if not schedule or not schedule.is_active:
@@ -3740,7 +3823,7 @@ def _verify_student_face_payload(
     *,
     db: Session,
     student: models.Student,
-    schedule: models.ClassSchedule,
+    schedule: models.ClassSchedule | None,
     payload: schemas.RealtimeAttendanceMarkRequest,
 ) -> tuple[str, float, str, models.AttendanceSubmissionStatus, str]:
     selfie_frames = payload.selfie_frames_data_urls or []
@@ -3797,11 +3880,12 @@ def _verify_student_face_payload(
     final_match = bool(opencv_verdict.get("match")) and final_confidence >= FACE_MATCH_PASS_THRESHOLD
 
     ai_verdict = _client_ai_verdict(payload)
+    schedule_log_value = int(schedule.id) if schedule is not None else 0
     if ai_verdict:
         logger.info(
             "attendance_client_ai_observation student=%s schedule_id=%s ai_match=%s ai_confidence=%.4f ai_reason=%s",
             student.email,
-            schedule.id,
+            schedule_log_value,
             bool(ai_verdict.get("match")),
             float(ai_verdict.get("confidence", 0.0)),
             str(ai_verdict.get("reason") or ""),
@@ -3823,7 +3907,7 @@ def _verify_student_face_payload(
         "engine=%s streak=%s/%s accepted=%s/%s liveness=%s reason=%s",
         datetime.utcnow().isoformat(),
         student.email,
-        schedule.id,
+        schedule_log_value,
         final_confidence,
         FACE_MATCH_PASS_THRESHOLD,
         status_value.value,
@@ -3855,6 +3939,10 @@ def _public_rejection_message(reason: str, confidence: float | None = None) -> s
         return "Lighting is poor. Move to a brighter area and keep front light on face."
     if "covered" in text or "occluded" in text:
         return "Face appears covered. Keep full face visible."
+    if "insufficient valid frames" in text:
+        return "Live capture quality is unstable. Keep one centered face, move closer, and improve front lighting."
+    if "insufficient head movement" in text or "challenge incomplete" in text:
+        return "Liveness check failed. Move head slowly left/right/up/down and retry."
     if "liveness" in text:
         return "Liveness check failed. Move head left/right/up/down and retry."
     if "landmark" in text or "eye" in text:
@@ -3870,26 +3958,56 @@ def _public_rejection_message(reason: str, confidence: float | None = None) -> s
     return "Face not recognized. Move to brighter light and retry."
 
 
+def _verification_response_message(
+    *,
+    status_value: models.AttendanceSubmissionStatus,
+    reason: str,
+    confidence: float,
+    demo_mode: bool,
+) -> str:
+    if status_value == models.AttendanceSubmissionStatus.VERIFIED:
+        if demo_mode:
+            return "Demo face verification passed. Attendance flow matched normally and no data was saved."
+        return "Attendance verified automatically"
+
+    rejection = _public_rejection_message(reason, confidence)
+    if demo_mode:
+        return f"{rejection} Demo mode did not save any attendance data."
+    return rejection
+
+
 @router.post("/realtime/mark", response_model=schemas.RealtimeAttendanceMarkResponse)
 def mark_realtime_attendance(
     payload: schemas.RealtimeAttendanceMarkRequest,
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    student, schedule, course = _resolve_student_schedule_context(
-        db=db,
-        current_user=current_user,
-        schedule_id=payload.schedule_id,
-    )
+    if payload.demo_mode:
+        student = _resolve_student_face_context(
+            db=db,
+            current_user=current_user,
+        )
+        schedule = None
+        course = None
+        today = date.today()
+    else:
+        if payload.schedule_id is None:
+            raise HTTPException(status_code=400, detail="schedule_id is required for attendance marking")
+        student, schedule, course = _resolve_student_schedule_context(
+            db=db,
+            current_user=current_user,
+            schedule_id=int(payload.schedule_id),
+        )
 
-    today = date.today()
-    if schedule.weekday != today.weekday():
-        raise HTTPException(status_code=400, detail="This class is not scheduled for today")
+        today = date.today()
+        if schedule.weekday != today.weekday():
+            raise HTTPException(status_code=400, detail="This class is not scheduled for today")
 
-    now_dt = datetime.now()
-    is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
-    if not is_open_now:
-        raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
+        now_dt = datetime.now()
+        is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
+        if not is_open_now:
+            raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
+
     primary_selfie, final_confidence, final_engine, status_value, final_reason = _verify_student_face_payload(
         db=db,
         student=student,
@@ -3897,6 +4015,25 @@ def mark_realtime_attendance(
         payload=payload,
     )
     final_match = status_value == models.AttendanceSubmissionStatus.VERIFIED
+
+    if payload.demo_mode:
+        # Demo mode still runs the full face-verification path, but it must not persist attendance data.
+        return schemas.RealtimeAttendanceMarkResponse(
+            submission_id=0,
+            status=status_value,
+            requires_faculty_review=False,
+            message=_verification_response_message(
+                status_value=status_value,
+                reason=final_reason,
+                confidence=final_confidence,
+                demo_mode=True,
+            ),
+            demo_mode=True,
+            persistence_skipped=True,
+            verification_engine=final_engine,
+            verification_confidence=final_confidence,
+            verification_reason=final_reason,
+        )
 
     submission = (
         db.query(models.AttendanceSubmission)
@@ -4051,10 +4188,11 @@ def mark_realtime_attendance(
         submission_id=submission.id,
         status=status_value,
         requires_faculty_review=False,
-        message=(
-            "Attendance verified automatically"
-            if status_value == models.AttendanceSubmissionStatus.VERIFIED
-            else _public_rejection_message(final_reason, final_confidence)
+        message=_verification_response_message(
+            status_value=status_value,
+            reason=final_reason,
+            confidence=final_confidence,
+            demo_mode=False,
         ),
         verification_engine=final_engine,
         verification_confidence=final_confidence,

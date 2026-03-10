@@ -1583,7 +1583,7 @@ def bootstrap_food_catalog(
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
-    summary = bootstrap_food_hall_catalog(db)
+    summary = bootstrap_food_hall_catalog(db, force=True)
     return schemas.MessageResponse(
         message=(
             "Food catalog synced. "

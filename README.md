@@ -687,8 +687,3 @@ Enterprise hardening roadmap and acceptance criteria:
 
 ---
 
-If you want, I can also generate:
-
-1. a **one-page recruiter/demo README** (`README.quick.md`)
-2. a **contributor handbook** (`CONTRIBUTING.md` + `ARCHITECTURE.md`)
-3. a **release-ready docs bundle** with changelog + API contract snapshots

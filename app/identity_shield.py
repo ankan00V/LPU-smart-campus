@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .face_verification import compare_face_templates
+from .face_verification import compare_face_templates, score_uploaded_video_liveness
 from .media_storage import signed_url_for_object, store_data_url_object
 from .mongo import get_mongo_db, mirror_document
 from .realtime_bus import publish_domain_event
@@ -506,6 +506,68 @@ def _persist_case_artifacts(
     return artifacts
 
 
+def _is_video_artifact(artifact_type: str) -> bool:
+    normalized = str(artifact_type or "").strip().lower()
+    return normalized in {"video_verification", "liveness_video", "verification_video"}
+
+
+def _prepare_applicant_artifact_uploads(
+    applicant_email: str,
+    artifact_uploads: Iterable[schemas.IdentityVerificationArtifactUpload] | None,
+) -> tuple[list[schemas.IdentityVerificationArtifactUpload], bool | None, list[dict[str, Any]]]:
+    uploads = list(artifact_uploads or [])
+    if not uploads:
+        return [], None, []
+
+    normalized_uploads: list[schemas.IdentityVerificationArtifactUpload] = []
+    inferred_liveness: bool | None = None
+    analyses: list[dict[str, Any]] = []
+
+    for item in uploads:
+        artifact_type = str(item.artifact_type or "").strip().lower()
+        if not _is_video_artifact(artifact_type):
+            normalized_uploads.append(item)
+            continue
+
+        analysis = score_uploaded_video_liveness(
+            item.data_url,
+            subject_label=f"applicant:{applicant_email or 'unknown'}",
+        )
+        analyses.append(analysis)
+
+        extracted_identity = dict(item.extracted_identity or {})
+        extracted_identity["auto_video_liveness"] = analysis
+
+        liveness_value = item.liveness_passed
+        verification_state = str(item.verification_state or "").strip().lower() or "submitted"
+        note_parts = [str(item.note or "").strip()] if str(item.note or "").strip() else []
+        if analysis.get("available"):
+            liveness_value = bool(analysis.get("liveness_passed"))
+            verification_state = "verified" if liveness_value else "failed"
+            note_parts.append(str(analysis.get("reason") or "Video liveness scored").strip())
+            inferred_liveness = (
+                liveness_value
+                if inferred_liveness is None
+                else bool(inferred_liveness and liveness_value)
+            )
+        else:
+            verification_state = "review_required"
+            note_parts.append(str(analysis.get("reason") or "Automatic video liveness scoring unavailable").strip())
+
+        normalized_uploads.append(
+            item.model_copy(
+                update={
+                    "verification_state": verification_state,
+                    "liveness_passed": liveness_value,
+                    "note": " | ".join(part for part in note_parts if part),
+                    "extracted_identity": extracted_identity,
+                }
+            )
+        )
+
+    return normalized_uploads, inferred_liveness, analyses
+
+
 def _serialize_case(
     case: models.IdentityVerificationCase,
     signals: Iterable[models.IdentityRiskSignal],
@@ -833,6 +895,12 @@ def assess_applicant_risk(
     signals: list[dict[str, Any]] = []
     requested_checks: list[str] = []
     completed_checks: list[str] = []
+    normalized_artifact_uploads, inferred_liveness, video_liveness_analyses = _prepare_applicant_artifact_uploads(
+        normalized_email,
+        payload.evidence_uploads,
+    )
+    effective_liveness = payload.liveness_passed if payload.liveness_passed is not None else inferred_liveness
+    has_video_evidence = any(_is_video_artifact(item.artifact_type) for item in normalized_artifact_uploads)
 
     mongo_db = get_mongo_db(required=False)
     fingerprint = observe_applicant_identity(
@@ -934,9 +1002,18 @@ def assess_applicant_risk(
                 evidence={"face_match_confidence": payload.face_match_confidence},
             )
 
-    if payload.liveness_passed is None:
+    if effective_liveness is None:
         requested_checks.append("liveness_video")
-    elif payload.liveness_passed is False:
+        if has_video_evidence and video_liveness_analyses:
+            _append_signal(
+                signals,
+                signal_type="liveness_auto_scoring_unavailable",
+                severity=models.FraudRiskLevel.MEDIUM,
+                score_delta=10.0,
+                reason="Verification video was uploaded, but automatic liveness scoring was unavailable and requires manual review.",
+                evidence={"video_liveness_analyses": video_liveness_analyses},
+            )
+    elif effective_liveness is False:
         _append_signal(
             signals,
             signal_type="liveness_failed",
@@ -944,6 +1021,7 @@ def assess_applicant_risk(
             score_delta=45.0,
             reason="Applicant liveness/video verification failed.",
             blocking=True,
+            evidence={"video_liveness_analyses": video_liveness_analyses} if video_liveness_analyses else {},
         )
     else:
         completed_checks.append("liveness_video")
@@ -989,6 +1067,8 @@ def assess_applicant_risk(
         "document_reference_hash": _stable_hash(payload.document_reference),
         "device_fingerprint": fingerprint,
     }
+    if video_liveness_analyses:
+        evidence["video_liveness_analyses"] = video_liveness_analyses
     return _persist_case_and_signals(
         db,
         workflow_key="applicant_identity",
@@ -1003,7 +1083,7 @@ def assess_applicant_risk(
         graph_summary=graph_summary,
         evidence=evidence,
         signals=signals,
-        artifact_uploads=payload.evidence_uploads,
+        artifact_uploads=normalized_artifact_uploads,
     )
 
 

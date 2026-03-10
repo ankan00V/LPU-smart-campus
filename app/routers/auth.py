@@ -81,7 +81,14 @@ def _mongo_db_or_503():
     try:
         return get_mongo_db(required=True)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("auth_mongo_unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Authentication datastore is temporarily unavailable. "
+                "Please retry in a few seconds."
+            ),
+        ) from exc
 
 
 def _request_ip(request: Request | None) -> str | None:
@@ -165,12 +172,20 @@ def _ensure_auth_user_id(db, user_doc: dict) -> int:
     return user_id
 
 
-def _send_login_otp_with_timeout(destination_email: str, otp_code: str) -> dict:
+def _send_login_otp_with_timeout(
+    destination_email: str,
+    otp_code: str,
+    *,
+    user_id: int,
+    purpose: str = "login",
+) -> dict:
     timeout_seconds = _otp_delivery_timeout_seconds()
     return dispatch_login_otp(
         destination_email,
         otp_code,
         timeout_seconds=timeout_seconds,
+        user_id=int(user_id),
+        purpose=purpose,
     )
 
 
@@ -1089,7 +1104,12 @@ def request_login_otp(
         db["auth_otps"].insert_one(otp_doc)
 
         try:
-            delivery = _send_login_otp_with_timeout(destination_email, otp_code)
+            delivery = _send_login_otp_with_timeout(
+                destination_email,
+                otp_code,
+                user_id=user_id,
+                purpose="login",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Login OTP delivery failed for email=%s destination=%s", email, destination_email)
             db["auth_otps"].update_one({"id": otp_doc["id"]}, {"$set": {"used_at": datetime.utcnow()}})
@@ -1440,7 +1460,12 @@ def request_password_reset_otp(
         db["auth_otps"].insert_one(otp_doc)
 
         try:
-            delivery = _send_login_otp_with_timeout(email, otp_code)
+            delivery = _send_login_otp_with_timeout(
+                email,
+                otp_code,
+                user_id=user_id,
+                purpose="password_reset",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Password reset OTP delivery failed for email=%s", email)
             db["auth_otps"].update_one({"id": otp_doc["id"]}, {"$set": {"used_at": datetime.utcnow()}})

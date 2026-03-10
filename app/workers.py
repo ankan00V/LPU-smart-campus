@@ -1,6 +1,10 @@
 import json
 import logging
 import os
+from pathlib import Path
+import secrets
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
@@ -12,6 +16,7 @@ from .database import SessionLocal, add_after_commit_hook
 from .observability import record_notification_delivery_attempt
 from .otp_delivery import send_login_otp, send_transactional_email
 from .runtime_infra import (
+    app_env,
     is_remote_service_host,
     managed_services_required,
     normalize_host,
@@ -33,6 +38,9 @@ TASK_RECOMPUTE = "smartcampus.tasks.recompute"
 
 _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="smartcampus-worker")
 _celery_app = None
+_AUTOBOOT_STATE_DIR = Path(__file__).resolve().parent.parent / ".runtime"
+_AUTOBOOT_PID_FILE = _AUTOBOOT_STATE_DIR / "celery-autoboot.pid"
+_AUTOBOOT_LOG_FILE = Path(__file__).resolve().parent.parent / "logs" / "celery-autoboot.log"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -50,6 +58,139 @@ def worker_required() -> bool:
 
 def inline_fallback_enabled() -> bool:
     return _bool_env("WORKER_INLINE_FALLBACK_ENABLED", default=True)
+
+
+def _worker_autoboot_enabled() -> bool:
+    raw = (os.getenv("WORKER_AUTO_BOOTSTRAP") or "").strip()
+    if raw:
+        return raw.lower() in {"1", "true", "yes", "on"}
+    return app_env() not in {"prod", "production"}
+
+
+def _autoboot_timeout_seconds() -> float:
+    raw = (os.getenv("WORKER_AUTO_BOOTSTRAP_TIMEOUT_SECONDS", "20") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 20.0
+    return max(3.0, min(60.0, value))
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _read_autoboot_pid() -> int | None:
+    try:
+        raw = _AUTOBOOT_PID_FILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    try:
+        pid = int(raw)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _clear_autoboot_pid_file() -> None:
+    try:
+        _AUTOBOOT_PID_FILE.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.warning("Failed to remove worker autoboot pid file", extra={"path": str(_AUTOBOOT_PID_FILE)})
+
+
+def _write_autoboot_pid(pid: int) -> None:
+    _AUTOBOOT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _AUTOBOOT_PID_FILE.write_text(str(int(pid)), encoding="utf-8")
+
+
+def _ensure_autoboot_paths() -> None:
+    _AUTOBOOT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    _AUTOBOOT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _spawn_worker_process() -> int:
+    _ensure_autoboot_paths()
+    env = dict(os.environ)
+    env["SMARTCAMPUS_AUTOSTARTED_WORKER"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "celery",
+        "-A",
+        "app.workers:celery_app",
+        "worker",
+        f"--loglevel={os.getenv('CELERY_LOG_LEVEL', 'INFO')}",
+        f"--concurrency={os.getenv('CELERY_WORKER_CONCURRENCY', '2')}",
+        f"--hostname={os.getenv('CELERY_WORKER_HOSTNAME', 'worker-autoboot@%h')}",
+    ]
+    with _AUTOBOOT_LOG_FILE.open("ab") as log_handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    _write_autoboot_pid(int(process.pid))
+    logger.info(
+        "Auto-started local Celery worker",
+        extra={"pid": int(process.pid), "log_file": str(_AUTOBOOT_LOG_FILE)},
+    )
+    return int(process.pid)
+
+
+def _wait_for_worker_live(*, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        if worker_live(timeout_seconds=0.5):
+            return True
+        time.sleep(0.5)
+    return worker_live(timeout_seconds=0.5)
+
+
+def _ensure_worker_bootstrapped() -> bool:
+    if not worker_required():
+        return False
+    if worker_live(timeout_seconds=0.5):
+        return True
+    if not _worker_autoboot_enabled():
+        return False
+
+    existing_pid = _read_autoboot_pid()
+    if existing_pid is not None and not _pid_alive(existing_pid):
+        _clear_autoboot_pid_file()
+        existing_pid = None
+
+    if existing_pid is not None:
+        if _wait_for_worker_live(timeout_seconds=min(5.0, _autoboot_timeout_seconds())):
+            return True
+        logger.warning(
+            "Existing auto-bootstrapped worker pid did not become healthy; replacing it",
+            extra={"pid": existing_pid},
+        )
+        _clear_autoboot_pid_file()
+        existing_pid = None
+
+    if existing_pid is None:
+        try:
+            _spawn_worker_process()
+        except Exception:
+            logger.exception("Automatic local worker bootstrap failed")
+            return False
+
+    return _wait_for_worker_live(timeout_seconds=_autoboot_timeout_seconds())
 
 
 def _worker_redis_tls_required() -> bool:
@@ -157,13 +298,143 @@ def assert_worker_ready() -> None:
             "WORKER_REQUIRED=true but Celery broker/backend is not configured or unavailable."
         )
     if not worker_live():
+        if _ensure_worker_bootstrapped():
+            return
         raise RuntimeError(
             "WORKER_REQUIRED=true but no active Celery worker responded to ping."
         )
 
 
-def _send_login_otp_task(destination_email: str, otp_code: str) -> dict[str, Any]:
-    return send_login_otp(destination_email, otp_code)
+def _otp_delivery_poll_interval_seconds() -> float:
+    raw = (os.getenv("OTP_DELIVERY_POLL_INTERVAL_SECONDS", "0.25") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.25
+    return max(0.05, min(1.0, value))
+
+
+def _create_otp_delivery_confirmation(
+    *,
+    user_id: int,
+    destination_email: str,
+    purpose: str,
+) -> str:
+    delivery_token = secrets.token_hex(5)
+    with SessionLocal() as db:
+        row = models.AuthOTPDeliveryReceipt(
+            delivery_token=delivery_token,
+            user_id=int(user_id),
+            destination=str(destination_email or "").strip(),
+            purpose=str(purpose or "").strip() or "login",
+            channel="worker-pending",
+        )
+        db.add(row)
+        db.commit()
+    return delivery_token
+
+
+def _update_otp_delivery_record(
+    delivery_token: str,
+    *,
+    status: str,
+    channel: str | None = None,
+    error: str | None = None,
+) -> None:
+    normalized_status = str(status or "").strip().lower() or "unknown"
+    resolved_channel = str(channel or "").strip()
+    if normalized_status == "processing":
+        resolved_channel = "worker-processing"
+    elif normalized_status == "failed":
+        resolved_channel = "delivery-failed"
+    elif not resolved_channel:
+        resolved_channel = "worker-pending"
+
+    with SessionLocal() as db:
+        row = (
+            db.query(models.AuthOTPDeliveryReceipt)
+            .filter(models.AuthOTPDeliveryReceipt.delivery_token == str(delivery_token))
+            .first()
+        )
+        if row is None:
+            raise RuntimeError("OTP delivery confirmation record is missing.")
+        row.channel = resolved_channel[:40]
+        row.updated_at = datetime.utcnow()
+        row.error_message = str(error).strip()[:600] if error else None
+        db.flush()
+        db.commit()
+
+    if error:
+        logger.warning(
+            "OTP delivery worker state updated with failure",
+            extra={"delivery_token": delivery_token, "error": str(error)[:1000]},
+        )
+
+
+def _wait_for_otp_delivery_confirmation(delivery_token: str, *, timeout_seconds: int) -> dict[str, Any]:
+    deadline = time.monotonic() + max(3, int(timeout_seconds))
+    poll_interval = _otp_delivery_poll_interval_seconds()
+    pending_channels = {"worker-pending", "worker-processing"}
+    while time.monotonic() < deadline:
+        with SessionLocal() as db:
+            row = (
+                db.query(models.AuthOTPDeliveryReceipt)
+                .filter(models.AuthOTPDeliveryReceipt.delivery_token == str(delivery_token))
+                .first()
+            )
+        if row is not None:
+            channel = str(row.channel or "").strip()
+            if channel == "delivery-failed":
+                raise RuntimeError("OTP worker reported delivery failure.")
+            if channel and channel not in pending_channels:
+                return {"channel": channel}
+        time.sleep(poll_interval)
+
+    with SessionLocal() as db:
+        row = (
+            db.query(models.AuthOTPDeliveryReceipt)
+            .filter(models.AuthOTPDeliveryReceipt.delivery_token == str(delivery_token))
+            .first()
+        )
+    if row is not None:
+        channel = str(row.channel or "").strip()
+        if channel == "delivery-failed":
+            raise RuntimeError("OTP worker reported delivery failure.")
+        if channel and channel not in pending_channels:
+            return {"channel": channel}
+    raise RuntimeError(f"OTP delivery timed out after {timeout_seconds} seconds.")
+
+
+def _send_login_otp_task(
+    destination_email: str,
+    otp_code: str,
+    *,
+    delivery_token: str | None = None,
+) -> dict[str, Any]:
+    if delivery_token is not None:
+        _update_otp_delivery_record(delivery_token, status="processing", channel="worker-processing")
+    try:
+        delivery = send_login_otp(destination_email, otp_code)
+    except Exception as exc:
+        if delivery_token is not None:
+            try:
+                _update_otp_delivery_record(
+                    delivery_token,
+                    status="failed",
+                    channel="delivery-failed",
+                    error=str(exc),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to persist OTP delivery failure state", extra={"delivery_token": delivery_token})
+        raise
+
+    if delivery_token is not None:
+        _update_otp_delivery_record(
+            delivery_token,
+            status="sent",
+            channel=str(delivery.get("channel") or "").strip() or "email",
+        )
+    return delivery
 
 
 def _compact_text(value: Any, *, default: str = "", max_len: int | None = None) -> str:
@@ -697,40 +968,58 @@ def dispatch_login_otp(
     otp_code: str,
     *,
     timeout_seconds: int,
+    user_id: int,
+    purpose: str = "login",
 ) -> dict[str, Any]:
     otp_worker_enabled = _bool_env("WORKER_ENABLE_OTP", default=True)
     if not otp_worker_enabled:
         raise RuntimeError("WORKER_ENABLE_OTP must remain true because OTP delivery is mandatory.")
-    if not _otp_wait_for_result():
-        raise RuntimeError(
-            "WORKER_WAIT_FOR_OTP_RESULT must remain true because OTP requests must confirm delivery before succeeding."
-        )
 
-    app = get_celery_app()
-    if app is None:
-        raise RuntimeError("OTP worker backend is unavailable.")
-
+    delivery_token = _create_otp_delivery_confirmation(
+        user_id=int(user_id),
+        destination_email=destination_email,
+        purpose=purpose,
+    )
     try:
-        result = app.send_task(
-            TASK_SEND_OTP,
-            kwargs={"destination_email": destination_email, "otp_code": otp_code},
+        _update_otp_delivery_record(
+            delivery_token,
+            status="processing",
+            channel="smtp-processing",
         )
+        payload = send_login_otp(destination_email, otp_code)
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"OTP worker enqueue failed: {exc}") from exc
+        try:
+            _update_otp_delivery_record(
+                delivery_token,
+                status="failed",
+                channel="delivery-failed",
+                error=f"OTP delivery failed: {exc}",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist OTP delivery failure state", extra={"delivery_token": delivery_token})
+        raise RuntimeError(f"OTP delivery failed: {exc}") from exc
 
-    try:
-        payload = result.get(timeout=max(3, int(timeout_seconds)))
-    except FuturesTimeoutError as exc:
-        raise RuntimeError(f"OTP delivery timed out after {timeout_seconds} seconds.") from exc
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"OTP worker execution failed: {exc}") from exc
-
-    if not isinstance(payload, dict):
-        raise RuntimeError("OTP worker returned an invalid payload.")
-
-    channel = str(payload.get("channel") or "").strip()
+    channel = str(payload.get("channel") or "").strip() if isinstance(payload, dict) else ""
     if not channel:
-        raise RuntimeError("OTP worker returned an invalid delivery channel.")
+        try:
+            _update_otp_delivery_record(
+                delivery_token,
+                status="failed",
+                channel="delivery-failed",
+                error="OTP delivery returned an invalid channel.",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to persist invalid OTP delivery payload", extra={"delivery_token": delivery_token})
+        raise RuntimeError("OTP delivery returned an invalid channel.")
+
+    try:
+        _update_otp_delivery_record(
+            delivery_token,
+            status="sent",
+            channel=channel,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"OTP delivery confirmation persistence failed: {exc}") from exc
 
     return {"channel": channel}
 
@@ -804,9 +1093,13 @@ def enqueue_recompute(payload: dict[str, Any]) -> str:
 celery_app = get_celery_app()
 if celery_app is not None:
 
-    @celery_app.task(name=TASK_SEND_OTP)
-    def send_login_otp_task(destination_email: str, otp_code: str) -> dict[str, Any]:
-        return _send_login_otp_task(destination_email, otp_code)
+    @celery_app.task(name=TASK_SEND_OTP, ignore_result=True)
+    def send_login_otp_task(
+        destination_email: str,
+        otp_code: str,
+        delivery_token: str | None = None,
+    ) -> dict[str, Any]:
+        return _send_login_otp_task(destination_email, otp_code, delivery_token=delivery_token)
 
     @celery_app.task(
         name=TASK_NOTIFY,

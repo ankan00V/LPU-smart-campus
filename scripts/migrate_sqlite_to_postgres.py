@@ -6,17 +6,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from _bootstrap import PROJECT_ROOT
 from sqlalchemy import MetaData, Table, create_engine, inspect, select, text
 from sqlalchemy.engine import make_url
 
 from app import models  # noqa: F401
 from app.database import Base
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _normalized_sqlite_url(raw: str) -> str:

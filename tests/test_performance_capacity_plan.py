@@ -40,6 +40,14 @@ class PerformanceCapacityPlanTests(unittest.TestCase):
         self.assertIn("snapshot", report)
         self.assertIn("bucket_metrics", report["snapshot"])
 
+    def test_enterprise_routes_are_bucketed_as_ops(self):
+        performance.record_request_metric("/enterprise/dr/backups", "GET", 200, 1400.0)
+        snapshot = performance.snapshot_sla(window_minutes=15)
+        self.assertIn("ops", snapshot["bucket_metrics"])
+        self.assertNotIn("default", snapshot["bucket_metrics"])
+        self.assertEqual(snapshot["bucket_metrics"]["ops"]["target_p95_ms"], 5000.0)
+        self.assertTrue(snapshot["bucket_metrics"]["ops"]["target_met"])
+
 
 if __name__ == "__main__":
     unittest.main()

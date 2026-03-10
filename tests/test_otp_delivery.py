@@ -35,7 +35,7 @@ class OTPDeliveryTests(unittest.TestCase):
         mode = otp_delivery.assert_otp_delivery_ready(verify_connection=True)
 
         self.assertEqual(mode, "smtp")
-        smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
+        smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=20.0)
         server.starttls.assert_called_once()
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
         server.noop.assert_called_once()
@@ -60,7 +60,7 @@ class OTPDeliveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"channel": "smtp-email"})
-        smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
+        smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=20.0)
         server.starttls.assert_called_once()
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
         server.send_message.assert_called_once()

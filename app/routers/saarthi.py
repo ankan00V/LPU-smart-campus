@@ -11,9 +11,10 @@ from ..saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     create_saarthi_turn,
     ensure_saarthi_bundle,
-    list_saarthi_messages,
+    list_active_saarthi_messages,
     materialize_saarthi_attendance,
     saarthi_week_start,
+    start_new_saarthi_chat,
 )
 
 router = APIRouter(prefix="/saarthi", tags=["Saarthi"])
@@ -49,13 +50,11 @@ def _status_message(
 ) -> str:
     if completed_for_week:
         return (
-            "This week's mandatory Saarthi counselling is complete. "
-            "CON111 has been credited for 1 hour for this Sunday."
+            "This week's Saarthi check-in is complete. You can still continue the conversation anytime you need."
         )
     if today == mandatory_date:
         return (
-            "Today is your mandatory Saarthi Sunday check-in. "
-            "Send at least one message today to secure this week's CON111 attendance credit."
+            "Today is your Saarthi Sunday check-in. Take a moment to talk, reflect, or ask for support."
         )
     if (
         last_attendance_status == models.AttendanceStatus.ABSENT
@@ -63,13 +62,10 @@ def _status_message(
         and last_attendance_date < week_start_date
     ):
         return (
-            f"Last Sunday's mandatory Saarthi check-in on {last_attendance_date.isoformat()} was missed. "
-            f"This week, attendance can be credited only on Sunday, {mandatory_date.isoformat()}."
+            f"Last Sunday's Saarthi check-in on {last_attendance_date.isoformat()} was missed. "
+            f"This week's guided check-in opens again on Sunday, {mandatory_date.isoformat()}."
         )
-    return (
-        f"You can talk to Saarthi anytime this week. Attendance will be credited only once on Sunday, "
-        f"{mandatory_date.isoformat()}, and it counts as a single 1-hour CON111 session."
-    )
+    return "Saarthi is here for you through the week. Reach out whenever you want to talk."
 
 
 def _build_status_out(
@@ -92,7 +88,7 @@ def _build_status_out(
             )
             .first()
         )
-    messages = list_saarthi_messages(db, session_id=int(session.id), limit=80) if session is not None else []
+    messages = list_active_saarthi_messages(db, session_id=int(session.id), limit=80) if session is not None else []
     latest_record = (
         db.query(models.AttendanceRecord)
         .filter(
@@ -193,4 +189,33 @@ def send_saarthi_message(
             current_dt=now_dt,
             current_session=session if isinstance(session, models.SaarthiSession) else None,
         ),
+    )
+
+
+@router.post("/new-chat", response_model=schemas.SaarthiStatusOut)
+def reset_saarthi_chat(
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    now_dt = datetime.now()
+    materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=_academic_start_date(),
+        today=now_dt.date(),
+    )
+    _, session = start_new_saarthi_chat(
+        db,
+        student_id=int(current_user.student_id),
+        current_dt=now_dt,
+    )
+    db.commit()
+    return _build_status_out(
+        db,
+        student_id=int(current_user.student_id),
+        current_dt=now_dt,
+        current_session=session,
     )

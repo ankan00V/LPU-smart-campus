@@ -233,10 +233,11 @@ def validate_production_secrets() -> None:
 
     get_field_encryptor.cache_clear()
     encryptor = get_field_encryptor()
+    primary_keyring = _json_loads(resolve_secret("APP_FIELD_ENCRYPTION_KEYS_JSON", default="{}"))
     if str(encryptor.active_key_id or "").startswith("dev-"):
         raise RuntimeError("Production field encryption key cannot use development fallback key ids.")
-    if any(str(key_id).startswith("dev-") for key_id in encryptor.keyring):
-        raise RuntimeError("Production field encryption keyring cannot include development fallback keys.")
+    if any(str(key_id).startswith("dev-") for key_id in primary_keyring):
+        raise RuntimeError("Production primary field encryption keyring cannot include development key ids.")
 
 
 def hash_lookup_value(value: str, *, purpose: str) -> str:
@@ -253,17 +254,19 @@ class FieldEncryptor:
     @classmethod
     def from_environment(cls) -> "FieldEncryptor":
         keyring_raw = _json_loads(resolve_secret("APP_FIELD_ENCRYPTION_KEYS_JSON", default="{}"))
+        legacy_keyring_raw = _json_loads(resolve_secret("APP_FIELD_ENCRYPTION_LEGACY_KEYS_JSON", default="{}"))
         active_key_id = _normalize_text(resolve_secret("APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID", default=""))
 
         keyring: dict[str, bytes] = {}
-        for key_id, key_value in keyring_raw.items():
-            try:
-                decoded = base64.urlsafe_b64decode(str(key_value))
-            except Exception:
-                continue
-            if len(decoded) != 32:
-                continue
-            keyring[str(key_id)] = decoded
+        for source in (keyring_raw, legacy_keyring_raw):
+            for key_id, key_value in source.items():
+                try:
+                    decoded = base64.urlsafe_b64decode(str(key_value))
+                except Exception:
+                    continue
+                if len(decoded) != 32:
+                    continue
+                keyring.setdefault(str(key_id), decoded)
 
         if not keyring:
             fallback = resolve_secret("APP_FIELD_ENCRYPTION_PRIMARY_KEY", default="")
@@ -375,6 +378,29 @@ class FieldEncryptor:
 @lru_cache(maxsize=1)
 def get_field_encryptor() -> FieldEncryptor:
     return FieldEncryptor.from_environment()
+
+
+def field_encryption_key_status() -> dict[str, Any]:
+    primary = sorted(
+        [
+            str(key_id).strip()
+            for key_id in _json_loads(resolve_secret("APP_FIELD_ENCRYPTION_KEYS_JSON", default="{}")).keys()
+            if str(key_id).strip()
+        ]
+    )
+    legacy = sorted(
+        [
+            str(key_id).strip()
+            for key_id in _json_loads(resolve_secret("APP_FIELD_ENCRYPTION_LEGACY_KEYS_JSON", default="{}")).keys()
+            if str(key_id).strip()
+        ]
+    )
+    encryptor = get_field_encryptor()
+    return {
+        "active_key_id": encryptor.active_key_id,
+        "primary_key_ids": primary or sorted(list(encryptor.keyring.keys())),
+        "legacy_key_ids": legacy,
+    }
 
 
 def encrypt_pii(value: str | None, *, aad: str = "") -> str | None:

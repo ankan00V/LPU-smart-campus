@@ -7,7 +7,8 @@ const USE_CLIENT_AI_FACE_ASSIST = false;
 const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 12000;
 const LIVE_VERIFICATION_MAX_ATTEMPTS = 8;
 const LIVE_VERIFICATION_BURST_FRAMES = 8;
-const LIVE_VERIFICATION_BURST_INTERVAL_MS = 140;
+const LIVE_VERIFICATION_BURST_INTERVAL_MS = 180;
+const AUTH_OTP_REQUEST_TIMEOUT_MS = 45000;
 const PASSWORD_POLICY_TEXT = 'Minimum 8 characters with letters, numbers, and a special character.';
 const FOOD_LOCATION_MAX_STALE_MS = 120000;
 const FOOD_DELIVERY_FEE_INR = 30;
@@ -20,7 +21,7 @@ const STUDENT_LIVE_REFRESH_MS = 60000;
 const REMEDIAL_LIVE_REFRESH_MS = 30000;
 const SUPPORT_DESK_LIVE_REFRESH_MS = 30000;
 const REALTIME_TOPICS = 'attendance,messages,rms,food,remedial,admin,identity,identity_shield';
-const ROUTE_SPLIT_ASSET_VERSION = '20260308d';
+const ROUTE_SPLIT_ASSET_VERSION = '20260308e';
 const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
 const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
 const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
@@ -110,6 +111,7 @@ const MODULE_LABELS = {
   administrative: 'Administrative',
   rms: 'RMS',
   remedial: 'Remedial',
+  saarthi: 'Saarthi',
 };
 let FOOD_POPULAR_SPOT_IDS = ['oven-express', 'kitchen-ette-block41', 'nk-food-court-bh2-6'];
 let FOOD_SHOP_GROUPS = [
@@ -259,6 +261,11 @@ const state = {
     saarthiExportBusy: false,
     identityCases: [],
     identityGraph: null,
+    identityGraphUi: {
+      clusterId: null,
+      nodeId: null,
+      zoom: 1,
+    },
     recoveryPlans: [],
     recoveryIncludeResolved: false,
     recoveryDeliverySummary: null,
@@ -357,6 +364,11 @@ const state = {
     saarthiStatus: null,
     saarthiMessages: [],
     saarthiSending: false,
+    saarthiResetting: false,
+    saarthiTyping: false,
+    saarthiPendingOutgoingMessage: null,
+    saarthiLastSentAtMs: 0,
+    saarthiSentFlashTimer: null,
     saarthiUiMessage: 'Saarthi session will appear here.',
     saarthiUiState: 'neutral',
     attendanceDetailsCourseKey: '',
@@ -570,6 +582,7 @@ const els = {
   navAttendanceBtn: document.getElementById('nav-attendance-btn'),
   topNavAttendanceBtn: document.getElementById('top-nav-attendance'),
   topNavFoodBtn: document.getElementById('top-nav-food'),
+  topNavSaarthiBtn: document.getElementById('top-nav-saarthi'),
   topNavAdministrativeBtn: document.getElementById('top-nav-administrative'),
   topNavRmsBtn: document.getElementById('top-nav-rms'),
   topNavRemedialBtn: document.getElementById('top-nav-remedial'),
@@ -586,6 +599,7 @@ const els = {
   executiveSection: document.getElementById('executive-section'),
   rmsSection: document.getElementById('rms-section'),
   studentSection: document.getElementById('student-section'),
+  saarthiSection: document.getElementById('saarthi-section'),
   facultySection: document.getElementById('faculty-section'),
   adminAttendanceActionsCard: document.getElementById('admin-attendance-actions-card'),
   adminRecoveryIncludeResolved: document.getElementById('admin-recovery-include-resolved'),
@@ -817,11 +831,24 @@ const els = {
   studentMessagesList: document.getElementById('student-messages-list'),
   studentMessagesOpenRemedialBtn: document.getElementById('student-messages-open-remedial-btn'),
   studentSaarthiCard: document.getElementById('student-saarthi-card'),
+  saarthiHeaderCopy: document.getElementById('saarthi-header-copy'),
+  saarthiStatusPill: document.getElementById('saarthi-status-pill'),
+  saarthiMessageCount: document.getElementById('saarthi-message-count'),
   saarthiStatus: document.getElementById('saarthi-status'),
+  saarthiCourseCode: document.getElementById('saarthi-course-code'),
+  saarthiCourseTitle: document.getElementById('saarthi-course-title'),
+  saarthiFacultyName: document.getElementById('saarthi-faculty-name'),
+  saarthiWeeklyProgressLabel: document.getElementById('saarthi-weekly-progress-label'),
+  saarthiWeeklyProgressFill: document.getElementById('saarthi-weekly-progress-fill'),
   saarthiMandatoryDate: document.getElementById('saarthi-mandatory-date'),
   saarthiWeeklyCredit: document.getElementById('saarthi-weekly-credit'),
+  saarthiSessionMode: document.getElementById('saarthi-session-mode'),
+  saarthiAwardedOn: document.getElementById('saarthi-awarded-on'),
+  saarthiCheckpointList: document.getElementById('saarthi-checkpoint-list'),
   saarthiHistory: document.getElementById('saarthi-history'),
   saarthiComposeInput: document.getElementById('saarthi-compose-input'),
+  saarthiAttendanceNote: document.getElementById('saarthi-attendance-note'),
+  saarthiNewChatBtn: document.getElementById('saarthi-new-chat-btn'),
   saarthiSendBtn: document.getElementById('saarthi-send-btn'),
   studentAggregatePercent: document.getElementById('student-aggregate-percent'),
   studentAttendedDelivered: document.getElementById('student-attended-delivered'),
@@ -913,7 +940,6 @@ const els = {
   adminApplicantFaceScore: document.getElementById('admin-applicant-face-score'),
   adminApplicantDocumentFile: document.getElementById('admin-applicant-document-file'),
   adminApplicantVideoFile: document.getElementById('admin-applicant-video-file'),
-  adminApplicantLiveness: document.getElementById('admin-applicant-liveness'),
   adminApplicantFlags: document.getElementById('admin-applicant-flags'),
   adminApplicantScreenBtn: document.getElementById('admin-applicant-screen-btn'),
   adminApplicantStatus: document.getElementById('admin-applicant-status'),
@@ -922,7 +948,12 @@ const els = {
   adminIdentityGraphBtn: document.getElementById('admin-identity-graph-btn'),
   adminIdentityGraphStatus: document.getElementById('admin-identity-graph-status'),
   adminIdentityGraphSummary: document.getElementById('admin-identity-graph-summary'),
+  adminIdentityGraphClusters: document.getElementById('admin-identity-graph-clusters'),
+  adminIdentityGraphZoomOut: document.getElementById('admin-identity-graph-zoom-out'),
+  adminIdentityGraphReset: document.getElementById('admin-identity-graph-reset'),
+  adminIdentityGraphZoomIn: document.getElementById('admin-identity-graph-zoom-in'),
   adminIdentityGraphCanvas: document.getElementById('admin-identity-graph-canvas'),
+  adminIdentityGraphDetails: document.getElementById('admin-identity-graph-details'),
   adminCopilotAuditSearch: document.getElementById('admin-copilot-audit-search'),
   adminCopilotAuditIntent: document.getElementById('admin-copilot-audit-intent'),
   adminCopilotAuditOutcome: document.getElementById('admin-copilot-audit-outcome'),
@@ -1820,6 +1851,7 @@ function syncTopNavActiveButtonIntoView() {
   const activeButton = [
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
+    els.topNavSaarthiBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
     els.topNavRemedialBtn,
@@ -3524,9 +3556,10 @@ function syncAuthRoleForm() {
   setHidden(els.authParentEmailWrap, !isStudent);
 }
 
-const MODULE_KEYS = new Set(['attendance', 'food', 'administrative', 'rms', 'remedial']);
+const MODULE_KEYS = new Set(['attendance', 'food', 'saarthi', 'administrative', 'rms', 'remedial']);
 const ROUTE_SPLIT_MODULES_BY_ROUTE = {
   attendance: ['attendance', 'messages'],
+  saarthi: ['attendance'],
   remedial: ['messages', 'remedial'],
   rms: ['rms'],
   food: ['food'],
@@ -3777,6 +3810,9 @@ function isModuleAccessible(moduleKey, role = authState.user?.role) {
   if (key === 'food') {
     return role === 'student' || role === 'faculty' || role === 'owner';
   }
+  if (key === 'saarthi') {
+    return role === 'student';
+  }
   if (key === 'administrative') {
     return role === 'admin';
   }
@@ -3802,6 +3838,7 @@ function setTopNavActive(moduleKey) {
   const topButtons = [
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
+    els.topNavSaarthiBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
     els.topNavRemedialBtn,
@@ -3859,7 +3896,7 @@ function updateDashboardHeroByRole() {
     els.dashboardSubtitle.textContent = 'Run classes, review attendance queues, and track section performance.';
   } else if (role === 'student') {
     els.dashboardTitle.textContent = 'Student Success Dashboard';
-    els.dashboardSubtitle.textContent = 'Track attendance, schedules, remedials, and campus food workflows from one place.';
+    els.dashboardSubtitle.textContent = 'Track attendance, Saarthi Sundays, remedials, schedules, and campus food workflows from one place.';
   } else if (role === 'owner') {
     els.dashboardTitle.textContent = 'Vendor Operations Console';
     els.dashboardSubtitle.textContent = 'Manage order intake, preparation flow, and delivery timelines for your shop.';
@@ -3885,6 +3922,7 @@ function applyRoleUI() {
   setHidden(els.rmsSection, !isFacultyOrAdmin || activeModule !== 'rms');
   setHidden(els.rmsAdminDedicatedNote, !isAdmin || activeModule !== 'rms');
   setHidden(els.studentSection, !isStudent || activeModule !== 'attendance');
+  setHidden(els.saarthiSection, !isStudent || activeModule !== 'saarthi');
   setHidden(els.facultySection, !isFacultyOrAdmin || activeModule !== 'attendance');
   setHidden(els.adminAttendanceActionsCard, !isAdmin || activeModule !== 'attendance');
   setHidden(els.foodSection, !authState.user || activeModule !== 'food');
@@ -3924,6 +3962,7 @@ function applyRoleUI() {
   const moduleButtons = [
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
+    els.topNavSaarthiBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
     els.topNavRemedialBtn,
@@ -4800,6 +4839,7 @@ function startSessionWatchdog() {
 }
 
 function resetStudentProfileState() {
+  clearSaarthiSentFlash();
   state.student.name = '';
   state.student.registrationNumber = '';
   state.student.section = '';
@@ -4833,6 +4873,9 @@ function resetStudentProfileState() {
   state.student.saarthiStatus = null;
   state.student.saarthiMessages = [];
   state.student.saarthiSending = false;
+  state.student.saarthiResetting = false;
+  state.student.saarthiTyping = false;
+  state.student.saarthiPendingOutgoingMessage = null;
   state.student.saarthiUiMessage = 'Saarthi session will appear here.';
   state.student.saarthiUiState = 'neutral';
   state.student.attendanceDetailsCourseKey = '';
@@ -11685,6 +11728,274 @@ function graphNodeTone(nodeType, riskLevel) {
   };
 }
 
+function adminIdentityRiskRank(level) {
+  const value = String(level || '').trim().toLowerCase();
+  if (value === 'critical') {
+    return 4;
+  }
+  if (value === 'high') {
+    return 3;
+  }
+  if (value === 'medium') {
+    return 2;
+  }
+  if (value === 'low') {
+    return 1;
+  }
+  return 0;
+}
+
+function getAdminIdentityGraphUiState() {
+  if (!state.admin.identityGraphUi || typeof state.admin.identityGraphUi !== 'object') {
+    state.admin.identityGraphUi = {
+      clusterId: null,
+      nodeId: null,
+      zoom: 1,
+    };
+  }
+  const currentZoom = Number(state.admin.identityGraphUi.zoom || 1);
+  state.admin.identityGraphUi.zoom = Number.isFinite(currentZoom)
+    ? Math.min(1.8, Math.max(0.75, currentZoom))
+    : 1;
+  return state.admin.identityGraphUi;
+}
+
+function summarizeIdentityGraphNode(node) {
+  if (!node || typeof node !== 'object') {
+    return '';
+  }
+  const metadata = node.metadata && typeof node.metadata === 'object' ? node.metadata : {};
+  if (String(node.node_type || '').trim().toLowerCase() === 'device') {
+    return `${Number(metadata.session_count || 0)} sessions`;
+  }
+  return graphNodeTypeLabel(node.node_type);
+}
+
+function buildAdminIdentityGraphClusters(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  if (!nodes.length) {
+    return [];
+  }
+
+  const nodesById = new Map();
+  const adjacency = new Map();
+  for (const node of nodes) {
+    const nodeId = String(node?.id || '').trim();
+    if (!nodeId) {
+      continue;
+    }
+    nodesById.set(nodeId, node);
+    adjacency.set(nodeId, new Set());
+  }
+
+  const normalizedEdges = [];
+  for (const edge of edges) {
+    const source = String(edge?.source || '').trim();
+    const target = String(edge?.target || '').trim();
+    if (!source || !target || !nodesById.has(source) || !nodesById.has(target)) {
+      continue;
+    }
+    adjacency.get(source)?.add(target);
+    adjacency.get(target)?.add(source);
+    normalizedEdges.push({ ...edge, source, target });
+  }
+
+  const visited = new Set();
+  const orderedNodeIds = Array.from(nodesById.keys()).sort();
+  const clusters = [];
+  for (const startId of orderedNodeIds) {
+    if (visited.has(startId)) {
+      continue;
+    }
+    const queue = [startId];
+    const componentIds = [];
+    visited.add(startId);
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+      componentIds.push(current);
+      for (const neighbor of adjacency.get(current) || []) {
+        if (visited.has(neighbor)) {
+          continue;
+        }
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+
+    const idSet = new Set(componentIds);
+    const componentNodes = componentIds.map((id) => nodesById.get(id)).filter(Boolean);
+    const componentEdges = normalizedEdges.filter((edge) => idSet.has(edge.source) && idSet.has(edge.target));
+    const counts = { device: 0, user: 0, student: 0, applicant: 0, external_subject: 0 };
+    let highRiskCount = 0;
+    let maxRiskRank = 0;
+    for (const node of componentNodes) {
+      const nodeType = String(node?.node_type || '').trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(counts, nodeType)) {
+        counts[nodeType] += 1;
+      }
+      const riskRank = adminIdentityRiskRank(node?.risk_level);
+      maxRiskRank = Math.max(maxRiskRank, riskRank);
+      if (riskRank >= 3) {
+        highRiskCount += 1;
+      }
+    }
+    clusters.push({
+      id: `cluster-${clusters.length + 1}-${componentIds[0].replace(/[^a-z0-9_-]/gi, '-')}`,
+      subjectIncluded: componentIds.includes(String(graph?.subject_key || '')),
+      nodes: componentNodes,
+      nodeIds: componentIds,
+      edges: componentEdges,
+      counts,
+      highRiskCount,
+      maxRiskRank,
+    });
+  }
+
+  clusters.sort((left, right) => {
+    if (left.subjectIncluded !== right.subjectIncluded) {
+      return left.subjectIncluded ? -1 : 1;
+    }
+    if (left.highRiskCount !== right.highRiskCount) {
+      return right.highRiskCount - left.highRiskCount;
+    }
+    if (left.nodes.length !== right.nodes.length) {
+      return right.nodes.length - left.nodes.length;
+    }
+    return right.maxRiskRank - left.maxRiskRank;
+  });
+
+  return clusters;
+}
+
+function layoutAdminIdentityGraphCluster(cluster, subjectKey) {
+  const width = 920;
+  const height = 560;
+  const nodes = Array.isArray(cluster?.nodes) ? cluster.nodes : [];
+  const edges = Array.isArray(cluster?.edges) ? cluster.edges : [];
+  const positions = new Map();
+  const degreeById = new Map();
+
+  for (const node of nodes) {
+    degreeById.set(String(node?.id || ''), 0);
+  }
+  for (const edge of edges) {
+    degreeById.set(edge.source, Number(degreeById.get(edge.source) || 0) + 1);
+    degreeById.set(edge.target, Number(degreeById.get(edge.target) || 0) + 1);
+  }
+  if (!nodes.length) {
+    return { width, height, positions, degreeById };
+  }
+
+  const typePriority = { device: 0, user: 1, student: 2, applicant: 3, external_subject: 4 };
+  const orderedNodes = [...nodes].sort((left, right) => {
+    const leftId = String(left?.id || '');
+    const rightId = String(right?.id || '');
+    if (leftId === subjectKey) {
+      return -1;
+    }
+    if (rightId === subjectKey) {
+      return 1;
+    }
+    const leftType = typePriority[String(left?.node_type || '').trim().toLowerCase()] ?? 9;
+    const rightType = typePriority[String(right?.node_type || '').trim().toLowerCase()] ?? 9;
+    if (leftType !== rightType) {
+      return leftType - rightType;
+    }
+    const degreeDiff = Number(degreeById.get(rightId) || 0) - Number(degreeById.get(leftId) || 0);
+    if (degreeDiff !== 0) {
+      return degreeDiff;
+    }
+    return String(left?.label || leftId).localeCompare(String(right?.label || rightId));
+  });
+
+  const rootNode = orderedNodes[0];
+  const centerX = width / 2;
+  const centerY = height / 2;
+  positions.set(String(rootNode?.id || ''), { x: centerX, y: centerY });
+
+  const maxPerRing = 6;
+  orderedNodes.slice(1).forEach((node, index) => {
+    const nodeType = String(node?.node_type || '').trim().toLowerCase();
+    const ring = Math.floor(index / maxPerRing) + 1;
+    const slot = index % maxPerRing;
+    const itemsInRing = Math.min(maxPerRing, orderedNodes.length - 1 - ((ring - 1) * maxPerRing));
+    const angle = ((Math.PI * 2) / Math.max(itemsInRing, 1)) * slot - (Math.PI / 2);
+    let radius = 132 + ((ring - 1) * 98);
+    if (nodeType === 'device') {
+      radius -= 18;
+    } else if (nodeType === 'applicant' || nodeType === 'external_subject') {
+      radius += 14;
+    }
+    const x = centerX + (Math.cos(angle) * radius);
+    const y = centerY + (Math.sin(angle) * Math.max(92, radius * 0.72));
+    positions.set(String(node?.id || ''), {
+      x: Math.max(116, Math.min(width - 116, Math.round(x))),
+      y: Math.max(74, Math.min(height - 74, Math.round(y))),
+    });
+  });
+
+  return { width, height, positions, degreeById };
+}
+
+function renderAdminIdentityGraphDetails(cluster, selectedNode, degreeById) {
+  if (!els.adminIdentityGraphDetails) {
+    return;
+  }
+  if (!cluster) {
+    els.adminIdentityGraphDetails.innerHTML = '<p>Select a cluster or a node to inspect suspicious device/account relationships.</p>';
+    return;
+  }
+
+  if (!selectedNode) {
+    const counts = cluster.counts || {};
+    const applicantCount = Number(counts.applicant || 0) + Number(counts.external_subject || 0);
+    els.adminIdentityGraphDetails.innerHTML = `
+      <div class="admin-identity-graph-detail-head">
+        <div>
+          <strong>${escapeHtml(cluster.subjectIncluded ? 'Primary suspicious cluster' : 'Suspicious cluster')}</strong>
+          <span>${escapeHtml(cluster.highRiskCount ? `${cluster.highRiskCount} high-risk nodes` : 'No high-risk nodes')}</span>
+        </div>
+        <span class="attendance-pill ${cluster.highRiskCount ? 'bad' : 'pending'}">${escapeHtml(String(cluster.nodes.length))} nodes</span>
+      </div>
+      <div class="admin-identity-graph-detail-grid">
+        <span>Devices: <strong>${escapeHtml(String(counts.device || 0))}</strong></span>
+        <span>Users: <strong>${escapeHtml(String(counts.user || 0))}</strong></span>
+        <span>Students: <strong>${escapeHtml(String(counts.student || 0))}</strong></span>
+        <span>Applicants: <strong>${escapeHtml(String(applicantCount))}</strong></span>
+        <span>Edges: <strong>${escapeHtml(String((cluster.edges || []).length))}</strong></span>
+      </div>
+      <p>Choose a node to inspect its linked accounts, device metadata, and risk posture.</p>
+    `;
+    return;
+  }
+
+  const metadata = selectedNode.metadata && typeof selectedNode.metadata === 'object' ? selectedNode.metadata : {};
+  const metadataEntries = Object.entries(metadata)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .slice(0, 8)
+    .map(([key, value]) => `<span>${escapeHtml(key.replace(/_/g, ' '))}: <strong>${escapeHtml(String(value))}</strong></span>`)
+    .join('');
+  const relatedCount = Number(degreeById?.get(String(selectedNode.id || '')) || 0);
+  els.adminIdentityGraphDetails.innerHTML = `
+    <div class="admin-identity-graph-detail-head">
+      <div>
+        <strong>${escapeHtml(String(selectedNode.label || selectedNode.id || 'Identity node'))}</strong>
+        <span>${escapeHtml(graphNodeTypeLabel(selectedNode.node_type))}</span>
+      </div>
+      <span class="attendance-pill ${identityRiskTone(selectedNode.risk_level)}">${escapeHtml(String(selectedNode.risk_level || 'low').toUpperCase())}</span>
+    </div>
+    <div class="admin-identity-graph-detail-grid">
+      <span>Node ID: <strong>${escapeHtml(String(selectedNode.id || ''))}</strong></span>
+      <span>Linked edges: <strong>${escapeHtml(String(relatedCount))}</strong></span>
+      ${metadataEntries}
+    </div>
+  `;
+}
+
 function renderAdminIdentityGraph() {
   if (!els.adminIdentityGraphCanvas || !els.adminIdentityGraphSummary) {
     return;
@@ -11709,11 +12020,18 @@ function renderAdminIdentityGraph() {
   if (summary?.latest_seen_at) {
     summaryEntries.push(`<span>Latest seen: <strong>${escapeHtml(adminTimestampLabel(summary.latest_seen_at, '--'))}</strong></span>`);
   }
+  if (Array.isArray(graph?.nodes) && graph.nodes.length) {
+    summaryEntries.push(`<span>Nodes: <strong>${escapeHtml(String(graph.nodes.length))}</strong></span>`);
+  }
   els.adminIdentityGraphSummary.innerHTML = summaryEntries.length
     ? summaryEntries.join('')
     : '<span>No graph summary available yet.</span>';
 
   if (!graph || !Array.isArray(graph.nodes) || !graph.nodes.length) {
+    if (els.adminIdentityGraphClusters) {
+      els.adminIdentityGraphClusters.innerHTML = '';
+    }
+    renderAdminIdentityGraphDetails(null, null, null);
     els.adminIdentityGraphCanvas.innerHTML = `
       <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="admin-identity-graph-empty">
         Load a student, user, or applicant graph to inspect suspicious links.
@@ -11722,69 +12040,118 @@ function renderAdminIdentityGraph() {
     return;
   }
 
-  const width = 720;
-  const height = 420;
-  const lanes = {
-    user: 100,
-    student: 250,
-    device: 360,
-    applicant: 490,
-    external_subject: 620,
-  };
-  const grouped = new Map();
-  for (const node of graph.nodes) {
-    const laneKey = Object.prototype.hasOwnProperty.call(lanes, node?.node_type) ? node.node_type : 'external_subject';
-    if (!grouped.has(laneKey)) {
-      grouped.set(laneKey, []);
+  const ui = getAdminIdentityGraphUiState();
+  const clusters = buildAdminIdentityGraphClusters(graph);
+  if (!clusters.length) {
+    if (els.adminIdentityGraphClusters) {
+      els.adminIdentityGraphClusters.innerHTML = '';
     }
-    grouped.get(laneKey).push(node);
+    renderAdminIdentityGraphDetails(null, null, null);
+    els.adminIdentityGraphCanvas.innerHTML = `
+      <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="admin-identity-graph-empty">
+        No suspicious identity clusters found for this subject.
+      </text>
+    `;
+    return;
   }
 
-  const positions = new Map();
-  for (const [laneKey, items] of grouped.entries()) {
-    const step = height / (items.length + 1);
-    items.forEach((node, index) => {
-      positions.set(node.id, {
-        x: lanes[laneKey] || lanes.external_subject,
-        y: Math.round(step * (index + 1)),
-      });
-    });
+  if (!clusters.some((cluster) => cluster.id === ui.clusterId)) {
+    ui.clusterId = clusters[0].id;
+    ui.nodeId = null;
+  }
+  const selectedCluster = clusters.find((cluster) => cluster.id === ui.clusterId) || clusters[0];
+  const selectedNode = selectedCluster.nodes.find((node) => String(node?.id || '') === String(ui.nodeId || '')) || null;
+  const { width, height, positions, degreeById } = layoutAdminIdentityGraphCluster(selectedCluster, String(graph?.subject_key || ''));
+  const zoom = Number(ui.zoom || 1);
+  const translateX = Math.round((width - (width * zoom)) / 2);
+  const translateY = Math.round((height - (height * zoom)) / 2);
+
+  if (els.adminIdentityGraphClusters) {
+    els.adminIdentityGraphClusters.innerHTML = clusters.map((cluster, index) => {
+      const applicantCount = Number(cluster.counts?.applicant || 0) + Number(cluster.counts?.external_subject || 0);
+      const label = cluster.subjectIncluded ? 'Primary Cluster' : `Cluster ${index + 1}`;
+      const descriptor = [
+        `${cluster.nodes.length} nodes`,
+        `${Number(cluster.counts?.device || 0)} devices`,
+        applicantCount ? `${applicantCount} applicants` : '',
+        cluster.highRiskCount ? `${cluster.highRiskCount} high risk` : '',
+      ].filter(Boolean).join(' • ');
+      return `
+        <button
+          type="button"
+          class="admin-identity-graph-cluster${cluster.id === selectedCluster.id ? ' active' : ''}"
+          data-cluster-id="${escapeHtml(cluster.id)}"
+          aria-pressed="${cluster.id === selectedCluster.id ? 'true' : 'false'}"
+        >
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(descriptor)}</span>
+        </button>
+      `;
+    }).join('');
   }
 
-  const edgeMarkup = (Array.isArray(graph.edges) ? graph.edges : []).map((edge) => {
+  renderAdminIdentityGraphDetails(selectedCluster, selectedNode, degreeById);
+
+  const edgeMarkup = selectedCluster.edges.map((edge) => {
     const source = positions.get(edge?.source);
     const target = positions.get(edge?.target);
     if (!source || !target) {
       return '';
     }
+    const isActive = selectedNode && (edge.source === selectedNode.id || edge.target === selectedNode.id);
     const midX = (source.x + target.x) / 2;
     const midY = (source.y + target.y) / 2;
     return `
       <g class="admin-identity-graph-edge">
-        <line x1="${source.x}" y1="${source.y}" x2="${target.x}" y2="${target.y}"></line>
-        <text x="${midX}" y="${midY - 6}" text-anchor="middle">${escapeHtml(String(edge?.relation || 'link').replace(/_/g, ' '))}</text>
+        <line
+          x1="${source.x}"
+          y1="${source.y}"
+          x2="${target.x}"
+          y2="${target.y}"
+          stroke="${isActive ? 'rgba(96, 165, 250, 0.94)' : 'rgba(149, 202, 242, 0.34)'}"
+          stroke-width="${isActive ? 2.6 : 1.45}"
+        ></line>
+        ${selectedCluster.nodes.length <= 10 ? `<text x="${midX}" y="${midY - 8}" text-anchor="middle">${escapeHtml(String(edge?.relation || 'link').replace(/_/g, ' '))}</text>` : ''}
       </g>
     `;
   }).join('');
 
-  const nodeMarkup = graph.nodes.map((node) => {
-    const point = positions.get(node.id) || { x: width / 2, y: height / 2 };
+  const nodeMarkup = selectedCluster.nodes.map((node) => {
+    const point = positions.get(String(node.id || '')) || { x: width / 2, y: height / 2 };
     const tone = graphNodeTone(node?.node_type, node?.risk_level);
     const label = String(node?.label || node?.id || 'Node');
-    const subtitle = graphNodeTypeLabel(node?.node_type);
+    const subtitle = summarizeIdentityGraphNode(node);
     const displayLabel = label.length > 26 ? `${label.slice(0, 23)}...` : label;
-    const left = Math.max(18, Math.min(width - 174, point.x - 78));
-    const top = Math.max(12, Math.min(height - 58, point.y - 22));
+    const isSelected = selectedNode && String(selectedNode.id || '') === String(node.id || '');
+    const boxWidth = isSelected ? 188 : 176;
+    const boxHeight = 52;
+    const left = Math.max(18, Math.min(width - boxWidth - 18, point.x - (boxWidth / 2)));
+    const top = Math.max(12, Math.min(height - boxHeight - 12, point.y - (boxHeight / 2)));
     return `
-      <g class="admin-identity-graph-node">
-        <rect x="${left}" y="${top}" rx="12" ry="12" width="156" height="44" fill="${tone.fill}" stroke="${tone.stroke}"></rect>
-        <text x="${left + 12}" y="${top + 17}" fill="${tone.text}" class="admin-identity-graph-node-label">${escapeHtml(displayLabel)}</text>
-        <text x="${left + 12}" y="${top + 33}" fill="${tone.text}" class="admin-identity-graph-node-subtitle">${escapeHtml(subtitle)}</text>
+      <g class="admin-identity-graph-node${isSelected ? ' selected' : ''}" data-node-id="${escapeHtml(String(node.id || ''))}">
+        <rect
+          x="${left}"
+          y="${top}"
+          rx="14"
+          ry="14"
+          width="${boxWidth}"
+          height="${boxHeight}"
+          fill="${tone.fill}"
+          stroke="${tone.stroke}"
+          stroke-width="${isSelected ? 2.8 : 1.2}"
+        ></rect>
+        <text x="${left + 12}" y="${top + 20}" fill="${tone.text}" class="admin-identity-graph-node-label">${escapeHtml(displayLabel)}</text>
+        <text x="${left + 12}" y="${top + 38}" fill="${tone.text}" class="admin-identity-graph-node-subtitle">${escapeHtml(subtitle)}</text>
       </g>
     `;
   }).join('');
 
-  els.adminIdentityGraphCanvas.innerHTML = `${edgeMarkup}${nodeMarkup}`;
+  els.adminIdentityGraphCanvas.innerHTML = `
+    <g class="admin-identity-graph-stage" transform="translate(${translateX} ${translateY}) scale(${zoom})">
+      ${edgeMarkup}
+      ${nodeMarkup}
+    </g>
+  `;
 }
 
 function renderAdminIdentityCases() {
@@ -11933,18 +12300,16 @@ async function runAdminApplicantIdentityWorkflow() {
   }
 
   if (videoFile) {
-    const livenessPassed = els.adminApplicantLiveness ? Boolean(els.adminApplicantLiveness.checked) : null;
     evidenceUploads.push({
       artifact_type: 'video_verification',
       data_url: await fileToDataUrl(videoFile),
       note: `Admin uploaded ${videoFile.name}`,
-      verification_state: livenessPassed === null ? 'submitted' : (livenessPassed ? 'verified' : 'failed'),
+      verification_state: 'submitted',
       extracted_identity: {
         file_name: videoFile.name,
         source: 'admin_applicant_workflow',
       },
       face_match_confidence: faceMatchConfidence,
-      liveness_passed: livenessPassed,
     });
   }
 
@@ -11956,7 +12321,6 @@ async function runAdminApplicantIdentityWorkflow() {
     external_subject_key: `admin-applicant:${applicantEmail}`,
     document_match_score: documentMatchScore,
     face_match_confidence: faceMatchConfidence,
-    liveness_passed: videoFile ? Boolean(els.adminApplicantLiveness?.checked) : null,
     suspicious_flags: suspiciousFlags,
     evidence_uploads: evidenceUploads,
   };
@@ -12012,6 +12376,11 @@ async function refreshAdminIdentityGraph() {
   setAdminIdentityGraphStatus('Loading suspicious identity graph...', false, 'loading');
   const graph = await api(endpoint);
   state.admin.identityGraph = graph;
+  state.admin.identityGraphUi = {
+    clusterId: null,
+    nodeId: null,
+    zoom: 1,
+  };
   renderAdminIdentityGraph();
   setAdminIdentityGraphStatus(
     `Loaded graph with ${Array.isArray(graph?.nodes) ? graph.nodes.length : 0} nodes and ${Array.isArray(graph?.edges) ? graph.edges.length : 0} edges.`,
@@ -13965,6 +14334,22 @@ async function refreshActiveModuleData() {
     await refreshRmsModule();
     return;
   }
+  if (moduleKey === 'saarthi') {
+    if (authState.user.role !== 'student') {
+      return;
+    }
+    await refreshStudentKpiTimetable({ forceNetwork: true });
+    const results = await Promise.allSettled([
+      loadStudentTimetable({ forceNetwork: true }),
+      loadStudentAttendanceInsights(),
+      loadSaarthiStatus({ silent: true }),
+    ]);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') {
+      throw failed.reason;
+    }
+    return;
+  }
   if (moduleKey === 'remedial') {
     await refreshRemedialModule();
     return;
@@ -14270,7 +14655,19 @@ function weekdayFromWeekStart(weekStartRaw) {
   return diffDays;
 }
 
+function isSaarthiTimetableItem(item = {}) {
+  const kindValue = String(item?.class_kind || '').trim().toLowerCase();
+  const codeValue = String(item?.course_code || '').trim().toUpperCase();
+  return kindValue === 'saarthi' || codeValue === 'CON111';
+}
+
 function slotTextLines(item) {
+  if (isSaarthiTimetableItem(item)) {
+    return {
+      primary: `${item.course_code} - ${item.course_title}`,
+      secondary: 'Sunday all-day window • Saarthi Studio',
+    };
+  }
   const labelRaw = String(item.classroom_label || '').trim();
   const [firstPart, secondPart] = labelRaw.split('|').map((part) => String(part || '').trim());
   const roomNo = secondPart
@@ -14327,6 +14724,7 @@ function buildStudentAttendanceTimeline(source = getKpiSourceTimetable()) {
     return [];
   }
   return source
+    .filter((item) => !isSaarthiTimetableItem(item))
     .map((item) => {
       const start = parseClassDateTimeLocal(item.class_date, item.start_time);
       const end = parseClassDateTimeLocal(item.class_date, item.end_time);
@@ -14352,25 +14750,11 @@ function findStudentDemoAttendanceState(nowArg = new Date()) {
   if (!isStudentAttendanceDemoEnabled()) {
     return null;
   }
-  const now = nowArg instanceof Date ? nowArg : new Date();
-  const activeRegularSlot = buildStudentAttendanceTimeline()
-    .find((slot) => (
-      now >= slot.start
-      && now <= slot.end
-      && String(slot.item?.class_kind || 'regular').toLowerCase() !== 'remedial'
-    ));
-  if (!activeRegularSlot) {
-    return null;
-  }
-  const selected = activeRegularSlot.item;
   return {
     mode: 'demo',
-    schedule: selected,
-    headline: `Demo Attendance | ${selected.course_code}`,
-    subtitle: (
-      `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | `
-      + `${selected.course_code} | Demo mode keeps marking open for this full class hour only.`
-    ),
+    schedule: null,
+    headline: 'Demo Attendance | Anytime',
+    subtitle: 'Demo verification is always available, does not depend on a subject, and never saves attendance data.',
   };
 }
 
@@ -14380,16 +14764,24 @@ function findEffectiveAttendanceManagementState(nowArg = new Date()) {
 
 function getSlotClass(item) {
   const status = resolveTimetableKpi(item);
+  const classes = [];
+  if (isSaarthiTimetableItem(item)) {
+    classes.push('slot-saarthi');
+  }
   if (status.key === 'present') {
-    return 'slot-present';
+    classes.push('slot-present');
+    return classes.join(' ');
   }
   if (status.key === 'absent') {
-    return 'slot-absent';
+    classes.push('slot-absent');
+    return classes.join(' ');
   }
   if (status.key === 'mark') {
-    return 'slot-mark slot-open-window';
+    classes.push('slot-mark', 'slot-open-window');
+    return classes.join(' ');
   }
-  return 'slot-upcoming';
+  classes.push('slot-upcoming');
+  return classes.join(' ');
 }
 
 function resolveTimetableKpi(item, nowArg = new Date()) {
@@ -14398,6 +14790,25 @@ function resolveTimetableKpi(item, nowArg = new Date()) {
   const markedPresent = ['verified', 'approved', 'present', 'pending_review'].includes(raw);
   const classStart = parseClassDateTimeLocal(item.class_date, item.start_time);
   const classEnd = parseClassDateTimeLocal(item.class_date, item.end_time);
+
+  if (isSaarthiTimetableItem(item)) {
+    if (markedPresent) {
+      return { key: 'present', label: 'Credited' };
+    }
+    if (raw === 'absent') {
+      return { key: 'absent', label: 'Missed Sunday' };
+    }
+    if (!classStart || !classEnd || Number.isNaN(classStart.getTime()) || Number.isNaN(classEnd.getTime())) {
+      return { key: 'upcoming', label: 'Sunday Window' };
+    }
+    if (now < classStart) {
+      return { key: 'upcoming', label: 'Sunday Window' };
+    }
+    if (now <= classEnd) {
+      return { key: 'mark', label: 'Open Saarthi' };
+    }
+    return { key: 'absent', label: 'Missed Sunday' };
+  }
 
   if (!classStart || !classEnd || Number.isNaN(classStart.getTime()) || Number.isNaN(classEnd.getTime())) {
     if (markedPresent) {
@@ -15281,7 +15692,7 @@ function updateSelectedClassState() {
   const kpi = findEffectiveAttendanceManagementState();
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
   const remedialWindowOpen = isRemedialAttendanceWindow(officialKpi);
-  const demoAttendanceActive = kpi.mode === 'demo' && scheduleId > 0;
+  const demoAttendanceActive = kpi.mode === 'demo';
   state.student.kpiScheduleId = scheduleId || null;
   renderStudentAttendanceDemoToggle();
 
@@ -15290,7 +15701,7 @@ function updateSelectedClassState() {
   }
   if (els.attendanceKpiSubtitle) {
     if (demoAttendanceActive) {
-      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Demo run is local only and does not save attendance data.`;
+      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} The same face-verification flow runs, but nothing is saved.`;
     } else if (!hasProfileReady) {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Complete profile setup to enable official marking.`;
     } else if (kpi.mode === 'mark' && String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
@@ -15309,7 +15720,7 @@ function updateSelectedClassState() {
   if (els.takeSelfieBtn) {
     els.takeSelfieBtn.textContent = remedialWindowOpen
       ? 'Open Remedial Module'
-      : (demoAttendanceActive ? 'Open Camera & Run Demo Attendance' : 'Open Camera & Mark Attendance');
+      : (demoAttendanceActive ? 'Open Camera & Run Demo Verification' : 'Open Camera & Mark Attendance');
     els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen || demoAttendanceActive);
   }
 }
@@ -15336,7 +15747,7 @@ function refreshStudentTimetableRealtimeStatus() {
       continue;
     }
     const kpi = resolveTimetableKpi(item);
-    card.classList.remove('slot-present', 'slot-absent', 'slot-upcoming', 'slot-mark', 'slot-open-window');
+    card.classList.remove('slot-present', 'slot-absent', 'slot-upcoming', 'slot-mark', 'slot-open-window', 'slot-saarthi');
     const nextClasses = getSlotClass(item).split(' ').filter(Boolean);
     for (const className of nextClasses) {
       card.classList.add(className);
@@ -15344,7 +15755,7 @@ function refreshStudentTimetableRealtimeStatus() {
 
     const badge = card.querySelector('.slot-status');
     if (badge) {
-      badge.className = `slot-status ${kpi.key}`;
+      badge.className = `slot-status ${kpi.key}${isSaarthiTimetableItem(item) ? ' saarthi' : ''}`;
       badge.textContent = kpi.label;
     }
 
@@ -15442,8 +15853,13 @@ function renderStudentTimetable() {
   for (const item of classes) {
     const start = toMinutes(item.start_time);
     const end = toMinutes(item.end_time);
-    const rowStart = Math.max(0, Math.floor((start - startMinute) / 60));
-    const rowSpan = Math.max(1, Math.ceil((end - start) / 60));
+    const clippedStart = Math.max(startMinute, start);
+    const clippedEnd = Math.min(endMinute, end);
+    if (!Number.isFinite(clippedStart) || !Number.isFinite(clippedEnd) || clippedEnd <= clippedStart) {
+      continue;
+    }
+    const rowStart = Math.max(0, Math.floor((clippedStart - startMinute) / 60));
+    const rowSpan = Math.max(1, Math.ceil((clippedEnd - clippedStart) / 60));
     const lines = slotTextLines(item);
 
     const card = document.createElement('div');
@@ -15488,7 +15904,7 @@ function renderStudentTimetable() {
 
     const kpi = resolveTimetableKpi(item);
     const slotState = document.createElement('span');
-    slotState.className = `slot-status ${kpi.key}`;
+    slotState.className = `slot-status ${kpi.key}${isSaarthiTimetableItem(item) ? ' saarthi' : ''}`;
     slotState.textContent = kpi.label;
     metaRow.appendChild(slotState);
 
@@ -15818,6 +16234,24 @@ function formatAttendanceDetailTimeRange(row = {}, courseCode = '') {
   return `${formatTime24(row?.start_time)}-${formatTime24(row?.end_time)}`;
 }
 
+function clearSaarthiSentFlash() {
+  if (state.student.saarthiSentFlashTimer) {
+    clearTimeout(state.student.saarthiSentFlashTimer);
+    state.student.saarthiSentFlashTimer = null;
+  }
+  state.student.saarthiLastSentAtMs = 0;
+}
+
+function triggerSaarthiSentFlash() {
+  clearSaarthiSentFlash();
+  state.student.saarthiLastSentAtMs = Date.now();
+  state.student.saarthiSentFlashTimer = setTimeout(() => {
+    state.student.saarthiSentFlashTimer = null;
+    state.student.saarthiLastSentAtMs = 0;
+    renderSaarthiPanel();
+  }, 1200);
+}
+
 function renderSaarthiPanel() {
   if (!els.studentSaarthiCard) {
     return;
@@ -15827,10 +16261,119 @@ function renderSaarthiPanel() {
     ? state.student.saarthiStatus
     : null;
   const messages = Array.isArray(state.student.saarthiMessages) ? state.student.saarthiMessages : [];
+  const pendingOutgoingMessage = state.student.saarthiPendingOutgoingMessage
+    && typeof state.student.saarthiPendingOutgoingMessage === 'object'
+    ? state.student.saarthiPendingOutgoingMessage
+    : null;
+  const renderedMessages = pendingOutgoingMessage
+    ? [...messages, pendingOutgoingMessage]
+    : [...messages];
+  if (state.student.saarthiTyping) {
+    renderedMessages.push({
+      id: 'typing-indicator',
+      sender_role: 'assistant',
+      message: '',
+      created_at: new Date().toISOString(),
+      isTyping: true,
+    });
+  }
+  const today = todayISO();
+  const mandatoryDateRaw = String(status?.mandatory_date || '').trim();
+  const weekStartRaw = String(status?.week_start_date || '').trim();
+  const awardedOnRaw = String(status?.attendance_awarded_on || '').trim();
+  const lastAttendanceDateRaw = String(status?.last_attendance_date || '').trim();
+  const completedForWeek = Boolean(status?.session_completed_for_week);
+  const isSundayWindow = Boolean(mandatoryDateRaw && mandatoryDateRaw === today);
+  const lastAttendanceStatus = String(status?.last_attendance_status || '').trim().toLowerCase();
+  const missedPreviousWeek = Boolean(
+    lastAttendanceStatus === 'absent'
+    && lastAttendanceDateRaw
+    && weekStartRaw
+    && lastAttendanceDateRaw < weekStartRaw
+  );
+  const messageCount = Math.max(0, Number(status?.current_week_message_count || messages.length || 0));
+  const minuteCredit = Math.max(0, Number(status?.attendance_credit_minutes_for_week || 0));
+  const messageLabel = `${messageCount} message${messageCount === 1 ? '' : 's'}`;
+  const sentFlashActive = (
+    !state.student.saarthiSending
+    && Number(state.student.saarthiLastSentAtMs || 0) > 0
+    && (Date.now() - Number(state.student.saarthiLastSentAtMs || 0) < 1200)
+  );
+
+  let headerCopy = 'Support space';
+  let pillText = 'Pending Sunday';
+  let pillState = 'pending';
+  let progressLabel = 'Awaiting Sunday check-in';
+  let progressValue = 12;
+  let sessionMode = 'Support is available any day';
+  let attendanceNote = 'Attendance is counted once on Sunday for CON111. The rest of the week stays open for support.';
+
+  if (completedForWeek) {
+    headerCopy = 'Sunday check-in complete';
+    pillText = 'Attendance Secured';
+    pillState = 'success';
+    progressLabel = 'Weekly 1-hour CON111 credit added';
+    progressValue = 100;
+    sessionMode = 'Attendance credited for this week';
+    attendanceNote = 'This week\'s CON111 credit is already secured. You can keep talking to Saarthi whenever you need.';
+  } else if (isSundayWindow) {
+    headerCopy = 'Sunday window live';
+    pillText = 'Sunday Window Live';
+    pillState = 'live';
+    progressLabel = 'Sunday check-in is open';
+    progressValue = messageCount > 0 ? 72 : 38;
+    sessionMode = 'Attendance plus counselling is live';
+    attendanceNote = 'Attendance is counted once today for CON111, no matter how long the conversation lasts.';
+  } else if (missedPreviousWeek) {
+    headerCopy = 'Next Sunday pending';
+    pillText = 'Previous Week Missed';
+    pillState = 'missed';
+    progressLabel = 'Next Sunday check-in required';
+    progressValue = messageCount > 0 ? 42 : 16;
+    sessionMode = 'Counselling only until next Sunday';
+    attendanceNote = `The next CON111 attendance chance opens on ${mandatoryDateRaw || 'Sunday'}. Saarthi is still here for support before then.`;
+  } else if (messageCount > 0) {
+    headerCopy = 'Conversation started';
+    pillText = 'Conversation Started';
+    pillState = 'engaged';
+    progressLabel = 'Conversation is open this week';
+    progressValue = 48;
+    sessionMode = 'Counselling active, attendance pending';
+    attendanceNote = 'Sunday remains the only day that affects CON111 attendance. The rest of the week stays open for support.';
+  }
+
+  if (els.saarthiHeaderCopy) {
+    els.saarthiHeaderCopy.textContent = headerCopy;
+  }
+  if (els.saarthiStatusPill) {
+    els.saarthiStatusPill.dataset.state = pillState;
+    els.saarthiStatusPill.textContent = pillText;
+  }
+  if (els.saarthiMessageCount) {
+    els.saarthiMessageCount.textContent = state.student.saarthiTyping
+      ? `${messageLabel} + live reply`
+      : messageLabel;
+  }
+  if (els.saarthiCourseCode) {
+    els.saarthiCourseCode.textContent = String(status?.course_code || 'CON111');
+  }
+  if (els.saarthiCourseTitle) {
+    els.saarthiCourseTitle.textContent = String(status?.course_title || 'Councelling and Happiness');
+  }
+  if (els.saarthiFacultyName) {
+    els.saarthiFacultyName.textContent = String(status?.faculty_name || 'Saarthi (AI Mentor)');
+  }
+  if (els.saarthiWeeklyProgressLabel) {
+    els.saarthiWeeklyProgressLabel.textContent = progressLabel;
+  }
+  if (els.saarthiWeeklyProgressFill) {
+    const safeProgress = Math.max(0, Math.min(100, Math.round(progressValue)));
+    els.saarthiWeeklyProgressFill.style.width = `${safeProgress}%`;
+  }
 
   if (els.saarthiMandatoryDate) {
-    if (status?.mandatory_date) {
-      els.saarthiMandatoryDate.textContent = parseISODateLocal(status.mandatory_date).toLocaleDateString([], {
+    if (mandatoryDateRaw) {
+      els.saarthiMandatoryDate.textContent = parseISODateLocal(mandatoryDateRaw).toLocaleDateString([], {
         weekday: 'short',
         day: '2-digit',
         month: 'short',
@@ -15841,20 +16384,29 @@ function renderSaarthiPanel() {
   }
 
   if (els.saarthiWeeklyCredit) {
-    if (status?.session_completed_for_week) {
-      els.saarthiWeeklyCredit.textContent = '1 hour credited';
-    } else if (status?.mandatory_date) {
+    if (completedForWeek) {
+      els.saarthiWeeklyCredit.textContent = `${Math.max(1, Math.round(minuteCredit / 60))} hour credited`;
+    } else if (mandatoryDateRaw) {
       els.saarthiWeeklyCredit.textContent = 'Pending Sunday';
     } else {
       els.saarthiWeeklyCredit.textContent = 'Pending';
     }
   }
+  if (els.saarthiSessionMode) {
+    els.saarthiSessionMode.textContent = sessionMode;
+  }
+  if (els.saarthiAwardedOn) {
+    els.saarthiAwardedOn.textContent = awardedOnRaw ? formatSaarthiDateTime(awardedOnRaw) : 'Not yet awarded';
+  }
+  if (els.saarthiAttendanceNote) {
+    els.saarthiAttendanceNote.textContent = attendanceNote;
+  }
 
   const transientUiState = normalizeUiState(state.student.saarthiUiState || 'neutral');
   const preferTransientMessage = transientUiState === 'loading' || transientUiState === 'error';
   const uiMessage = preferTransientMessage
-    ? (state.student.saarthiUiMessage || status?.status_message || 'Saarthi session will appear here.')
-    : (status?.status_message || state.student.saarthiUiMessage || 'Saarthi session will appear here.');
+    ? (state.student.saarthiUiMessage || status?.status_message || 'Hi, I\'m Saarthi. I\'m here whenever you want to talk.')
+    : (status?.status_message || state.student.saarthiUiMessage || 'Hi, I\'m Saarthi. I\'m here whenever you want to talk.');
   const uiState = preferTransientMessage
     ? transientUiState
     : (
@@ -15864,19 +16416,77 @@ function renderSaarthiPanel() {
     );
   setSaarthiStatus(uiMessage, uiState);
 
+  if (els.saarthiCheckpointList) {
+    const sundaySummary = completedForWeek
+      ? 'Completed this week. Your Sunday check-in is already done.'
+      : (isSundayWindow
+        ? 'Live now. Take a moment to check in whenever you are ready.'
+        : (missedPreviousWeek
+          ? `Previous Sunday was missed. The next guided check-in opens on ${mandatoryDateRaw || 'Sunday'}.`
+          : `Next mandatory window: ${mandatoryDateRaw || 'Sunday'}.`));
+    const conversationSummary = messageCount
+      ? `${messageLabel} recorded this week with Saarthi.`
+      : 'No Saarthi conversation recorded this week yet.';
+    const checkpoints = [
+      {
+        tone: 'done',
+        title: 'Timetable sync',
+        body: 'Saarthi is automatically added to the Sunday timetable window for every student.',
+      },
+      {
+        tone: completedForWeek ? 'done' : (isSundayWindow ? 'live' : (missedPreviousWeek ? 'missed' : 'pending')),
+        title: 'Mandatory Sunday session',
+        body: sundaySummary,
+      },
+      {
+        tone: messageCount > 0 ? 'engaged' : 'pending',
+        title: 'Conversation status',
+        body: conversationSummary,
+      },
+      {
+        tone: messageCount > 0 ? 'engaged' : 'pending',
+        title: 'Support style',
+        body: 'Saarthi listens first, then helps you reflect, steady yourself, and figure out the next step.',
+      },
+    ];
+    els.saarthiCheckpointList.innerHTML = checkpoints.map((checkpoint) => `
+      <article class="saarthi-checkpoint" data-tone="${escapeHtml(checkpoint.tone)}">
+        <strong>${escapeHtml(checkpoint.title)}</strong>
+        <p>${escapeHtml(checkpoint.body)}</p>
+      </article>
+    `).join('');
+  }
+
   if (els.saarthiHistory) {
-    if (!messages.length) {
-      els.saarthiHistory.innerHTML = '<div class="saarthi-empty">No chat this week yet. Your Sunday check-in here is mandatory for CON111 attendance.</div>';
+    if (!renderedMessages.length) {
+      els.saarthiHistory.innerHTML = '<div class="saarthi-empty">Hi, I\'m Saarthi. I\'m here to listen and support you. Start with whatever is on your mind.</div>';
     } else {
-      els.saarthiHistory.innerHTML = messages.map((row) => {
+      els.saarthiHistory.innerHTML = renderedMessages.map((row, index) => {
+        if (row?.isTyping) {
+          return `
+            <article class="saarthi-message typing">
+              <div class="saarthi-message-header">
+                <strong>Saarthi</strong>
+                <span>thinking...</span>
+              </div>
+              <div class="saarthi-typing-indicator" aria-label="Saarthi is typing">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+            </article>
+          `;
+        }
         const senderRole = String(row?.sender_role || '').trim().toLowerCase();
         const mine = senderRole === 'student';
         const senderLabel = mine ? 'You' : 'Saarthi';
+        const messageDelay = Math.min(index, 8) * 48;
+        const pendingClass = row?.isPending ? ' pending' : '';
         return `
-          <article class="saarthi-message ${mine ? 'mine' : 'theirs'}">
+          <article class="saarthi-message ${mine ? 'mine' : 'theirs'}${pendingClass}" style="--message-delay:${messageDelay}ms">
             <div class="saarthi-message-header">
               <strong>${escapeHtml(senderLabel)}</strong>
-              <span>${escapeHtml(formatSaarthiDateTime(row?.created_at))}</span>
+              <span>${escapeHtml(row?.isPending ? 'sending...' : formatSaarthiDateTime(row?.created_at))}</span>
             </div>
             <p class="saarthi-message-text">${escapeHtml(String(row?.message || ''))}</p>
           </article>
@@ -15887,11 +16497,23 @@ function renderSaarthiPanel() {
   }
 
   if (els.saarthiComposeInput) {
-    els.saarthiComposeInput.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
+    els.saarthiComposeInput.disabled = state.student.saarthiSending || state.student.saarthiResetting || authState.user?.role !== 'student';
+    els.saarthiComposeInput.placeholder = isSundayWindow
+      ? 'Hi, I\'m Saarthi. Tell me what is on your mind today.'
+      : 'Hi, I\'m Saarthi. Share anything that is weighing on you, confusing you, or simply important to you.';
+  }
+  if (els.saarthiNewChatBtn) {
+    els.saarthiNewChatBtn.disabled = state.student.saarthiSending || state.student.saarthiResetting || authState.user?.role !== 'student';
+    els.saarthiNewChatBtn.textContent = state.student.saarthiResetting ? 'Starting...' : 'New chat';
+    els.saarthiNewChatBtn.classList.toggle('is-busy', state.student.saarthiResetting);
   }
   if (els.saarthiSendBtn) {
-    els.saarthiSendBtn.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
-    els.saarthiSendBtn.textContent = state.student.saarthiSending ? 'Sending...' : 'Send to Saarthi';
+    els.saarthiSendBtn.disabled = state.student.saarthiSending || state.student.saarthiResetting || authState.user?.role !== 'student';
+    els.saarthiSendBtn.textContent = state.student.saarthiSending
+      ? 'Sending...'
+      : (sentFlashActive ? 'Sent' : 'Send to Saarthi');
+    els.saarthiSendBtn.classList.toggle('is-sending', state.student.saarthiSending);
+    els.saarthiSendBtn.classList.toggle('is-sent', sentFlashActive);
   }
 }
 
@@ -15899,6 +16521,9 @@ async function loadSaarthiStatus({ silent = false } = {}) {
   if (authState.user?.role !== 'student') {
     state.student.saarthiStatus = null;
     state.student.saarthiMessages = [];
+    state.student.saarthiPendingOutgoingMessage = null;
+    state.student.saarthiTyping = false;
+    clearSaarthiSentFlash();
     setSaarthiStatus('Saarthi is available for students only.', 'neutral');
     renderSaarthiPanel();
     return null;
@@ -15912,12 +16537,55 @@ async function loadSaarthiStatus({ silent = false } = {}) {
   const payload = await api('/saarthi/status');
   state.student.saarthiStatus = payload && typeof payload === 'object' ? payload : null;
   state.student.saarthiMessages = Array.isArray(payload?.messages) ? payload.messages : [];
+  state.student.saarthiPendingOutgoingMessage = null;
+  state.student.saarthiTyping = false;
+  clearSaarthiSentFlash();
   setSaarthiStatus(
     payload?.status_message || 'Saarthi session loaded.',
     payload?.session_completed_for_week ? 'success' : 'neutral',
   );
   renderSaarthiPanel();
   return payload;
+}
+
+async function startNewSaarthiChat() {
+  if (authState.user?.role !== 'student') {
+    throw new Error('Only students can use Saarthi.');
+  }
+  if (Array.isArray(state.student.saarthiMessages) && state.student.saarthiMessages.length) {
+    const proceed = window.confirm('Start a fresh Saarthi chat? Your current chat view for this week will be reset.');
+    if (!proceed) {
+      return null;
+    }
+  }
+
+  state.student.saarthiResetting = true;
+  state.student.saarthiPendingOutgoingMessage = null;
+  state.student.saarthiTyping = false;
+  clearSaarthiSentFlash();
+  setSaarthiStatus('Starting a fresh Saarthi chat...', 'loading');
+  renderSaarthiPanel();
+
+  try {
+    const session = await api('/saarthi/new-chat', {
+      method: 'POST',
+    });
+    state.student.saarthiStatus = session && typeof session === 'object' ? session : null;
+    state.student.saarthiMessages = Array.isArray(session?.messages) ? session.messages : [];
+    setSaarthiStatus('Fresh chat started. Saarthi is ready when you are.', 'success');
+    renderSaarthiPanel();
+    if (els.saarthiComposeInput) {
+      els.saarthiComposeInput.focus();
+    }
+    return session;
+  } catch (error) {
+    setSaarthiStatus(error.message || 'Failed to start a new Saarthi chat.', 'error');
+    renderSaarthiPanel();
+    throw error;
+  } finally {
+    state.student.saarthiResetting = false;
+    renderSaarthiPanel();
+  }
 }
 
 async function sendSaarthiMessage() {
@@ -15930,7 +16598,16 @@ async function sendSaarthiMessage() {
     throw new Error('Type your message to Saarthi first.');
   }
 
+  state.student.saarthiPendingOutgoingMessage = {
+    id: `pending-${Date.now()}`,
+    sender_role: 'student',
+    message,
+    created_at: new Date().toISOString(),
+    isPending: true,
+  };
+  state.student.saarthiTyping = true;
   state.student.saarthiSending = true;
+  clearSaarthiSentFlash();
   setSaarthiStatus('Sending message to Saarthi...', 'loading');
   renderSaarthiPanel();
 
@@ -15940,11 +16617,14 @@ async function sendSaarthiMessage() {
       body: JSON.stringify({ message }),
     });
     const session = payload && typeof payload === 'object' ? payload.session || null : null;
+    state.student.saarthiPendingOutgoingMessage = null;
+    state.student.saarthiTyping = false;
     if (els.saarthiComposeInput) {
       els.saarthiComposeInput.value = '';
     }
     state.student.saarthiStatus = session;
     state.student.saarthiMessages = Array.isArray(session?.messages) ? session.messages : [];
+    triggerSaarthiSentFlash();
     setSaarthiStatus(
       session?.status_message || 'Saarthi session updated.',
       payload?.attendance_awarded_now ? 'success' : 'neutral',
@@ -15952,14 +16632,20 @@ async function sendSaarthiMessage() {
     renderSaarthiPanel();
 
     if (payload?.attendance_awarded_now) {
-      try {
-        await loadStudentAttendanceInsights();
-      } catch (error) {
-        log(error.message || 'Attendance ledger refresh failed after Saarthi credit was applied.');
+      const refreshes = await Promise.allSettled([
+        loadStudentAttendanceInsights(),
+        refreshStudentKpiTimetable({ forceNetwork: true }),
+        loadStudentTimetable({ forceNetwork: true }),
+      ]);
+      const failedRefresh = refreshes.find((result) => result.status === 'rejected');
+      if (failedRefresh?.status === 'rejected') {
+        log(failedRefresh.reason?.message || 'Attendance refresh failed after Saarthi credit was applied.');
       }
     }
     return payload;
   } catch (error) {
+    state.student.saarthiPendingOutgoingMessage = null;
+    state.student.saarthiTyping = false;
     setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
     renderSaarthiPanel();
     throw error;
@@ -16905,12 +17591,14 @@ function pickStudentFallbackSchedule() {
   const today = todayISO();
   const todayClasses = classes.filter((item) => String(item.class_date || '') === today);
   const pool = todayClasses.length ? todayClasses : classes;
+  const preferredPool = pool.filter((item) => !isSaarthiTimetableItem(item));
+  const source = preferredPool.length ? preferredPool : pool;
 
   return (
-    pool.find((item) => resolveTimetableKpi(item).key === 'mark')
-    || pool.find((item) => resolveTimetableKpi(item).key === 'upcoming')
-    || pool.find((item) => resolveTimetableKpi(item).key === 'present')
-    || pool[0]
+    source.find((item) => resolveTimetableKpi(item).key === 'mark')
+    || source.find((item) => resolveTimetableKpi(item).key === 'upcoming')
+    || source.find((item) => resolveTimetableKpi(item).key === 'present')
+    || source[0]
     || null
   );
 }
@@ -16927,10 +17615,17 @@ function ensureStudentScheduleSelection() {
   return fallback;
 }
 
-async function buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames = []) {
+async function buildAttendanceVerificationPayload(
+  selectedScheduleId,
+  selfieDataUrl,
+  selfieFrames = [],
+  options = {}
+) {
+  const { demoMode = false } = options;
   const payload = {
-    schedule_id: selectedScheduleId,
+    schedule_id: selectedScheduleId || null,
     selfie_photo_data_url: selfieDataUrl,
+    demo_mode: Boolean(demoMode),
   };
   if (Array.isArray(selfieFrames) && selfieFrames.length) {
     payload.selfie_frames_data_urls = selfieFrames;
@@ -16965,6 +17660,12 @@ function deriveLiveGuidance(message = '') {
   const text = String(message || '').toLowerCase();
   if (text.includes('unauthorized marking attempt') || text.includes('different person')) {
     return 'Different person detected. Only the registered student can mark attendance.';
+  }
+  if (text.includes('almost matched')) {
+    return 'Face almost matched. Move to brighter light, look straight, and hold still for a full second.';
+  }
+  if (text.includes('capture quality is unstable')) {
+    return 'Move closer, keep one face centered, and improve front lighting before retrying.';
   }
   if (text.includes('liveness')) {
     return 'Move your head slowly left/right/up/down while keeping face centered.';
@@ -17011,8 +17712,18 @@ function shouldStopLiveVerification(message = '') {
   );
 }
 
-async function submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames = []) {
-  const payload = await buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames);
+async function submitStudentAttendanceAttempt(
+  selectedScheduleId,
+  selfieDataUrl,
+  selfieFrames = [],
+  options = {}
+) {
+  const payload = await buildAttendanceVerificationPayload(
+    selectedScheduleId,
+    selfieDataUrl,
+    selfieFrames,
+    options
+  );
   return apiWithTimeout(
     '/attendance/realtime/mark',
     {
@@ -17024,17 +17735,27 @@ async function submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl,
   );
 }
 
-async function startLiveAttendanceVerification() {
-  const kpi = findAttendanceManagementState();
-  const selectedScheduleId = Number(kpi.schedule?.schedule_id || 0);
-  if (kpi.mode !== 'mark' || !selectedScheduleId) {
+async function startLiveAttendanceVerification(options = {}) {
+  const {
+    demoMode = false,
+    resolvedState = null,
+  } = options;
+  const kpi = demoMode
+    ? (resolvedState?.mode === 'demo' ? resolvedState : findStudentDemoAttendanceState())
+    : findAttendanceManagementState();
+  const selectedScheduleId = Number(kpi?.schedule?.schedule_id || 0);
+  if (demoMode) {
+    if (kpi?.mode !== 'demo') {
+      throw new Error('Demo attendance is currently unavailable.');
+    }
+  } else if (kpi.mode !== 'mark' || !selectedScheduleId) {
     throw new Error('Attendance window is closed right now. Wait for the next class.');
   }
-  if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
+  if (String(kpi?.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
     throw new Error('This is a remedial class. Open Remedial module, validate the faculty code, then mark attendance there.');
   }
-  state.student.kpiScheduleId = selectedScheduleId;
-  state.student.selectedScheduleId = selectedScheduleId;
+  state.student.kpiScheduleId = selectedScheduleId || null;
+  state.student.selectedScheduleId = selectedScheduleId || null;
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo before marking attendance.');
   }
@@ -17042,15 +17763,24 @@ async function startLiveAttendanceVerification() {
     throw new Error('Live verification is already running.');
   }
 
-  setStudentResult('Live attendance verification started...');
+  const retryAction = demoMode
+    ? () => startStudentDemoAttendanceFlow(kpi)
+    : () => startStudentSelfieFlow();
+  setStudentResult(
+    demoMode
+      ? 'Demo attendance verification started. The same live face-match flow is running, but nothing will be saved.'
+      : 'Live attendance verification started...'
+  );
 
   await openCameraModal({
-    title: 'Live Realtime Attendance Verification',
+    title: demoMode ? 'Demo Attendance Verification' : 'Live Realtime Attendance Verification',
     facingMode: 'user',
     referencePhotoDataUrl: state.student.profilePhotoDataUrl,
     burstFrames: LIVE_VERIFICATION_BURST_FRAMES,
     captureEnabled: false,
-    messageOverride: 'OpenCV live verification running. Keep one face centered, look straight, then move head slightly left/right/up/down.',
+    messageOverride: demoMode
+      ? 'OpenCV demo verification running. This uses the same live face-match flow as normal attendance, but no attendance data will be saved.'
+      : 'OpenCV live verification running. Keep one face centered, look straight, then move head slightly left/right/up/down.',
   });
 
   const sessionToken = state.camera.liveSessionToken;
@@ -17058,6 +17788,7 @@ async function startLiveAttendanceVerification() {
 
   let attempts = 0;
   let livenessFailures = 0;
+  let lastFailureMessage = '';
   const maxAttempts = LIVE_VERIFICATION_MAX_ATTEMPTS;
   while (
     state.camera.liveVerificationActive
@@ -17065,10 +17796,12 @@ async function startLiveAttendanceVerification() {
     && sessionToken === state.camera.liveSessionToken
   ) {
     if (attempts >= maxAttempts) {
-      const timeoutMsg = 'Verification took too long. Use bright front light, keep one centered face, then retry.';
+      const timeoutMsg = lastFailureMessage
+        ? `${lastFailureMessage} Verification stopped after multiple attempts.`
+        : 'Verification took too long. Use bright front light, keep one centered face, then retry.';
       setStudentResult(timeoutMsg, {
         showRetry: true,
-        retryAction: () => startStudentSelfieFlow(),
+        retryAction,
       });
       if (els.cameraMessage) {
         els.cameraMessage.textContent = timeoutMsg;
@@ -17094,7 +17827,12 @@ async function startLiveAttendanceVerification() {
         }
       }
 
-      const response = await submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames);
+      const response = await submitStudentAttendanceAttempt(
+        selectedScheduleId,
+        selfieDataUrl,
+        selfieFrames,
+        { demoMode }
+      );
       const status = String(response.status || '').toLowerCase();
       const confidencePct = (Number(response.verification_confidence || 0) * 100).toFixed(1);
       const verified = ['verified', 'approved', 'present'].includes(status);
@@ -17106,11 +17844,19 @@ async function startLiveAttendanceVerification() {
         ];
         setStudentResult(lines.join('\n'));
         if (els.cameraMessage) {
-          els.cameraMessage.textContent = 'Attendance verified. Closing camera...';
+          els.cameraMessage.textContent = demoMode
+            ? 'Demo verification passed. Closing camera...'
+            : 'Attendance verified. Closing camera...';
         }
-        log(`Attendance marked with confidence: ${confidencePct}%`);
-        await loadStudentTimetable({ forceNetwork: true });
-        await loadStudentAttendanceInsights();
+        log(
+          demoMode
+            ? `Demo attendance verified with confidence: ${confidencePct}%`
+            : `Attendance marked with confidence: ${confidencePct}%`
+        );
+        if (!demoMode) {
+          await loadStudentTimetable({ forceNetwork: true });
+          await loadStudentAttendanceInsights();
+        }
         await sleep(900);
         closeCameraModal();
         return;
@@ -17118,6 +17864,7 @@ async function startLiveAttendanceVerification() {
 
       const guidance = deriveLiveGuidance(response.message || response.verification_reason || '');
       const failureText = String(response.message || response.verification_reason || '').toLowerCase();
+      lastFailureMessage = String(response.message || response.verification_reason || '').trim() || lastFailureMessage;
       if (failureText.includes('liveness')) {
         livenessFailures += 1;
       } else {
@@ -17136,7 +17883,7 @@ async function startLiveAttendanceVerification() {
         const livenessTimeoutMessage = 'Liveness check still failing. Keep front light on face, center your face, and move head slowly left/right/up/down, then retry.';
         setStudentResult(livenessTimeoutMessage, {
           showRetry: true,
-          retryAction: () => startStudentSelfieFlow(),
+          retryAction,
         });
         if (els.cameraMessage) {
           els.cameraMessage.textContent = livenessTimeoutMessage;
@@ -17146,6 +17893,7 @@ async function startLiveAttendanceVerification() {
       await sleep(600);
     } catch (error) {
       const message = error?.message || 'Live verification attempt failed.';
+      lastFailureMessage = String(message || '').trim() || lastFailureMessage;
       setStudentResult(message);
       if (els.cameraMessage) {
         els.cameraMessage.textContent = `${deriveLiveGuidance(message)} Auto retry in progress...`;
@@ -18028,40 +18776,15 @@ async function startStudentDemoAttendanceFlow(resolvedState = null) {
   const demoState = resolvedState?.mode === 'demo'
     ? resolvedState
     : findStudentDemoAttendanceState();
-  const schedule = demoState?.schedule || null;
-  const scheduleId = Number(schedule?.schedule_id || 0);
-  if (!scheduleId) {
-    throw new Error('Demo attendance is available only during a live regular class hour.');
+  if (demoState?.mode !== 'demo') {
+    throw new Error('Demo attendance is currently unavailable.');
   }
 
-  state.student.kpiScheduleId = scheduleId;
-  state.student.selectedScheduleId = scheduleId;
-  setStudentResult('Demo attendance is active. Capture a selfie to simulate marking for this class hour. Nothing will be saved.');
-
-  await openCameraModal({
-    title: 'Demo Attendance Capture',
-    facingMode: 'user',
-    referencePhotoDataUrl: state.student.profilePhotoDataUrl || '',
-    messageOverride: 'Demo mode is active. Capture a selfie to simulate attendance for this class hour only. No data will be saved.',
-    onCapture: async (captured) => {
-      const captures = Array.isArray(captured) ? captured : [captured];
-      const selfieDataUrl = String(captures[0] || '');
-      if (selfieDataUrl) {
-        state.student.selfieDataUrl = selfieDataUrl;
-        if (els.selfiePreview) {
-          els.selfiePreview.src = selfieDataUrl;
-          els.selfiePreview.classList.remove('hidden');
-        }
-      }
-      setStudentResult(
-        [
-          'Status: DEMO VERIFIED',
-          `Message: Demo attendance simulated for ${schedule.course_code} (${formatTime(schedule.start_time)} - ${formatTime(schedule.end_time)}).`,
-          'Persistence: No data was saved to attendance records.',
-        ].join('\n')
-      );
-      log(`Student attendance demo simulated for schedule ${scheduleId}`);
-    },
+  state.student.kpiScheduleId = null;
+  state.student.selectedScheduleId = null;
+  await startLiveAttendanceVerification({
+    demoMode: true,
+    resolvedState: demoState,
   });
 }
 
@@ -18165,7 +18888,7 @@ async function requestForgotPasswordOtp() {
   try {
     const data = await api('/auth/password/request-otp', {
       method: 'POST',
-      timeoutMs: 20000,
+      timeoutMs: AUTH_OTP_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({
         email,
         registration_number: registrationNumber,
@@ -18303,7 +19026,7 @@ async function requestOtp() {
   try {
     const data = await api('/auth/login/request-otp', {
       method: 'POST',
-      timeoutMs: 20000,
+      timeoutMs: AUTH_OTP_REQUEST_TIMEOUT_MS,
       body: JSON.stringify({
         email,
         password,
@@ -19128,6 +19851,7 @@ function bindEvents() {
   const topModuleButtons = [
     els.topNavAttendanceBtn,
     els.topNavFoodBtn,
+    els.topNavSaarthiBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
     els.topNavRemedialBtn,
@@ -20313,8 +21037,18 @@ function bindEvents() {
       return;
     }
     selectStudentSchedule(scheduleId);
+    const selectedItem = (state.student.timetable || []).find((item) => Number(item?.schedule_id || 0) === scheduleId) || null;
 
     if (event.shiftKey) {
+      if (selectedItem && isSaarthiTimetableItem(selectedItem)) {
+        setActiveModule('saarthi', { updateHash: true });
+        try {
+          await refreshActiveModuleData();
+        } catch (error) {
+          log(error.message);
+        }
+        return;
+      }
       try {
         await handleStudentMarkAttendanceAction();
       } catch (error) {
@@ -20338,7 +21072,7 @@ function bindEvents() {
       state.student.demoAttendanceEnabled = !state.student.demoAttendanceEnabled;
       updateSelectedClassState();
       if (state.student.demoAttendanceEnabled) {
-        setStudentResult('Demo attendance enabled. You can simulate attendance during the full live class hour. Nothing will be saved.');
+        setStudentResult('Demo attendance enabled. You can run the full live face-verification flow during the active class hour, and nothing will be saved.');
         log('Student attendance demo mode enabled');
       } else {
         setStudentResult('Demo attendance disabled. Official first-10-minute attendance window is active again.');
@@ -20353,6 +21087,16 @@ function bindEvents() {
         await sendSaarthiMessage();
       } catch (error) {
         setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
+      }
+    });
+  }
+
+  if (els.saarthiNewChatBtn) {
+    els.saarthiNewChatBtn.addEventListener('click', async () => {
+      try {
+        await startNewSaarthiChat();
+      } catch (error) {
+        setSaarthiStatus(error.message || 'Failed to start a new Saarthi chat.', 'error');
       }
     });
   }
@@ -21075,6 +21819,66 @@ function bindEvents() {
         setAdminIdentityGraphStatus(message, true);
         log(message);
       }
+    });
+  }
+
+  if (els.adminIdentityGraphClusters) {
+    els.adminIdentityGraphClusters.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-cluster-id]') : null;
+      if (!target) {
+        return;
+      }
+      const clusterId = String(target.getAttribute('data-cluster-id') || '').trim();
+      if (!clusterId) {
+        return;
+      }
+      const ui = getAdminIdentityGraphUiState();
+      ui.clusterId = clusterId;
+      ui.nodeId = null;
+      renderAdminIdentityGraph();
+    });
+  }
+
+  if (els.adminIdentityGraphCanvas) {
+    els.adminIdentityGraphCanvas.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target.closest('[data-node-id]') : null;
+      if (!target) {
+        return;
+      }
+      const nodeId = String(target.getAttribute('data-node-id') || '').trim();
+      if (!nodeId) {
+        return;
+      }
+      const ui = getAdminIdentityGraphUiState();
+      ui.nodeId = nodeId;
+      renderAdminIdentityGraph();
+    });
+  }
+
+  if (els.adminIdentityGraphZoomIn) {
+    els.adminIdentityGraphZoomIn.addEventListener('click', () => {
+      const ui = getAdminIdentityGraphUiState();
+      ui.zoom = Math.min(1.8, Number(ui.zoom || 1) + 0.15);
+      renderAdminIdentityGraph();
+    });
+  }
+
+  if (els.adminIdentityGraphZoomOut) {
+    els.adminIdentityGraphZoomOut.addEventListener('click', () => {
+      const ui = getAdminIdentityGraphUiState();
+      ui.zoom = Math.max(0.75, Number(ui.zoom || 1) - 0.15);
+      renderAdminIdentityGraph();
+    });
+  }
+
+  if (els.adminIdentityGraphReset) {
+    els.adminIdentityGraphReset.addEventListener('click', () => {
+      state.admin.identityGraphUi = {
+        clusterId: null,
+        nodeId: null,
+        zoom: 1,
+      };
+      renderAdminIdentityGraph();
     });
   }
 

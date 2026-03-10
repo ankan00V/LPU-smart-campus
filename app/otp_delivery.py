@@ -3,12 +3,11 @@ import smtplib
 import ssl
 import json
 from email.message import EmailMessage
-from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
+from .env_loader import load_app_env
 
 
 _ENV_LOADED = False
@@ -19,8 +18,7 @@ def _ensure_env_loaded() -> None:
     global _ENV_LOADED
     if _ENV_LOADED:
         return
-    project_root = Path(__file__).resolve().parent.parent
-    load_dotenv(project_root / ".env")
+    load_app_env()
     _ENV_LOADED = True
 
 
@@ -51,6 +49,16 @@ def _smtp_port() -> int:
     if value < 1 or value > 65535:
         raise RuntimeError("OTP_SMTP_PORT must be between 1 and 65535.")
     return value
+
+
+def _smtp_timeout_seconds() -> float:
+    _ensure_env_loaded()
+    raw = os.getenv("OTP_SMTP_TIMEOUT_SECONDS", "20").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 20.0
+    return max(5.0, min(60.0, value))
 
 
 def _smtp_username() -> str:
@@ -169,14 +177,15 @@ def _verify_smtp_connection() -> None:
     port = _smtp_port()
     username = _smtp_username()
     password = _smtp_password()
+    timeout_seconds = _smtp_timeout_seconds()
     try:
         if _smtp_use_ssl():
             context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=timeout_seconds) as server:
                 server.login(username, password)
                 code, _ = server.noop()
         else:
-            with smtplib.SMTP(host, port, timeout=15) as server:
+            with smtplib.SMTP(host, port, timeout=timeout_seconds) as server:
                 server.ehlo()
                 if _smtp_starttls():
                     context = ssl.create_default_context()
@@ -198,15 +207,16 @@ def _send_smtp_message(destination_email: str, *, subject: str, body: str) -> No
     port = _smtp_port()
     username = _smtp_username()
     password = _smtp_password()
+    timeout_seconds = _smtp_timeout_seconds()
 
     if _smtp_use_ssl():
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=timeout_seconds) as server:
             server.login(username, password)
             server.send_message(message)
         return
 
-    with smtplib.SMTP(host, port, timeout=15) as server:
+    with smtplib.SMTP(host, port, timeout=timeout_seconds) as server:
         if _smtp_starttls():
             context = ssl.create_default_context()
             server.starttls(context=context)

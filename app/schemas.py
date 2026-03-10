@@ -1805,9 +1805,10 @@ class DefaultTimetableLoadResponse(BaseModel):
 
 
 class RealtimeAttendanceMarkRequest(BaseModel):
-    schedule_id: int
+    schedule_id: Optional[int] = Field(default=None, ge=1)
     selfie_photo_data_url: Optional[str] = Field(default=None, min_length=20)
     selfie_frames_data_urls: Optional[list[str]] = Field(default=None, min_length=1, max_length=12)
+    demo_mode: bool = False
     ai_match: Optional[bool] = None
     ai_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     ai_reason: Optional[str] = None
@@ -1815,6 +1816,8 @@ class RealtimeAttendanceMarkRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_selfie_payload(self):
+        if not self.demo_mode and self.schedule_id is None:
+            raise ValueError("schedule_id is required unless demo_mode=true")
         if not self.selfie_photo_data_url and not self.selfie_frames_data_urls:
             raise ValueError("Provide selfie_photo_data_url or selfie_frames_data_urls")
         if self.selfie_frames_data_urls:
@@ -1832,6 +1835,8 @@ class RealtimeAttendanceMarkResponse(BaseModel):
     status: AttendanceSubmissionStatus
     requires_faculty_review: bool
     message: str
+    demo_mode: bool = False
+    persistence_skipped: bool = False
     verification_engine: str = "ai"
     verification_confidence: float = 0.0
     verification_reason: Optional[str] = None

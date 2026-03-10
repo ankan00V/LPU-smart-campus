@@ -2,18 +2,19 @@
 import argparse
 import hashlib
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from dotenv import load_dotenv
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
+from _bootstrap import PROJECT_ROOT
 from app.mongo import get_mongo_db, init_mongo, next_sequence
 from app.performance import snapshot_sla
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _jsonable(value: Any) -> Any:

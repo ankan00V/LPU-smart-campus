@@ -130,14 +130,27 @@ class IdentityShieldTests(unittest.TestCase):
     @patch("app.identity_shield.publish_domain_event")
     @patch("app.identity_shield.mirror_document")
     @patch("app.identity_shield.store_data_url_object")
+    @patch("app.identity_shield.score_uploaded_video_liveness")
     @patch("app.identity_shield.get_mongo_db", return_value=None)
     def test_applicant_risk_assessment_persists_evidence_artifacts(
         self,
         _get_mongo_db,
+        score_uploaded_video_liveness_mock,
         store_data_url_object_mock,
         mirror_document_mock,
         publish_domain_event_mock,
     ):
+        score_uploaded_video_liveness_mock.return_value = {
+            "available": True,
+            "liveness_passed": True,
+            "score": 0.93,
+            "engine": "opencv-dnn",
+            "reason": "Automatic liveness score passed.",
+            "metrics": {"motion_score": 0.19},
+            "sampled_frames": 8,
+            "valid_frames": 8,
+            "total_video_frames": 41,
+        }
         store_data_url_object_mock.side_effect = [
             SimpleNamespace(
                 object_key="identity/cases/doc.pdf",
@@ -159,7 +172,6 @@ class IdentityShieldTests(unittest.TestCase):
             registration_number="24BCS1001",
             document_match_score=0.84,
             face_match_confidence=0.88,
-            liveness_passed=True,
             evidence_uploads=[
                 schemas.IdentityVerificationArtifactUpload(
                     artifact_type="document_evidence",
@@ -186,6 +198,11 @@ class IdentityShieldTests(unittest.TestCase):
         self.assertEqual(result.artifacts[0].media_object_key, "identity/cases/doc.pdf")
         self.assertEqual(result.artifacts[1].artifact_type, "video_verification")
         self.assertEqual(result.artifacts[1].media_object_key, "identity/cases/video.mp4")
+        self.assertEqual(result.artifacts[1].verification_state, "verified")
+        self.assertTrue(result.artifacts[1].liveness_passed)
+        self.assertEqual(result.artifacts[1].extracted_identity["auto_video_liveness"]["engine"], "opencv-dnn")
+        self.assertIn("Automatic liveness score passed.", result.artifacts[1].note or "")
+        self.assertIn("liveness_video", result.completed_checks)
         self.assertEqual(self.db.query(models.IdentityVerificationArtifact).count(), 2)
         self.assertTrue(mirror_document_mock.called)
         self.assertTrue(publish_domain_event_mock.called)

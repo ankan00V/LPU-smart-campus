@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 from app.enterprise_controls import get_field_encryptor, rotate_collection_encryption
 from app.mongo import get_mongo_db, init_mongo, next_sequence
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _default_collections() -> list[dict[str, list[str]]]:

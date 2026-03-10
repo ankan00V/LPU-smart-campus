@@ -34,10 +34,19 @@ x-strict-env: &strict-env
   WORKER_ENABLE_FACE_REVERIFY: "true"
   WORKER_ENABLE_RECOMPUTE: "true"
   WORKER_INLINE_FALLBACK_ENABLED: "false"
-  WORKER_WAIT_FOR_OTP_RESULT: "false"
+  WORKER_WAIT_FOR_OTP_RESULT: "true"
   WORKER_TASK_TIME_LIMIT_SECONDS: "60"
 
-  OTP_DELIVERY_MODE: "debug"
+  OTP_DELIVERY_MODE: "smtp"
+  OTP_VERIFY_CONNECTION_ON_STARTUP: "false"
+  OTP_SMTP_HOST: "mailpit"
+  OTP_SMTP_PORT: "1025"
+  OTP_SMTP_USERNAME: "strict-local"
+  OTP_SMTP_PASSWORD: "strict-local-password"
+  OTP_SMTP_STARTTLS: "false"
+  OTP_SMTP_USE_SSL: "false"
+  OTP_FROM_EMAIL: "noreply@smartcampus.local"
+  OTP_SUBJECT_PREFIX: "LPU Smart Campus"
   SQLALCHEMY_DATABASE_URL: "postgresql+psycopg://smartcampus:smartcampus@postgres:5432/lpu_smart"
 
 services:
@@ -83,6 +92,10 @@ services:
       retries: 20
       start_period: 5s
 
+  mailpit:
+    image: axllent/mailpit:v1.20
+    restart: unless-stopped
+
   worker:
     build:
       context: ..
@@ -96,6 +109,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     command: ["celery", "-A", "app.workers:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--hostname=worker@%h"]
     volumes:
       - app-data:/srv/app/runtime-data
@@ -119,6 +134,8 @@ services:
         condition: service_healthy
       mongo:
         condition: service_healthy
+      mailpit:
+        condition: service_started
       worker:
         condition: service_healthy
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

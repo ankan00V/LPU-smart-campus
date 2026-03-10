@@ -12,6 +12,7 @@ from app.enterprise_controls import (
     apply_pii_encryption_policy,
     decode_hs256_jwt,
     encrypt_pii,
+    field_encryption_key_status,
     get_field_encryptor,
     hash_backup_code,
     match_totp_code,
@@ -328,6 +329,73 @@ class EnterpriseControlsTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_validate_production_secrets_allows_legacy_dev_key_in_separate_legacy_keyring(self):
+        keys = [
+            "APP_ENV",
+            "APP_SECRETS_PROVIDER",
+            "APP_SECRETS_FILE",
+            "APP_FIELD_ENCRYPTION_REQUIRED",
+            "APP_COOKIE_SECURE",
+            "APP_RUNTIME_STRICT",
+            "APP_MANAGED_SERVICES_REQUIRED",
+            "REDIS_REQUIRED",
+            "WORKER_REQUIRED",
+            "WORKER_INLINE_FALLBACK_ENABLED",
+            "MONGO_PERSISTENCE_REQUIRED",
+            "MONGO_STARTUP_STRICT",
+            "SAARTHI_LLM_PROVIDER",
+            "SAARTHI_LLM_REQUIRED",
+        ]
+        backup = {key: os.environ.get(key) for key in keys}
+        secret_file = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+                tmp.write(
+                    json.dumps(
+                        {
+                            "APP_AUTH_SECRET": "prod-auth-secret-123",
+                            "SCIM_BEARER_TOKEN": "prod-scim-token-123",
+                            "APP_LOOKUP_HASH_SECRET": "prod-lookup-secret-123",
+                            "APP_FIELD_ENCRYPTION_KEYS_JSON": json.dumps(
+                                {"prod-v1": base64.urlsafe_b64encode(b"a" * 32).decode("utf-8")}
+                            ),
+                            "APP_FIELD_ENCRYPTION_LEGACY_KEYS_JSON": json.dumps(
+                                {"dev-v1": base64.urlsafe_b64encode(b"b" * 32).decode("utf-8")}
+                            ),
+                            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID": "prod-v1",
+                        }
+                    )
+                )
+                secret_file = tmp.name
+            os.environ["APP_ENV"] = "production"
+            os.environ["APP_SECRETS_PROVIDER"] = "file"
+            os.environ["APP_SECRETS_FILE"] = secret_file
+            os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
+            os.environ["APP_COOKIE_SECURE"] = "true"
+            os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+            os.environ["REDIS_REQUIRED"] = "true"
+            os.environ["WORKER_REQUIRED"] = "true"
+            os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
+            os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
+            os.environ["MONGO_STARTUP_STRICT"] = "true"
+            os.environ.pop("SAARTHI_LLM_PROVIDER", None)
+            os.environ.pop("SAARTHI_LLM_REQUIRED", None)
+
+            validate_production_secrets()
+        finally:
+            get_field_encryptor.cache_clear()
+            if secret_file:
+                try:
+                    os.unlink(secret_file)
+                except FileNotFoundError:
+                    pass
+            for key, value in backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_encrypt_pii_in_production_does_not_fallback_to_plaintext(self):
         keys = [
             "APP_ENV",
@@ -353,6 +421,36 @@ class EnterpriseControlsTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_field_encryption_key_status_separates_primary_and_legacy_keys(self):
+        keys = [
+            "APP_FIELD_ENCRYPTION_KEYS_JSON",
+            "APP_FIELD_ENCRYPTION_LEGACY_KEYS_JSON",
+            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID",
+        ]
+        backup = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["APP_FIELD_ENCRYPTION_KEYS_JSON"] = json.dumps(
+                {"prod-v1": base64.urlsafe_b64encode(b"a" * 32).decode("utf-8")}
+            )
+            os.environ["APP_FIELD_ENCRYPTION_LEGACY_KEYS_JSON"] = json.dumps(
+                {"dev-v1": base64.urlsafe_b64encode(b"b" * 32).decode("utf-8")}
+            )
+            os.environ["APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID"] = "prod-v1"
+            get_field_encryptor.cache_clear()
+
+            status = field_encryption_key_status()
+        finally:
+            get_field_encryptor.cache_clear()
+            for key, value in backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(status["active_key_id"], "prod-v1")
+        self.assertEqual(status["primary_key_ids"], ["prod-v1"])
+        self.assertEqual(status["legacy_key_ids"], ["dev-v1"])
 
     def test_rotate_collection_encryption_handles_document_scoped_aad(self):
         class _Cursor(list):

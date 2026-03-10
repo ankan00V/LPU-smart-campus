@@ -173,7 +173,18 @@ def _mongo_hosts(value: str | None = None) -> list[str]:
 
 
 def _mongo_tls_enabled() -> bool:
-    return True
+    scheme = _mongo_scheme()
+    if scheme == "mongodb+srv":
+        return True
+    query = {
+        str(key or "").strip().lower(): str(value or "").strip().lower()
+        for key, value in parse_qsl(str(_mongo_url_parts().query or ""), keep_blank_values=True)
+    }
+    for name in ("tls", "ssl"):
+        if name not in query:
+            continue
+        return query[name] in {"1", "true", "yes", "on", "required"}
+    return False
 
 
 def _ensure_indexes(db) -> None:
@@ -513,24 +524,26 @@ def init_mongo(force: bool = False) -> bool:
         "serverSelectionTimeoutMS": _int_env("MONGO_SERVER_SELECTION_TIMEOUT_MS", 15000, minimum=1000),
         "connectTimeoutMS": _int_env("MONGO_CONNECT_TIMEOUT_MS", 10000, minimum=1000),
         "socketTimeoutMS": _int_env("MONGO_SOCKET_TIMEOUT_MS", 20000, minimum=1000),
-        "tls": True,
     }
+    tls_enabled = _mongo_tls_enabled()
+    if tls_enabled:
+        mongo_kwargs["tls"] = True
 
     ca_file = (os.getenv("MONGO_TLS_CA_FILE") or "").strip()
-    if not ca_file:
+    if tls_enabled and not ca_file:
         try:
             import certifi  # type: ignore
             ca_file = certifi.where()
         except Exception:
             ca_file = ""
-    if ca_file:
+    if tls_enabled and ca_file:
         mongo_kwargs["tlsCAFile"] = ca_file
 
-    if _bool_env("MONGO_TLS_DISABLE_OCSP_ENDPOINT_CHECK", default=False):
+    if tls_enabled and _bool_env("MONGO_TLS_DISABLE_OCSP_ENDPOINT_CHECK", default=False):
         mongo_kwargs["tlsDisableOCSPEndpointCheck"] = True
-    if _bool_env("MONGO_TLS_ALLOW_INVALID_CERTIFICATES", default=False):
+    if tls_enabled and _bool_env("MONGO_TLS_ALLOW_INVALID_CERTIFICATES", default=False):
         mongo_kwargs["tlsAllowInvalidCertificates"] = True
-    if _bool_env("MONGO_TLS_ALLOW_INVALID_HOSTNAMES", default=False):
+    if tls_enabled and _bool_env("MONGO_TLS_ALLOW_INVALID_HOSTNAMES", default=False):
         mongo_kwargs["tlsAllowInvalidHostnames"] = True
 
     errors: list[str] = []

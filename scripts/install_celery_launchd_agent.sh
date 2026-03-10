@@ -39,13 +39,42 @@ ensure_requirements() {
 }
 
 load_env_from_dotenv() {
-  eval "$("${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  eval "$("${PYTHON_BIN}" - "${ROOT_DIR}" <<'PY'
+import os
 import shlex
 import sys
+from pathlib import Path
 
 from dotenv import dotenv_values
 
-for key, value in dotenv_values(sys.argv[1]).items():
+root = Path(sys.argv[1]).resolve()
+base_values = {
+    str(key): value
+    for key, value in dotenv_values(root / ".env").items()
+    if key is not None
+}
+env_name = str(os.getenv("APP_ENV") or base_values.get("APP_ENV") or "development").strip().lower() or "development"
+merged = dict(base_values)
+overlay_path = root / (".env.production" if env_name in {"prod", "production"} else ".env.local")
+should_overlay = env_name in {"prod", "production"}
+if overlay_path.exists() and not should_overlay:
+    overlay_preview = {
+        str(key): value
+        for key, value in dotenv_values(overlay_path).items()
+        if key is not None
+    }
+    strict_value = str(overlay_preview.get("APP_RUNTIME_STRICT") or "").strip().lower()
+    should_overlay = strict_value in {"1", "true", "yes", "on"}
+if overlay_path.exists() and should_overlay:
+    merged.update(
+        {
+            str(key): value
+            for key, value in dotenv_values(overlay_path).items()
+            if key is not None
+        }
+    )
+
+for key, value in merged.items():
     if value is None:
         continue
     print(f"export {key}={shlex.quote(value)}")
@@ -54,13 +83,42 @@ PY
 }
 
 render_env_xml() {
-  "${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ROOT_DIR}" <<'PY'
+import os
 import sys
+from pathlib import Path
 from xml.sax.saxutils import escape
 
 from dotenv import dotenv_values
 
-for key, value in dotenv_values(sys.argv[1]).items():
+root = Path(sys.argv[1]).resolve()
+base_values = {
+    str(key): value
+    for key, value in dotenv_values(root / ".env").items()
+    if key is not None
+}
+env_name = str(os.getenv("APP_ENV") or base_values.get("APP_ENV") or "development").strip().lower() or "development"
+merged = dict(base_values)
+overlay_path = root / (".env.production" if env_name in {"prod", "production"} else ".env.local")
+should_overlay = env_name in {"prod", "production"}
+if overlay_path.exists() and not should_overlay:
+    overlay_preview = {
+        str(key): value
+        for key, value in dotenv_values(overlay_path).items()
+        if key is not None
+    }
+    strict_value = str(overlay_preview.get("APP_RUNTIME_STRICT") or "").strip().lower()
+    should_overlay = strict_value in {"1", "true", "yes", "on"}
+if overlay_path.exists() and should_overlay:
+    merged.update(
+        {
+            str(key): value
+            for key, value in dotenv_values(overlay_path).items()
+            if key is not None
+        }
+    )
+
+for key, value in merged.items():
     if value is None:
         continue
     print(f"    <key>{escape(key)}</key>")
@@ -69,12 +127,39 @@ PY
 }
 
 validate_strict_env() {
-  "${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ROOT_DIR}" <<'PY'
+import os
 import sys
+from pathlib import Path
 
 from dotenv import dotenv_values
 
-data = dotenv_values(sys.argv[1])
+root = Path(sys.argv[1]).resolve()
+base_values = {
+    str(key): value
+    for key, value in dotenv_values(root / ".env").items()
+    if key is not None
+}
+env_name = str(os.getenv("APP_ENV") or base_values.get("APP_ENV") or "development").strip().lower() or "development"
+data = dict(base_values)
+overlay_path = root / (".env.production" if env_name in {"prod", "production"} else ".env.local")
+should_overlay = env_name in {"prod", "production"}
+if overlay_path.exists() and not should_overlay:
+    overlay_preview = {
+        str(key): value
+        for key, value in dotenv_values(overlay_path).items()
+        if key is not None
+    }
+    strict_value = str(overlay_preview.get("APP_RUNTIME_STRICT") or "").strip().lower()
+    should_overlay = strict_value in {"1", "true", "yes", "on"}
+if overlay_path.exists() and should_overlay:
+    data.update(
+        {
+            str(key): value
+            for key, value in dotenv_values(overlay_path).items()
+            if key is not None
+        }
+    )
 required = {
     "APP_RUNTIME_STRICT": "true",
     "REDIS_REQUIRED": "true",

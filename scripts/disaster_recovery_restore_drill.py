@@ -2,11 +2,25 @@
 import argparse
 import hashlib
 import json
+import sys
 import shutil
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from _bootstrap import PROJECT_ROOT
+from app.mongo import get_mongo_db, init_mongo, next_sequence
+from app.postgres_backup import validate_postgresql_backup_artifact
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _latest_backup(root: Path) -> Path | None:
@@ -26,18 +40,6 @@ def _sqlite_check(sqlite_path: Path) -> dict[str, Any]:
         conn.close()
         temp_path.unlink(missing_ok=True)
     return {"restored": True, "table_count": table_count}
-
-
-def _postgres_dump_check(dump_path: Path) -> dict[str, Any]:
-    content = dump_path.read_text(encoding="utf-8", errors="ignore")
-    has_header = "PostgreSQL database dump" in content[:4096]
-    has_schema = "CREATE TABLE" in content or "COPY " in content or "INSERT INTO" in content
-    return {
-        "validated": bool(has_header and has_schema and dump_path.stat().st_size > 0),
-        "size_bytes": dump_path.stat().st_size,
-        "has_header": has_header,
-        "has_schema_statements": has_schema,
-    }
 
 
 def _sha256_file(path: Path) -> str:
@@ -116,8 +118,9 @@ def _verify_manifest_artifacts(backup: Path, manifest: dict[str, Any]) -> dict[s
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run restore drill from a backup snapshot directory")
-    parser.add_argument("--backups-dir", default="backups", help="Backup root directory")
+    parser.add_argument("--backups-dir", default=str(PROJECT_ROOT / "backups"), help="Backup root directory")
     parser.add_argument("--backup-id", default="", help="Specific backup folder name")
+    parser.add_argument("--executed-by", default="automation", help="Audit label for persisted DR evidence")
     args = parser.parse_args()
 
     root = Path(args.backups_dir).resolve()
@@ -139,11 +142,10 @@ def main() -> None:
 
     relational_result = {"backend": "unknown", "validated": False}
     sqlite_files = [p for p in backup.glob("*.db")]
-    postgres_dumps = [p for p in backup.glob("*.sql")]
     if sqlite_files:
         relational_result = {"backend": "sqlite", **_sqlite_check(sqlite_files[0])}
-    elif postgres_dumps:
-        relational_result = {"backend": "postgresql", **_postgres_dump_check(postgres_dumps[0])}
+    else:
+        relational_result = validate_postgresql_backup_artifact(backup)
 
     mongo_files = list((backup / "mongo").glob("*.jsonl")) if (backup / "mongo").exists() else []
     elapsed = round(time.perf_counter() - started, 3)
@@ -161,6 +163,26 @@ def main() -> None:
         "target_met": elapsed <= 3600 and bool(relational_result.get("validated") or relational_result.get("restored")) and manifest_integrity_ok,
         "artifact_count": len((manifest.get("artifacts") or {})),
     }
+    if init_mongo(force=True):
+        mongo_db = get_mongo_db(required=False)
+        if mongo_db is not None:
+            mongo_db["dr_restore_drills"].insert_one(
+                {
+                    "id": next_sequence("dr_restore_drills"),
+                    "backup_id": backup.name,
+                    "started_at": _utc_now(),
+                    "executed_by_user_id": None,
+                    "executed_by_email": str(args.executed_by or "automation"),
+                    "relational_checks": out["relational"],
+                    "manifest_exists": bool(manifest_path.exists()),
+                    "manifest_integrity": out["manifest_integrity"],
+                    "manifest_integrity_ok": bool(out["manifest_integrity_ok"]),
+                    "mongo_artifacts_present": bool(mongo_files),
+                    "rto_seconds": out["rto_seconds"],
+                    "target_rto_seconds": out["target_rto_seconds"],
+                    "target_met": bool(out["target_met"]),
+                }
+            )
     print(json.dumps(out, indent=2))
 
 

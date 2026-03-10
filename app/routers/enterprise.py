@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import json
 import os
-import subprocess
 import shutil
 import sqlite3
 import time
@@ -29,6 +28,7 @@ from ..enterprise_controls import (
     compute_rpo_reference,
     decode_hs256_jwt,
     decrypt_pii,
+    field_encryption_key_status,
     get_field_encryptor,
     iso_utc,
     parse_datetime_param,
@@ -39,7 +39,7 @@ from ..enterprise_controls import (
 )
 from ..mongo import get_mongo_db, mirror_event, next_sequence
 from ..performance import build_capacity_plan, get_sla_targets_ms, snapshot_sla
-from ..postgres_tools import require_postgres_command
+from ..postgres_backup import create_postgresql_backup_artifact, validate_postgresql_backup_artifact
 
 router = APIRouter(prefix="/enterprise", tags=["Enterprise Controls"])
 
@@ -639,7 +639,7 @@ def _issue_session_response(
 def enterprise_controls_status(
     _: CurrentUser = Depends(require_roles(models.UserRole.ADMIN)),
 ):
-    encryptor = get_field_encryptor()
+    key_status = field_encryption_key_status()
     return {
         "mfa_enforced_for_admin_faculty": (os.getenv("APP_ENFORCE_PRIVILEGED_MFA", "true") or "").strip().lower()
         in {"1", "true", "yes", "on"},
@@ -652,8 +652,9 @@ def enterprise_controls_status(
         "sso_tenant_domain_allowlist": {
             tenant: sorted(list(domains)) for tenant, domains in _tenant_domain_allow_map().items()
         },
-        "field_encryption_active_key_id": encryptor.active_key_id,
-        "field_encryption_key_ids": sorted(list(encryptor.keyring.keys())),
+        "field_encryption_active_key_id": key_status["active_key_id"],
+        "field_encryption_key_ids": key_status["primary_key_ids"],
+        "field_encryption_legacy_key_ids": key_status["legacy_key_ids"],
         "default_retention_policies_days": _default_retention_policies(),
         "deletion_dual_control_required": _deletion_dual_control_required(),
         "sla_targets_ms": get_sla_targets_ms(),
@@ -1534,33 +1535,9 @@ def _create_relational_backup_artifact(destination: Path, manifest: dict[str, An
 
     if _is_postgres_url():
         try:
-            pg_dump = require_postgres_command("pg_dump")
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        dump_path = destination / "postgres.sql"
-        try:
-            subprocess.run(
-                [
-                    pg_dump,
-                    "--dbname",
-                    _pg_dump_url(),
-                    "--file",
-                    str(dump_path),
-                    "--format=plain",
-                    "--no-owner",
-                    "--no-privileges",
-                ],
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
+            manifest["artifacts"]["relational:postgresql"] = create_postgresql_backup_artifact(destination, _pg_dump_url())
+        except Exception as exc:
             raise HTTPException(status_code=500, detail="PostgreSQL backup export failed") from exc
-
-        manifest["artifacts"]["relational:postgresql"] = {
-            "backend": "postgresql",
-            "path": str(dump_path),
-            "size_bytes": dump_path.stat().st_size,
-            "sha256": hashlib.sha256(dump_path.read_bytes()).hexdigest(),
-        }
         return
     raise HTTPException(status_code=500, detail="No supported relational database backend configured for DR backup")
 
@@ -1578,22 +1555,7 @@ def _run_relational_restore_drill(backup_path: Path) -> dict[str, Any]:
             conn.close()
             temp_restore.unlink(missing_ok=True)
 
-    postgres_dumps = [p for p in backup_path.glob("*.sql")]
-    if postgres_dumps:
-        dump_path = postgres_dumps[0]
-        content = dump_path.read_text(encoding="utf-8", errors="ignore")
-        has_header = "PostgreSQL database dump" in content[:4096]
-        has_schema = "CREATE TABLE" in content or "COPY " in content or "INSERT INTO" in content
-        return {
-            "backend": "postgresql",
-            "restored": False,
-            "validated": bool(has_header and has_schema and dump_path.stat().st_size > 0),
-            "size_bytes": dump_path.stat().st_size,
-            "has_header": has_header,
-            "has_schema_statements": has_schema,
-        }
-
-    return {"backend": "unknown", "restored": False, "validated": False}
+    return validate_postgresql_backup_artifact(backup_path)
 
 
 def _backup_root() -> Path:

@@ -1,4 +1,5 @@
 import json
+import hashlib
 from datetime import datetime, time
 
 from sqlalchemy.orm import Session
@@ -8,6 +9,13 @@ from .mongo import mirror_document, mirror_event
 
 DEFAULT_AVAILABLE_FROM = time(10, 0)
 DEFAULT_AVAILABLE_TO = time(21, 0)
+FOOD_CATALOG_POLICY_KEY = "food_catalog_bootstrap"
+FOOD_CATALOG_MIN_COUNTS = {
+    "shops": 20,
+    "menu_items": 80,
+    "slots": 11,
+    "items": 80,
+}
 
 HavmorFlavors = [
     "Vanilla",
@@ -312,7 +320,66 @@ def _key(name: str, block: str) -> tuple[str, str]:
     return name.strip().lower(), block.strip().lower()
 
 
-def bootstrap_food_hall_catalog(db: Session) -> dict:
+def _food_catalog_version() -> str:
+    payload = {
+        "shops": FOOD_SHOPS,
+        "menu": [
+            {
+                "shop_name": str(shop_name),
+                "block": str(block),
+                "items": items,
+            }
+            for (shop_name, block), items in sorted(
+                FOOD_MENU_BY_SHOP.items(),
+                key=lambda item: (str(item[0][0]).lower(), str(item[0][1]).lower()),
+            )
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+FOOD_CATALOG_VERSION = _food_catalog_version()
+
+
+def _food_catalog_counts(db: Session) -> dict[str, int]:
+    return {
+        "shops": int(db.query(models.FoodShop).count() or 0),
+        "menu_items": int(db.query(models.FoodMenuItem).count() or 0),
+        "slots": int(db.query(models.BreakSlot).count() or 0),
+        "items": int(db.query(models.FoodItem).count() or 0),
+    }
+
+
+def _food_catalog_counts_sufficient(counts: dict[str, int]) -> bool:
+    return all(int(counts.get(key, 0) or 0) >= minimum for key, minimum in FOOD_CATALOG_MIN_COUNTS.items())
+
+
+def _food_catalog_state_row(db: Session) -> models.AdminPolicySetting | None:
+    return db.query(models.AdminPolicySetting).filter(models.AdminPolicySetting.key == FOOD_CATALOG_POLICY_KEY).first()
+
+
+def _food_catalog_state_matches(db: Session) -> tuple[bool, dict[str, int]]:
+    counts = _food_catalog_counts(db)
+    row = _food_catalog_state_row(db)
+    if row is None:
+        return False, counts
+    try:
+        payload = json.loads(str(row.value_json or "{}"))
+    except json.JSONDecodeError:
+        payload = {}
+    version = str(payload.get("version") or "").strip()
+    stored_counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    normalized_stored_counts = {str(key): int(value or 0) for key, value in stored_counts.items()}
+    matches = (
+        version == FOOD_CATALOG_VERSION
+        and _food_catalog_counts_sufficient(counts)
+        and normalized_stored_counts == counts
+    )
+    return matches, counts
+
+
+def bootstrap_food_hall_catalog(db: Session, *, force: bool = False) -> dict:
     summary = {
         "shops_created": 0,
         "shops_updated": 0,
@@ -322,7 +389,16 @@ def bootstrap_food_hall_catalog(db: Session) -> dict:
         "items_updated": 0,
         "slots_created": 0,
         "slots_updated": 0,
+        "skipped": False,
+        "version": FOOD_CATALOG_VERSION,
     }
+    state_matches, before_counts = _food_catalog_state_matches(db)
+    summary["before_counts"] = before_counts
+    if not force and state_matches:
+        summary["skipped"] = True
+        summary["after_counts"] = before_counts
+        return summary
+
     now = datetime.utcnow()
 
     shops_by_key: dict[tuple[str, str], models.FoodShop] = {}
@@ -507,7 +583,28 @@ def bootstrap_food_hall_catalog(db: Session) -> dict:
             upsert_filter={"slot_id": slot_row.id},
         )
 
+    after_counts = _food_catalog_counts(db)
+    state_row = _food_catalog_state_row(db)
+    state_payload = {
+        "version": FOOD_CATALOG_VERSION,
+        "counts": after_counts,
+        "updated_at": now.isoformat(),
+    }
+    if state_row is None:
+        state_row = models.AdminPolicySetting(
+            key=FOOD_CATALOG_POLICY_KEY,
+            value_json=json.dumps(state_payload, sort_keys=True),
+            updated_by_user_id=None,
+            updated_at=now,
+        )
+        db.add(state_row)
+    else:
+        state_row.value_json = json.dumps(state_payload, sort_keys=True)
+        state_row.updated_by_user_id = None
+        state_row.updated_at = now
+
     db.commit()
+    summary["after_counts"] = after_counts
     mirror_event(
         "food.bootstrap",
         {

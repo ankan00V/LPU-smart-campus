@@ -15,18 +15,39 @@ from app.attendance_recovery import evaluate_attendance_recovery
 from app.routers.attendance import (
     get_student_attendance_aggregate,
     get_student_attendance_history,
+    get_student_weekly_timetable,
 )
 from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
+    SAARTHI_IDENTITY_INTRO,
+    SAARTHI_LLM_FREQUENCY_PENALTY,
+    SAARTHI_LLM_PRESENCE_PENALTY,
+    SAARTHI_LLM_TEMPERATURE,
+    SAARTHI_LLM_TOP_P,
     create_saarthi_turn,
     ensure_saarthi_bundle,
     materialize_saarthi_attendance,
+    start_new_saarthi_chat,
 )
 
 
 class SaarthiAttendanceTests(unittest.TestCase):
     def setUp(self):
+        self._env_keys = [
+            "APP_SECRETS_PROVIDER",
+            "APP_SECRETS_FILE",
+            "SAARTHI_LLM_PROVIDER",
+            "SAARTHI_LLM_REQUIRED",
+            "SAARTHI_LLM_MODEL",
+            "SAARTHI_LLM_TIMEOUT_SECONDS",
+            "GEMINI_API_KEYS_JSON",
+            "GEMINI_API_KEY",
+            "OPENROUTER_API_KEY",
+        ]
+        self._env_backup = {key: os.environ.get(key) for key in self._env_keys}
+        for key in self._env_keys:
+            os.environ.pop(key, None)
         self.engine = create_engine("sqlite:///:memory:")
         models.Base.metadata.create_all(self.engine)
         SessionLocal = sessionmaker(bind=self.engine)
@@ -36,6 +57,11 @@ class SaarthiAttendanceTests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def _seed(self):
         self.student = models.Student(
@@ -163,6 +189,93 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertIsNone(session.attendance_marked_at)
         self.assertEqual(session.attendance_credit_minutes, 0)
         self.assertEqual(len(messages), 2)
+
+    def test_first_reply_uses_identity_intro_and_reflective_question_without_forcing_attendance(self):
+        out = create_saarthi_turn(
+            self.db,
+            student=self.student,
+            message="I feel overwhelmed with deadlines and I can't focus.",
+            current_dt=datetime(2026, 3, 10, 18, 15, 0),
+            academic_start=date(2026, 3, 9),
+        )
+
+        self.assertTrue(out["reply"].startswith(SAARTHI_IDENTITY_INTRO))
+        self.assertIn("That sounds like a lot to carry at once.", out["reply"])
+        self.assertIn("What part of this feels heaviest right now?", out["reply"])
+        self.assertNotIn("CON111", out["reply"])
+
+    def test_new_chat_resets_visible_context_for_next_reply(self):
+        create_saarthi_turn(
+            self.db,
+            student=self.student,
+            message="I need help with stress this week.",
+            current_dt=datetime(2026, 3, 10, 12, 0, 0),
+            academic_start=date(2026, 3, 9),
+        )
+        start_new_saarthi_chat(
+            self.db,
+            student_id=int(self.student.id),
+            current_dt=datetime(2026, 3, 10, 12, 10, 0),
+        )
+        out = create_saarthi_turn(
+            self.db,
+            student=self.student,
+            message="I want to start fresh and talk about motivation.",
+            current_dt=datetime(2026, 3, 10, 12, 11, 0),
+            academic_start=date(2026, 3, 9),
+        )
+
+        rows = self.db.query(models.SaarthiMessage).order_by(models.SaarthiMessage.id.asc()).all()
+        self.assertTrue(any(str(row.sender_role) == "system" for row in rows))
+        self.assertTrue(out["reply"].startswith(SAARTHI_IDENTITY_INTRO))
+
+    def test_weekly_timetable_includes_all_day_saarthi_slot_and_auto_enrolls_student(self):
+        payload = get_student_weekly_timetable(
+            week_start=date(2026, 3, 2),
+            db=self.db,
+            current_user=self._student_user(),
+        )
+
+        saarthi_row = next((row for row in payload.classes if row.course_code == SAARTHI_COURSE_CODE), None)
+        self.assertIsNotNone(saarthi_row)
+        self.assertEqual(saarthi_row.class_kind, "saarthi")
+        self.assertEqual(saarthi_row.class_date, date(2026, 3, 8))
+        self.assertEqual(str(saarthi_row.start_time), "00:00:00")
+        self.assertEqual(str(saarthi_row.end_time), "23:59:00")
+        self.assertEqual(saarthi_row.attendance_window_minutes, 24 * 60)
+        self.assertEqual(saarthi_row.classroom_label, "Saarthi Studio | Sunday all-day window")
+
+        bundle = ensure_saarthi_bundle(self.db, student_id=int(self.student.id))
+        enrollment = (
+            self.db.query(models.Enrollment)
+            .filter(
+                models.Enrollment.student_id == int(self.student.id),
+                models.Enrollment.course_id == int(bundle.course.id),
+            )
+            .first()
+        )
+        self.assertIsNotNone(enrollment)
+
+    def test_timetable_marks_saarthi_present_after_sunday_credit(self):
+        create_saarthi_turn(
+            self.db,
+            student=self.student,
+            message="I need a Sunday Saarthi check-in.",
+            current_dt=datetime(2026, 3, 8, 9, 15, 0),
+            academic_start=date(2026, 3, 2),
+        )
+        self.db.commit()
+
+        payload = get_student_weekly_timetable(
+            week_start=date(2026, 3, 2),
+            db=self.db,
+            current_user=self._student_user(),
+        )
+
+        saarthi_row = next((row for row in payload.classes if row.course_code == SAARTHI_COURSE_CODE), None)
+        self.assertIsNotNone(saarthi_row)
+        self.assertEqual(saarthi_row.class_kind, "saarthi")
+        self.assertEqual(saarthi_row.attendance_status, "present")
 
     def test_missed_past_sunday_materializes_absent_record_in_aggregate_and_history(self):
         materialize_saarthi_attendance(
@@ -299,7 +412,79 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 academic_start=date(2026, 3, 2),
             )
 
-        self.assertEqual(out["reply"], "Live Gemini counselling reply.")
+        self.assertTrue(out["reply"].startswith("Live Gemini counselling reply."))
+        self.assertIn("?", out["reply"])
+
+    def test_gemini_request_contains_companion_system_instruction(self):
+        captured_body: dict[str, object] = {}
+
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [{"text": "Live Gemini counselling reply."}],
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            del timeout
+            captured_body.update(json.loads(request.data.decode("utf-8")))
+            return DummyResponse()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "gemini",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_LLM_MODEL": "gemini-2.5-flash",
+                "GEMINI_API_KEY": "test-key",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", side_effect=fake_urlopen):
+            out = create_saarthi_turn(
+                self.db,
+                student=self.student,
+                message="I need help planning this week.",
+                current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                academic_start=date(2026, 3, 2),
+            )
+
+        self.assertTrue(out["reply"].startswith("Live Gemini counselling reply."))
+        self.assertIn("?", out["reply"])
+        system_instruction = (
+            captured_body.get("system_instruction", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        user_prompt = (
+            captured_body.get("contents", [{}])[0]
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        generation_config = captured_body.get("generationConfig", {})
+        self.assertIn("wise, understanding senior", system_instruction)
+        self.assertIn("4 to 8 sentences", system_instruction)
+        self.assertEqual(generation_config.get("temperature"), SAARTHI_LLM_TEMPERATURE)
+        self.assertEqual(generation_config.get("topP"), SAARTHI_LLM_TOP_P)
+        self.assertNotIn("presencePenalty", generation_config)
+        self.assertNotIn("frequencyPenalty", generation_config)
+        self.assertIn("Detected emotional tone:", user_prompt)
+        self.assertIn(SAARTHI_IDENTITY_INTRO, user_prompt)
+        self.assertIn("thoughtful follow-up question", user_prompt)
+        self.assertIn("mandatory once every week on Sunday", user_prompt)
+        self.assertIn("one hour of attendance is credited", user_prompt)
 
     def test_gemini_rotates_to_next_key_on_quota_exhaustion(self):
         class DummyResponse:
@@ -323,9 +508,11 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 ).encode("utf-8")
 
         seen_urls: list[str] = []
+        seen_keys: list[str | None] = []
 
         def fake_urlopen(request, timeout=0):
             seen_urls.append(request.full_url)
+            seen_keys.append(request.headers.get("X-goog-api-key"))
             if len(seen_urls) == 1:
                 raise HTTPError(
                     request.full_url,
@@ -373,10 +560,11 @@ class SaarthiAttendanceTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
-        self.assertEqual(out["reply"], "Recovered Gemini counselling reply.")
+        self.assertTrue(out["reply"].startswith("Recovered Gemini counselling reply."))
+        self.assertIn("?", out["reply"])
         self.assertEqual(len(seen_urls), 2)
-        self.assertIn("key=key-one", seen_urls[0])
-        self.assertIn("key=key-two", seen_urls[1])
+        self.assertTrue(seen_urls[0].endswith(":generateContent"))
+        self.assertEqual(seen_keys, ["key-one", "key-two"])
 
     def test_gemini_exhaustion_falls_back_to_openrouter_last(self):
         class OpenRouterResponse:
@@ -400,9 +588,11 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 ).encode("utf-8")
 
         seen_urls: list[str] = []
+        seen_keys: list[str | None] = []
 
         def fake_urlopen(request, timeout=0):
             seen_urls.append(request.full_url)
+            seen_keys.append(request.headers.get("X-goog-api-key"))
             if "generativelanguage.googleapis.com" in request.full_url:
                 raise HTTPError(
                     request.full_url,
@@ -457,10 +647,10 @@ class SaarthiAttendanceTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
-        self.assertEqual(out["reply"], "OpenRouter final fallback reply.")
+        self.assertTrue(out["reply"].startswith("OpenRouter final fallback reply."))
+        self.assertIn("?", out["reply"])
         self.assertEqual(len(seen_urls), 3)
-        self.assertIn("key=key-one", seen_urls[0])
-        self.assertIn("key=key-two", seen_urls[1])
+        self.assertEqual(seen_keys[:2], ["key-one", "key-two"])
         self.assertTrue(seen_urls[2].endswith("/chat/completions"))
 
     def test_configured_openrouter_llm_reply_is_used_from_secrets_file(self):
@@ -512,7 +702,68 @@ class SaarthiAttendanceTests(unittest.TestCase):
             except FileNotFoundError:
                 pass
 
-        self.assertEqual(out["reply"], "Live OpenRouter counselling reply.")
+        self.assertTrue(out["reply"].startswith("Live OpenRouter counselling reply."))
+        self.assertIn("?", out["reply"])
+
+    def test_openrouter_request_contains_system_companion_message(self):
+        captured_body: dict[str, object] = {}
+
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "Live OpenRouter counselling reply.",
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        def fake_urlopen(request, timeout=0):
+            del timeout
+            captured_body.update(json.loads(request.data.decode("utf-8")))
+            return DummyResponse()
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "openrouter",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_LLM_MODEL": "google/gemini-2.5-flash",
+                "OPENROUTER_API_KEY": "test-openrouter-key",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", side_effect=fake_urlopen):
+            out = create_saarthi_turn(
+                self.db,
+                student=self.student,
+                message="I feel really overwhelmed and alone.",
+                current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                academic_start=date(2026, 3, 2),
+            )
+
+        self.assertTrue(out["reply"].startswith("Live OpenRouter counselling reply."))
+        self.assertIn("?", out["reply"])
+        messages = captured_body.get("messages", [])
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("wise, understanding senior", messages[0]["content"])
+        self.assertEqual(messages[1]["role"], "user")
+        self.assertEqual(captured_body.get("temperature"), SAARTHI_LLM_TEMPERATURE)
+        self.assertEqual(captured_body.get("top_p"), SAARTHI_LLM_TOP_P)
+        self.assertEqual(captured_body.get("presence_penalty"), SAARTHI_LLM_PRESENCE_PENALTY)
+        self.assertEqual(captured_body.get("frequency_penalty"), SAARTHI_LLM_FREQUENCY_PENALTY)
+        self.assertIn("Detected emotional tone:", messages[1]["content"])
+        self.assertIn(SAARTHI_IDENTITY_INTRO, messages[1]["content"])
+        self.assertIn("one hour of attendance is credited", messages[1]["content"])
 
 
 if __name__ == "__main__":
