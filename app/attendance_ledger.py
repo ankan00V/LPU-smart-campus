@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import secrets
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from . import models
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def append_attendance_event(
@@ -43,7 +47,7 @@ def append_attendance_event(
         actor_role=role_value,
         source=(source or "attendance-event").strip() or "attendance-event",
         note=(note or "").strip() or None,
-        created_at=datetime.utcnow(),
+        created_at=_utcnow_naive(),
     )
     db.add(row)
     db.flush()
@@ -111,7 +115,7 @@ def recompute_attendance_record(
         return None
 
     marked_by_faculty_id = _resolve_marking_faculty_id(db, latest_event=latest_event, existing_record=existing)
-    now_dt = datetime.utcnow()
+    now_dt = _utcnow_naive()
 
     if existing is None:
         existing = models.AttendanceRecord(

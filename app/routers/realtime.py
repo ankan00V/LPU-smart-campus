@@ -24,6 +24,12 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
+def _format_sse_message(event: dict[str, Any]) -> str:
+    event_id = str(event.get("id") or "")
+    data = json.dumps(event, default=_json_default)
+    return f"id: {event_id}\ndata: {data}\n\n"
+
+
 @router.get("/stream")
 async def stream_events(
     request: Request,
@@ -54,10 +60,7 @@ async def stream_events(
                     yield ": keep-alive\n\n"
                     continue
 
-                event_type = str(event.get("event_type") or "system.update")
-                event_id = str(event.get("id") or "")
-                data = json.dumps(event, default=_json_default)
-                yield f"id: {event_id}\nevent: {event_type}\ndata: {data}\n\n"
+                yield _format_sse_message(event)
         finally:
             await realtime_hub.unsubscribe(subscriber_id)
 

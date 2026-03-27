@@ -105,6 +105,10 @@ class RemedialAccessFallbackTests(unittest.TestCase):
         )
 
     def test_validate_and_mark_allow_targeted_student_without_enrollment(self):
+        class_row = self.db.get(models.MakeUpClass, 1)
+        class_row.sections_json = json.dumps([" p 132 "])
+        self.db.commit()
+
         validate_out = validate_remedial_code(
             payload=schemas.RemedialCodeValidateRequest(remedial_code="4C5X5OSK"),
             db=self.db,

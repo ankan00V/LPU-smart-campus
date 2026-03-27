@@ -441,6 +441,7 @@ REDIS_REQUIRED=true
 # CELERY_BROKER_URL and CELERY_RESULT_BACKEND as well.
 
 OTP_DELIVERY_MODE=smtp
+OTP_VERIFY_CONNECTION_ON_STARTUP=true
 OTP_SMTP_HOST=smtp.gmail.com
 OTP_SMTP_PORT=587
 OTP_SMTP_USERNAME=<sender@gmail.com>
@@ -449,9 +450,18 @@ OTP_FROM_EMAIL=<sender@gmail.com>
 
 RAZORPAY_KEY_ID=<optional>
 RAZORPAY_KEY_SECRET=<optional>
+RAZORPAY_KEYRING_JSON={} # optional key rotation pool
+RAZORPAY_ACTIVE_KEY_ID=
+RAZORPAY_WEBHOOK_SECRETS_JSON={}
+
+API_RATE_LIMIT_ENABLED=true
+API_RATE_LIMIT_IP_DEFAULT=240
+API_RATE_LIMIT_USER_DEFAULT=160
+API_RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
 OTP login runs only on real mail backends (`smtp` or `graph`). The app now fails startup if OTP delivery mode is invalid or the configured backend cannot authenticate.
+Set `OTP_VERIFY_CONNECTION_ON_STARTUP=false` for local development if outbound SMTP is intermittently blocked, while keeping it `true` in production.
 
 ### Managed Production Runtime
 
@@ -471,6 +481,7 @@ Production guardrails:
 - `APP_MANAGED_SERVICES_REQUIRED=true` rejects loopback/localhost database endpoints
 - PostgreSQL must use TLS (`DATABASE_SSL_MODE=require|verify-ca|verify-full`)
 - For Neon or another PgBouncer-backed provider, use the pooled PostgreSQL URL for `SQLALCHEMY_DATABASE_URL`
+- Keep API secrets in managed secret sources (`APP_SECRETS_PROVIDER=file|aws_secrets_manager`) and rotate via keyring envs (`*_KEYRING_JSON` + active key id)
 - Use `POSTGRES_ADMIN_DATABASE_URL` for `pg_dump`, restore jobs, and GUI clients such as TablePlus
 - Set `DATABASE_DISABLE_PREPARED_STATEMENTS=true` when the app uses a pooled PostgreSQL endpoint
 - Redis app and worker URLs must use `rediss://`

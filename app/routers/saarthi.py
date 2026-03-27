@@ -1,5 +1,6 @@
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,8 +10,10 @@ from ..auth_utils import require_roles
 from ..database import get_db
 from ..saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
+    count_saarthi_messages,
     create_saarthi_turn,
     ensure_saarthi_bundle,
+    get_or_create_saarthi_session,
     list_saarthi_messages,
     materialize_saarthi_attendance,
     saarthi_week_start,
@@ -19,6 +22,7 @@ from ..saarthi_service import (
 router = APIRouter(prefix="/saarthi", tags=["Saarthi"])
 
 ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
+SAARTHI_TIMEZONE_DEFAULT = "Asia/Kolkata"
 
 
 def _academic_start_date() -> date:
@@ -29,12 +33,21 @@ def _academic_start_date() -> date:
         return date.fromisoformat(ACADEMIC_START_DATE_DEFAULT)
 
 
+def _saarthi_now() -> datetime:
+    zone_name = (os.getenv("APP_TIMEZONE", SAARTHI_TIMEZONE_DEFAULT) or "").strip() or SAARTHI_TIMEZONE_DEFAULT
+    try:
+        zone = ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo(SAARTHI_TIMEZONE_DEFAULT)
+    return datetime.now(zone).replace(tzinfo=None)
+
+
 def _serialize_message(row: models.SaarthiMessage) -> schemas.SaarthiMessageOut:
     return schemas.SaarthiMessageOut(
         id=int(row.id),
         sender_role=str(row.sender_role or "").strip().lower() or "assistant",
         message=str(row.message or "").strip(),
-        created_at=row.created_at or datetime.utcnow(),
+        created_at=row.created_at or datetime.now(timezone.utc).replace(tzinfo=None),
     )
 
 
@@ -93,6 +106,7 @@ def _build_status_out(
             .first()
         )
     messages = list_saarthi_messages(db, session_id=int(session.id), limit=80) if session is not None else []
+    message_count = count_saarthi_messages(db, session_id=int(session.id)) if session is not None else 0
     latest_record = (
         db.query(models.AttendanceRecord)
         .filter(
@@ -116,7 +130,7 @@ def _build_status_out(
             else 0
         ),
         attendance_awarded_on=(session.attendance_marked_at if session is not None else None),
-        current_week_message_count=len(messages),
+        current_week_message_count=message_count,
         last_attendance_status=(latest_record.status if latest_record is not None else None),
         last_attendance_date=(latest_record.attendance_date if latest_record is not None else None),
         status_message=_status_message(
@@ -139,7 +153,7 @@ def get_saarthi_status(
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
-    now_dt = datetime.now()
+    now_dt = _saarthi_now()
     materialize_saarthi_attendance(
         db,
         student_id=int(current_user.student_id),
@@ -168,7 +182,7 @@ def send_saarthi_message(
     if student is None:
         raise HTTPException(status_code=404, detail="Student profile not found")
 
-    now_dt = datetime.now()
+    now_dt = _saarthi_now()
     try:
         out = create_saarthi_turn(
             db,
@@ -178,8 +192,10 @@ def send_saarthi_message(
             academic_start=_academic_start_date(),
         )
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
+        db.rollback()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     db.commit()
@@ -193,4 +209,41 @@ def send_saarthi_message(
             current_dt=now_dt,
             current_session=session if isinstance(session, models.SaarthiSession) else None,
         ),
+    )
+
+
+@router.post("/new-chat", response_model=schemas.SaarthiStatusOut)
+def reset_saarthi_chat(
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    now_dt = _saarthi_now()
+    materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=_academic_start_date(),
+        today=now_dt.date(),
+    )
+    _, session = get_or_create_saarthi_session(
+        db,
+        student_id=int(current_user.student_id),
+        current_dt=now_dt,
+    )
+    (
+        db.query(models.SaarthiMessage)
+        .filter(models.SaarthiMessage.session_id == int(session.id))
+        .delete(synchronize_session=False)
+    )
+    session.last_message_at = None
+    session.updated_at = now_dt
+    db.commit()
+
+    return _build_status_out(
+        db,
+        student_id=int(current_user.student_id),
+        current_dt=now_dt,
+        current_session=session,
     )

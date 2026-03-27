@@ -125,13 +125,6 @@ def observe_identity_session(
         },
         "$setOnInsert": {
             "created_at": now,
-            "session_count": 0,
-            "linked_user_ids": [],
-            "linked_student_ids": [],
-            "linked_faculty_ids": [],
-            "linked_roles": [],
-            "linked_email_hashes": [],
-            "seen_ip_hashes": [],
         },
         "$inc": {"session_count": 1},
     }

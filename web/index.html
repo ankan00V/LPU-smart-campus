@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260308b">
-    <script src="/web/app.js?v=20260308c" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260317a">
+    <script src="/web/app.js?v=20260325a" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -26,7 +26,7 @@
                     <figure class="auth-brand-hero" role="img" aria-label="LPU Smart Campus side banner image">
                         <img
                             class="auth-brand-image"
-                            src="/assets/static/auth-side-panel-bg?v=20260306c"
+                            src="/web/assets/auth-side-panel-bg.png?v=20260306c"
                             data-fallback-src="/web/assets/auth-side-panel-bg.png?v=20260306c"
                             alt="LPU Smart Campus banner"
                             loading="eager"
@@ -129,6 +129,12 @@
                         <option value="student">student (@gmail.com)</option>
                         <option value="owner">shop owner (@gmail.com)</option>
                     </select>
+                </label>
+                <label id="auth-signup-admin-photo-wrap" class="field hidden">
+                    <span>Admin Profile Photo (required)</span>
+                    <input id="auth-signup-admin-photo" type="file" accept="image/*">
+                    <small class="field-hint">Upload a clear headshot for admin verification.</small>
+                    <img id="auth-signup-admin-photo-preview" class="auth-photo-preview hidden" alt="Admin photo preview">
                 </label>
                 <label id="auth-signup-registration-wrap" class="field">
                     <span>Registration Number (student)</span>
@@ -302,7 +308,7 @@
             <div class="ums-logo-mark-frame">
                 <img
                     class="ums-logo-mark"
-                    src="/assets/static/lpu-smart-campus-logo?v=20260306c"
+                    src="/web/assets/lpu-smart-campus-logo.png?v=20260306c"
                     data-fallback-src="/web/assets/lpu-smart-campus-logo.png?v=20260306c"
                     alt="LPU Smart Campus logo"
                     loading="eager"
@@ -328,30 +334,30 @@
                 <span class="verlyn-toggle-avatar" aria-hidden="true">C</span>
                 <span class="verlyn-toggle-copy">
                     <strong>Campus Copilot</strong>
-                    <small>Explainable Actions</small>
+                    <small id="verlyn-toggle-meta">Audited Actions</small>
                 </span>
             </button>
             <div id="verlyn-panel" class="verlyn-panel" role="dialog" aria-label="Campus copilot">
                 <div class="verlyn-head">
                     <div class="verlyn-head-copy">
                         <strong>Campus Copilot</strong>
-                        <small>Explains decisions, executes safe actions, logs every run</small>
+                        <small>Audited actions for every module you can access</small>
                     </div>
                     <button id="verlyn-minimize-btn" class="btn btn-ghost verlyn-minimize-btn" type="button">Close</button>
                 </div>
-                <p id="verlyn-status" class="helper-text verlyn-status">Supported prompts only. Every result includes evidence and audit log.</p>
-                <p id="verlyn-module-context" class="helper-text verlyn-module-context">Module-aware quick actions load here after sign-in.</p>
+                <div class="verlyn-meta-row">
+                    <span id="verlyn-scope-chip" class="verlyn-meta-chip">Attendance</span>
+                    <span id="verlyn-role-chip" class="verlyn-meta-chip">Guest</span>
+                </div>
+                <p id="verlyn-status" class="helper-text verlyn-status">Ready.</p>
                 <div id="verlyn-quick-actions" class="verlyn-quick-actions" aria-live="polite"></div>
-                <div id="verlyn-output" class="verlyn-output">Student Copilot
-1. Supported prompts only. No free-form chatbot mode.
-2. Every result includes evidence, allowed actions, and an audit log id.
-3. Why can't I mark attendance?
-4. What do I need to fix before I lose eligibility?</div>
+                <div id="verlyn-output" class="verlyn-output">Campus Copilot is ready.
+
+Ask about any module available to your role.</div>
                 <label class="field verlyn-compose-field">
-                    <span>Manual Copilot Request</span>
+                    <span>Ask Copilot</span>
                     <input id="verlyn-input" type="text" placeholder="e.g. Why can't I mark attendance?">
                 </label>
-                <p class="helper-text verlyn-compose-note">Use quick actions above when available. Manual requests are validated against the same guardrails.</p>
                 <div class="inline-controls verlyn-actions">
                     <button id="verlyn-ask-btn" class="btn btn-primary" type="button">Run Copilot</button>
                 </div>
@@ -368,7 +374,7 @@
                 <div class="hero-summary">
                     <div class="hero-kpi">
                         <span>Live Modules</span>
-                        <strong>5 Active Workstreams</strong>
+                        <strong>6 Active Workstreams</strong>
                     </div>
                     <a class="btn btn-primary hero-primary-cta" href="#attendance">Open Attendance Hub</a>
                 </div>
@@ -379,6 +385,10 @@
                     <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">
                         <span class="module-glyph" aria-hidden="true">AT</span>
                         <span class="module-label">Attendance</span>
+                    </button>
+                    <button id="top-nav-saarthi" class="ums-module-btn" data-module="saarthi" type="button">
+                        <span class="module-glyph" aria-hidden="true">SA</span>
+                        <span class="module-label">Saarthi</span>
                     </button>
                     <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">
                         <span class="module-glyph" aria-hidden="true">FD</span>
@@ -842,6 +852,7 @@
                                 <option value="eligibility_risk">Eligibility Risk</option>
                                 <option value="create_remedial_plan">Create Remedial Plan</option>
                                 <option value="student_flag_reason">Student Flag Reason</option>
+                                <option value="module_assist">Module Assist</option>
                                 <option value="unsupported">Unsupported</option>
                             </select>
                         </label>
@@ -888,7 +899,19 @@
         </section>
 
         <section id="rms-section" class="role-section module-panel hidden" data-module="rms">
-            <article class="ops-card glass tilt" data-tilt>
+            <div class="admin-submodule-picker" data-admin-submodule-nav="rms" aria-label="RMS submodules">
+                <label class="field">
+                    <span>RMS Submodule</span>
+                    <select id="admin-rms-submodule-select" data-admin-submodule-select="rms">
+                        <option value="rms-overview">Overview & Filters</option>
+                        <option value="rms-queue">Queue & Approvals</option>
+                        <option value="rms-student">Student Corrections</option>
+                        <option value="rms-attendance">Attendance Overrides</option>
+                    </select>
+                </label>
+            </div>
+
+            <article class="ops-card glass tilt admin-submodule-panel is-active" data-tilt data-admin-submodule-scope="rms" data-admin-submodule="rms-overview">
                 <div class="panel-head">
                     <h3>RMS - Relationship Management System</h3>
                     <small>Segregated student queries and action approvals desk</small>
@@ -931,7 +954,7 @@
                 </section>
             </article>
 
-            <article class="ops-card glass tilt" data-tilt>
+            <article class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="rms" data-admin-submodule="rms-queue">
                 <div class="panel-head">
                     <h3>Student Query Buckets</h3>
                     <small>Attendance, Academics, Discrepancy, and Other threads</small>
@@ -939,7 +962,7 @@
                 <div id="rms-query-list" class="list-wrap"></div>
             </article>
 
-            <article class="ops-card glass tilt" data-tilt>
+            <article class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="rms" data-admin-submodule="rms-queue">
                 <div class="panel-head">
                     <h3>Thread Approval Workflow</h3>
                     <small>Approve, disapprove, or schedule a selected RMS thread</small>
@@ -967,7 +990,7 @@
                 <p id="rms-thread-action-msg" class="helper-text">Workflow actions are logged and reflected in RMS status buckets.</p>
             </article>
 
-            <article class="ops-card glass tilt" data-tilt>
+            <article class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="rms" data-admin-submodule="rms-student">
                 <div class="panel-head">
                     <h3>Student Search & Approval Actions</h3>
                     <small>Search by registration number, then approve correction updates</small>
@@ -994,7 +1017,7 @@
                 <p id="rms-student-update-msg" class="helper-text">Section and registration corrections are audit-logged as approvals.</p>
             </article>
 
-            <article class="ops-card glass tilt" data-tilt>
+            <article class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="rms" data-admin-submodule="rms-attendance">
                 <div class="panel-head">
                     <h3>RMS Attendance Status Control</h3>
                     <small>Faculty can correct own-course attendance. Admin has full override desk.</small>
@@ -1007,16 +1030,22 @@
                         <span>Student Registration Number</span>
                         <input id="rms-attendance-registration" type="text" placeholder="e.g. 22BCS101">
                     </label>
-                    <button id="rms-attendance-search-btn" class="btn btn-primary" type="button">Search Student Subjects</button>
+                    <button id="rms-attendance-search-btn" class="btn btn-primary" type="button">Search Day Classes</button>
                 </div>
                 <div id="rms-attendance-student-summary" class="helper-text">
-                    Search by registration number to load student name and enrolled subjects.
+                    Search by registration number to load student day-wise classes.
                 </div>
                 <div class="faculty-admin-grid">
                     <label class="field">
-                        <span>Enrolled Subject</span>
+                        <span>Subject (on selected day)</span>
                         <select id="rms-attendance-subject-select">
                             <option value="">Select subject</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>Time Slot</span>
+                        <select id="rms-attendance-slot-select">
+                            <option value="">Select time slot</option>
                         </select>
                     </label>
                     <label class="field">
@@ -1040,7 +1069,7 @@
                     </label>
                     <button id="rms-attendance-apply-btn" class="btn btn-primary" type="button">Apply Attendance Status</button>
                 </div>
-                <p id="rms-attendance-status-msg" class="helper-text">Search by registration number, select subject, review current status, then apply attendance override.</p>
+                <p id="rms-attendance-status-msg" class="helper-text">Search student, select subject and slot, review current status, then apply attendance override.</p>
                 <div id="rms-attendance-result" class="list-wrap"></div>
             </article>
         </section>
@@ -1087,38 +1116,6 @@
                 <div id="student-messages-list" class="list-wrap"></div>
             </article>
 
-            <article id="student-saarthi-card" class="ops-card glass tilt nav-anchor" data-tilt>
-                <div class="panel-head">
-                    <h3>Saarthi</h3>
-                    <small>Mandatory weekly AI counselling for CON111. Sunday check-in counts once for 1 hour only.</small>
-                </div>
-                <p id="saarthi-status" class="helper-text">Loading Saarthi session...</p>
-                <section class="saarthi-chip-grid">
-                    <div class="saarthi-chip">
-                        <span>Mandatory Sunday</span>
-                        <strong id="saarthi-mandatory-date">--</strong>
-                    </div>
-                    <div class="saarthi-chip">
-                        <span>This Week</span>
-                        <strong id="saarthi-weekly-credit">Pending</strong>
-                    </div>
-                </section>
-                <div id="saarthi-history" class="saarthi-history" role="log" aria-live="polite"></div>
-                <label class="field saarthi-compose-field">
-                    <span>Private message to Saarthi</span>
-                    <textarea
-                        id="saarthi-compose-input"
-                        rows="4"
-                        maxlength="2000"
-                        placeholder="Share what is worrying you today. Attendance is credited only once on Sunday."
-                    ></textarea>
-                </label>
-                <div class="inline-controls saarthi-actions">
-                    <small class="helper-text">Only the mandatory Sunday chat updates attendance. Other days remain counselling-only.</small>
-                    <button id="saarthi-send-btn" class="btn btn-primary" type="button">Send to Saarthi</button>
-                </div>
-            </article>
-
             <article id="student-ledger-card" class="ops-card glass tilt" data-tilt>
                 <div class="panel-head">
                     <h3>Attendance Ledger</h3>
@@ -1146,8 +1143,94 @@
             </article>
         </section>
 
+        <section id="saarthi-section" class="role-section hidden module-panel" data-module="saarthi" data-module-role="student">
+            <article id="student-saarthi-card" class="ops-card glass tilt nav-anchor" data-tilt>
+                <section class="saarthi-header-section" aria-label="Saarthi welcome">
+                    <section class="saarthi-affirmation-band" aria-label="Words of affirmation">
+                        <div class="saarthi-affirmation-track">
+                            <span class="saarthi-affirmation-pill">You are not alone in this.</span>
+                            <span class="saarthi-affirmation-pill">One small step still counts.</span>
+                            <span class="saarthi-affirmation-pill">It is okay to ask for support.</span>
+                            <span class="saarthi-affirmation-pill">Your pace is valid.</span>
+                            <span class="saarthi-affirmation-pill">Progress can be gentle.</span>
+                            <span class="saarthi-affirmation-pill">You are doing better than you think.</span>
+                            <span class="saarthi-affirmation-pill">You are not alone in this.</span>
+                            <span class="saarthi-affirmation-pill">One small step still counts.</span>
+                            <span class="saarthi-affirmation-pill">It is okay to ask for support.</span>
+                            <span class="saarthi-affirmation-pill">Your pace is valid.</span>
+                            <span class="saarthi-affirmation-pill">Progress can be gentle.</span>
+                            <span class="saarthi-affirmation-pill">You are doing better than you think.</span>
+                        </div>
+                    </section>
+                    <div class="saarthi-welcome-card">
+                        <div class="saarthi-welcome-icon" aria-hidden="true">
+                            <span class="saarthi-welcome-orb"></span>
+                            <span class="saarthi-welcome-ring"></span>
+                            <span class="saarthi-welcome-spark"></span>
+                        </div>
+                        <div class="saarthi-welcome-copy">
+                            <h3>Saarthi AI Counsellor</h3>
+                            <p>Hi, I'm Saarthi. I'm here to listen and support you. You can share anything that's on your mind.</p>
+                        </div>
+                    </div>
+                    <p id="saarthi-status" class="helper-text saarthi-status-line">Loading Saarthi session...</p>
+                    <section class="saarthi-chip-grid" aria-label="Weekly counselling status">
+                        <div class="saarthi-chip">
+                            <span>Mandatory Sunday</span>
+                            <strong id="saarthi-mandatory-date">--</strong>
+                        </div>
+                        <div class="saarthi-chip">
+                            <span>This Week</span>
+                            <strong id="saarthi-weekly-credit">Pending</strong>
+                        </div>
+                    </section>
+                </section>
+
+                <section class="saarthi-conversation-section" aria-label="Conversation area">
+                    <div id="saarthi-history" class="saarthi-history" role="log" aria-live="polite"></div>
+                    <p class="saarthi-soft-note">You're not alone. Saarthi is here to listen.</p>
+                </section>
+
+                <section class="saarthi-input-section" aria-label="Send a message">
+                    <label class="field saarthi-compose-field">
+                        <span>Share with Saarthi</span>
+                        <textarea
+                            id="saarthi-compose-input"
+                            rows="3"
+                            maxlength="2000"
+                            placeholder="Share what's on your mind..."
+                        ></textarea>
+                    </label>
+                    <div class="saarthi-actions">
+                        <small class="helper-text">Only the mandatory Sunday chat updates attendance. Other days remain counselling-only.</small>
+                        <button id="saarthi-new-chat-btn" class="saarthi-new-chat-btn" type="button" aria-label="Start a new Saarthi chat">
+                            New chat
+                        </button>
+                        <button id="saarthi-send-btn" class="saarthi-send-btn" type="button" aria-label="Send message to Saarthi">
+                            <svg class="saarthi-send-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                <path d="M4 12L20 12M14 6L20 12L14 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                            <span class="saarthi-send-text">Send message</span>
+                        </button>
+                    </div>
+                </section>
+            </article>
+        </section>
+
         <section id="faculty-section" class="role-section hidden module-panel" data-module="attendance" data-module-role="faculty">
-            <article id="faculty-dashboard-card" class="ops-card glass tilt nav-anchor" data-tilt>
+            <div class="admin-submodule-picker" data-admin-submodule-nav="attendance" aria-label="Attendance submodules">
+                <label class="field">
+                    <span>Attendance Submodule</span>
+                    <select id="admin-attendance-submodule-select" data-admin-submodule-select="attendance">
+                        <option value="attendance-ops">Class Operations</option>
+                        <option value="attendance-admin">Admin Overrides & Outreach</option>
+                        <option value="attendance-recovery">Recovery & Risk</option>
+                        <option value="attendance-analysis">AI Classroom Analysis</option>
+                    </select>
+                </label>
+            </div>
+
+            <article id="faculty-dashboard-card" class="ops-card glass tilt nav-anchor admin-submodule-panel is-active" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
                 <div class="panel-head">
                     <h3>Faculty Attendance Control Center</h3>
                     <small>Review pending AI submissions</small>
@@ -1165,7 +1248,7 @@
                 </div>
             </article>
 
-            <article id="admin-attendance-actions-card" class="ops-card glass tilt hidden" data-tilt>
+            <article id="admin-attendance-actions-card" class="ops-card glass tilt hidden admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-admin">
                 <div class="panel-head">
                     <h3>Admin Approval & Scheduling Controls</h3>
                     <small>Create class schedules and approve student section updates</small>
@@ -1289,7 +1372,41 @@
                 <p id="admin-update-student-section-status" class="helper-text">Apply approved section changes directly.</p>
             </article>
 
-            <section class="faculty-stats-grid">
+            <article id="direct-email-card" class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-admin">
+                <div class="panel-head">
+                    <h3>Direct Student Email</h3>
+                    <small>Send a one-to-one message to a student’s registered email.</small>
+                </div>
+                <div class="direct-email-grid">
+                    <label class="field">
+                        <span>Student ID (optional)</span>
+                        <input id="direct-email-student-id" type="number" min="1" placeholder="e.g. 54">
+                    </label>
+                    <label class="field">
+                        <span>Registration No. (optional)</span>
+                        <input id="direct-email-registration" type="text" placeholder="e.g. 22BCS101">
+                    </label>
+                    <label class="field">
+                        <span>Student Email (optional)</span>
+                        <input id="direct-email-student-email" type="email" placeholder="student@example.com">
+                    </label>
+                </div>
+                <label class="field">
+                    <span>Subject</span>
+                    <input id="direct-email-subject" type="text" maxlength="140" placeholder="Subject line">
+                </label>
+                <label class="field">
+                    <span>Message</span>
+                    <textarea id="direct-email-message" rows="4" maxlength="2000" placeholder="Write a direct note to the student..."></textarea>
+                </label>
+                <div class="inline-controls direct-email-actions">
+                    <button id="direct-email-send-btn" class="btn btn-primary" type="button">Send Email</button>
+                    <span id="direct-email-status" class="helper-text"></span>
+                </div>
+                <p class="helper-text">Provide Student ID, Registration No., or Email to target the student.</p>
+            </article>
+
+            <section class="faculty-stats-grid admin-submodule-panel" data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
                 <article class="metric glass tilt" data-tilt>
                     <h2>Total Students</h2>
                     <p id="faculty-total" class="metric-value">0</p>
@@ -1308,7 +1425,7 @@
                 </article>
             </section>
 
-            <article id="faculty-attendance-card" class="ops-card glass tilt nav-anchor" data-tilt>
+            <article id="faculty-attendance-card" class="ops-card glass tilt nav-anchor admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
                 <div class="panel-head">
                     <h3>Submission Review Queue</h3>
                     <small>Batch approve or reject pending rows</small>
@@ -1358,7 +1475,7 @@
                 </div>
             </article>
 
-            <article id="faculty-recovery-card" class="ops-card glass tilt" data-tilt>
+            <article id="faculty-recovery-card" class="ops-card glass tilt admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-recovery">
                 <div class="panel-head">
                     <h3>Attendance Recovery Radar</h3>
                     <small>Students needing intervention, catch-up, or remedial routing</small>
@@ -1366,7 +1483,7 @@
                 <div id="faculty-recovery-list" class="attendance-recovery-list faculty-recovery-list"></div>
             </article>
 
-            <section class="analysis-grid">
+            <section class="analysis-grid admin-submodule-panel" data-admin-submodule-scope="attendance" data-admin-submodule="attendance-analysis">
                 <article class="ops-card glass tilt" data-tilt>
                     <div class="panel-head">
                         <h3>AI Classroom Analysis</h3>
@@ -1413,9 +1530,12 @@
                     </label>
                     <div class="food-order-actions">
                         <button id="food-enable-location-btn" class="btn btn-secondary" type="button">Enable Location Access</button>
+                        <button id="food-demo-toggle-btn" class="btn btn-ghost food-demo-btn" type="button" aria-pressed="false">Demo Bypass Off</button>
                         <button id="food-open-cart-btn" class="btn btn-primary" type="button">Open Cart</button>
                     </div>
                 </div>
+                <p class="helper-text food-demo-helper">Demo only. Temporarily bypasses close time and ordering checks so Food Hall can be shown end-to-end after hours.</p>
+                <p id="food-demo-status" class="helper-text food-demo-status hidden">Food Hall demo bypass is off.</p>
                 <p id="food-location-status" class="helper-text">Location access is required. Delivery is allowed only inside LPU campus.</p>
                 <p id="food-status-msg" class="helper-text">Select one shop card, add items, then open cart to checkout.</p>
             </article>

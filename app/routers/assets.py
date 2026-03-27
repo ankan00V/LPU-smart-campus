@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -17,7 +18,7 @@ from starlette.background import BackgroundTask
 
 from ..database import get_db
 from ..media_storage import open_media_bytes, verify_signed_media_url
-from ..mongo import get_mongo_db, invalidate_mongo_connection
+from ..mongo import get_mongo_db, init_mongo, invalidate_mongo_connection
 
 router = APIRouter(prefix="/assets", tags=["Static Assets"])
 
@@ -27,6 +28,7 @@ ASSET_COLLECTION = "static_assets"
 LOGGER = logging.getLogger(__name__)
 ASSET_CACHE_HEADERS = {"Cache-Control": "public, max-age=0, must-revalidate"}
 MONGO_CONFIRMED_ASSET_KEYS: set[str] = set()
+_T = TypeVar("_T")
 
 STATIC_ASSETS: dict[str, dict[str, str]] = {
     "lpu-smart-campus-logo": {
@@ -42,6 +44,20 @@ STATIC_ASSETS: dict[str, dict[str, str]] = {
         "content_type": "image/svg+xml",
     },
 }
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _static_asset_mongo_required() -> bool:
+    raw = (os.getenv("STATIC_ASSET_REQUIRE_MONGO") or "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    if _bool_env("MONGO_PERSISTENCE_REQUIRED", default=True):
+        return True
+    return _bool_env("APP_RUNTIME_STRICT", default=True)
 
 
 def _asset_file_path(asset_key: str) -> Path:
@@ -80,16 +96,44 @@ def _mark_asset_seeded(asset_key: str) -> None:
     MONGO_CONFIRMED_ASSET_KEYS.add(asset_key)
 
 
+def _run_mongo_asset_operation(operation: Callable[[Any], _T]) -> _T:
+    last_exc: Exception | None = None
+    invalidated = False
+    for attempt in range(2):
+        try:
+            mongo_db = get_mongo_db(required=False)
+        except TypeError:
+            mongo_db = get_mongo_db()
+        if mongo_db is None:
+            init_mongo(force=True)
+            try:
+                mongo_db = get_mongo_db(required=False)
+            except TypeError:
+                mongo_db = get_mongo_db()
+        if mongo_db is None:
+            break
+        try:
+            return operation(mongo_db)
+        except PyMongoError as exc:
+            last_exc = exc
+            if not invalidated:
+                invalidate_mongo_connection(exc)
+                invalidated = True
+            if attempt == 0:
+                continue
+            raise
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("MongoDB is unavailable")
+
+
 def _upsert_static_asset(asset_key: str, *, payload: bytes, digest: str, source: str) -> str:
     config = STATIC_ASSETS[asset_key]
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        return "failed"
-
     try:
-        current = mongo_db[ASSET_COLLECTION].find_one({"key": asset_key}, {"sha256": 1})
-    except PyMongoError as exc:
-        invalidate_mongo_connection(exc)
+        current = _run_mongo_asset_operation(
+            lambda mongo_db: mongo_db[ASSET_COLLECTION].find_one({"key": asset_key}, {"sha256": 1})
+        )
+    except (PyMongoError, RuntimeError) as exc:
         LOGGER.warning("static_asset_seed_lookup_failed asset_key=%s err=%s", asset_key, exc)
         return "failed"
 
@@ -98,24 +142,25 @@ def _upsert_static_asset(asset_key: str, *, payload: bytes, digest: str, source:
         return "skipped"
 
     try:
-        mongo_db[ASSET_COLLECTION].update_one(
-            {"key": asset_key},
-            {
-                "$set": {
-                    "key": asset_key,
-                    "filename": config["filename"],
-                    "content_type": config["content_type"],
-                    "size": len(payload),
-                    "sha256": digest,
-                    "data": payload,
-                    "updated_at": datetime.now(timezone.utc),
-                    "source": source,
-                }
-            },
-            upsert=True,
+        _run_mongo_asset_operation(
+            lambda mongo_db: mongo_db[ASSET_COLLECTION].update_one(
+                {"key": asset_key},
+                {
+                    "$set": {
+                        "key": asset_key,
+                        "filename": config["filename"],
+                        "content_type": config["content_type"],
+                        "size": len(payload),
+                        "sha256": digest,
+                        "data": payload,
+                        "updated_at": datetime.now(timezone.utc),
+                        "source": source,
+                    }
+                },
+                upsert=True,
+            )
         )
-    except PyMongoError as exc:
-        invalidate_mongo_connection(exc)
+    except (PyMongoError, RuntimeError) as exc:
         LOGGER.warning("static_asset_seed_write_failed asset_key=%s err=%s", asset_key, exc)
         return "failed"
 
@@ -135,17 +180,14 @@ def _seed_bundled_asset_to_mongo_in_background(asset_key: str) -> None:
 
 def _response_from_mongo(asset_key: str) -> Response | None:
     config = STATIC_ASSETS[asset_key]
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        return None
-
     try:
-        doc = mongo_db[ASSET_COLLECTION].find_one(
-            {"key": asset_key},
-            {"_id": 0, "content_type": 1, "data": 1, "sha256": 1},
+        doc = _run_mongo_asset_operation(
+            lambda mongo_db: mongo_db[ASSET_COLLECTION].find_one(
+                {"key": asset_key},
+                {"_id": 0, "content_type": 1, "data": 1, "sha256": 1},
+            )
         )
-    except PyMongoError as exc:
-        invalidate_mongo_connection(exc)
+    except (PyMongoError, RuntimeError) as exc:
         LOGGER.warning("static_asset_lookup_failed asset_key=%s err=%s", asset_key, exc)
         return None
 
@@ -194,6 +236,15 @@ def build_static_asset_response(asset_key: str, *, prefer_database: bool = True)
     if asset_key not in STATIC_ASSETS:
         raise HTTPException(status_code=404, detail="Asset not found")
 
+    if _static_asset_mongo_required():
+        mongo_response = _response_from_mongo(asset_key)
+        if mongo_response is not None:
+            return mongo_response
+        raise HTTPException(
+            status_code=503,
+            detail="Static assets must be served from MongoDB in this environment.",
+        )
+
     if prefer_database:
         mongo_response = _response_from_mongo(asset_key)
         if mongo_response is not None:
@@ -227,13 +278,16 @@ def build_static_asset_response(asset_key: str, *, prefer_database: bool = True)
     raise HTTPException(status_code=404, detail="Asset source unavailable")
 
 
-def seed_static_assets_to_mongo() -> dict[str, int]:
-    mongo_db = get_mongo_db()
+def seed_static_assets_to_mongo(*, required: bool = False) -> dict[str, int]:
+    mongo_db = get_mongo_db(required=False)
     if mongo_db is None:
-        return {"stored": 0, "skipped": len(STATIC_ASSETS)}
+        if required:
+            raise RuntimeError("MongoDB is unavailable for required static asset seeding.")
+        return {"stored": 0, "skipped": len(STATIC_ASSETS), "failed": 0}
 
     stored = 0
     skipped = 0
+    failed = 0
     for asset_key, config in STATIC_ASSETS.items():
         data: bytes | None = None
         digest = ""
@@ -249,7 +303,9 @@ def seed_static_assets_to_mongo() -> dict[str, int]:
                     digest = hashlib.sha256(data).hexdigest()
 
         if not data:
-            skipped += 1
+            failed += 1
+            if required:
+                raise RuntimeError(f"Required bundled asset is unavailable: {asset_key}")
             continue
 
         seed_status = _upsert_static_asset(asset_key, payload=data, digest=digest, source="startup-seed")
@@ -260,9 +316,11 @@ def seed_static_assets_to_mongo() -> dict[str, int]:
             skipped += 1
             continue
 
-        break
+        failed += 1
+        if required:
+            raise RuntimeError(f"Failed to seed required static asset into MongoDB: {asset_key}")
 
-    return {"stored": stored, "skipped": skipped}
+    return {"stored": stored, "skipped": skipped, "failed": failed}
 
 
 @router.get("/static/{asset_key}", include_in_schema=False)

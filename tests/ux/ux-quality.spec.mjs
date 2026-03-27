@@ -27,4 +27,28 @@ test.describe('UX Quality Gates', () => {
     const criticalViolations = scan.violations.filter((violation) => violation.impact === 'critical');
     expect(criticalViolations).toEqual([]);
   });
+
+  test('remedial online link input preserves faculty-entered URL', async ({ page }) => {
+    await page.goto('/web/');
+    await page.waitForLoadState('networkidle');
+
+    const result = await page.evaluate(() => {
+      const modeSelect = document.getElementById('remedial-mode-select');
+      const onlineLinkInput = document.getElementById('remedial-online-link-input');
+      if (!(modeSelect instanceof HTMLSelectElement) || !(onlineLinkInput instanceof HTMLInputElement)) {
+        return null;
+      }
+      onlineLinkInput.value = 'https://meet.example.edu/remedial/cse500';
+      modeSelect.value = 'online';
+      modeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      return {
+        value: onlineLinkInput.value,
+        readOnly: onlineLinkInput.readOnly,
+      };
+    });
+
+    expect(result).not.toBeNull();
+    expect(result.value).toBe('https://meet.example.edu/remedial/cse500');
+    expect(result.readOnly).toBe(false);
+  });
 });

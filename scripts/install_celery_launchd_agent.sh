@@ -7,7 +7,13 @@ TEMPLATE_PATH="${ROOT_DIR}/deploy/launchd/${LABEL}.plist.template"
 TARGET_DIR="${HOME}/Library/LaunchAgents"
 TARGET_PATH="${TARGET_DIR}/${LABEL}.plist"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-ENV_FILE="${ROOT_DIR}/.env"
+ENV_FILES=()
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  ENV_FILES+=("${ROOT_DIR}/.env")
+fi
+if [[ -f "${ROOT_DIR}/.env.local" ]]; then
+  ENV_FILES+=("${ROOT_DIR}/.env.local")
+fi
 STDOUT_LOG="${HOME}/Library/Logs/smartcampus-celery-launchd.out.log"
 STDERR_LOG="${HOME}/Library/Logs/smartcampus-celery-launchd.err.log"
 
@@ -28,8 +34,8 @@ ensure_requirements() {
     echo "Missing template: ${TEMPLATE_PATH}" >&2
     exit 1
   fi
-  if [[ ! -f "${ENV_FILE}" ]]; then
-    echo "Missing env file: ${ENV_FILE}" >&2
+  if [[ "${#ENV_FILES[@]}" -eq 0 ]]; then
+    echo "Missing env file: ${ROOT_DIR}/.env (or .env.local)" >&2
     exit 1
   fi
   if [[ ! -x "${PYTHON_BIN}" ]]; then
@@ -39,42 +45,58 @@ ensure_requirements() {
 }
 
 load_env_from_dotenv() {
-  eval "$("${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  eval "$("${PYTHON_BIN}" - "${ENV_FILES[@]}" <<'PY'
 import shlex
 import sys
 
 from dotenv import dotenv_values
 
-for key, value in dotenv_values(sys.argv[1]).items():
-    if value is None:
-        continue
+data = {}
+for path in sys.argv[1:]:
+    for key, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        data[key] = value
+
+for key, value in data.items():
     print(f"export {key}={shlex.quote(value)}")
 PY
 )"
 }
 
 render_env_xml() {
-  "${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ENV_FILES[@]}" <<'PY'
 import sys
 from xml.sax.saxutils import escape
 
 from dotenv import dotenv_values
 
-for key, value in dotenv_values(sys.argv[1]).items():
-    if value is None:
-        continue
+data = {}
+for path in sys.argv[1:]:
+    for key, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        data[key] = value
+
+for key, value in data.items():
     print(f"    <key>{escape(key)}</key>")
     print(f"    <string>{escape(value)}</string>")
 PY
 }
 
 validate_strict_env() {
-  "${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  "${PYTHON_BIN}" - "${ENV_FILES[@]}" <<'PY'
 import sys
 
 from dotenv import dotenv_values
 
-data = dotenv_values(sys.argv[1])
+data = {}
+for path in sys.argv[1:]:
+    for key, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        data[key] = value
+
 required = {
     "APP_RUNTIME_STRICT": "true",
     "REDIS_REQUIRED": "true",

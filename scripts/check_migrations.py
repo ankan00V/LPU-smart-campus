@@ -37,11 +37,11 @@ def main() -> int:
         os.environ.setdefault("APP_RUNTIME_STRICT", "false")
 
         # Import only after env injection so SQLAlchemy engine points to temp DB.
-        from app.main import apply_sqlite_migrations  # noqa: PLC0415
+        from app.main import init_sql_schema  # noqa: PLC0415
 
-        # Must be safe to run repeatedly.
-        apply_sqlite_migrations()
-        apply_sqlite_migrations()
+        # Must be safe to run repeatedly from an empty database.
+        init_sql_schema()
+        init_sql_schema()
 
         conn = sqlite3.connect(db_path)
         try:

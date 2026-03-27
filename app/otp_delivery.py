@@ -8,10 +8,11 @@ from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 
 _ENV_LOADED = False
+_ORIGINAL_ENV = dict(os.environ)
 _OTP_DELIVERY_MODES = {"smtp", "graph"}
 
 
@@ -21,6 +22,13 @@ def _ensure_env_loaded() -> None:
         return
     project_root = Path(__file__).resolve().parent.parent
     load_dotenv(project_root / ".env")
+    local_values = dotenv_values(project_root / ".env.local")
+    for key, value in local_values.items():
+        if value is None:
+            continue
+        if key in _ORIGINAL_ENV:
+            continue
+        os.environ[key] = str(value)
     _ENV_LOADED = True
 
 
@@ -117,6 +125,16 @@ def _otp_mail_body(otp_code: str) -> str:
     )
 
 
+def _normalize_subject_line(subject: str) -> str:
+    prefix = _subject_prefix()
+    cleaned = " ".join(str(subject or "").split()).strip()
+    if not cleaned:
+        cleaned = "Campus Update"
+    if cleaned.lower().startswith(prefix.lower()):
+        return cleaned
+    return f"{prefix} | {cleaned}"
+
+
 def _ensure_smtp_config() -> None:
     def is_placeholder(value: str) -> bool:
         return value.strip() in {
@@ -179,6 +197,35 @@ def _send_via_smtp(destination_email: str, otp_code: str) -> None:
     message["To"] = destination_email
     message["Subject"] = _otp_mail_subject()
     message.set_content(_otp_mail_body(otp_code))
+
+    host = _smtp_host()
+    port = _smtp_port()
+    username = _smtp_username()
+    password = _smtp_password()
+
+    if _smtp_use_ssl():
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            server.login(username, password)
+            server.send_message(message)
+        return
+
+    with smtplib.SMTP(host, port, timeout=15) as server:
+        if _smtp_starttls():
+            context = ssl.create_default_context()
+            server.starttls(context=context)
+        server.login(username, password)
+        server.send_message(message)
+
+
+def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> None:
+    _ensure_smtp_config()
+
+    message = EmailMessage()
+    message["From"] = _from_email()
+    message["To"] = destination_email
+    message["Subject"] = subject
+    message.set_content(body)
 
     host = _smtp_host()
     port = _smtp_port()
@@ -284,6 +331,31 @@ def _send_via_graph(destination_email: str, otp_code: str) -> None:
         raise RuntimeError(f"Graph sendMail failed: HTTP {exc.code} {raw}") from exc
 
 
+def _send_custom_via_graph(destination_email: str, subject: str, body: str) -> None:
+    token = _graph_access_token()
+    sender_user = quote(_graph_sender_user())
+    send_url = f"https://graph.microsoft.com/v1.0/users/{sender_user}/sendMail"
+
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": [{"emailAddress": {"address": destination_email}}],
+        },
+        "saveToSentItems": False,
+    }
+    body_bytes = json.dumps(payload).encode("utf-8")
+    request = Request(send_url, data=body_bytes, method="POST")
+    request.add_header("Content-Type", "application/json")
+    request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urlopen(request, timeout=20):
+            return
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        raise RuntimeError(f"Graph sendMail failed: HTTP {exc.code} {raw}") from exc
+
+
 def _verify_graph_connection() -> None:
     token = _graph_access_token()
     sender_user = quote(_graph_sender_user())
@@ -330,6 +402,30 @@ def send_login_otp(destination_email: str, otp_code: str) -> dict:
         _send_via_graph(destination_email, otp_code)
         return {
             "channel": "graph-email",
+        }
+
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+
+
+def send_notification_email(destination_email: str, *, subject: str, body: str) -> dict:
+    mode = otp_delivery_mode()
+    subject_line = _normalize_subject_line(subject)
+    message_body = str(body or "").strip()
+    if not message_body:
+        raise RuntimeError("Notification email body cannot be empty.")
+
+    if mode == "smtp":
+        _send_custom_via_smtp(destination_email, subject_line, message_body)
+        return {
+            "channel": "smtp-email",
+            "subject": subject_line,
+        }
+
+    if mode == "graph":
+        _send_custom_via_graph(destination_email, subject_line, message_body)
+        return {
+            "channel": "graph-email",
+            "subject": subject_line,
         }
 
     raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")

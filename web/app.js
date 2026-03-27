@@ -2,6 +2,8 @@ const DAY_LABELS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Sat
 const AI_MODEL = 'gemini-3-flash-preview';
 const PUTER_SDK_URL = 'https://js.puter.com/v2/';
 const RAZORPAY_SDK_URL = 'https://checkout.razorpay.com/v1/checkout.js';
+const RAZORPAY_SDK_ORIGIN = 'https://checkout.razorpay.com';
+const RAZORPAY_SDK_LOAD_TIMEOUT_MS = 12000;
 const ENABLE_DECORATIVE_MOTION = false;
 const USE_CLIENT_AI_FACE_ASSIST = false;
 const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 12000;
@@ -12,6 +14,7 @@ const PASSWORD_POLICY_TEXT = 'Minimum 8 characters with letters, numbers, and a 
 const FOOD_LOCATION_MAX_STALE_MS = 120000;
 const FOOD_DELIVERY_FEE_INR = 30;
 const FOOD_PLATFORM_FEE_INR = 5;
+const FOOD_DEMO_STORAGE_KEY = 'foodhall_demo_enabled';
 const FOOD_SERVICE_START_MINUTES = 10 * 60;
 const FOOD_SERVICE_END_MINUTES = 21 * 60;
 const FOOD_SERVICE_HOURS_LABEL = '10:00 AM - 9:00 PM';
@@ -106,6 +109,7 @@ const FOOD_DEMAND_PIE_COLORS = [
 ];
 const MODULE_LABELS = {
   attendance: 'Attendance',
+  saarthi: 'Saarthi',
   food: 'Food Hall',
   administrative: 'Administrative',
   rms: 'RMS',
@@ -221,10 +225,12 @@ const state = {
     shops: [],
     menuByShop: {},
     selectedShopId: '',
+    demoEnabled: false,
     cart: {
         shopId: '',
         items: [],
     },
+    cartUpdatedAt: '',
     cartModalTab: 'cart',
     checkoutPreviewOpen: false,
     checkoutDeliveryPoint: '',
@@ -302,6 +308,7 @@ const state = {
     threadAction: 'approve',
     attendanceContext: null,
     attendanceSelectedCourseCode: '',
+    attendanceSelectedScheduleId: null,
     attendanceUpdate: null,
   },
   student: {
@@ -311,6 +318,7 @@ const state = {
     timetable: [],
     kpiTimetable: [],
     timetableCache: {},
+    timetableNetworkRequests: new Map(),
     timetablePrefetching: new Set(),
     timetableRequestToken: 0,
     timetableRepairInFlight: false,
@@ -351,6 +359,7 @@ const state = {
     saarthiStatus: null,
     saarthiMessages: [],
     saarthiSending: false,
+    saarthiResetting: false,
     saarthiUiMessage: 'Saarthi session will appear here.',
     saarthiUiState: 'neutral',
     attendanceDetailsCourseKey: '',
@@ -397,6 +406,10 @@ const state = {
   ui: {
     theme: 'light',
     activeModule: 'attendance',
+    adminSubmodules: {
+      attendance: 'attendance-ops',
+      rms: 'rms-overview',
+    },
     chotuOpen: false,
     supportDeskOpen: false,
     verlynOpen: false,
@@ -412,6 +425,7 @@ const authState = {
   otpRequestInFlight: false,
   otpVerifyInFlight: false,
   registerInFlight: false,
+  signupAdminPhotoDataUrl: '',
   forgotOtpCooldownUntilMs: 0,
   forgotOtpRequestInFlight: false,
   forgotResetToken: '',
@@ -494,6 +508,9 @@ const els = {
   authSignupRegistration: document.getElementById('auth-signup-registration'),
   authSignupFacultyIdWrap: document.getElementById('auth-signup-faculty-id-wrap'),
   authSignupFacultyId: document.getElementById('auth-signup-faculty-id'),
+  authSignupAdminPhotoWrap: document.getElementById('auth-signup-admin-photo-wrap'),
+  authSignupAdminPhoto: document.getElementById('auth-signup-admin-photo'),
+  authSignupAdminPhotoPreview: document.getElementById('auth-signup-admin-photo-preview'),
   authSectionWrap: document.getElementById('auth-section-wrap'),
   authSignupSection: document.getElementById('auth-signup-section'),
   authSemesterWrap: document.getElementById('auth-semester-wrap'),
@@ -563,6 +580,7 @@ const els = {
   navCoursesBtn: document.getElementById('nav-courses-btn'),
   navAttendanceBtn: document.getElementById('nav-attendance-btn'),
   topNavAttendanceBtn: document.getElementById('top-nav-attendance'),
+  topNavSaarthiBtn: document.getElementById('top-nav-saarthi'),
   topNavFoodBtn: document.getElementById('top-nav-food'),
   topNavAdministrativeBtn: document.getElementById('top-nav-administrative'),
   topNavRmsBtn: document.getElementById('top-nav-rms'),
@@ -580,6 +598,7 @@ const els = {
   executiveSection: document.getElementById('executive-section'),
   rmsSection: document.getElementById('rms-section'),
   studentSection: document.getElementById('student-section'),
+  saarthiSection: document.getElementById('saarthi-section'),
   facultySection: document.getElementById('faculty-section'),
   adminAttendanceActionsCard: document.getElementById('admin-attendance-actions-card'),
   adminRecoveryIncludeResolved: document.getElementById('admin-recovery-include-resolved'),
@@ -603,6 +622,8 @@ const els = {
   foodItemSelect: document.getElementById('food-item-select'),
   foodSlotSelect: document.getElementById('food-slot-select'),
   foodOpenCartBtn: document.getElementById('food-open-cart-btn'),
+  foodDemoToggleBtn: document.getElementById('food-demo-toggle-btn'),
+  foodDemoStatus: document.getElementById('food-demo-status'),
   foodEnableLocationBtn: document.getElementById('food-enable-location-btn'),
   foodLocationStatus: document.getElementById('food-location-status'),
   foodStatusMsg: document.getElementById('food-status-msg'),
@@ -658,7 +679,9 @@ const els = {
   verlynPanel: document.getElementById('verlyn-panel'),
   verlynMinimizeBtn: document.getElementById('verlyn-minimize-btn'),
   verlynStatus: document.getElementById('verlyn-status'),
-  verlynModuleContext: document.getElementById('verlyn-module-context'),
+  verlynScopeChip: document.getElementById('verlyn-scope-chip'),
+  verlynRoleChip: document.getElementById('verlyn-role-chip'),
+  verlynToggleMeta: document.getElementById('verlyn-toggle-meta'),
   verlynQuickActions: document.getElementById('verlyn-quick-actions'),
   verlynOutput: document.getElementById('verlyn-output'),
   verlynInput: document.getElementById('verlyn-input'),
@@ -732,6 +755,13 @@ const els = {
   facultyMessageText: document.getElementById('faculty-message-text'),
   facultyMessageSendBtn: document.getElementById('faculty-message-send-btn'),
   facultyMessageStatus: document.getElementById('faculty-message-status'),
+  directEmailStudentId: document.getElementById('direct-email-student-id'),
+  directEmailRegistration: document.getElementById('direct-email-registration'),
+  directEmailStudentEmail: document.getElementById('direct-email-student-email'),
+  directEmailSubject: document.getElementById('direct-email-subject'),
+  directEmailMessage: document.getElementById('direct-email-message'),
+  directEmailSendBtn: document.getElementById('direct-email-send-btn'),
+  directEmailStatus: document.getElementById('direct-email-status'),
   remedialCodeInput: document.getElementById('remedial-code-input'),
   remedialValidateBtn: document.getElementById('remedial-validate-btn'),
   remedialCodeDetails: document.getElementById('remedial-code-details'),
@@ -805,6 +835,7 @@ const els = {
   saarthiWeeklyCredit: document.getElementById('saarthi-weekly-credit'),
   saarthiHistory: document.getElementById('saarthi-history'),
   saarthiComposeInput: document.getElementById('saarthi-compose-input'),
+  saarthiNewChatBtn: document.getElementById('saarthi-new-chat-btn'),
   saarthiSendBtn: document.getElementById('saarthi-send-btn'),
   studentAggregatePercent: document.getElementById('student-aggregate-percent'),
   studentAttendedDelivered: document.getElementById('student-attended-delivered'),
@@ -898,6 +929,8 @@ const els = {
   adminCopilotAuditClearBtn: document.getElementById('admin-copilot-audit-clear-btn'),
   adminCopilotAuditStatus: document.getElementById('admin-copilot-audit-status'),
   adminCopilotAuditWrap: document.getElementById('admin-copilot-audit-wrap'),
+  adminAttendanceSubmoduleSelect: document.getElementById('admin-attendance-submodule-select'),
+  adminRmsSubmoduleSelect: document.getElementById('admin-rms-submodule-select'),
   rmsQueryCategory: document.getElementById('rms-query-category'),
   rmsQueryStatus: document.getElementById('rms-query-status'),
   rmsRefreshBtn: document.getElementById('rms-refresh-btn'),
@@ -925,6 +958,7 @@ const els = {
   rmsAttendanceSearchBtn: document.getElementById('rms-attendance-search-btn'),
   rmsAttendanceStudentSummary: document.getElementById('rms-attendance-student-summary'),
   rmsAttendanceSubjectSelect: document.getElementById('rms-attendance-subject-select'),
+  rmsAttendanceSlotSelect: document.getElementById('rms-attendance-slot-select'),
   rmsAttendanceDate: document.getElementById('rms-attendance-date'),
   rmsAttendanceCurrentStatus: document.getElementById('rms-attendance-current-status'),
   rmsAttendanceStatus: document.getElementById('rms-attendance-status'),
@@ -1784,6 +1818,7 @@ function applyDaylightTint(now = new Date()) {
 function syncTopNavActiveButtonIntoView() {
   const activeButton = [
     els.topNavAttendanceBtn,
+    els.topNavSaarthiBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
@@ -2197,6 +2232,39 @@ function getVerlynModuleLabel(moduleKey = getSanitizedModuleKey(state.ui.activeM
   return MODULE_LABELS[normalized] || asTitleCase(normalized);
 }
 
+function getVerlynAccessibleModuleLabels() {
+  const role = authState.user?.role;
+  if (!role) {
+    return [];
+  }
+  return Object.keys(MODULE_LABELS)
+    .filter((moduleKey) => isModuleAccessible(moduleKey, role))
+    .map((moduleKey) => MODULE_LABELS[moduleKey] || asTitleCase(moduleKey));
+}
+
+function syncVerlynVisualContext() {
+  const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
+  const moduleLabel = getVerlynModuleLabel(moduleKey);
+  const roleLabel = getVerlynRoleLabel();
+  if (els.verlynSidebarWidget) {
+    els.verlynSidebarWidget.dataset.module = moduleKey;
+  }
+  if (els.verlynPanel) {
+    els.verlynPanel.dataset.module = moduleKey;
+  }
+  if (els.verlynScopeChip) {
+    els.verlynScopeChip.textContent = moduleLabel;
+  }
+  if (els.verlynRoleChip) {
+    els.verlynRoleChip.textContent = roleLabel;
+  }
+  if (els.verlynToggleMeta) {
+    els.verlynToggleMeta.textContent = authState.user
+      ? `${moduleLabel} • ${roleLabel}`
+      : 'Sign in for Copilot';
+  }
+}
+
 function getVerlynSeedRegistration() {
   const candidates = [
     state.rms?.selectedStudent?.registration_number,
@@ -2250,26 +2318,30 @@ function getVerlynRemedialDefaults() {
 
 function getVerlynPromptExamples() {
   const role = String(authState.user?.role || '').trim().toLowerCase();
-  const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
   if (role === 'student') {
-    if (moduleKey === 'attendance') {
-      return [
-        "Why can't I mark attendance?",
-        'What do I need to fix before I lose eligibility?',
-      ];
-    }
-    return ['Open Attendance module for student copilot checks.'];
+    return [
+      'Summarize my pending tasks across attendance, food, Saarthi, and remedial.',
+      "Why can't I mark attendance?",
+      'What is pending in my food orders this week?',
+    ];
   }
-  if (role === 'faculty' || role === 'admin') {
-    if (moduleKey === 'remedial') {
-      return ['Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00'];
-    }
-    if (moduleKey === 'attendance' || moduleKey === 'rms' || moduleKey === 'administrative') {
-      return ['Show why student 22BCS777 is flagged'];
-    }
+  if (role === 'faculty') {
     return [
       'Show why student 22BCS777 is flagged',
       'Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00',
+      'Give me a module-wise summary for attendance, RMS, remedial, and food.',
+    ];
+  }
+  if (role === 'admin') {
+    return [
+      'Show why student 22BCS777 is flagged',
+      'Give me an administrative and RMS summary for today.',
+      'Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00',
+    ];
+  }
+  if (role === 'owner') {
+    return [
+      'Summarize active food orders and delivery flow for my shops today.',
     ];
   }
   return ['Login to use explainable campus actions.'];
@@ -2277,16 +2349,17 @@ function getVerlynPromptExamples() {
 
 function getVerlynDefaultOutput() {
   const roleLabel = getVerlynRoleLabel();
-  const moduleLabel = getVerlynModuleLabel();
+  const moduleLabels = getVerlynAccessibleModuleLabels();
   const examples = getVerlynPromptExamples();
+  const scope = moduleLabels.length ? moduleLabels.join(', ') : getVerlynModuleLabel();
   const lines = [
-    `${roleLabel} Copilot | ${moduleLabel} Module`,
-    '1. Quick actions above build audited requests for this module.',
-    '2. Manual entry is still validated against the same hard guardrails.',
+    `${roleLabel} Copilot`,
+    `Scope: ${scope}`,
+    `Try: ${examples[0] || 'Ask for a module summary.'}`,
   ];
-  examples.forEach((example, index) => {
-    lines.push(`${index + 3}. ${example}`);
-  });
+  if (examples[1]) {
+    lines.push(`Next: ${examples[1]}`);
+  }
   return lines.join('\n');
 }
 
@@ -2304,205 +2377,123 @@ function syncVerlynQuickActionFieldState() {
 }
 
 function renderVerlynQuickActions() {
-  if (!els.verlynQuickActions || !els.verlynModuleContext) {
+  if (!els.verlynQuickActions) {
     return;
   }
   const role = String(authState.user?.role || '').trim().toLowerCase();
-  const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
-  const moduleLabel = getVerlynModuleLabel(moduleKey);
   const seedRegistration = getVerlynSeedRegistration();
   const remedialDefaults = getVerlynRemedialDefaults();
-  let contextMessage = `${moduleLabel} quick actions load here.`;
   let markup = '';
 
   if (!authState.user) {
-    contextMessage = 'Sign in to load role-scoped copilot actions for the active module.';
     markup = `
       <div class="verlyn-empty-note">
-        Campus Copilot stays locked until a verified session is active.
+        Sign in to run audited Campus Copilot actions.
       </div>
     `;
-  } else if (role === 'student' && moduleKey === 'attendance') {
-    contextMessage = 'Student attendance checks are available for the active attendance module.';
+  } else if (role === 'student') {
     markup = `
-      <section class="verlyn-action-card">
+      <section class="verlyn-action-card verlyn-action-card-compact">
         <div class="verlyn-action-head">
-          <strong>Attendance Checks</strong>
-          <small>Run explainable student checks without typing supported prompt text.</small>
+          <strong>Quick Actions</strong>
         </div>
         <div class="verlyn-chip-row">
           <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
-            Why can't I mark attendance?
+            Attendance blocker
           </button>
           <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
-            Eligibility risk check
+            Eligibility risk
+          </button>
+          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+            Module summary
           </button>
         </div>
       </section>
     `;
-  } else if (role === 'admin' && moduleKey === 'administrative') {
-    contextMessage = 'Administrative copilot actions are live for flag review, remedial planning, and audit governance.';
+  } else if (role === 'faculty' || role === 'admin') {
+    const auditAction = role === 'admin'
+      ? '<button class="btn verlyn-chip-btn" type="button" data-verlyn-action="focus_audit_timeline">Audit Timeline</button>'
+      : '';
     markup = `
-      <form class="verlyn-action-card" data-verlyn-action="flag_reason">
+      <form class="verlyn-action-card verlyn-action-card-inline" data-verlyn-action="flag_reason">
         <div class="verlyn-action-head">
           <strong>Flag Review</strong>
-          <small>Explain exactly why a student is flagged before taking a remedial or RMS action.</small>
         </div>
-        <div class="verlyn-field-grid">
-          <label class="field verlyn-quick-field">
-            <span>Registration Number</span>
-            <input id="verlyn-flag-registration" type="text" value="${escapeHtml(seedRegistration)}" placeholder="e.g. 22BCS777">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Student ID (optional)</span>
-            <input id="verlyn-flag-student-id" type="number" min="1" placeholder="e.g. 102">
-          </label>
-        </div>
-        <div class="verlyn-chip-row">
-          <button class="btn btn-primary" type="submit">Show Why This Student Is Flagged</button>
-          <button class="btn" type="button" data-verlyn-action="focus_audit_timeline">Open Audit Timeline</button>
+        <div class="verlyn-action-inline">
+          <input id="verlyn-flag-registration" type="text" value="${escapeHtml(seedRegistration)}" placeholder="Registration no. e.g. 22BCS777">
+          <button class="btn btn-primary" type="submit">Explain</button>
+          ${auditAction}
         </div>
       </form>
-      <form class="verlyn-action-card" data-verlyn-action="create_remedial_plan">
-        <div class="verlyn-action-head">
-          <strong>Remedial Planner</strong>
-          <small>Admin can schedule audited remedial plans directly from the administrative module.</small>
-        </div>
-        <div class="verlyn-field-grid">
-          <label class="field verlyn-quick-field">
-            <span>Course Code</span>
-            <input id="verlyn-remedial-course-code" type="text" value="${escapeHtml(remedialDefaults.courseCode)}" placeholder="e.g. CSE501">
+      <details class="verlyn-action-card verlyn-action-disclosure" open>
+        <summary>Remedial Planner</summary>
+        <form class="verlyn-action-form" data-verlyn-action="create_remedial_plan">
+          <div class="verlyn-field-grid">
+            <label class="field verlyn-quick-field">
+              <span>Course</span>
+              <input id="verlyn-remedial-course-code" type="text" value="${escapeHtml(remedialDefaults.courseCode)}" placeholder="e.g. CSE501">
+            </label>
+            <label class="field verlyn-quick-field">
+              <span>Section</span>
+              <input id="verlyn-remedial-section" type="text" value="${escapeHtml(remedialDefaults.section)}" placeholder="e.g. P132">
+            </label>
+            <label class="field verlyn-quick-field">
+              <span>Date</span>
+              <input id="verlyn-remedial-date" type="date" value="${escapeHtml(remedialDefaults.classDate)}">
+            </label>
+            <label class="field verlyn-quick-field">
+              <span>Time</span>
+              <input id="verlyn-remedial-time" type="time" value="${escapeHtml(remedialDefaults.startTime)}">
+            </label>
+            <label class="field verlyn-quick-field">
+              <span>Mode</span>
+              <select id="verlyn-remedial-mode">
+                <option value="offline"${remedialDefaults.classMode === 'offline' ? ' selected' : ''}>Offline</option>
+                <option value="online"${remedialDefaults.classMode === 'online' ? ' selected' : ''}>Online</option>
+              </select>
+            </label>
+            <label class="field verlyn-quick-field">
+              <span>Room</span>
+              <input id="verlyn-remedial-room" type="text" value="${escapeHtml(remedialDefaults.roomNumber)}" placeholder="e.g. 34-101">
+            </label>
+          </div>
+          <label class="verlyn-inline-check">
+            <input id="verlyn-remedial-send-message" type="checkbox" ${remedialDefaults.sendMessage ? 'checked' : ''}>
+            Notify section
           </label>
-          <label class="field verlyn-quick-field">
-            <span>Section</span>
-            <input id="verlyn-remedial-section" type="text" value="${escapeHtml(remedialDefaults.section)}" placeholder="e.g. P132">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Class Date</span>
-            <input id="verlyn-remedial-date" type="date" value="${escapeHtml(remedialDefaults.classDate)}">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Start Time</span>
-            <input id="verlyn-remedial-time" type="time" value="${escapeHtml(remedialDefaults.startTime)}">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Mode</span>
-            <select id="verlyn-remedial-mode">
-              <option value="offline"${remedialDefaults.classMode === 'offline' ? ' selected' : ''}>Offline</option>
-              <option value="online"${remedialDefaults.classMode === 'online' ? ' selected' : ''}>Online</option>
-            </select>
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Room Number (offline)</span>
-            <input id="verlyn-remedial-room" type="text" value="${escapeHtml(remedialDefaults.roomNumber)}" placeholder="e.g. 34-101">
-          </label>
-        </div>
-        <label class="verlyn-inline-check">
-          <input id="verlyn-remedial-send-message" type="checkbox" ${remedialDefaults.sendMessage ? 'checked' : ''}>
-          Notify section automatically after scheduling
-        </label>
-        <div class="verlyn-chip-row">
-          <button class="btn btn-primary" type="submit">Preview or Schedule Remedial Plan</button>
-        </div>
-      </form>
+          <div class="verlyn-chip-row">
+            <button class="btn btn-primary" type="submit">Schedule</button>
+          </div>
+        </form>
+      </details>
     `;
-  } else if ((role === 'faculty' || role === 'admin') && (moduleKey === 'attendance' || moduleKey === 'rms')) {
-    contextMessage = `Flag review is available from the ${moduleLabel} module.`;
+  } else if (role === 'owner') {
     markup = `
-      <form class="verlyn-action-card" data-verlyn-action="flag_reason">
+      <section class="verlyn-action-card verlyn-action-card-compact">
         <div class="verlyn-action-head">
-          <strong>Flag Review</strong>
-          <small>Explain exactly why a student is flagged before taking a remedial or RMS action.</small>
-        </div>
-        <div class="verlyn-field-grid">
-          <label class="field verlyn-quick-field">
-            <span>Registration Number</span>
-            <input id="verlyn-flag-registration" type="text" value="${escapeHtml(seedRegistration)}" placeholder="e.g. 22BCS777">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Student ID (optional)</span>
-            <input id="verlyn-flag-student-id" type="number" min="1" placeholder="e.g. 102">
-          </label>
+          <strong>Quick Actions</strong>
         </div>
         <div class="verlyn-chip-row">
-          <button class="btn btn-primary" type="submit">Show Why This Student Is Flagged</button>
-        </div>
-      </form>
-    `;
-  } else if ((role === 'faculty' || role === 'admin') && moduleKey === 'remedial') {
-    contextMessage = 'Remedial quick form maps directly to structured scheduling fields and audited execution.';
-    markup = `
-      <form class="verlyn-action-card" data-verlyn-action="create_remedial_plan">
-        <div class="verlyn-action-head">
-          <strong>Remedial Planner</strong>
-          <small>Fill only the scheduling fields you have. Copilot will preview or execute, then log the outcome.</small>
-        </div>
-        <div class="verlyn-field-grid">
-          <label class="field verlyn-quick-field">
-            <span>Course Code</span>
-            <input id="verlyn-remedial-course-code" type="text" value="${escapeHtml(remedialDefaults.courseCode)}" placeholder="e.g. CSE501">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Section</span>
-            <input id="verlyn-remedial-section" type="text" value="${escapeHtml(remedialDefaults.section)}" placeholder="e.g. P132">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Class Date</span>
-            <input id="verlyn-remedial-date" type="date" value="${escapeHtml(remedialDefaults.classDate)}">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Start Time</span>
-            <input id="verlyn-remedial-time" type="time" value="${escapeHtml(remedialDefaults.startTime)}">
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Mode</span>
-            <select id="verlyn-remedial-mode">
-              <option value="offline"${remedialDefaults.classMode === 'offline' ? ' selected' : ''}>Offline</option>
-              <option value="online"${remedialDefaults.classMode === 'online' ? ' selected' : ''}>Online</option>
-            </select>
-          </label>
-          <label class="field verlyn-quick-field">
-            <span>Room Number (offline)</span>
-            <input id="verlyn-remedial-room" type="text" value="${escapeHtml(remedialDefaults.roomNumber)}" placeholder="e.g. 34-101">
-          </label>
-        </div>
-        <label class="verlyn-inline-check">
-          <input id="verlyn-remedial-send-message" type="checkbox" ${remedialDefaults.sendMessage ? 'checked' : ''}>
-          Notify section automatically after scheduling
-        </label>
-        <div class="verlyn-chip-row">
-          <button class="btn btn-primary" type="submit">Preview or Schedule Remedial Plan</button>
-        </div>
-      </form>
-    `;
-  } else if (role === 'student') {
-    contextMessage = `No student copilot action is exposed in ${moduleLabel}.`;
-    markup = `
-      <section class="verlyn-action-card">
-        <div class="verlyn-action-head">
-          <strong>Switch Module</strong>
-          <small>Student copilot checks currently run only from Attendance.</small>
-        </div>
-        <div class="verlyn-chip-row">
-          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="open_attendance_module">Open Attendance Module</button>
+          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="owner_food_summary">
+            Shop order summary
+          </button>
         </div>
       </section>
     `;
   } else {
-    contextMessage = `No academic copilot action is exposed for your role in ${moduleLabel}.`;
     markup = `
       <div class="verlyn-empty-note">
-        This module does not expose a guarded copilot workflow for your current role.
+        Use Ask to run audited, role-scoped module queries.
       </div>
     `;
   }
 
-  els.verlynModuleContext.textContent = contextMessage;
   els.verlynQuickActions.innerHTML = markup;
   if (els.verlynInput) {
-    const firstExample = getVerlynPromptExamples()[0] || 'Use a supported copilot request';
+    const firstExample = getVerlynPromptExamples()[0] || 'Ask for a module summary.';
     els.verlynInput.placeholder = `e.g. ${firstExample}`;
   }
+  syncVerlynVisualContext();
   syncVerlynQuickActionFieldState();
 }
 
@@ -2635,6 +2626,99 @@ function buildVerlynRemedialPayload() {
   };
 }
 
+function extractRemedialCodeFromCopilotResponse(response = {}) {
+  const entityCode = String(response?.entities?.remedial_code || '').trim().toUpperCase();
+  if (entityCode) {
+    return entityCode;
+  }
+  const actionDetail = Array.isArray(response?.actions)
+    ? response.actions
+      .map((item) => String(item?.detail || '').trim())
+      .find((detail) => /[A-Z0-9]{4,16}/.test(detail) && /remedial class/i.test(detail))
+    : '';
+  const actionCodeMatch = actionDetail.match(/\b([A-Z0-9]{4,16})\b/);
+  if (actionCodeMatch) {
+    return actionCodeMatch[1];
+  }
+  return '';
+}
+
+function inferRemedialEndTime(startTime = '') {
+  const parts = parseTimeStringToParts(startTime);
+  if (!parts) {
+    return '';
+  }
+  const totalMinutes = (parts.hour * 60) + parts.minute + 60;
+  const nextHour = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const nextMinute = totalMinutes % 60;
+  return `${String(nextHour).padStart(2, '0')}:${String(nextMinute).padStart(2, '0')}:00`;
+}
+
+function resolveVerlynRemedialCourseTitle(payload = {}) {
+  const directTitle = normalizeRemedialCourseTitle(els.remedialCourseTitleInput?.value || '');
+  if (directTitle) {
+    return directTitle;
+  }
+  const eligibleCourses = Array.isArray(state.remedial.eligibleCourses) ? state.remedial.eligibleCourses : [];
+  const normalizedCode = normalizeRemedialCourseCode(payload.course_code || '');
+  if (normalizedCode) {
+    const matchedEligible = eligibleCourses.find((course) => normalizeRemedialCourseCode(course?.code || '') === normalizedCode);
+    if (matchedEligible?.title) {
+      return normalizeRemedialCourseTitle(matchedEligible.title);
+    }
+    const matchedCourse = Object.values(state.coursesById || {}).find(
+      (course) => normalizeRemedialCourseCode(course?.code || '') === normalizedCode
+    );
+    if (matchedCourse?.title) {
+      return normalizeRemedialCourseTitle(matchedCourse.title);
+    }
+  }
+  const courseId = Number(payload.course_id || 0);
+  if (courseId > 0) {
+    return normalizeRemedialCourseTitle(state.coursesById?.[courseId]?.title || '');
+  }
+  return '';
+}
+
+function upsertRemedialClassFromCopilot(payload = {}, response = {}) {
+  const nextId = Number(response?.entities?.class_id || response?.audit_id || 0);
+  const nextCode = extractRemedialCodeFromCopilotResponse(response);
+  const nextSection = normalizeRemedialSections(payload.section || '');
+  const nextTitle = resolveVerlynRemedialCourseTitle(payload);
+  const nextStartTime = parseTimeStringToParts(payload.start_time)
+    ? `${String(payload.start_time).slice(0, 5)}:00`
+    : '';
+  const optimisticEntry = {
+    id: nextId || Date.now(),
+    course_id: Number(payload.course_id || 0) || null,
+    course_code: normalizeRemedialCourseCode(payload.course_code || ''),
+    course_title: nextTitle,
+    class_date: String(payload.class_date || '').trim() || null,
+    start_time: nextStartTime,
+    end_time: inferRemedialEndTime(nextStartTime),
+    topic: 'Remedial Session',
+    sections: nextSection,
+    class_mode: String(payload.class_mode || 'offline').trim().toLowerCase() === 'online' ? 'online' : 'offline',
+    room_number: String(payload.room_number || '').trim() || null,
+    remedial_code: nextCode || '--',
+    is_active: true,
+  };
+  const matchIndex = (Array.isArray(state.remedial.classes) ? state.remedial.classes : []).findIndex((entry) => (
+    (nextId > 0 && Number(entry?.id || 0) === nextId)
+    || (nextCode && String(entry?.remedial_code || '').trim().toUpperCase() === nextCode)
+  ));
+  if (matchIndex >= 0) {
+    state.remedial.classes[matchIndex] = {
+      ...state.remedial.classes[matchIndex],
+      ...optimisticEntry,
+    };
+  } else {
+    state.remedial.classes = [optimisticEntry, ...(Array.isArray(state.remedial.classes) ? state.remedial.classes : [])];
+  }
+  renderRemedialClassesList();
+  renderRemedialClassSelect();
+}
+
 function focusAdminCopilotAuditTimeline({ refresh = true } = {}) {
   if (!authState.user || authState.user.role !== 'admin') {
     throw new Error('Only admin can open the copilot audit timeline.');
@@ -2654,16 +2738,355 @@ function focusAdminCopilotAuditTimeline({ refresh = true } = {}) {
   }
 }
 
+function buildVerlynAttendanceClientContext() {
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  if (role === 'student') {
+    const aggregate = state.student.attendanceAggregate && typeof state.student.attendanceAggregate === 'object'
+      ? state.student.attendanceAggregate
+      : null;
+    const courses = Array.isArray(aggregate?.courses) ? aggregate.courses : [];
+    const selectedScheduleId = Number(state.student.selectedScheduleId || state.student.kpiScheduleId || 0) || null;
+    const selectedClass = (Array.isArray(state.student.timetable) ? state.student.timetable : [])
+      .find((entry) => Number(entry?.schedule_id || 0) === selectedScheduleId)
+      || null;
+    return {
+      role_view: 'student',
+      aggregate_percent: Number(aggregate?.aggregate_percent || 0),
+      attended_total: Number(aggregate?.attended_total || 0),
+      delivered_total: Number(aggregate?.delivered_total || 0),
+      at_risk_course_codes: courses
+        .filter((row) => Number(row?.delivered_classes || 0) >= 4 && Number(row?.attendance_percent || 0) < 75)
+        .map((row) => String(row?.course_code || '').trim())
+        .filter(Boolean),
+      watch_course_codes: courses
+        .filter((row) => Number(row?.delivered_classes || 0) > 0 && Number(row?.attendance_percent || 0) >= 75 && Number(row?.attendance_percent || 0) < 80)
+        .map((row) => String(row?.course_code || '').trim())
+        .filter(Boolean),
+      selected_schedule_id: selectedScheduleId,
+      selected_class: selectedClass
+        ? {
+          schedule_id: Number(selectedClass.schedule_id || 0),
+          course_code: String(selectedClass.course_code || '').trim() || null,
+          course_title: String(selectedClass.course_title || '').trim() || null,
+          start_time: String(selectedClass.start_time || '').trim() || null,
+          end_time: String(selectedClass.end_time || '').trim() || null,
+        }
+        : null,
+      pending_rectifications: Array.isArray(state.student.attendanceRectificationRequests) ? state.student.attendanceRectificationRequests.filter((row) => String(row?.status || '').trim().toLowerCase() === 'pending').length : 0,
+      recovery_plan_count: Array.isArray(state.student.recoveryPlans) ? state.student.recoveryPlans.length : 0,
+      profile_ready: Boolean(state.student.registrationNumber && state.student.profilePhotoDataUrl && state.student.hasEnrollmentVideo),
+      registration_ready: Boolean(state.student.registrationNumber),
+      profile_photo_ready: Boolean(state.student.profilePhotoDataUrl),
+      enrollment_ready: Boolean(state.student.hasEnrollmentVideo),
+    };
+  }
+  if (role === 'faculty') {
+    const selectedScheduleId = Number(state.faculty.selectedScheduleId || 0) || null;
+    const selectedSchedule = (Array.isArray(state.faculty.schedules) ? state.faculty.schedules : [])
+      .find((entry) => Number(entry?.schedule_id || entry?.id || 0) === selectedScheduleId)
+      || null;
+    return {
+      role_view: 'faculty',
+      schedule_count: Array.isArray(state.faculty.schedules) ? state.faculty.schedules.length : 0,
+      selected_schedule_id: selectedScheduleId,
+      selected_schedule: selectedSchedule
+        ? {
+          schedule_id: Number(selectedSchedule.schedule_id || selectedSchedule.id || 0),
+          course_code: String(selectedSchedule.course_code || '').trim() || null,
+          classroom_label: String(selectedSchedule.classroom_label || '').trim() || null,
+          class_date: String(selectedSchedule.class_date || '').trim() || null,
+        }
+        : null,
+      pending_rectifications: Array.isArray(state.faculty.rectificationRequests) ? state.faculty.rectificationRequests.filter((row) => String(row?.status || '').trim().toLowerCase() === 'pending').length : 0,
+      recovery_plan_count: Array.isArray(state.faculty.recoveryPlans) ? state.faculty.recoveryPlans.length : 0,
+    };
+  }
+  const adminSummary = state.admin.summary && typeof state.admin.summary === 'object' ? state.admin.summary : {};
+  return {
+    role_view: role || 'admin',
+    work_date: String(els.workDate?.value || todayISO()).trim() || todayISO(),
+    pending_correction_approvals: Number(adminSummary?.pending_correction_approvals || 0),
+    pending_identity_reviews: Number(adminSummary?.pending_identity_reviews || 0),
+    alerts_count: Array.isArray(state.admin.alerts) ? state.admin.alerts.length : 0,
+  };
+}
+
+function buildVerlynSaarthiClientContext() {
+  const status = state.student.saarthiStatus && typeof state.student.saarthiStatus === 'object'
+    ? state.student.saarthiStatus
+    : {};
+  const messages = Array.isArray(state.student.saarthiMessages) ? state.student.saarthiMessages : [];
+  return {
+    session_started: Boolean(messages.length || status?.session_id || status?.week_started),
+    message_count: messages.length,
+    attendance_credited: Boolean(status?.attendance_credited || status?.attendance_marked_at),
+    mandatory_date: String(status?.mandatory_date || '').trim() || null,
+    status_message: String(status?.status_message || state.student.saarthiUiMessage || '').trim() || null,
+    ui_state: String(state.student.saarthiUiState || 'neutral').trim().toLowerCase(),
+  };
+}
+
+function buildVerlynRemedialClientContext() {
+  const classes = Array.isArray(state.remedial.classes) ? state.remedial.classes : [];
+  const selectedClassId = Number(state.remedial.selectedClassId || 0) || null;
+  const selectedClass = classes.find((entry) => Number(entry?.id || 0) === selectedClassId)
+    || (state.remedial.validatedClass && typeof state.remedial.validatedClass === 'object' ? state.remedial.validatedClass : null);
+  return {
+    class_count: classes.length,
+    message_count: Array.isArray(state.remedial.messages) ? state.remedial.messages.length : 0,
+    selected_class_id: selectedClassId,
+    selected_class: selectedClass
+      ? {
+        id: Number(selectedClass.id || 0) || null,
+        course_code: String(selectedClass.course_code || '').trim() || null,
+        course_title: String(selectedClass.course_title || '').trim() || null,
+        class_date: String(selectedClass.class_date || '').trim() || null,
+        start_time: String(selectedClass.start_time || '').trim() || null,
+        remedial_code: String(selectedClass.remedial_code || '').trim() || null,
+      }
+      : null,
+    validated_class_id: Number(state.remedial.validatedClass?.id || 0) || null,
+    demo_bypass_lead_time: Boolean(state.remedial.demoBypassLeadTime),
+  };
+}
+
+function buildVerlynRmsClientContext() {
+  const dashboard = state.rms.dashboard && typeof state.rms.dashboard === 'object' ? state.rms.dashboard : {};
+  const selectedStudent = state.rms.selectedStudent && typeof state.rms.selectedStudent === 'object'
+    ? state.rms.selectedStudent
+    : (state.rms.attendanceContext?.student && typeof state.rms.attendanceContext.student === 'object' ? state.rms.attendanceContext.student : null);
+  const selectedThread = state.rms.selectedThread && typeof state.rms.selectedThread === 'object'
+    ? state.rms.selectedThread
+    : null;
+  const selectedSubject = resolveRmsAttendanceSelectedSubject();
+  const selectedSlot = resolveRmsAttendanceSelectedSlot();
+  return {
+    filters: {
+      category: String(state.rms.selectedCategory || '').trim() || 'all',
+      status: String(state.rms.selectedStatus || '').trim() || 'all',
+      thread_action: String(state.rms.threadAction || '').trim() || 'approve',
+    },
+    total_threads: Number(dashboard?.total_threads || 0),
+    total_pending: Number(dashboard?.total_pending || 0),
+    selected_student: selectedStudent
+      ? {
+        student_id: Number(selectedStudent.student_id || 0) || null,
+        name: String(selectedStudent.name || '').trim() || null,
+        registration_number: String(selectedStudent.registration_number || '').trim() || null,
+        section: String(selectedStudent.section || '').trim() || null,
+      }
+      : null,
+    selected_thread: selectedThread
+      ? {
+        category: String(selectedThread.category || '').trim() || null,
+        subject: String(selectedThread.subject || '').trim() || null,
+        pending_action: Boolean(selectedThread.pending_action),
+        action_state: String(selectedThread.action_state || '').trim() || null,
+      }
+      : null,
+    attendance_context: state.rms.attendanceContext
+      ? {
+        attendance_date: String(state.rms.attendanceContext.attendance_date || '').trim() || null,
+        subject_count: Array.isArray(state.rms.attendanceContext.subjects) ? state.rms.attendanceContext.subjects.length : 0,
+        selected_course_code: String(selectedSubject?.course_code || state.rms.attendanceSelectedCourseCode || '').trim() || null,
+        selected_schedule_id: Number(selectedSlot?.schedule_id || state.rms.attendanceSelectedScheduleId || 0) || null,
+        selected_slot_status: String(selectedSlot?.current_status_label || selectedSubject?.current_status_label || '').trim() || null,
+      }
+      : null,
+  };
+}
+
+function buildVerlynAdministrativeClientContext() {
+  const summary = state.admin.summary && typeof state.admin.summary === 'object' ? state.admin.summary : {};
+  return {
+    work_date: String(els.workDate?.value || todayISO()).trim() || todayISO(),
+    alerts_count: Array.isArray(state.admin.alerts) ? state.admin.alerts.length : 0,
+    identity_case_count: Array.isArray(state.admin.identityCases) ? state.admin.identityCases.length : 0,
+    recovery_plan_count: Array.isArray(state.admin.recoveryPlans) ? state.admin.recoveryPlans.length : 0,
+    copilot_runs_today: Number(summary?.copilot_runs_today || 0),
+    pending_correction_approvals: Number(summary?.pending_correction_approvals || 0),
+    pending_identity_reviews: Number(summary?.pending_identity_reviews || 0),
+    flagged_identity_cases: Number(summary?.flagged_identity_cases || 0),
+  };
+}
+
+function buildVerlynActiveModuleSummary(activeModule, moduleContext = {}) {
+  const lines = [];
+  const role = String(authState.user?.role || '').trim().toLowerCase();
+  if (activeModule === 'attendance') {
+    if (role === 'student') {
+      if (Number.isFinite(Number(moduleContext.aggregate_percent))) {
+        lines.push(`Attendance aggregate ${Number(moduleContext.aggregate_percent || 0).toFixed(2)}% across ${Number(moduleContext.delivered_total || 0)} delivered classes.`);
+      }
+      if (moduleContext.selected_class?.course_code) {
+        lines.push(`Selected class ${String(moduleContext.selected_class.course_code)} schedule ${Number(moduleContext.selected_schedule_id || 0)} ${String(moduleContext.selected_class.start_time || '--')}-${String(moduleContext.selected_class.end_time || '--')}.`);
+      }
+      if (Number(moduleContext.pending_rectifications || 0) > 0) {
+        lines.push(`${Number(moduleContext.pending_rectifications || 0)} attendance rectification request(s) are pending.`);
+      }
+      if (!moduleContext.profile_ready) {
+        lines.push('Attendance profile prerequisites are incomplete on the current student account.');
+      }
+    } else if (role === 'faculty') {
+      lines.push(`${Number(moduleContext.schedule_count || 0)} attendance schedule(s) are loaded in faculty view.`);
+      if (Number(moduleContext.pending_rectifications || 0) > 0) {
+        lines.push(`${Number(moduleContext.pending_rectifications || 0)} rectification request(s) are pending review.`);
+      }
+    } else {
+      lines.push(`Admin attendance view is loaded for ${String(moduleContext.work_date || todayISO())}.`);
+      if (Number(moduleContext.pending_correction_approvals || 0) > 0) {
+        lines.push(`${Number(moduleContext.pending_correction_approvals || 0)} correction approval(s) are pending.`);
+      }
+    }
+  } else if (activeModule === 'food') {
+    if (moduleContext.order_gate?.reason) {
+      lines.push(`Food Hall gate: ${String(moduleContext.order_gate.reason).replaceAll('_', ' ')}.`);
+    }
+    if (moduleContext.slot?.selected && moduleContext.slot?.label) {
+      lines.push(`Selected food slot: ${String(moduleContext.slot.label)}.`);
+    }
+    lines.push(`Cart has ${Number(moduleContext.cart?.item_count || 0)} item(s) and ${Number(moduleContext.cart?.total_quantity || 0)} total quantity.`);
+    if (moduleContext.location?.message) {
+      lines.push(`Location status: ${String(moduleContext.location.message)}.`);
+    }
+  } else if (activeModule === 'saarthi') {
+    lines.push(`Saarthi messages this week: ${Number(moduleContext.message_count || 0)}.`);
+    if (moduleContext.status_message) {
+      lines.push(String(moduleContext.status_message));
+    }
+  } else if (activeModule === 'remedial') {
+    lines.push(`Remedial classes loaded: ${Number(moduleContext.class_count || 0)}.`);
+    if (moduleContext.selected_class?.course_code) {
+      lines.push(`Selected remedial class ${String(moduleContext.selected_class.course_code)} on ${String(moduleContext.selected_class.class_date || '--')}.`);
+    }
+  } else if (activeModule === 'rms') {
+    lines.push(`RMS dashboard shows ${Number(moduleContext.total_threads || 0)} thread(s) and ${Number(moduleContext.total_pending || 0)} pending.`);
+    if (moduleContext.selected_student?.registration_number) {
+      lines.push(`Selected RMS student ${String(moduleContext.selected_student.registration_number)} (${String(moduleContext.selected_student.name || 'student')}).`);
+    }
+    if (moduleContext.selected_thread?.subject) {
+      lines.push(`Selected RMS thread subject: ${String(moduleContext.selected_thread.subject)}.`);
+    }
+  } else if (activeModule === 'administrative') {
+    lines.push(`Administrative live view is loaded for ${String(moduleContext.work_date || todayISO())}.`);
+    if (Number(moduleContext.pending_identity_reviews || 0) > 0) {
+      lines.push(`${Number(moduleContext.pending_identity_reviews || 0)} identity review(s) are pending.`);
+    }
+    if (Number(moduleContext.recovery_plan_count || 0) > 0) {
+      lines.push(`${Number(moduleContext.recovery_plan_count || 0)} recovery plan(s) are visible.`);
+    }
+  }
+  return lines.filter((line) => String(line || '').trim());
+}
+
+function buildVerlynFoodClientContext() {
+  const orderDate = resolveFoodOrderDateValue();
+  const selectedSlot = getSelectedFoodSlot();
+  const orderGate = getFoodRuntimeOrderGate({ slot: selectedSlot, orderDate });
+  const cartItems = Array.isArray(state.food.cart.items) ? state.food.cart.items : [];
+  const totalQuantity = cartItems.reduce((sum, item) => sum + Number(item?.quantity || 0), 0);
+  const cartShopId = String(state.food.cart.shopId || '').trim();
+  const cartShop = getShopById(cartShopId);
+  const deliveryPoint = String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim();
+  return {
+    demo_enabled: isFoodDemoEnabled(),
+    order_date: orderDate,
+    order_gate: {
+      can_order_now: Boolean(orderGate.canOrderNow),
+      can_browse_shops: Boolean(orderGate.canBrowseShops),
+      reason: String(orderGate.reason || '').trim(),
+      message: String(orderGate.message || '').trim(),
+      service_open_now: Boolean(orderGate.serviceOpenNow),
+      date_allowed: Boolean(orderGate.dateAllowed),
+      slot_elapsed: Boolean(orderGate.slotElapsed),
+    },
+    slot: {
+      selected: Boolean(selectedSlot),
+      slot_id: selectedSlot ? Number(selectedSlot.id) : null,
+      label: String(selectedSlot?.label || '').trim(),
+      start_time: String(selectedSlot?.start_time || '').trim() || null,
+      end_time: String(selectedSlot?.end_time || '').trim() || null,
+    },
+    cart: {
+      item_count: cartItems.length,
+      total_quantity: totalQuantity,
+      shop_id: cartShopId ? Number(cartShopId) : null,
+      shop_name: String(cartShop?.name || '').trim() || null,
+    },
+    checkout: {
+      review_open: Boolean(state.food.checkoutPreviewOpen),
+      delivery_point_selected: Boolean(deliveryPoint),
+      delivery_point: deliveryPoint || null,
+    },
+    location: {
+      verified: Boolean(state.food.location.verified),
+      allowed: Boolean(state.food.location.allowed),
+      fresh: Boolean(isFoodLocationFresh()),
+      checking: Boolean(state.food.location.checking),
+      message: String(state.food.location.message || '').trim() || null,
+    },
+    shops: {
+      active_count: Array.isArray(state.food.shops) ? state.food.shops.length : 0,
+    },
+  };
+}
+
+function buildVerlynRuntimePayload(payload = {}) {
+  const basePayload = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : {};
+  const activeModule = getSanitizedModuleKey(state.ui.activeModule);
+  const nextClientContext = (
+    basePayload.client_context
+    && typeof basePayload.client_context === 'object'
+    && !Array.isArray(basePayload.client_context)
+  )
+    ? { ...basePayload.client_context }
+    : {};
+  const moduleContextBuilders = {
+    attendance: buildVerlynAttendanceClientContext,
+    food: buildVerlynFoodClientContext,
+    saarthi: buildVerlynSaarthiClientContext,
+    remedial: buildVerlynRemedialClientContext,
+    rms: buildVerlynRmsClientContext,
+    administrative: buildVerlynAdministrativeClientContext,
+  };
+  const moduleBuilder = moduleContextBuilders[activeModule];
+  const activeModuleContext = typeof moduleBuilder === 'function' ? moduleBuilder() : {};
+  if (activeModule && activeModuleContext && typeof activeModuleContext === 'object' && !Array.isArray(activeModuleContext)) {
+    nextClientContext[activeModule] = {
+      ...((nextClientContext[activeModule] && typeof nextClientContext[activeModule] === 'object' && !Array.isArray(nextClientContext[activeModule]))
+        ? nextClientContext[activeModule]
+        : {}),
+      ...activeModuleContext,
+    };
+  }
+  nextClientContext.ui = {
+    ...((nextClientContext.ui && typeof nextClientContext.ui === 'object' && !Array.isArray(nextClientContext.ui))
+      ? nextClientContext.ui
+      : {}),
+    active_module: activeModule || null,
+    active_module_label: activeModule ? getVerlynModuleLabel(activeModule) : null,
+    screen_summary: buildVerlynActiveModuleSummary(activeModule, activeModuleContext),
+  };
+  return {
+    ...basePayload,
+    active_module: activeModule || null,
+    client_context: nextClientContext,
+  };
+}
+
 async function runVerlynCopilot(payload, { syncInput = true } = {}) {
   if (!els.verlynOutput) {
     return null;
   }
-  if (!authState.token) {
+  // Copilot should work for any authenticated session, including cookie-backed sessions
+  // where a bearer token may be intentionally absent on the client.
+  if (!authState.user) {
     setVerlynStatus('Login is required to run campus copilot actions.', true, 'error');
     els.verlynOutput.textContent = getVerlynDefaultOutput();
     return null;
   }
-  const queryText = String(payload?.query_text || '').trim();
+  const requestPayload = buildVerlynRuntimePayload(payload);
+  const queryText = String(requestPayload?.query_text || '').trim();
   if (!queryText) {
     setVerlynStatus('Type your question first.', true, 'empty');
     els.verlynOutput.textContent = getVerlynDefaultOutput();
@@ -2672,29 +3095,39 @@ async function runVerlynCopilot(payload, { syncInput = true } = {}) {
   if (syncInput && els.verlynInput) {
     els.verlynInput.value = queryText;
   }
-  setVerlynStatus('Running audited campus check...', false, 'loading');
+  setVerlynStatus('Running...', false, 'loading');
   try {
     const response = await api('/copilot/query', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
     });
     els.verlynOutput.textContent = formatVerlynCopilotResponse(response);
     const outcome = String(response?.outcome || '').trim().toLowerCase();
     if (outcome === 'completed') {
-      setVerlynStatus('Action completed and logged.', false, 'success');
+      setVerlynStatus('Done. Logged.', false, 'success');
     } else if (outcome === 'blocked') {
-      setVerlynStatus('Copilot needs more context before it can execute. Result logged.', false, 'neutral');
+      const hasExplanation = Array.isArray(response?.explanation) && response.explanation.length > 0;
+      setVerlynStatus(
+        hasExplanation ? 'Blocked by current campus checks.' : 'Need a bit more context.',
+        hasExplanation,
+        hasExplanation ? 'error' : 'neutral',
+      );
     } else if (outcome === 'denied') {
-      setVerlynStatus('Role guardrail denied this request. Result logged.', true, 'error');
+      setVerlynStatus('Denied by role guardrails.', true, 'error');
     } else {
-      setVerlynStatus('Copilot could not complete the request. Review the audit-backed response.', true, 'error');
+      setVerlynStatus('Could not complete the request.', true, 'error');
     }
     if (
       outcome === 'completed'
       && String(response?.intent || '').trim().toLowerCase() === 'create_remedial_plan'
       && getSanitizedModuleKey(state.ui.activeModule) === 'remedial'
     ) {
-      await refreshRemedialModule();
+      upsertRemedialClassFromCopilot(requestPayload, response);
+      try {
+        await refreshRemedialModule();
+      } catch (refreshError) {
+        log(refreshError?.message || 'Remedial module refresh failed after copilot scheduling');
+      }
       syncVisibleVerlynQuickActions();
     }
     if (authState.user?.role === 'admin' && getSanitizedModuleKey(state.ui.activeModule) === 'administrative') {
@@ -3470,6 +3903,28 @@ function setAuthMode(mode) {
   renderForgotOtpCooldown();
 }
 
+function setSignupAdminPhotoPreview(dataUrl) {
+  if (!els.authSignupAdminPhotoPreview) {
+    return;
+  }
+  const safeUrl = String(dataUrl || '').trim();
+  if (!safeUrl) {
+    els.authSignupAdminPhotoPreview.removeAttribute('src');
+    setHidden(els.authSignupAdminPhotoPreview, true);
+    return;
+  }
+  els.authSignupAdminPhotoPreview.src = safeUrl;
+  setHidden(els.authSignupAdminPhotoPreview, false);
+}
+
+function resetSignupAdminPhoto() {
+  authState.signupAdminPhotoDataUrl = '';
+  if (els.authSignupAdminPhoto) {
+    els.authSignupAdminPhoto.value = '';
+  }
+  setSignupAdminPhotoPreview('');
+}
+
 function syncAuthRoleForm() {
   if (!isSignupMode()) {
     setHidden(els.authSignupRegistrationWrap, true);
@@ -3477,21 +3932,29 @@ function syncAuthRoleForm() {
     setHidden(els.authSectionWrap, true);
     setHidden(els.authSemesterWrap, true);
     setHidden(els.authParentEmailWrap, true);
+    setHidden(els.authSignupAdminPhotoWrap, true);
+    resetSignupAdminPhoto();
     return;
   }
   const role = selectedAuthRole();
   const isStudent = role === 'student';
   const isFaculty = role === 'faculty';
+  const isAdmin = role === 'admin';
   setHidden(els.authSignupRegistrationWrap, !isStudent);
   setHidden(els.authSignupFacultyIdWrap, !isFaculty);
   setHidden(els.authSectionWrap, !isStudent);
   setHidden(els.authSemesterWrap, !isStudent);
   setHidden(els.authParentEmailWrap, !isStudent);
+  setHidden(els.authSignupAdminPhotoWrap, !isAdmin);
+  if (!isAdmin) {
+    resetSignupAdminPhoto();
+  }
 }
 
-const MODULE_KEYS = new Set(['attendance', 'food', 'administrative', 'rms', 'remedial']);
+const MODULE_KEYS = new Set(['attendance', 'saarthi', 'food', 'administrative', 'rms', 'remedial']);
 const ROUTE_SPLIT_MODULES_BY_ROUTE = {
   attendance: ['attendance', 'messages'],
+  saarthi: ['attendance'],
   remedial: ['messages', 'remedial'],
   rms: ['rms'],
   food: ['food'],
@@ -3518,8 +3981,7 @@ function routeSplitKeysForRoute(moduleKey) {
 
 async function refreshStudentAttendanceRealtime() {
   await Promise.allSettled([
-    refreshStudentKpiTimetable({ forceNetwork: true }),
-    loadStudentTimetable({ forceNetwork: true }),
+    refreshStudentTimetableSurface({ forceNetwork: true }),
     loadStudentAttendanceInsights(),
     loadSaarthiStatus({ silent: true }),
   ]);
@@ -3736,6 +4198,9 @@ function isModuleAccessible(moduleKey, role = authState.user?.role) {
     return false;
   }
   const key = normalizeModuleKey(moduleKey);
+  if (key === 'saarthi') {
+    return role === 'student';
+  }
   if (key === 'attendance') {
     return role === 'student' || role === 'faculty' || role === 'admin';
   }
@@ -3766,6 +4231,7 @@ function setTopNavActive(moduleKey) {
   const active = normalizeModuleKey(moduleKey);
   const topButtons = [
     els.topNavAttendanceBtn,
+    els.topNavSaarthiBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
@@ -3824,7 +4290,7 @@ function updateDashboardHeroByRole() {
     els.dashboardSubtitle.textContent = 'Run classes, review attendance queues, and track section performance.';
   } else if (role === 'student') {
     els.dashboardTitle.textContent = 'Student Success Dashboard';
-    els.dashboardSubtitle.textContent = 'Track attendance, schedules, remedials, and campus food workflows from one place.';
+    els.dashboardSubtitle.textContent = 'Track attendance, Saarthi mentoring, schedules, remedials, and campus food workflows from one place.';
   } else if (role === 'owner') {
     els.dashboardTitle.textContent = 'Vendor Operations Console';
     els.dashboardSubtitle.textContent = 'Manage order intake, preparation flow, and delivery timelines for your shop.';
@@ -3832,6 +4298,99 @@ function updateDashboardHeroByRole() {
     els.dashboardTitle.textContent = 'Campus Command Center';
     els.dashboardSubtitle.textContent = 'Unified attendance, remedial, food, and operations workflows.';
   }
+}
+
+const ADMIN_SUBMODULE_DEFAULTS = {
+  attendance: 'attendance-ops',
+  rms: 'rms-overview',
+};
+
+const ROLE_CLASS_LIST = ['role-admin', 'role-faculty', 'role-student', 'role-owner', 'role-guest'];
+
+function syncRoleClass(role) {
+  const body = document.body;
+  if (!body) {
+    return;
+  }
+  ROLE_CLASS_LIST.forEach((className) => body.classList.remove(className));
+  const safeRole = role || 'guest';
+  body.classList.add(`role-${safeRole}`);
+  body.dataset.role = safeRole;
+}
+
+function resolveAdminSubmodule(scope, panels) {
+  const candidates = Array.from(panels)
+    .map((panel) => String(panel.dataset.adminSubmodule || '').trim())
+    .filter(Boolean);
+  const available = new Set(candidates);
+  const stored = state.ui.adminSubmodules?.[scope];
+  const fallback = ADMIN_SUBMODULE_DEFAULTS[scope];
+  let active = String(stored || fallback || '').trim();
+  if (!active || !available.has(active)) {
+    active = candidates[0] || active;
+    if (active) {
+      state.ui.adminSubmodules[scope] = active;
+    }
+  }
+  return active;
+}
+
+function syncAdminSubmodulePanels(scope) {
+  if (!scope) {
+    return;
+  }
+  const panels = document.querySelectorAll(`[data-admin-submodule-scope="${scope}"]`);
+  if (!panels.length) {
+    return;
+  }
+  const isAdmin = authState.user?.role === 'admin';
+  if (!isAdmin) {
+    panels.forEach((panel) => {
+      panel.classList.remove('is-active');
+      panel.removeAttribute('aria-hidden');
+    });
+    return;
+  }
+  const active = resolveAdminSubmodule(scope, panels);
+  panels.forEach((panel) => {
+    const isActive = panel.dataset.adminSubmodule === active;
+    panel.classList.toggle('is-active', isActive);
+    panel.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+  });
+  const select = document.querySelector(`[data-admin-submodule-select="${scope}"]`);
+  if (select && active && select.value !== active) {
+    select.value = active;
+  }
+}
+
+function syncAdminSubmodulesForRole() {
+  syncAdminSubmodulePanels('attendance');
+  syncAdminSubmodulePanels('rms');
+}
+
+function setAdminSubmodule(scope, submodule) {
+  if (!scope || !submodule) {
+    return;
+  }
+  if (!state.ui.adminSubmodules) {
+    state.ui.adminSubmodules = {};
+  }
+  state.ui.adminSubmodules[scope] = submodule;
+  syncAdminSubmodulePanels(scope);
+}
+
+function bindAdminSubmodulePickers() {
+  const selects = document.querySelectorAll('[data-admin-submodule-select]');
+  selects.forEach((select) => {
+    select.addEventListener('change', () => {
+      const scope = select.dataset.adminSubmoduleSelect;
+      const nextValue = String(select.value || '').trim();
+      if (!scope || !nextValue) {
+        return;
+      }
+      setAdminSubmodule(scope, nextValue);
+    });
+  });
 }
 
 function applyRoleUI() {
@@ -3845,11 +4404,14 @@ function applyRoleUI() {
   const activeModule = getSanitizedModuleKey(state.ui.activeModule);
   state.ui.activeModule = activeModule;
 
+  syncRoleClass(role);
+
   setHidden(els.accountSection, true);
   setHidden(els.executiveSection, !isAdmin || activeModule !== 'administrative');
   setHidden(els.rmsSection, !isFacultyOrAdmin || activeModule !== 'rms');
   setHidden(els.rmsAdminDedicatedNote, !isAdmin || activeModule !== 'rms');
   setHidden(els.studentSection, !isStudent || activeModule !== 'attendance');
+  setHidden(els.saarthiSection, !isStudent || activeModule !== 'saarthi');
   setHidden(els.facultySection, !isFacultyOrAdmin || activeModule !== 'attendance');
   setHidden(els.adminAttendanceActionsCard, !isAdmin || activeModule !== 'attendance');
   setHidden(els.foodSection, !authState.user || activeModule !== 'food');
@@ -3885,9 +4447,12 @@ function applyRoleUI() {
     els.aiOutput.textContent = 'AI output will appear here.';
   }
 
+  syncAdminSubmodulesForRole();
+
   setTopNavActive(activeModule);
   const moduleButtons = [
     els.topNavAttendanceBtn,
+    els.topNavSaarthiBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
@@ -3914,9 +4479,11 @@ function applyRoleUI() {
     setSidebarActive('dashboard');
   }
   updateDashboardHeroByRole();
+  renderFoodDemoToggle();
   renderEnrollmentSummary();
   syncFoodLocationMonitoringByModule();
   syncRemedialLiveTicker();
+  syncVerlynVisualContext();
   updateVerlynVisibility();
   renderVerlynQuickActions();
   updateChotuVisibility();
@@ -4798,6 +5365,7 @@ function resetStudentProfileState() {
   state.student.saarthiStatus = null;
   state.student.saarthiMessages = [];
   state.student.saarthiSending = false;
+  state.student.saarthiResetting = false;
   state.student.saarthiUiMessage = 'Saarthi session will appear here.';
   state.student.saarthiUiState = 'neutral';
   state.student.attendanceDetailsCourseKey = '';
@@ -4867,6 +5435,7 @@ function setSession(token, user) {
   state.food.menuByShop = {};
   state.food.cart.shopId = '';
   state.food.cart.items = [];
+  state.food.cartUpdatedAt = '';
   setFoodCartModalTab('cart');
   state.food.checkoutPreviewOpen = false;
   state.food.checkoutDeliveryPoint = '';
@@ -4926,6 +5495,7 @@ function setSession(token, user) {
   state.rms.threadAction = 'approve';
   state.rms.attendanceContext = null;
   state.rms.attendanceSelectedCourseCode = '';
+  state.rms.attendanceSelectedScheduleId = null;
   state.rms.attendanceUpdate = null;
   state.admin.telemetryHistory = [];
   state.admin.summary = null;
@@ -4958,11 +5528,15 @@ function setSession(token, user) {
     els.rmsAttendanceRegistration.value = '';
   }
   if (els.rmsAttendanceStudentSummary) {
-    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student day-wise classes.';
   }
   if (els.rmsAttendanceSubjectSelect) {
     els.rmsAttendanceSubjectSelect.innerHTML = '<option value="">Select subject</option>';
     els.rmsAttendanceSubjectSelect.value = '';
+  }
+  if (els.rmsAttendanceSlotSelect) {
+    els.rmsAttendanceSlotSelect.innerHTML = '<option value="">Select time slot</option>';
+    els.rmsAttendanceSlotSelect.value = '';
   }
   if (els.rmsAttendanceDate) {
     els.rmsAttendanceDate.value = todayISO();
@@ -4976,7 +5550,7 @@ function setSession(token, user) {
   if (els.rmsAttendanceNote) {
     els.rmsAttendanceNote.value = '';
   }
-  setRmsAttendanceStatus('Search by registration number, choose subject, then apply attendance status.');
+  setRmsAttendanceStatus('Search by registration number, choose subject and slot, then apply attendance status.');
   syncRmsThreadActionForm();
   renderRmsSelectedThreadSummary(null);
   renderRmsAttendanceStudentSummary(null);
@@ -4985,6 +5559,13 @@ function setSession(token, user) {
   state.studentMessages = [];
   resetStudentProfileState();
   resetFacultyProfileState();
+  state.student.weekStart = '';
+  state.student.viewDate = '';
+  state.student.timetable = [];
+  state.student.timetableCache = {};
+  state.student.timetableNetworkRequests.clear();
+  state.student.timetablePrefetching.clear();
+  state.student.timetableRequestToken = 0;
   if (user?.role === 'student') {
     state.student.minTimetableDate = STUDENT_TIMETABLE_START_DATE;
     state.student.kpiTimetable = [];
@@ -5007,9 +5588,6 @@ function setSession(token, user) {
       els.weekStartDate.value = state.student.viewDate;
     }
     startStudentRealtimeTicker();
-    void ensureCurrentWeekTimetableVisible({ forceNetwork: true }).catch((error) => {
-      log(error.message || 'Failed to auto-load current week timetable');
-    });
   } else {
     stopStudentRealtimeTicker();
   }
@@ -5022,6 +5600,7 @@ function setSession(token, user) {
 function clearSession() {
   stopFoodLocationMonitoring();
   stopFoodDemandLiveTicker();
+  stopPresentationTour({ silent: true });
   authState.token = '';
   authState.user = null;
   authState.pendingEmail = '';
@@ -5048,11 +5627,13 @@ function clearSession() {
   persistToken('');
   state.ui.activeModule = 'attendance';
   state.student.selectedScheduleId = null;
+  state.student.weekStart = '';
   state.student.minTimetableDate = STUDENT_TIMETABLE_START_DATE;
   state.student.viewDate = '';
   state.student.timetable = [];
   state.student.kpiTimetable = [];
   state.student.timetableCache = {};
+  state.student.timetableNetworkRequests.clear();
   state.student.timetablePrefetching.clear();
   state.student.timetableRequestToken = 0;
   state.student.kpiRefreshInFlight = false;
@@ -5105,6 +5686,7 @@ function clearSession() {
   state.food.selectedShopId = '';
   state.food.cart.shopId = '';
   state.food.cart.items = [];
+  state.food.cartUpdatedAt = '';
   setFoodCartModalTab('cart');
   state.food.location.requestedOnce = false;
   state.food.location.autoPromptAttempted = false;
@@ -5162,6 +5744,7 @@ function clearSession() {
   state.rms.threadAction = 'approve';
   state.rms.attendanceContext = null;
   state.rms.attendanceSelectedCourseCode = '';
+  state.rms.attendanceSelectedScheduleId = null;
   state.rms.attendanceUpdate = null;
   if (els.adminSearchResults) {
     els.adminSearchResults.innerHTML = '';
@@ -5184,11 +5767,15 @@ function clearSession() {
     els.rmsAttendanceRegistration.value = '';
   }
   if (els.rmsAttendanceStudentSummary) {
-    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student day-wise classes.';
   }
   if (els.rmsAttendanceSubjectSelect) {
     els.rmsAttendanceSubjectSelect.innerHTML = '<option value="">Select subject</option>';
     els.rmsAttendanceSubjectSelect.value = '';
+  }
+  if (els.rmsAttendanceSlotSelect) {
+    els.rmsAttendanceSlotSelect.innerHTML = '<option value="">Select time slot</option>';
+    els.rmsAttendanceSlotSelect.value = '';
   }
   if (els.rmsAttendanceDate) {
     els.rmsAttendanceDate.value = todayISO();
@@ -5202,7 +5789,7 @@ function clearSession() {
   if (els.rmsAttendanceNote) {
     els.rmsAttendanceNote.value = '';
   }
-  setRmsAttendanceStatus('Search by registration number, choose subject, then apply attendance status.');
+  setRmsAttendanceStatus('Search by registration number, choose subject and slot, then apply attendance status.');
   syncRmsThreadActionForm();
   renderRmsSelectedThreadSummary(null);
   renderRmsAttendanceStudentSummary(null);
@@ -7174,7 +7761,7 @@ async function loadShopMenuItems(shopId, { force = false } = {}) {
     state.food.menuByShop[key] = [];
     return [];
   }
-  const rows = await api(`/food/shops/${shop.apiShopId}/menu-items?active_only=true`);
+  const rows = await api(`/food/shops/${shop.apiShopId}/menu-items?active_only=${isFoodDemoEnabled() ? 'false' : 'true'}`);
   const items = Array.isArray(rows) ? rows.map((item) => ({
     id: Number(item.id),
     name: String(item.name || `Item #${item.id}`),
@@ -7346,7 +7933,7 @@ async function openFoodShopModal(shopId) {
       addOneBtn.className = 'btn btn-secondary';
       addOneBtn.type = 'button';
       addOneBtn.textContent = 'Add';
-      addOneBtn.disabled = Boolean(menuItem.soldOut) || Number(menuItem.stockQuantity) === 0;
+      addOneBtn.disabled = !isFoodDemoEnabled() && (Boolean(menuItem.soldOut) || Number(menuItem.stockQuantity) === 0);
       addOneBtn.addEventListener('click', () => {
         void addMenuItemToCart(shop.id, menuItem, 1, buildItemNote()).catch((error) => {
           setFoodStatus(error.message || 'Failed to update cart.', true);
@@ -7356,13 +7943,13 @@ async function openFoodShopModal(shopId) {
       addTwoBtn.className = 'btn';
       addTwoBtn.type = 'button';
       addTwoBtn.textContent = 'Add x2';
-      addTwoBtn.disabled = Boolean(menuItem.soldOut) || Number(menuItem.stockQuantity) === 0;
+      addTwoBtn.disabled = !isFoodDemoEnabled() && (Boolean(menuItem.soldOut) || Number(menuItem.stockQuantity) === 0);
       addTwoBtn.addEventListener('click', () => {
         void addMenuItemToCart(shop.id, menuItem, 2, buildItemNote()).catch((error) => {
           setFoodStatus(error.message || 'Failed to update cart.', true);
         });
       });
-      if (menuItem.soldOut || Number(menuItem.stockQuantity) === 0) {
+      if (!isFoodDemoEnabled() && (menuItem.soldOut || Number(menuItem.stockQuantity) === 0)) {
         const soldOutBadge = document.createElement('span');
         soldOutBadge.className = 'shop-popular';
         soldOutBadge.textContent = 'Sold Out';
@@ -7537,10 +8124,61 @@ function buildFoodCartKey(menuItemId, itemNote = '') {
   return `${Number(menuItemId || 0)}::${normalizeFoodKey(itemNote)}`;
 }
 
+function hashFoodCheckoutSeed(seed = '') {
+  let hash = 2166136261;
+  const normalizedSeed = String(seed || '');
+  for (let index = 0; index < normalizedSeed.length; index += 1) {
+    hash ^= normalizedSeed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function buildFoodCheckoutIdempotencyKey({
+  studentId,
+  orderDate,
+  slotId,
+  shopId,
+  deliveryPoint,
+  cartItems,
+  cartUpdatedAt,
+}) {
+  const normalizedItems = (Array.isArray(cartItems) ? cartItems : [])
+    .map((entry) => ({
+      menuItemId: Number(entry?.menuItemId || 0),
+      quantity: Math.max(1, Number(entry?.quantity || 1)),
+      itemNote: String(entry?.itemNote || '').trim().toLowerCase(),
+    }))
+    .filter((entry) => entry.menuItemId > 0)
+    .sort((left, right) => {
+      if (left.menuItemId !== right.menuItemId) {
+        return left.menuItemId - right.menuItemId;
+      }
+      if (left.itemNote !== right.itemNote) {
+        return left.itemNote.localeCompare(right.itemNote);
+      }
+      return left.quantity - right.quantity;
+    })
+    .map((entry) => `${entry.menuItemId}:${entry.quantity}:${entry.itemNote}`)
+    .join('|');
+  const seed = [
+    Number(studentId || 0),
+    String(orderDate || '').trim(),
+    Number(slotId || 0),
+    Number(shopId || 0),
+    String(deliveryPoint || '').trim().toLowerCase(),
+    String(cartUpdatedAt || '').trim(),
+    normalizedItems,
+  ].join('|');
+  const compactDate = String(orderDate || '').replaceAll('-', '') || 'date';
+  return `foodchk-${Number(studentId || 0)}-${compactDate}-${Number(slotId || 0)}-${hashFoodCheckoutSeed(seed)}`.slice(0, 100);
+}
+
 function applyFoodCartPayload(cartPayload, { syncSelectedShop = true } = {}) {
   const raw = (cartPayload && typeof cartPayload === 'object') ? cartPayload : {};
   const parsedShopId = Number(raw.shop_id || 0);
   state.food.cart.shopId = parsedShopId > 0 ? String(parsedShopId) : '';
+  state.food.cartUpdatedAt = String(raw.updated_at || '').trim();
 
   const nextItems = [];
   const rawItems = Array.isArray(raw.items) ? raw.items : [];
@@ -7629,6 +8267,74 @@ async function persistFoodCartUiState() {
   }
 }
 
+function isFoodDemoEnabled() {
+  return Boolean(state.food.demoEnabled && authState.user?.role === 'student');
+}
+
+function foodDemoRequestHeaders(headers = {}) {
+  if (!isFoodDemoEnabled()) {
+    return headers;
+  }
+  return {
+    ...headers,
+    'X-Food-Demo-Mode': 'true',
+  };
+}
+
+function renderFoodDemoToggle() {
+  if (els.foodDemoToggleBtn) {
+    const enabled = isFoodDemoEnabled();
+    els.foodDemoToggleBtn.dataset.active = enabled ? 'true' : 'false';
+    els.foodDemoToggleBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    els.foodDemoToggleBtn.textContent = enabled ? 'Demo Bypass On' : 'Demo Bypass Off';
+    els.foodDemoToggleBtn.classList.toggle('btn-primary', enabled);
+    els.foodDemoToggleBtn.classList.toggle('btn-secondary', !enabled);
+    els.foodDemoToggleBtn.disabled = authState.user?.role !== 'student';
+  }
+  if (els.foodDemoStatus) {
+    const enabled = isFoodDemoEnabled();
+    setHidden(els.foodDemoStatus, !enabled);
+    els.foodDemoStatus.textContent = enabled
+      ? 'Food Hall demo bypass is on. Date, time, location, stock, slot, and single-shop constraints are bypassed temporarily.'
+      : 'Food Hall demo bypass is off.';
+  }
+}
+
+function setFoodDemoEnabled(enabled, { persist = true } = {}) {
+  const changed = state.food.demoEnabled !== Boolean(enabled);
+  state.food.demoEnabled = Boolean(enabled);
+  if (persist) {
+    try {
+      if (state.food.demoEnabled) {
+        window.localStorage.setItem(FOOD_DEMO_STORAGE_KEY, 'true');
+      } else {
+        window.localStorage.removeItem(FOOD_DEMO_STORAGE_KEY);
+      }
+    } catch (_) {
+      // Ignore storage failures in restricted runtimes.
+    }
+  }
+  if (changed) {
+    state.food.menuByShop = {};
+    void refreshFoodModule({ silentStatus: true }).catch((error) => {
+      log(`Food demo refresh delayed: ${error?.message || 'Unknown error'}`);
+    });
+  }
+  renderFoodDemoToggle();
+  renderFoodCheckoutPreview();
+  renderFoodCart();
+  renderFoodShops();
+  syncFoodOrderActionState();
+}
+
+function restoreFoodDemoEnabled() {
+  try {
+    state.food.demoEnabled = window.localStorage.getItem(FOOD_DEMO_STORAGE_KEY) === 'true';
+  } catch (_) {
+    state.food.demoEnabled = false;
+  }
+}
+
 function getSelectedFoodSlot() {
   const slotId = Number(els.foodSlotSelect?.value || 0);
   return state.food.slots.find((slot) => Number(slot.id) === slotId) || null;
@@ -7662,6 +8368,17 @@ function clampFoodOrderDateToToday({ showNotice = false } = {}) {
 }
 
 function getFoodRuntimeOrderGate({ slot = null, orderDate = null, now = new Date() } = {}) {
+  if (isFoodDemoEnabled()) {
+    return {
+      dateAllowed: true,
+      serviceOpenNow: true,
+      slotElapsed: false,
+      canBrowseShops: true,
+      canOrderNow: true,
+      reason: 'demo_bypass',
+      message: 'Food Hall demo bypass is active.',
+    };
+  }
   const selectedDate = String(orderDate || resolveFoodOrderDateValue()).trim() || todayISO();
   const today = todayISO();
   const nowMinutes = (now.getHours() * 60) + now.getMinutes();
@@ -7859,7 +8576,9 @@ function renderFoodCheckoutPreview() {
     : 'No slot selected';
   const delivery = String(state.food.checkoutDeliveryPoint || '').trim();
   const locationOk = state.food.location.verified && state.food.location.allowed && isFoodLocationFresh();
-  const locationText = locationOk ? 'Campus location verified' : 'Location not verified yet';
+  const locationText = isFoodDemoEnabled()
+    ? 'Demo bypass active'
+    : (locationOk ? 'Campus location verified' : 'Location not verified yet');
   if (els.foodCheckoutFeeBreakdown) {
     els.foodCheckoutFeeBreakdown.innerHTML = `
       <div class="food-checkout-fee-row"><span>Items subtotal</span><strong>${formatMoney(pricing.subtotal)}</strong></div>
@@ -7899,11 +8618,11 @@ function openFoodCheckoutPreview() {
   if (!state.food.cart.items.length) {
     throw new Error('Add menu items before checkout.');
   }
-  if (!Number(els.foodSlotSelect?.value || 0)) {
+  if (!Number(els.foodSlotSelect?.value || 0) && !(isFoodDemoEnabled() && Number(state.food.slots?.[0]?.id || 0))) {
     throw new Error('Select break slot before checkout.');
   }
   const selectedSlot = getSelectedFoodSlot();
-  if (!selectedSlot) {
+  if (!selectedSlot && !isFoodDemoEnabled()) {
     throw new Error('Selected break slot is unavailable. Refresh and retry.');
   }
   const orderGate = getFoodRuntimeOrderGate({ slot: selectedSlot });
@@ -7929,7 +8648,7 @@ async function addMenuItemToCart(shopId, menuItem, quantity = 1, itemNote = '') 
   const activeShopId = state.food.cart.shopId;
   const normalizedShopId = String(resolvedShopId);
   const cleanNote = String(itemNote || '').trim();
-  if (activeShopId && String(activeShopId) !== normalizedShopId) {
+  if (!isFoodDemoEnabled() && activeShopId && String(activeShopId) !== normalizedShopId) {
     const message = 'Orders are accepted only from a single shop at a time. Clear or checkout the current cart first.';
     showFoodPopup('Single Shop Rule', message, { isError: true, autoHideMs: 2600 });
     throw new Error(message);
@@ -7938,6 +8657,7 @@ async function addMenuItemToCart(shopId, menuItem, quantity = 1, itemNote = '') 
   const addedLabel = cleanNote ? `${menuItem.name} (${cleanNote})` : menuItem.name;
   const payload = await api('/food/cart/items', {
     method: 'POST',
+    headers: foodDemoRequestHeaders(),
     body: JSON.stringify({
       shop_id: resolvedShopId,
       menu_item_id: menuItemId,
@@ -7975,6 +8695,7 @@ async function updateCartItemQty(cartKey, delta) {
   }
   const payload = await api('/food/cart/items', {
     method: 'POST',
+    headers: foodDemoRequestHeaders(),
     body: JSON.stringify({
       shop_id: resolvedShopId,
       menu_item_id: Number(item.menuItemId || 0),
@@ -8349,6 +9070,15 @@ function setFacultyMessageStatus(message, isError = false, state = 'neutral') {
     return;
   }
   setUiStateMessage(els.facultyMessageStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setDirectEmailStatus(message, isError = false, state = 'neutral') {
+  if (!els.directEmailStatus) {
+    return;
+  }
+  setUiStateMessage(els.directEmailStatus, message, {
     state: isError ? 'error' : state,
   });
 }
@@ -8814,8 +9544,7 @@ async function refreshFoodSlotHints(orderDate) {
 
   if (!rows) {
     try {
-      const payload = await api(`/attendance/student/timetable?week_start=${weekStart}`);
-      cacheTimetableWeekPayload(payload.week_start || weekStart, payload);
+      const payload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
       rows = Array.isArray(payload.classes) ? payload.classes : [];
     } catch (_) {
       rows = [];
@@ -8835,6 +9564,7 @@ function renderFoodSlotOptions() {
   const nowMinutes = (now.getHours() * 60) + now.getMinutes();
   const selectedDate = resolveFoodOrderDateValue();
   const isTodaySelected = selectedDate === todayISO();
+  const demoEnabled = isFoodDemoEnabled();
   const selectableSlotIds = [];
   els.foodSlotSelect.innerHTML = '';
   if (!state.food.slots.length) {
@@ -8852,12 +9582,13 @@ function renderFoodSlotOptions() {
     option.value = String(slot.id);
     const baseLabel = `${slot.label} (${formatTime(slot.start_time)} - ${formatTime(slot.end_time)})`;
     const slotEndMinutes = toMinutes(slot.end_time);
-    const slotElapsed = isTodaySelected && Number.isFinite(slotEndMinutes) && slotEndMinutes <= nowMinutes;
+    const slotElapsed = !demoEnabled && isTodaySelected && Number.isFinite(slotEndMinutes) && slotEndMinutes <= nowMinutes;
     if (slotElapsed) {
       option.disabled = true;
       option.textContent = `${baseLabel} • Closed`;
     } else {
-      option.textContent = hint?.label ? `${baseLabel} • ${hint.label}` : baseLabel;
+      const suffix = hint?.label || (demoEnabled ? 'Demo override' : '');
+      option.textContent = suffix ? `${baseLabel} • ${suffix}` : baseLabel;
       selectableSlotIds.push(slot.id);
     }
     els.foodSlotSelect.appendChild(option);
@@ -9146,6 +9877,64 @@ function syncFoodOrderInState(updatedOrder) {
   }
 }
 
+function mergeFoodOrdersIntoState(orderRows, { assumeVerifiedPayment = false } = {}) {
+  const normalizedRows = (Array.isArray(orderRows) ? orderRows : [])
+    .map((row) => {
+      const id = Number(row?.id || 0);
+      if (!id) {
+        return null;
+      }
+      const nextRow = { ...row, id };
+      if (assumeVerifiedPayment) {
+        const currentStatus = String(nextRow.status || '').trim().toLowerCase();
+        nextRow.payment_status = 'paid';
+        nextRow.payment_provider = String(nextRow.payment_provider || 'razorpay');
+        if (currentStatus === 'placed') {
+          nextRow.status = 'verified';
+        }
+        const verifiedAt = nextRow.verified_at || new Date().toISOString();
+        nextRow.verified_at = verifiedAt;
+        nextRow.last_status_updated_at = nextRow.last_status_updated_at || verifiedAt;
+      }
+      return nextRow;
+    })
+    .filter(Boolean);
+  if (!normalizedRows.length) {
+    return;
+  }
+
+  const mergeBucket = (rows) => {
+    const byId = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const id = Number(row?.id || 0);
+      if (!id || byId.has(id)) {
+        continue;
+      }
+      byId.set(id, row);
+    }
+    for (const row of normalizedRows) {
+      const id = Number(row.id || 0);
+      byId.set(id, { ...(byId.get(id) || {}), ...row });
+    }
+    return Array.from(byId.values()).sort((left, right) => {
+      const delta = foodOrderTimestampMs(right) - foodOrderTimestampMs(left);
+      if (delta !== 0) {
+        return delta;
+      }
+      return Number(right?.id || 0) - Number(left?.id || 0);
+    });
+  };
+
+  state.food.orders = mergeBucket(state.food.orders);
+  state.food.orderHistory = mergeBucket(state.food.orderHistory);
+  state.food.ordersTab = 'current';
+
+  const digestRows = state.food.orderHistory.length ? state.food.orderHistory : state.food.orders;
+  state.food.freshnessDigest = buildFoodOrdersFreshnessDigest(digestRows, state.food.paymentRecovery);
+  markFoodOrdersFreshness({ changed: true });
+  syncFoodOrderLiveFeedNotifications(digestRows);
+}
+
 async function updateFoodOrderRating(orderId, stars, { confirmFinal = false } = {}) {
   const id = Number(orderId || 0);
   if (!id || authState.user?.role !== 'student') {
@@ -9161,7 +9950,7 @@ async function updateFoodOrderRating(orderId, stars, { confirmFinal = false } = 
     });
     syncFoodOrderInState(updated);
     try {
-      const shops = await api('/food/shops?active_only=true');
+      const shops = await api(`/food/shops?active_only=${isFoodDemoEnabled() ? 'false' : 'true'}`);
       state.food.shops = hydrateApiShops(shops);
       renderFoodShops();
     } catch (_) {
@@ -9282,13 +10071,22 @@ async function retryFoodPaymentRecovery(recoveryRow) {
       },
     });
     if (result.status === 'paid') {
+      const knownRows = (state.food.orderHistory.length ? state.food.orderHistory : state.food.orders)
+        .filter((row) => orderIds.includes(Number(row?.id || 0)));
+      mergeFoodOrdersIntoState(knownRows, { assumeVerifiedPayment: true });
+      renderFoodOrders();
+      renderFoodOrderStatusTimeline();
       setFoodStatus(`Payment recovered successfully for ${shopName}.`, false);
+      void refreshFoodModule({ forceFreshOrders: true, silentStatus: true }).catch((error) => {
+        log(`Fresh food order refresh delayed: ${error?.message || 'Unknown error'}`);
+      });
     } else if (result.status === 'dismissed') {
       setFoodStatus('Payment window closed. Recovery remains available.', true);
+      await refreshFoodModule();
     } else {
       setFoodStatus(result.message || 'Payment retry failed. Please retry.', true);
+      await refreshFoodModule();
     }
-    await refreshFoodModule();
   } catch (error) {
     setFoodStatus(error.message || 'Unable to retry payment right now.', true);
   } finally {
@@ -9747,12 +10545,13 @@ function syncFoodOrderActionState() {
   const canOrder = authState.user?.role === 'student' && Number(authState.user?.student_id);
   const hasCartItems = Array.isArray(state.food.cart.items) && state.food.cart.items.length > 0;
   const selectedSlot = getSelectedFoodSlot();
-  const hasSlot = Boolean(Number(els.foodSlotSelect?.value || 0));
+  const hasSlot = Boolean(Number(els.foodSlotSelect?.value || 0) || (isFoodDemoEnabled() ? Number(state.food.slots?.[0]?.id || 0) : 0));
   const orderGate = getFoodRuntimeOrderGate({ slot: selectedSlot });
   const canReview = Boolean(canOrder && hasCartItems && hasSlot && orderGate.canOrderNow);
-  const hasDeliveryPoint = Boolean(String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim());
+  const hasDeliveryPoint = isFoodDemoEnabled()
+    || Boolean(String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim());
   const locationFresh = isFoodLocationFresh();
-  const locationOk = state.food.location.verified && state.food.location.allowed && locationFresh;
+  const locationOk = isFoodDemoEnabled() || (state.food.location.verified && state.food.location.allowed && locationFresh);
   const canCheckout = Boolean(canReview && state.food.checkoutPreviewOpen && hasDeliveryPoint);
   let actionBlockMessage = '';
   if (canOrder && hasCartItems && hasSlot && !orderGate.canOrderNow) {
@@ -9762,6 +10561,7 @@ function syncFoodOrderActionState() {
     setFoodCartModalTab('cart');
   }
   if (els.foodCartCheckoutBtn) {
+    els.foodCartCheckoutBtn.textContent = 'Review Cart';
     els.foodCartCheckoutBtn.disabled = !canReview;
     if (actionBlockMessage) {
       els.foodCartCheckoutBtn.title = actionBlockMessage;
@@ -9770,6 +10570,7 @@ function syncFoodOrderActionState() {
     }
   }
   if (els.foodCartTabReviewBtn) {
+    els.foodCartTabReviewBtn.textContent = 'Review & Pay';
     els.foodCartTabReviewBtn.disabled = !canReview;
     if (actionBlockMessage) {
       els.foodCartTabReviewBtn.title = actionBlockMessage;
@@ -9780,6 +10581,9 @@ function syncFoodOrderActionState() {
   if (els.foodCartPayBtn) {
     const reviewTabActive = state.food.cartModalTab === 'review';
     setHidden(els.foodCartPayBtn, !(reviewTabActive && state.food.checkoutPreviewOpen));
+    if (els.foodCartPayBtn.dataset.processing !== 'true') {
+      els.foodCartPayBtn.textContent = isFoodDemoEnabled() ? 'Place Demo Order' : 'Pay & Place Order';
+    }
     els.foodCartPayBtn.disabled = !canCheckout;
     if (!canCheckout && actionBlockMessage) {
       els.foodCartPayBtn.title = actionBlockMessage;
@@ -9813,7 +10617,21 @@ function buildFoodLoadWarningMessage(failures) {
   return `Some Food Hall data could not load (${shortList.join(', ')}${suffix}). Showing available data.`;
 }
 
-async function loadFoodSnapshot({ orderDate, shouldLoadCart }) {
+function buildFoodOrdersApiPath({ orderDate = '', limit = 200, forceFresh = false } = {}) {
+  const params = new URLSearchParams();
+  if (String(orderDate || '').trim()) {
+    params.set('order_date', String(orderDate || '').trim());
+  }
+  if (Number(limit || 0) > 0) {
+    params.set('limit', String(Number(limit)));
+  }
+  if (forceFresh) {
+    params.set('fresh', '1');
+  }
+  return `/food/orders?${params.toString()}`;
+}
+
+async function loadFoodSnapshot({ orderDate, shouldLoadCart, forceFreshOrders = false }) {
   const failures = [];
   const loadWithFallback = async (label, loader, fallbackValue) => {
     try {
@@ -9830,10 +10648,18 @@ async function loadFoodSnapshot({ orderDate, shouldLoadCart }) {
   const [items, slots, ordersForDate, orderHistory, peaks, shops, cartPayload, paymentRecovery] = await Promise.all([
     loadWithFallback('items', () => api('/food/items'), []),
     loadWithFallback('slots', () => api('/food/slots'), []),
-    loadWithFallback('orders', () => api(`/food/orders?order_date=${orderDate}&limit=180`), []),
-    loadWithFallback('order history', () => api('/food/orders?limit=200'), []),
+    loadWithFallback(
+      'orders',
+      () => api(buildFoodOrdersApiPath({ orderDate, limit: 180, forceFresh: forceFreshOrders })),
+      [],
+    ),
+    loadWithFallback(
+      'order history',
+      () => api(buildFoodOrdersApiPath({ limit: 200, forceFresh: forceFreshOrders })),
+      [],
+    ),
     loadWithFallback('peak times', () => api('/food/peak-times?lookback_days=14'), []),
-    loadWithFallback('shops', () => api('/food/shops?active_only=true'), []),
+    loadWithFallback('shops', () => api(`/food/shops?active_only=${isFoodDemoEnabled() ? 'false' : 'true'}`), []),
     shouldLoadCart
       ? loadWithFallback('cart', () => api('/food/cart'), null)
       : Promise.resolve(null),
@@ -9855,12 +10681,14 @@ async function loadFoodSnapshot({ orderDate, shouldLoadCart }) {
   };
 }
 
-async function refreshFoodModule() {
+async function refreshFoodModule({ forceFreshOrders = false, silentStatus = false } = {}) {
   if (!authState.user) {
     return;
   }
   await ensureFoodCatalogLoaded({ preloadOnly: false });
-  setFoodStatus('Refreshing Food Hall data...', false, 'loading');
+  if (!silentStatus) {
+    setFoodStatus('Refreshing Food Hall data...', false, 'loading');
+  }
 
   if (els.foodOrderDate) {
     const currentDate = todayISO();
@@ -9884,7 +10712,7 @@ async function refreshFoodModule() {
   state.food.orderDate = orderDate;
 
   const shouldLoadCart = authState.user.role === 'student';
-  let snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart });
+  let snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart, forceFreshOrders });
   let {
     items,
     slots,
@@ -9900,7 +10728,7 @@ async function refreshFoodModule() {
   if ((!Array.isArray(shops) || !shops.length || !Array.isArray(slots) || !slots.length) && authState.user) {
     try {
       await api('/food/bootstrap/ensure', { method: 'POST' });
-      snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart });
+      snapshot = await loadFoodSnapshot({ orderDate, shouldLoadCart, forceFreshOrders });
       ({
         items,
         slots,
@@ -9950,7 +10778,7 @@ async function refreshFoodModule() {
   state.food.shops = hydrateApiShops(shops);
   if (shouldLoadCart) {
     applyFoodCartPayload(cartPayload || {});
-  } else {
+  } else if (authState.user.role !== 'student') {
     applyFoodCartPayload({});
   }
   if (!state.food.menuByShop || typeof state.food.menuByShop !== 'object') {
@@ -10001,9 +10829,13 @@ async function refreshFoodModule() {
 
   if (authState.user.role === 'student' && (!state.food.shops.length || !state.food.slots.length)) {
     if (foodLoadWarning) {
-      setFoodStatus(foodLoadWarning, true);
+      if (!silentStatus) {
+        setFoodStatus(foodLoadWarning, true);
+      }
     } else {
-      setFoodStatus('Shops or pickup slots are not configured yet. Please contact faculty/admin.', true);
+      if (!silentStatus) {
+        setFoodStatus('Shops or pickup slots are not configured yet. Please contact faculty/admin.', true);
+      }
     }
     return;
   }
@@ -10011,11 +10843,17 @@ async function refreshFoodModule() {
   if (authState.user.role !== 'student') {
     stopFoodLocationMonitoring();
     if (foodLoadWarning) {
-      setFoodStatus(foodLoadWarning, true);
+      if (!silentStatus) {
+        setFoodStatus(foodLoadWarning, true);
+      }
     } else if (authState.user.role === 'owner') {
-      setFoodStatus('Owner panel refreshed. You can manage orders for your assigned shop only.');
+      if (!silentStatus) {
+        setFoodStatus('Owner panel refreshed. You can manage orders for your assigned shop only.');
+      }
     } else {
-      setFoodStatus('Food module refreshed. You can monitor demand and manage setup.');
+      if (!silentStatus) {
+        setFoodStatus('Food module refreshed. You can monitor demand and manage setup.');
+      }
     }
     setFoodLocationStatus('Location gate is enforced for student checkouts.', 'warn');
   } else {
@@ -10044,13 +10882,19 @@ async function refreshFoodModule() {
       setFoodLocationStatus('Location access is required. Delivery is allowed only inside LPU campus.', 'warn');
     }
     if (foodLoadWarning) {
-      setFoodStatus(foodLoadWarning, true);
+      if (!silentStatus) {
+        setFoodStatus(foodLoadWarning, true);
+      }
     } else {
       const orderGate = getFoodRuntimeOrderGate({ slot: getSelectedFoodSlot(), orderDate });
       if (!orderGate.canBrowseShops || !orderGate.canOrderNow) {
-        setFoodStatus(orderGate.message, true);
+        if (!silentStatus) {
+          setFoodStatus(orderGate.message, true);
+        }
       } else {
-        setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+        if (!silentStatus) {
+          setFoodStatus('Select one shop, add items, then open cart to checkout. Orders are accepted from one shop at a time.');
+        }
       }
     }
   }
@@ -10123,6 +10967,34 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
     }
   };
 
+  if (isFoodDemoEnabled()) {
+    let intent = null;
+    try {
+      intent = await api('/food/payments/intent', {
+        method: 'POST',
+        body: JSON.stringify({ order_ids: normalizedIds, provider: 'sandbox' }),
+      });
+    } catch (error) {
+      throw new Error(resolveFoodPaymentError(error, 'Unable to initialize demo payment. Please retry.'));
+    }
+    const paymentReference = String(intent?.payment_reference || '').trim();
+    if (!paymentReference) {
+      throw new Error('Demo payment reference was not created.');
+    }
+    emitLiveStatus('initiated', 'Demo payment initialized.');
+    try {
+      await api('/food/payments/demo-complete', {
+        method: 'POST',
+        headers: foodDemoRequestHeaders(),
+        body: JSON.stringify({ payment_reference: paymentReference }),
+      });
+    } catch (error) {
+      throw new Error(resolveFoodPaymentError(error, 'Unable to complete demo payment. Please retry.'));
+    }
+    emitLiveStatus('paid', 'Demo payment confirmed.');
+    return { status: 'paid' };
+  }
+
   let config = null;
   try {
     config = await api('/food/payments/config');
@@ -10132,6 +11004,12 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
   if (!config?.key_id) {
     throw new Error('Payments are not configured on server. Razorpay key is missing.');
   }
+
+  let sdkLoadError = null;
+  const sdkLoadPromise = ensureRazorpayCheckoutSdk().catch((error) => {
+    sdkLoadError = error;
+    return null;
+  });
 
   let intent = null;
   try {
@@ -10153,7 +11031,10 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
     throw new Error('Invalid payment amount received from server. Please retry checkout.');
   }
 
-  await ensureRazorpayCheckoutSdk();
+  await sdkLoadPromise;
+  if (sdkLoadError || !window.Razorpay) {
+    throw new Error(sdkLoadError?.message || 'Razorpay checkout failed to load. Check internet and retry.');
+  }
 
   let checkoutResult = null;
   try {
@@ -10173,16 +11054,16 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
       };
 
       const options = {
-      key: config.key_id,
-      amount: amountInSubunits,
-      currency: 'INR',
-      name: 'LPU Smart Campus Food Hall',
-      description: `Order from ${shopName || 'selected shop'}`,
-      order_id: providerOrderId,
-      prefill: {
-        email: authState.user?.email || '',
-        name: authState.user?.name || '',
-      },
+        key: config.key_id,
+        amount: amountInSubunits,
+        currency: 'INR',
+        name: 'LPU Smart Campus Food Hall',
+        description: `Order from ${shopName || 'selected shop'}`,
+        order_id: providerOrderId,
+        prefill: {
+          email: authState.user?.email || '',
+          name: authState.user?.name || '',
+        },
         handler: async (response) => {
           paymentVerificationInFlight = true;
           try {
@@ -10211,17 +11092,17 @@ async function runFoodPaymentFlow({ orderIds, shopName, onLiveStatus = null }) {
               failure: {
                 razorpay_order_id: providerOrderId,
                 error_code: 'checkout_dismissed',
-              error_description: 'Checkout was closed before payment completion.',
-              error_source: 'checkout-modal',
-              error_step: 'payment_window',
-              error_reason: 'checkout_dismissed',
-            },
-            message: 'Payment window closed before completion.',
-          });
+                error_description: 'Checkout was closed before payment completion.',
+                error_source: 'checkout-modal',
+                error_step: 'payment_window',
+                error_reason: 'checkout_dismissed',
+              },
+              message: 'Payment window closed before completion.',
+            });
+          },
         },
-      },
-      theme: { color: '#3399cc' },
-    };
+        theme: { color: '#3399cc' },
+      };
 
       const rzp = new window.Razorpay(options);
       rzp.on('payment.failed', (response) => {
@@ -10272,7 +11153,8 @@ async function placeFoodOrder() {
   if (authState.user?.role !== 'student' || !studentId) {
     throw new Error('Food pre-order is available only for student accounts.');
   }
-  const slotId = Number(els.foodSlotSelect?.value || 0);
+  const fallbackSlotId = Number(state.food.slots?.[0]?.id || 0);
+  const slotId = Number(els.foodSlotSelect?.value || 0) || (isFoodDemoEnabled() ? fallbackSlotId : 0);
   const orderDate = String(els.foodOrderDate?.value || todayISO()).trim() || todayISO();
   const slot = getSelectedFoodSlot();
   const orderGate = getFoodRuntimeOrderGate({ slot, orderDate });
@@ -10282,7 +11164,7 @@ async function placeFoodOrder() {
   if (!slotId) {
     throw new Error('Select break slot before checkout.');
   }
-  if (!slot || Number(slot.id) !== slotId) {
+  if (!isFoodDemoEnabled() && (!slot || Number(slot.id) !== slotId)) {
     throw new Error('Selected break slot is unavailable. Refresh and retry.');
   }
   if (!orderGate.canOrderNow) {
@@ -10294,39 +11176,45 @@ async function placeFoodOrder() {
   if (!state.food.checkoutPreviewOpen) {
     throw new Error('Open cart and click "Review Checkout" before payment.');
   }
-  const deliveryPoint = String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim();
+  const deliveryPoint = String(state.food.checkoutDeliveryPoint || els.foodDeliveryBlockSelect?.value || '').trim()
+    || (isFoodDemoEnabled() ? 'Demo Delivery Point' : '');
   if (!deliveryPoint) {
     throw new Error('Select delivery block before payment.');
   }
   state.food.checkoutDeliveryPoint = deliveryPoint;
 
-  const locationAllowed = await verifyFoodLocationGate({
-    forcePrompt: !state.food.location.verified || !isFoodLocationFresh(),
-    silent: false,
-  });
-  if (!locationAllowed) {
-    throw new Error(state.food.location.message || 'Delivery is allowed only inside LPU campus.');
-  }
-
   const checkoutBtn = els.foodCartPayBtn;
   if (checkoutBtn) {
+    checkoutBtn.dataset.processing = 'true';
     checkoutBtn.disabled = true;
     checkoutBtn.textContent = 'Processing Payment...';
   }
 
   try {
-    const checkoutIdempotencyKey = [
+    if (!isFoodDemoEnabled()) {
+      const locationAllowed = await verifyFoodLocationGate({
+        forcePrompt: !state.food.location.verified || !isFoodLocationFresh(),
+        silent: false,
+      });
+      if (!locationAllowed) {
+        throw new Error(state.food.location.message || 'Delivery is allowed only inside LPU campus.');
+      }
+    }
+
+    const checkoutIdempotencyKey = buildFoodCheckoutIdempotencyKey({
       studentId,
       orderDate,
       slotId,
-      Date.now(),
-      Math.random().toString(36).slice(2, 10),
-    ].join('-');
+      shopId: Number(shop.apiShopId || shop.id || 0) || 0,
+      deliveryPoint,
+      cartItems,
+      cartUpdatedAt: state.food.cartUpdatedAt,
+    });
     let placedOrders = null;
     try {
       placedOrders = await api('/food/orders/checkout', {
         method: 'POST',
-        headers: { 'X-Idempotency-Key': checkoutIdempotencyKey },
+        headers: foodDemoRequestHeaders({ 'X-Idempotency-Key': checkoutIdempotencyKey }),
         body: JSON.stringify({
           student_id: studentId,
           shop_id: Number(shop.apiShopId || shop.id || 0) || null,
@@ -10336,9 +11224,9 @@ async function placeFoodOrder() {
           shop_name: shop.name,
           shop_block: shop.block,
           pickup_point: deliveryPoint,
-          location_latitude: state.food.location.latitude,
-          location_longitude: state.food.location.longitude,
-          location_accuracy_m: state.food.location.accuracyM,
+          location_latitude: isFoodDemoEnabled() ? null : state.food.location.latitude,
+          location_longitude: isFoodDemoEnabled() ? null : state.food.location.longitude,
+          location_accuracy_m: isFoodDemoEnabled() ? null : state.food.location.accuracyM,
           items: cartItems.map((entry) => ({
             menu_item_id: Number(entry.menuItemId),
             food_item_id: Number.isFinite(Number(entry.foodItemId)) ? Number(entry.foodItemId) : null,
@@ -10363,19 +11251,32 @@ async function placeFoodOrder() {
       },
     });
     if (paymentResult.status === 'paid') {
-      setFoodStatus(`Payment successful. Order confirmed with ${shop.name}.`, false);
-      log(`Food order paid (${shop.name})`);
+      mergeFoodOrdersIntoState(placedOrders, { assumeVerifiedPayment: true });
+      setFoodStatus(
+        isFoodDemoEnabled()
+          ? `Demo order completed successfully with ${shop.name}.`
+          : `Payment successful. Order confirmed with ${shop.name}.`,
+        false,
+      );
+      log(isFoodDemoEnabled() ? `Food demo order completed (${shop.name})` : `Food order paid (${shop.name})`);
       await clearFoodCart({ silent: true });
       closeFoodCartModal();
+      renderFoodOrders();
+      renderFoodOrderStatusTimeline();
+      void refreshFoodModule({ forceFreshOrders: true, silentStatus: true }).catch((error) => {
+        log(`Fresh food order refresh delayed: ${error?.message || 'Unknown error'}`);
+      });
     } else if (paymentResult.status === 'dismissed') {
       setFoodStatus('Payment window closed. You can retry from Payment Recovery.', true);
+      await refreshFoodModule();
     } else {
       setFoodStatus(`Payment failed: ${paymentResult.message || 'Please retry.'}`, true);
+      await refreshFoodModule();
     }
-    await refreshFoodModule();
   } finally {
     if (checkoutBtn) {
-      checkoutBtn.textContent = 'Pay & Place Order';
+      delete checkoutBtn.dataset.processing;
+      checkoutBtn.textContent = isFoodDemoEnabled() ? 'Place Demo Order' : 'Pay & Place Order';
     }
     syncFoodOrderActionState();
   }
@@ -10633,14 +11534,26 @@ function renderRmsAttendanceResult(result = state.rms.attendanceUpdate) {
   const previousStatus = result.previous_status ? statusLabel(result.previous_status) : 'Not marked';
   const attendanceDate = String(result.attendance_date || '--');
   const note = String(result.note || '').trim();
+  const slotLabel = (
+    result.class_start_time && result.class_end_time
+      ? `${formatTime(result.class_start_time)} - ${formatTime(result.class_end_time)}`
+      : '--'
+  );
   const meta = [
     `Reg: ${String(result.registration_number || '--')}`,
     `Course: ${String(result.course_code || '--')} (${String(result.course_title || 'Course')})`,
+    `Slot: ${slotLabel}`,
     `Date: ${attendanceDate}`,
     `Status: ${updatedStatus} (was ${previousStatus})`,
     `Faculty: ${String(result.faculty_name || `#${Number(result.faculty_id || 0)}`)}`,
     `Source: ${String(result.source || '--')}`,
   ];
+  if (Number(result.schedule_id || 0) > 0) {
+    meta.push(`Schedule ID: #${Number(result.schedule_id)}`);
+  }
+  if (String(result.classroom_label || '').trim()) {
+    meta.push(`Room: ${String(result.classroom_label).trim()}`);
+  }
   if (result.message_sent) {
     meta.push('Student Notified: Yes');
   }
@@ -10655,11 +11568,14 @@ function renderRmsAttendanceStudentSummary(context = state.rms.attendanceContext
     return;
   }
   if (!context || typeof context !== 'object' || !context.student) {
-    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student name and enrolled subjects.';
+    els.rmsAttendanceStudentSummary.textContent = 'Search by registration number to load student day-wise classes.';
     return;
   }
   const student = context.student;
   const subjects = Array.isArray(context.subjects) ? context.subjects : [];
+  const slotCount = subjects.reduce((sum, row) => (
+    sum + (Array.isArray(row?.slots) ? row.slots.length : 0)
+  ), 0);
   const dateLabel = String(context.attendance_date || '').trim() || todayISO();
   const reg = String(student.registration_number || '').trim() || 'Not set';
   const section = String(student.section || '').trim() || 'Not set';
@@ -10668,6 +11584,7 @@ function renderRmsAttendanceStudentSummary(context = state.rms.attendanceContext
     `Reg: ${reg}`,
     `Section: ${section}`,
     `Subjects: ${subjects.length}`,
+    `Slots: ${slotCount}`,
     `Date: ${dateLabel}`,
   ].join(' | ');
 }
@@ -10684,20 +11601,53 @@ function resolveRmsAttendanceSelectedSubject(context = state.rms.attendanceConte
   return rows.find((row) => String(row?.course_code || '').trim().toUpperCase() === selectedCourseCode) || null;
 }
 
+function resolveRmsAttendanceSlotsForSelectedSubject(context = state.rms.attendanceContext) {
+  const subject = resolveRmsAttendanceSelectedSubject(context);
+  if (!subject || !Array.isArray(subject?.slots)) {
+    return [];
+  }
+  return subject.slots;
+}
+
+function resolveRmsAttendanceSelectedSlot(context = state.rms.attendanceContext) {
+  const slots = resolveRmsAttendanceSlotsForSelectedSubject(context);
+  if (!slots.length) {
+    return null;
+  }
+  const selectedScheduleId = Number(
+    state.rms.attendanceSelectedScheduleId
+    || els.rmsAttendanceSlotSelect?.value
+    || 0,
+  );
+  if (!selectedScheduleId) {
+    return null;
+  }
+  return slots.find((row) => Number(row?.schedule_id || 0) === selectedScheduleId) || null;
+}
+
 function syncRmsAttendanceCurrentStatus() {
-  const selected = resolveRmsAttendanceSelectedSubject();
+  const selectedSlot = resolveRmsAttendanceSelectedSlot();
+  const selectedSubject = resolveRmsAttendanceSelectedSubject();
   if (!els.rmsAttendanceCurrentStatus) {
     return;
   }
-  if (!selected) {
+  if (!selectedSlot && !selectedSubject) {
     els.rmsAttendanceCurrentStatus.value = 'Not marked';
     if (els.rmsAttendanceStatus) {
       els.rmsAttendanceStatus.value = 'present';
     }
     return;
   }
-  const statusRaw = String(selected.current_status || '').trim().toLowerCase();
-  const statusLabel = String(selected.current_status_label || '').trim() || 'Not marked';
+  const statusRaw = String(
+    selectedSlot?.current_status
+      || selectedSubject?.current_status
+      || '',
+  ).trim().toLowerCase();
+  const statusLabel = String(
+    selectedSlot?.current_status_label
+      || selectedSubject?.current_status_label
+      || '',
+  ).trim() || 'Not marked';
   els.rmsAttendanceCurrentStatus.value = statusLabel;
   if (!els.rmsAttendanceStatus) {
     return;
@@ -10706,6 +11656,58 @@ function syncRmsAttendanceCurrentStatus() {
     els.rmsAttendanceStatus.value = statusRaw;
   } else {
     els.rmsAttendanceStatus.value = 'present';
+  }
+}
+
+function renderRmsAttendanceSlotOptions(context = state.rms.attendanceContext) {
+  if (!els.rmsAttendanceSlotSelect) {
+    return;
+  }
+  const subject = resolveRmsAttendanceSelectedSubject(context);
+  const slots = Array.isArray(subject?.slots) ? subject.slots : [];
+  els.rmsAttendanceSlotSelect.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = !subject
+    ? 'Select subject first'
+    : (slots.length ? 'Select time slot' : 'No class slots');
+  els.rmsAttendanceSlotSelect.appendChild(placeholder);
+
+  for (const slot of slots) {
+    const scheduleId = Number(slot?.schedule_id || 0);
+    if (!scheduleId) {
+      continue;
+    }
+    const option = document.createElement('option');
+    option.value = String(scheduleId);
+    const statusLabel = String(slot?.current_status_label || '').trim();
+    const roomLabel = String(slot?.classroom_label || '').trim();
+    const labelParts = [
+      `${formatTime24(slot?.start_time)}-${formatTime24(slot?.end_time)}`,
+    ];
+    if (roomLabel) {
+      labelParts.push(roomLabel);
+    }
+    if (statusLabel) {
+      labelParts.push(`Current: ${statusLabel}`);
+    }
+    option.textContent = labelParts.join(' | ');
+    els.rmsAttendanceSlotSelect.appendChild(option);
+  }
+
+  if (slots.length) {
+    const selectedScheduleId = Number(state.rms.attendanceSelectedScheduleId || 0);
+    const hasSelected = selectedScheduleId > 0
+      && slots.some((row) => Number(row?.schedule_id || 0) === selectedScheduleId);
+    const resolvedScheduleId = hasSelected
+      ? selectedScheduleId
+      : Number(slots[0]?.schedule_id || 0);
+    state.rms.attendanceSelectedScheduleId = resolvedScheduleId > 0 ? resolvedScheduleId : null;
+    els.rmsAttendanceSlotSelect.value = resolvedScheduleId > 0 ? String(resolvedScheduleId) : '';
+  } else {
+    state.rms.attendanceSelectedScheduleId = null;
+    els.rmsAttendanceSlotSelect.value = '';
   }
 }
 
@@ -10754,8 +11756,10 @@ function renderRmsAttendanceSubjectOptions(context = state.rms.attendanceContext
     }
   } else {
     state.rms.attendanceSelectedCourseCode = '';
+    state.rms.attendanceSelectedScheduleId = null;
     els.rmsAttendanceSubjectSelect.value = '';
   }
+  renderRmsAttendanceSlotOptions(context);
   syncRmsAttendanceCurrentStatus();
 }
 
@@ -10963,6 +11967,7 @@ async function searchRmsStudentByRegistration({ silent = false } = {}) {
   }
   state.rms.attendanceContext = null;
   state.rms.attendanceSelectedCourseCode = '';
+  state.rms.attendanceSelectedScheduleId = null;
   renderRmsAttendanceStudentSummary(null);
   renderRmsAttendanceSubjectOptions(null);
   if (els.rmsUpdateSection && state.rms.selectedStudent) {
@@ -10998,6 +12003,7 @@ async function searchRmsAttendanceStudentContext({ silent = false } = {}) {
     `/admin/rms/attendance/student-context?registration_number=${encodeURIComponent(registrationNumber)}&attendance_date=${encodeURIComponent(attendanceDate)}`,
   );
   state.rms.attendanceContext = payload && typeof payload === 'object' ? payload : null;
+  state.rms.attendanceSelectedScheduleId = null;
   state.rms.selectedStudent = state.rms.attendanceContext?.student || state.rms.selectedStudent;
   if (state.rms.selectedStudent && els.rmsUpdateRegistration) {
     els.rmsUpdateRegistration.value = String(state.rms.selectedStudent.registration_number || registrationNumber);
@@ -11013,7 +12019,7 @@ async function searchRmsAttendanceStudentContext({ silent = false } = {}) {
   if (!silent) {
     setRmsAttendanceStatus(
       loadedCount > 0
-        ? `Loaded ${loadedCount} subject(s). Select subject and apply updated status.`
+        ? `Loaded ${loadedCount} subject(s). Select subject and slot, then apply updated status.`
         : String(state.rms.attendanceContext?.message || 'No enrolled subjects found for this registration number.'),
       false,
     );
@@ -11074,6 +12080,7 @@ async function applyRmsAttendanceStatusUpdate() {
   if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
     throw new Error('Only admin or faculty can apply RMS attendance updates.');
   }
+  const selectedSubject = resolveRmsAttendanceSelectedSubject();
   const registrationNumber = normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '');
   const courseCode = String(
     els.rmsAttendanceSubjectSelect?.value
@@ -11082,6 +12089,11 @@ async function applyRmsAttendanceStatusUpdate() {
   )
     .trim()
     .toUpperCase();
+  const scheduleId = Number(
+    els.rmsAttendanceSlotSelect?.value
+      || state.rms.attendanceSelectedScheduleId
+      || 0,
+  ) || null;
   const attendanceDate = String(els.rmsAttendanceDate?.value || '').trim() || todayISO();
   const status = String(els.rmsAttendanceStatus?.value || '').trim().toLowerCase();
   const note = String(els.rmsAttendanceNote?.value || '').trim();
@@ -11090,7 +12102,10 @@ async function applyRmsAttendanceStatusUpdate() {
     throw new Error('Enter student registration number for attendance update.');
   }
   if (!courseCode) {
-    throw new Error('Select enrolled subject for attendance update.');
+    throw new Error('Select subject for attendance update.');
+  }
+  if (!scheduleId) {
+    throw new Error('Select class time slot for attendance update.');
   }
   if (status !== 'present' && status !== 'absent') {
     throw new Error('Select valid attendance status.');
@@ -11102,14 +12117,19 @@ async function applyRmsAttendanceStatusUpdate() {
   if (els.rmsAttendanceSubjectSelect) {
     els.rmsAttendanceSubjectSelect.value = courseCode;
   }
+  if (els.rmsAttendanceSlotSelect) {
+    els.rmsAttendanceSlotSelect.value = String(scheduleId);
+  }
   if (els.rmsAttendanceDate && !els.rmsAttendanceDate.value) {
     els.rmsAttendanceDate.value = attendanceDate;
   }
   state.rms.attendanceSelectedCourseCode = courseCode;
+  state.rms.attendanceSelectedScheduleId = scheduleId;
 
   const payload = {
     registration_number: registrationNumber,
     course_code: courseCode,
+    schedule_id: scheduleId,
     attendance_date: attendanceDate,
     status,
   };
@@ -11140,8 +12160,17 @@ async function applyRmsAttendanceStatusUpdate() {
   if (els.rmsAttendanceNote) {
     els.rmsAttendanceNote.value = '';
   }
+  const selectedSlot = resolveRmsAttendanceSelectedSlot()
+    || (
+      Array.isArray(selectedSubject?.slots)
+        ? selectedSubject.slots.find((slot) => Number(slot?.schedule_id || 0) === scheduleId)
+        : null
+    );
+  const slotText = selectedSlot?.start_time && selectedSlot?.end_time
+    ? `${formatTime24(selectedSlot.start_time)}-${formatTime24(selectedSlot.end_time)}`
+    : `schedule #${scheduleId}`;
   log(
-    `RMS attendance updated for ${registrationNumber} (${courseCode}) on ${attendanceDate} as ${status}.`,
+    `RMS attendance updated for ${registrationNumber} (${courseCode}, ${slotText}) on ${attendanceDate} as ${status}.`,
   );
 }
 
@@ -12155,6 +13184,9 @@ function remedialClassWindow(entry) {
 }
 
 function isRemedialClassPrevious(entry, nowDate = new Date()) {
+  if (typeof entry?.is_active === 'boolean') {
+    return !entry.is_active;
+  }
   const window = remedialClassWindow(entry);
   if (!window) {
     return false;
@@ -12176,8 +13208,8 @@ function applyRemedialModeVisibility() {
   setHidden(els.remedialRoomWrap, isOnline);
   setHidden(els.remedialOnlineWrap, !isOnline);
   if (els.remedialOnlineLinkInput) {
-    els.remedialOnlineLinkInput.readOnly = isOnline;
-    if (isOnline) {
+    els.remedialOnlineLinkInput.readOnly = false;
+    if (isOnline && !String(els.remedialOnlineLinkInput.value || '').trim()) {
       els.remedialOnlineLinkInput.value = REMEDIAL_DEFAULT_ONLINE_LINK;
     }
   }
@@ -13003,6 +14035,42 @@ async function sendFacultyBroadcastMessage() {
   await refreshStudentMessages();
 }
 
+async function sendDirectStudentEmail() {
+  const role = authState.user?.role;
+  if (role !== 'admin' && role !== 'faculty') {
+    throw new Error('Only admin or faculty can send direct student emails.');
+  }
+  const studentId = Number(els.directEmailStudentId?.value || 0);
+  const registrationNumber = String(els.directEmailRegistration?.value || '').trim();
+  const email = String(els.directEmailStudentEmail?.value || '').trim().toLowerCase();
+  const subject = String(els.directEmailSubject?.value || '').trim();
+  const message = String(els.directEmailMessage?.value || '').trim();
+  if (!studentId && !registrationNumber && !email) {
+    throw new Error('Provide student id, registration number, or email.');
+  }
+  if (!subject || !message) {
+    throw new Error('Add subject and message before sending.');
+  }
+  const payload = {
+    student_id: studentId || null,
+    registration_number: registrationNumber || null,
+    email: email || null,
+    subject,
+    message,
+  };
+  const response = await api('/messages/direct-email', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 60000,
+  });
+  const deliveredTo = String(response?.delivered_to || '').trim();
+  const statusMessage = deliveredTo ? `Email sent to ${deliveredTo}.` : 'Email sent to student.';
+  setDirectEmailStatus(statusMessage, false, 'success');
+  if (els.directEmailMessage) {
+    els.directEmailMessage.value = '';
+  }
+}
+
 async function cancelRemedialClass(classId) {
   const targetClassId = Number(classId || 0);
   if (!targetClassId) {
@@ -13042,7 +14110,7 @@ async function createRemedialClass() {
     throw new Error('Select assigned course, or enter both manual course code and course name.');
   }
   if (classMode === 'online') {
-    onlineLink = REMEDIAL_DEFAULT_ONLINE_LINK;
+    onlineLink = normalizedRemedialOnlineLink(onlineLink);
     if (els.remedialOnlineLinkInput) {
       els.remedialOnlineLinkInput.value = onlineLink;
     }
@@ -13343,6 +14411,12 @@ async function refreshActiveModuleData() {
     return;
   }
   const moduleKey = getSanitizedModuleKey(state.ui.activeModule);
+  if (moduleKey === 'saarthi') {
+    if (authState.user.role === 'student') {
+      await loadSaarthiStatus({ silent: true });
+    }
+    return;
+  }
   if (moduleKey === 'food') {
     await refreshFoodModule();
     return;
@@ -13360,8 +14434,7 @@ async function refreshActiveModuleData() {
     return;
   }
   if (authState.user.role === 'student') {
-    await refreshStudentKpiTimetable({ forceNetwork: true });
-    await loadStudentTimetable({ forceNetwork: true });
+    await refreshStudentTimetableSurface({ forceNetwork: true });
     const results = await Promise.allSettled([
       loadStudentAttendanceInsights(),
       refreshStudentMessages(),
@@ -13431,34 +14504,107 @@ function loadRazorpayCheckoutSdk() {
     return razorpaySdkPromise;
   }
 
-  razorpaySdkPromise = new Promise((resolve, reject) => {
-    const existingScript = document.querySelector(`script[src="${RAZORPAY_SDK_URL}"]`);
-    if (existingScript) {
-      existingScript.addEventListener('load', () => {
-        if (window.Razorpay) {
-          resolve(window.Razorpay);
-          return;
-        }
-        reject(new Error('Razorpay checkout loaded but client is unavailable.'));
-      });
-      existingScript.addEventListener('error', () => {
-        reject(new Error('Failed to load Razorpay checkout.'));
-      });
-      return;
+  const ensureRazorpayNetworkHints = () => {
+    const hints = [
+      { rel: 'preconnect', href: RAZORPAY_SDK_ORIGIN, crossOrigin: 'anonymous' },
+      { rel: 'dns-prefetch', href: '//checkout.razorpay.com' },
+    ];
+    for (const hint of hints) {
+      if (document.head.querySelector(`link[rel="${hint.rel}"][href="${hint.href}"]`)) {
+        continue;
+      }
+      const link = document.createElement('link');
+      link.rel = hint.rel;
+      link.href = hint.href;
+      if (hint.crossOrigin) {
+        link.crossOrigin = hint.crossOrigin;
+      }
+      document.head.appendChild(link);
     }
+  };
+  const removeRazorpayScript = (scriptEl) => {
+    if (scriptEl?.parentNode) {
+      scriptEl.parentNode.removeChild(scriptEl);
+    }
+  };
 
-    const script = document.createElement('script');
-    script.src = RAZORPAY_SDK_URL;
-    script.async = true;
-    script.onload = () => {
-      if (window.Razorpay) {
-        resolve(window.Razorpay);
+  ensureRazorpayNetworkHints();
+  razorpaySdkPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    let timeoutId = null;
+    const settle = (payload, asError = false) => {
+      if (settled) {
         return;
       }
-      reject(new Error('Razorpay checkout loaded but client is unavailable.'));
+      settled = true;
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+      if (asError) {
+        reject(payload);
+        return;
+      }
+      resolve(payload);
     };
-    script.onerror = () => reject(new Error('Failed to load Razorpay checkout.'));
-    document.head.appendChild(script);
+    const resolveIfReady = () => {
+      if (window.Razorpay) {
+        settle(window.Razorpay);
+        return true;
+      }
+      return false;
+    };
+
+    const attachScriptListeners = (scriptEl) => {
+      const handleLoad = () => {
+        scriptEl.dataset.loadState = 'loaded';
+        if (resolveIfReady()) {
+          return;
+        }
+        removeRazorpayScript(scriptEl);
+        settle(new Error('Razorpay checkout loaded but client is unavailable.'), true);
+      };
+      const handleError = () => {
+        scriptEl.dataset.loadState = 'error';
+        removeRazorpayScript(scriptEl);
+        settle(new Error('Failed to load Razorpay checkout.'), true);
+      };
+      scriptEl.addEventListener('load', handleLoad, { once: true });
+      scriptEl.addEventListener('error', handleError, { once: true });
+      timeoutId = window.setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        scriptEl.dataset.loadState = 'error';
+        removeRazorpayScript(scriptEl);
+        settle(new Error('Razorpay checkout timed out while loading.'), true);
+      }, RAZORPAY_SDK_LOAD_TIMEOUT_MS);
+    };
+
+    const mountScript = () => {
+      const script = document.createElement('script');
+      script.src = RAZORPAY_SDK_URL;
+      script.async = true;
+      script.dataset.loadState = 'loading';
+      document.head.appendChild(script);
+      attachScriptListeners(script);
+    };
+
+    let existingScript = document.querySelector(`script[src="${RAZORPAY_SDK_URL}"]`);
+    if (existingScript) {
+      if (resolveIfReady()) {
+        return;
+      }
+      const loadState = String(existingScript.dataset.loadState || '').trim().toLowerCase();
+      if (loadState === 'error' || loadState === 'loaded') {
+        removeRazorpayScript(existingScript);
+        existingScript = null;
+      }
+    }
+    if (existingScript) {
+      attachScriptListeners(existingScript);
+      return;
+    }
+    mountScript();
   }).catch((error) => {
     razorpaySdkPromise = null;
     throw error;
@@ -13473,6 +14619,10 @@ async function ensureRazorpayCheckoutSdk() {
   } catch (_) {
     throw new Error('Razorpay checkout failed to load. Check internet and retry.');
   }
+}
+
+function warmRazorpayCheckoutSdk() {
+  void loadRazorpayCheckoutSdk().catch(() => {});
 }
 
 async function getPuterClient() {
@@ -13742,25 +14892,11 @@ function findStudentDemoAttendanceState(nowArg = new Date()) {
   if (!isStudentAttendanceDemoEnabled()) {
     return null;
   }
-  const now = nowArg instanceof Date ? nowArg : new Date();
-  const activeRegularSlot = buildStudentAttendanceTimeline()
-    .find((slot) => (
-      now >= slot.start
-      && now <= slot.end
-      && String(slot.item?.class_kind || 'regular').toLowerCase() !== 'remedial'
-    ));
-  if (!activeRegularSlot) {
-    return null;
-  }
-  const selected = activeRegularSlot.item;
   return {
     mode: 'demo',
-    schedule: selected,
-    headline: `Demo Attendance | ${selected.course_code}`,
-    subtitle: (
-      `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | `
-      + `${selected.course_code} | Demo mode keeps marking open for this full class hour only.`
-    ),
+    schedule: null,
+    headline: 'Demo Attendance | Anytime',
+    subtitle: 'Independent demo mode for testing full attendance verification flow. No attendance data will be saved.',
   };
 }
 
@@ -14237,7 +15373,7 @@ function resolveFoodPaymentError(error, fallback = 'Payment checkout failed. Ple
   }
   const lowered = raw.toLowerCase();
   if (lowered.includes('razorpay configuration is missing') || lowered.includes('razorpay is not configured')) {
-    return 'Payments are not configured on server. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in backend .env, then restart server.';
+    return 'Payments are not configured on server. Add active Razorpay keys (RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET or RAZORPAY_KEYRING_JSON + RAZORPAY_ACTIVE_KEY_ID) in backend env, then restart server.';
   }
   if (lowered.includes('razorpay order id was not returned')) {
     return 'Payment gateway did not return order id. Retry once, then verify Razorpay account/API keys.';
@@ -14671,8 +15807,8 @@ function updateSelectedClassState() {
   const kpi = findEffectiveAttendanceManagementState();
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
   const remedialWindowOpen = isRemedialAttendanceWindow(officialKpi);
-  const demoAttendanceActive = kpi.mode === 'demo' && scheduleId > 0;
-  state.student.kpiScheduleId = scheduleId || null;
+  const demoAttendanceActive = kpi.mode === 'demo';
+  state.student.kpiScheduleId = demoAttendanceActive ? null : (scheduleId || null);
   renderStudentAttendanceDemoToggle();
 
   if (els.selectedClassLabel) {
@@ -14680,7 +15816,7 @@ function updateSelectedClassState() {
   }
   if (els.attendanceKpiSubtitle) {
     if (demoAttendanceActive) {
-      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Demo run is local only and does not save attendance data.`;
+      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Verification runs end-to-end and does not save attendance data.`;
     } else if (!hasProfileReady) {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Complete profile setup to enable official marking.`;
     } else if (kpi.mode === 'mark' && String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
@@ -14700,7 +15836,8 @@ function updateSelectedClassState() {
     els.takeSelfieBtn.textContent = remedialWindowOpen
       ? 'Open Remedial Module'
       : (demoAttendanceActive ? 'Open Camera & Run Demo Attendance' : 'Open Camera & Mark Attendance');
-    els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen || demoAttendanceActive);
+    const demoReady = demoAttendanceActive && hasProfileReady && !requiresStudentEnrollmentSetup();
+    els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen || demoReady);
   }
 }
 
@@ -14991,6 +16128,35 @@ function cacheTimetableWeekPayload(weekStart, payload) {
   };
 }
 
+async function fetchStudentTimetableWeek(weekStart, options = {}) {
+  const { forceNetwork = true } = options;
+  if (!weekStart) {
+    throw new Error('Week start is required.');
+  }
+
+  const cached = state.student.timetableCache[weekStart];
+  if (cached && !forceNetwork) {
+    return cached;
+  }
+
+  const requestKey = `${weekStart}:${forceNetwork ? 'network' : 'default'}`;
+  const existingRequest = state.student.timetableNetworkRequests.get(requestKey);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request = (async () => {
+    const payload = await api(`/attendance/student/timetable?week_start=${weekStart}`);
+    cacheTimetableWeekPayload(payload.week_start || weekStart, payload);
+    return payload;
+  })().finally(() => {
+    state.student.timetableNetworkRequests.delete(requestKey);
+  });
+
+  state.student.timetableNetworkRequests.set(requestKey, request);
+  return request;
+}
+
 function applyStudentTimetablePayload(payload) {
   if (payload?.min_navigable_date) {
     state.student.minTimetableDate = String(payload.min_navigable_date);
@@ -15038,8 +16204,7 @@ async function prefetchStudentTimetableWeek(weekStart) {
 
   state.student.timetablePrefetching.add(weekStart);
   try {
-    const payload = await api(`/attendance/student/timetable?week_start=${weekStart}`);
-    cacheTimetableWeekPayload(weekStart, payload);
+    await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
   } catch (_) {
     // Keep prefetch best-effort only.
   } finally {
@@ -15083,8 +16248,7 @@ async function refreshStudentKpiTimetable(options = {}) {
   }
   state.student.kpiRefreshInFlight = true;
   try {
-    const payload = await api(`/attendance/student/timetable?week_start=${currentWeekStart}`);
-    cacheTimetableWeekPayload(payload.week_start || currentWeekStart, payload);
+    const payload = await fetchStudentTimetableWeek(currentWeekStart, { forceNetwork: true });
     state.student.kpiTimetable = payload.classes || [];
   } catch (_) {
     if (cached) {
@@ -15121,7 +16285,7 @@ async function loadStudentTimetable(options = {}) {
 
   let payload;
   try {
-    payload = await api(`/attendance/student/timetable?week_start=${weekStart}`);
+    payload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
   } catch (error) {
     if (cached) {
       return;
@@ -15139,11 +16303,10 @@ async function loadStudentTimetable(options = {}) {
     state.student.timetableRepairInFlight = true;
     try {
       await api('/attendance/student/default-timetable', { method: 'POST' });
-      const repairedPayload = await api(`/attendance/student/timetable?week_start=${weekStart}`);
+      const repairedPayload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
       if (requestToken !== state.student.timetableRequestToken) {
         return;
       }
-      cacheTimetableWeekPayload(repairedPayload.week_start || weekStart, repairedPayload);
       applyStudentTimetablePayload(repairedPayload);
       prefetchAdjacentStudentWeeks(state.student.weekStart || weekStart);
       return;
@@ -15157,13 +16320,25 @@ async function loadStudentTimetable(options = {}) {
     }
   }
 
-  cacheTimetableWeekPayload(payload.week_start || weekStart, payload);
   applyStudentTimetablePayload(payload);
   prefetchAdjacentStudentWeeks(state.student.weekStart || weekStart);
   if (weekStart !== currentWeekStart) {
     void refreshStudentKpiTimetable({ forceNetwork: true }).then(() => {
       updateSelectedClassState();
     });
+  }
+}
+
+async function refreshStudentTimetableSurface(options = {}) {
+  const { forceNetwork = true } = options;
+  await loadStudentTimetable({ forceNetwork });
+  const currentWeekStart = weekStartISO(todayISO());
+  const activeWeekStart = weekStartISO(state.student.weekStart || state.student.viewDate || todayISO());
+  if (activeWeekStart !== currentWeekStart) {
+    await refreshStudentKpiTimetable({ forceNetwork });
+  } else {
+    state.student.kpiTimetable = Array.isArray(state.student.timetable) ? state.student.timetable : [];
+    updateSelectedClassState();
   }
 }
 
@@ -15178,6 +16353,64 @@ function formatSaarthiDateTime(rawValue) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function looksLikeSaarthiTailFragment(text) {
+  const cleaned = String(text || '').trim();
+  if (!cleaned) {
+    return false;
+  }
+  if (/['"`(\[{\/\-\s]$/.test(cleaned)) {
+    return true;
+  }
+  const tokens = cleaned.match(/[A-Za-z0-9']+/g) || [];
+  if (!tokens.length) {
+    return true;
+  }
+  const connectorTokens = new Set([
+    'and',
+    'because',
+    'but',
+    'if',
+    'so',
+    'that',
+    'then',
+    'though',
+    'to',
+    'when',
+    'while',
+    'which',
+    'who',
+  ]);
+  const leadToken = tokens[0].toLowerCase();
+  const tailToken = tokens[tokens.length - 1].toLowerCase();
+  if (tokens.length === 1 && !/[.!?]$/.test(cleaned)) {
+    return true;
+  }
+  if (connectorTokens.has(tailToken)) {
+    return true;
+  }
+  if (tokens.length <= 2 && ['i', 'you', 'we', 'they', 'he', 'she', 'it', 'this', 'that'].includes(leadToken)) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeSaarthiMessageText(rawValue) {
+  const cleaned = String(rawValue || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return '';
+  }
+  const lastTerminalIdx = Math.max(cleaned.lastIndexOf('.'), cleaned.lastIndexOf('!'), cleaned.lastIndexOf('?'));
+  if (lastTerminalIdx >= 0 && lastTerminalIdx < cleaned.length - 1) {
+    const tail = cleaned.slice(lastTerminalIdx + 1).trim();
+    if (looksLikeSaarthiTailFragment(tail)) {
+      return cleaned.slice(0, lastTerminalIdx + 1).trim();
+    }
+  } else if (looksLikeSaarthiTailFragment(cleaned)) {
+    return cleaned.replace(/['"`(\[{\/\-\s]+$/g, '').trim();
+  }
+  return cleaned;
 }
 
 function setSaarthiStatus(message, uiState = 'neutral') {
@@ -15255,33 +16488,69 @@ function renderSaarthiPanel() {
   setSaarthiStatus(uiMessage, uiState);
 
   if (els.saarthiHistory) {
+    els.saarthiHistory.classList.toggle('is-empty', !messages.length);
+    const typingMarkup = state.student.saarthiSending
+      ? `
+        <article class="saarthi-typing" role="status" aria-live="polite">
+          <span class="saarthi-typing-label">Saarthi is thinking</span>
+          <span class="saarthi-typing-dots" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </span>
+        </article>
+      `
+      : '';
     if (!messages.length) {
-      els.saarthiHistory.innerHTML = '<div class="saarthi-empty">No chat this week yet. Your Sunday check-in here is mandatory for CON111 attendance.</div>';
+      els.saarthiHistory.innerHTML = `
+        <div class="saarthi-empty">No chat this week yet. Your Sunday check-in here is mandatory for CON111 attendance.</div>
+        ${typingMarkup}
+      `;
     } else {
-      els.saarthiHistory.innerHTML = messages.map((row) => {
+      const chatMarkup = messages.map((row, index) => {
         const senderRole = String(row?.sender_role || '').trim().toLowerCase();
         const mine = senderRole === 'student';
         const senderLabel = mine ? 'You' : 'Saarthi';
+        const rawMessage = String(row?.message || '');
+        const messageText = mine ? rawMessage : sanitizeSaarthiMessageText(rawMessage);
+        const enterDelayMs = Math.min(index * 36, 220);
         return `
-          <article class="saarthi-message ${mine ? 'mine' : 'theirs'}">
+          <article class="saarthi-message ${mine ? 'mine' : 'theirs'}" style="animation-delay:${enterDelayMs}ms">
             <div class="saarthi-message-header">
-              <strong>${escapeHtml(senderLabel)}</strong>
+              <strong class="saarthi-message-sender">${escapeHtml(senderLabel)}</strong>
               <span>${escapeHtml(formatSaarthiDateTime(row?.created_at))}</span>
             </div>
-            <p class="saarthi-message-text">${escapeHtml(String(row?.message || ''))}</p>
+            <p class="saarthi-message-text">${escapeHtml(messageText)}</p>
           </article>
         `;
       }).join('');
-      els.saarthiHistory.scrollTop = els.saarthiHistory.scrollHeight;
+      els.saarthiHistory.innerHTML = `${chatMarkup}${typingMarkup}`;
     }
+    els.saarthiHistory.scrollTop = els.saarthiHistory.scrollHeight;
   }
 
   if (els.saarthiComposeInput) {
-    els.saarthiComposeInput.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
+    const busy = state.student.saarthiSending || state.student.saarthiResetting;
+    els.saarthiComposeInput.disabled = busy || authState.user?.role !== 'student';
   }
   if (els.saarthiSendBtn) {
-    els.saarthiSendBtn.disabled = state.student.saarthiSending || authState.user?.role !== 'student';
-    els.saarthiSendBtn.textContent = state.student.saarthiSending ? 'Sending...' : 'Send to Saarthi';
+    const sending = state.student.saarthiSending;
+    const resetting = state.student.saarthiResetting;
+    const busy = sending || resetting;
+    const canUseSaarthi = authState.user?.role === 'student';
+    const sendText = els.saarthiSendBtn.querySelector('.saarthi-send-text');
+    els.saarthiSendBtn.disabled = busy || !canUseSaarthi;
+    els.saarthiSendBtn.classList.toggle('is-sending', sending);
+    els.saarthiSendBtn.setAttribute('aria-label', sending ? 'Sending message to Saarthi' : 'Send message to Saarthi');
+    if (sendText) {
+      sendText.textContent = sending ? 'Sending message' : 'Send message';
+    }
+  }
+  if (els.saarthiNewChatBtn) {
+    const canUseSaarthi = authState.user?.role === 'student';
+    const resetting = state.student.saarthiResetting;
+    const hasMessages = messages.length > 0;
+    els.saarthiNewChatBtn.disabled = !canUseSaarthi || state.student.saarthiSending || resetting || !hasMessages;
+    els.saarthiNewChatBtn.classList.toggle('is-loading', resetting);
+    els.saarthiNewChatBtn.textContent = resetting ? 'Starting...' : 'New chat';
   }
 }
 
@@ -15355,6 +16624,41 @@ async function sendSaarthiMessage() {
     throw error;
   } finally {
     state.student.saarthiSending = false;
+    renderSaarthiPanel();
+  }
+}
+
+async function startNewSaarthiChat() {
+  if (authState.user?.role !== 'student') {
+    throw new Error('Only students can use Saarthi.');
+  }
+
+  if (!Array.isArray(state.student.saarthiMessages) || state.student.saarthiMessages.length === 0) {
+    setSaarthiStatus('This week already has a fresh Saarthi chat.', 'neutral');
+    renderSaarthiPanel();
+    return null;
+  }
+
+  state.student.saarthiResetting = true;
+  setSaarthiStatus('Starting a new Saarthi chat...', 'loading');
+  renderSaarthiPanel();
+
+  try {
+    const payload = await api('/saarthi/new-chat', { method: 'POST' });
+    state.student.saarthiStatus = payload && typeof payload === 'object' ? payload : null;
+    state.student.saarthiMessages = Array.isArray(payload?.messages) ? payload.messages : [];
+    if (els.saarthiComposeInput) {
+      els.saarthiComposeInput.value = '';
+    }
+    setSaarthiStatus(payload?.status_message || 'Started a new Saarthi chat.', 'success');
+    renderSaarthiPanel();
+    return payload;
+  } catch (error) {
+    setSaarthiStatus(error.message || 'Failed to start a new Saarthi chat.', 'error');
+    renderSaarthiPanel();
+    throw error;
+  } finally {
+    state.student.saarthiResetting = false;
     renderSaarthiPanel();
   }
 }
@@ -16237,11 +17541,21 @@ function ensureStudentScheduleSelection() {
   return fallback;
 }
 
-async function buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames = []) {
+async function buildAttendanceVerificationPayload(
+  selectedScheduleId,
+  selfieDataUrl,
+  selfieFrames = [],
+  options = {},
+) {
+  const demoMode = Boolean(options?.demoMode);
   const payload = {
-    schedule_id: selectedScheduleId,
     selfie_photo_data_url: selfieDataUrl,
+    demo_mode: demoMode,
   };
+  const normalizedScheduleId = Number(selectedScheduleId || 0);
+  if (!demoMode && normalizedScheduleId > 0) {
+    payload.schedule_id = normalizedScheduleId;
+  }
   if (Array.isArray(selfieFrames) && selfieFrames.length) {
     payload.selfie_frames_data_urls = selfieFrames;
   }
@@ -16321,8 +17635,18 @@ function shouldStopLiveVerification(message = '') {
   );
 }
 
-async function submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames = []) {
-  const payload = await buildAttendanceVerificationPayload(selectedScheduleId, selfieDataUrl, selfieFrames);
+async function submitStudentAttendanceAttempt(
+  selectedScheduleId,
+  selfieDataUrl,
+  selfieFrames = [],
+  options = {},
+) {
+  const payload = await buildAttendanceVerificationPayload(
+    selectedScheduleId,
+    selfieDataUrl,
+    selfieFrames,
+    options,
+  );
   return apiWithTimeout(
     '/attendance/realtime/mark',
     {
@@ -16334,33 +17658,52 @@ async function submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl,
   );
 }
 
-async function startLiveAttendanceVerification() {
-  const kpi = findAttendanceManagementState();
-  const selectedScheduleId = Number(kpi.schedule?.schedule_id || 0);
-  if (kpi.mode !== 'mark' || !selectedScheduleId) {
-    throw new Error('Attendance window is closed right now. Wait for the next class.');
+async function startLiveAttendanceVerification(options = {}) {
+  const demoMode = Boolean(options?.demoMode);
+  const kpi = demoMode ? null : findAttendanceManagementState();
+  const selectedScheduleId = demoMode ? null : Number(kpi?.schedule?.schedule_id || 0);
+  if (!demoMode) {
+    if (kpi.mode !== 'mark' || !selectedScheduleId) {
+      throw new Error('Attendance window is closed right now. Wait for the next class.');
+    }
+    if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
+      throw new Error('This is a remedial class. Open Remedial module, validate the faculty code, then mark attendance there.');
+    }
+    state.student.kpiScheduleId = selectedScheduleId;
+    state.student.selectedScheduleId = selectedScheduleId;
+  } else {
+    const demoState = options?.demoState && options.demoState.mode === 'demo'
+      ? options.demoState
+      : findStudentDemoAttendanceState();
+    if (!demoState || demoState.mode !== 'demo') {
+      throw new Error('Demo attendance is disabled. Enable Demo Attendance first.');
+    }
+    state.student.kpiScheduleId = null;
+    state.student.selectedScheduleId = null;
   }
-  if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
-    throw new Error('This is a remedial class. Open Remedial module, validate the faculty code, then mark attendance there.');
-  }
-  state.student.kpiScheduleId = selectedScheduleId;
-  state.student.selectedScheduleId = selectedScheduleId;
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo before marking attendance.');
+  }
+  if (requiresStudentEnrollmentSetup()) {
+    throw new Error('Complete one-time enrollment video before marking attendance.');
   }
   if (state.camera.liveVerificationActive) {
     throw new Error('Live verification is already running.');
   }
 
-  setStudentResult('Live attendance verification started...');
+  setStudentResult(demoMode
+    ? 'Live demo attendance verification started...'
+    : 'Live attendance verification started...');
 
   await openCameraModal({
-    title: 'Live Realtime Attendance Verification',
+    title: demoMode ? 'Live Realtime Demo Verification' : 'Live Realtime Attendance Verification',
     facingMode: 'user',
     referencePhotoDataUrl: state.student.profilePhotoDataUrl,
     burstFrames: LIVE_VERIFICATION_BURST_FRAMES,
     captureEnabled: false,
-    messageOverride: 'OpenCV live verification running. Keep one face centered, look straight, then move head slightly left/right/up/down.',
+    messageOverride: demoMode
+      ? 'OpenCV live verification running in demo mode. Keep one face centered, look straight, then move head slightly left/right/up/down. No attendance data is saved.'
+      : 'OpenCV live verification running. Keep one face centered, look straight, then move head slightly left/right/up/down.',
   });
 
   const sessionToken = state.camera.liveSessionToken;
@@ -16375,10 +17718,12 @@ async function startLiveAttendanceVerification() {
     && sessionToken === state.camera.liveSessionToken
   ) {
     if (attempts >= maxAttempts) {
-      const timeoutMsg = 'Verification took too long. Use bright front light, keep one centered face, then retry.';
+      const timeoutMsg = demoMode
+        ? 'Verification took too long. Use bright front light, keep one centered face, then retry. Demo mode does not save attendance data.'
+        : 'Verification took too long. Use bright front light, keep one centered face, then retry.';
       setStudentResult(timeoutMsg, {
         showRetry: true,
-        retryAction: () => startStudentSelfieFlow(),
+        retryAction: () => (demoMode ? startStudentDemoAttendanceFlow() : startStudentSelfieFlow()),
       });
       if (els.cameraMessage) {
         els.cameraMessage.textContent = timeoutMsg;
@@ -16404,7 +17749,12 @@ async function startLiveAttendanceVerification() {
         }
       }
 
-      const response = await submitStudentAttendanceAttempt(selectedScheduleId, selfieDataUrl, selfieFrames);
+      const response = await submitStudentAttendanceAttempt(
+        selectedScheduleId,
+        selfieDataUrl,
+        selfieFrames,
+        { demoMode },
+      );
       const status = String(response.status || '').toLowerCase();
       const confidencePct = (Number(response.verification_confidence || 0) * 100).toFixed(1);
       const verified = ['verified', 'approved', 'present'].includes(status);
@@ -16414,13 +17764,25 @@ async function startLiveAttendanceVerification() {
           `Status: ${statusLabel(response.status)}`,
           `Message: ${response.message}`,
         ];
+        if (
+          (demoMode || response.demo_mode || response.persistence_skipped)
+          && !String(response.message || '').toLowerCase().includes('did not save')
+        ) {
+          lines.push('Persistence: Demo mode did not save attendance data.');
+        }
         setStudentResult(lines.join('\n'));
         if (els.cameraMessage) {
-          els.cameraMessage.textContent = 'Attendance verified. Closing camera...';
+          els.cameraMessage.textContent = demoMode
+            ? 'Demo verification complete. Closing camera...'
+            : 'Attendance verified. Closing camera...';
         }
-        log(`Attendance marked with confidence: ${confidencePct}%`);
-        await loadStudentTimetable({ forceNetwork: true });
-        await loadStudentAttendanceInsights();
+        if (demoMode || response.demo_mode || response.persistence_skipped) {
+          log(`Demo verification completed with confidence: ${confidencePct}%`);
+        } else {
+          log(`Attendance marked with confidence: ${confidencePct}%`);
+          await loadStudentTimetable({ forceNetwork: true });
+          await loadStudentAttendanceInsights();
+        }
         await sleep(900);
         closeCameraModal();
         return;
@@ -16443,10 +17805,12 @@ async function startLiveAttendanceVerification() {
       }
       log(`Live verification retry (${attempts}/${maxAttempts})`);
       if (livenessFailures >= 3) {
-        const livenessTimeoutMessage = 'Liveness check still failing. Keep front light on face, center your face, and move head slowly left/right/up/down, then retry.';
+        const livenessTimeoutMessage = demoMode
+          ? 'Liveness check still failing. Keep front light on face, center your face, and move head slowly left/right/up/down, then retry. Demo mode does not save attendance data.'
+          : 'Liveness check still failing. Keep front light on face, center your face, and move head slowly left/right/up/down, then retry.';
         setStudentResult(livenessTimeoutMessage, {
           showRetry: true,
-          retryAction: () => startStudentSelfieFlow(),
+          retryAction: () => (demoMode ? startStudentDemoAttendanceFlow() : startStudentSelfieFlow()),
         });
         if (els.cameraMessage) {
           els.cameraMessage.textContent = livenessTimeoutMessage;
@@ -17338,41 +18702,19 @@ async function startStudentDemoAttendanceFlow(resolvedState = null) {
   const demoState = resolvedState?.mode === 'demo'
     ? resolvedState
     : findStudentDemoAttendanceState();
-  const schedule = demoState?.schedule || null;
-  const scheduleId = Number(schedule?.schedule_id || 0);
-  if (!scheduleId) {
-    throw new Error('Demo attendance is available only during a live regular class hour.');
+  if (!demoState || demoState.mode !== 'demo') {
+    throw new Error('Demo attendance is disabled. Enable Demo Attendance first.');
   }
-
-  state.student.kpiScheduleId = scheduleId;
-  state.student.selectedScheduleId = scheduleId;
-  setStudentResult('Demo attendance is active. Capture a selfie to simulate marking for this class hour. Nothing will be saved.');
-
-  await openCameraModal({
-    title: 'Demo Attendance Capture',
-    facingMode: 'user',
-    referencePhotoDataUrl: state.student.profilePhotoDataUrl || '',
-    messageOverride: 'Demo mode is active. Capture a selfie to simulate attendance for this class hour only. No data will be saved.',
-    onCapture: async (captured) => {
-      const captures = Array.isArray(captured) ? captured : [captured];
-      const selfieDataUrl = String(captures[0] || '');
-      if (selfieDataUrl) {
-        state.student.selfieDataUrl = selfieDataUrl;
-        if (els.selfiePreview) {
-          els.selfiePreview.src = selfieDataUrl;
-          els.selfiePreview.classList.remove('hidden');
-        }
-      }
-      setStudentResult(
-        [
-          'Status: DEMO VERIFIED',
-          `Message: Demo attendance simulated for ${schedule.course_code} (${formatTime(schedule.start_time)} - ${formatTime(schedule.end_time)}).`,
-          'Persistence: No data was saved to attendance records.',
-        ].join('\n')
-      );
-      log(`Student attendance demo simulated for schedule ${scheduleId}`);
-    },
-  });
+  if (!state.student.registrationNumber) {
+    throw new Error('Complete profile setup with registration number first.');
+  }
+  if (!state.student.profilePhotoDataUrl) {
+    throw new Error('Upload profile photo first. It is required for facial attendance.');
+  }
+  if (requiresStudentEnrollmentSetup()) {
+    throw new Error('Complete one-time enrollment video before marking attendance.');
+  }
+  await startLiveAttendanceVerification({ demoMode: true, demoState });
 }
 
 async function startClassroomCaptureFlow() {
@@ -17443,6 +18785,13 @@ function normalizedRegistrationInput(rawValue = '') {
   return String(rawValue || '').trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function normalizedAuthUppercaseInput(rawValue = '', { compact = false } = {}) {
+  const raw = String(rawValue || '').toUpperCase();
+  return compact
+    ? raw.replace(/\s+/g, '')
+    : raw.replace(/\s+/g, ' ').trimStart();
+}
+
 async function requestForgotPasswordOtp() {
   const remaining = getForgotOtpCooldownRemainingSeconds();
   if (remaining > 0) {
@@ -17469,13 +18818,13 @@ async function requestForgotPasswordOtp() {
   setForgotOtpRequestInFlight(true);
   showOtpPopup(
     'Sending Reset OTP',
-    'Validating account and delivering OTP to your email...',
+    'Validating account and delivering OTP to your email. This can take up to 60 seconds.',
     { tone: 'sending', loading: true, closable: false }
   );
   try {
     const data = await api('/auth/password/request-otp', {
       method: 'POST',
-      timeoutMs: 20000,
+      timeoutMs: 60000,
       body: JSON.stringify({
         email,
         registration_number: registrationNumber,
@@ -17606,14 +18955,14 @@ async function requestOtp() {
   setOtpRequestInFlight(true);
   showOtpPopup(
     'Sending OTP',
-    'Generating secure OTP and delivering it to your email...',
+    'Generating secure OTP and delivering it to your email. This can take up to 60 seconds.',
     { tone: 'sending', loading: true, closable: false }
   );
   setAuthMessage('Sending OTP... please wait.');
   try {
     const data = await api('/auth/login/request-otp', {
       method: 'POST',
-      timeoutMs: 20000,
+      timeoutMs: 60000,
       body: JSON.stringify({
         email,
         password,
@@ -17659,13 +19008,14 @@ async function registerAccount() {
   const role = selectedAuthRole();
   const email = (els.authSignupEmail?.value || '').trim().toLowerCase();
   const password = els.authSignupPassword?.value || '';
-  const name = els.authName.value.trim();
-  const department = els.authDepartment.value.trim();
+  const name = normalizedAuthUppercaseInput(els.authName?.value || '');
+  const department = normalizedAuthUppercaseInput(els.authDepartment?.value || '');
   const registrationNumber = normalizedRegistrationInput(els.authSignupRegistration?.value || '');
   const facultyIdentifier = normalizedRegistrationInput(els.authSignupFacultyId?.value || '');
   const section = (els.authSignupSection?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const semesterValue = els.authSemester.value.trim();
   const parentEmail = els.authParentEmail.value.trim();
+  const adminPhotoDataUrl = authState.signupAdminPhotoDataUrl || '';
 
   if (!email || !password || !name || !department) {
     throw new Error('Role, email, password, name, and department are required.');
@@ -17692,6 +19042,9 @@ async function registerAccount() {
   if (role === 'faculty' && !facultyIdentifier) {
     throw new Error('Faculty identifier is required for faculty registration.');
   }
+  if (role === 'admin' && !adminPhotoDataUrl) {
+    throw new Error('Admin profile photo is required for registration.');
+  }
 
   const payload = {
     email,
@@ -17699,6 +19052,7 @@ async function registerAccount() {
     role,
     name,
     department,
+    profile_photo_data_url: role === 'admin' ? adminPhotoDataUrl : null,
     registration_number: role === 'student' ? registrationNumber : null,
     faculty_identifier: role === 'faculty' ? facultyIdentifier : null,
     section: role === 'student' ? section : null,
@@ -17736,6 +19090,7 @@ async function registerAccount() {
   if (els.authSignupSection) {
     els.authSignupSection.value = '';
   }
+  resetSignupAdminPhoto();
   setAuthMode('login');
   els.authPassword.value = '';
   renderPasswordStrengthHint(els.authPasswordStrength, '');
@@ -17830,11 +19185,6 @@ async function restoreSession() {
         els.weekStartDate.value = state.student.viewDate;
       }
       startStudentRealtimeTicker();
-      try {
-        await ensureCurrentWeekTimetableVisible({ forceNetwork: true });
-      } catch (error) {
-        log(error.message || 'Failed to auto-load current week timetable');
-      }
     } else {
       stopStudentRealtimeTicker();
     }
@@ -17877,13 +19227,13 @@ async function logout(message = 'Logged out. Sign in again to continue.') {
   if (els.profileModal) {
     els.profileModal.classList.add('hidden');
   }
+  clearSession();
+  openAuthOverlay(message);
   try {
     await api('/auth/logout', { method: 'POST', skipAuth: true });
   } catch (_error) {
     // Ignore logout API failures and always clear client session state.
   }
-  clearSession();
-  openAuthOverlay(message);
   log('Logged out');
 }
 
@@ -17993,6 +19343,84 @@ function initMicroInteractions() {
   });
 }
 
+function initSaarthiAvatarAura() {
+  const avatar = document.querySelector('#student-saarthi-card .saarthi-welcome-icon');
+  if (!(avatar instanceof HTMLElement)) {
+    return;
+  }
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (prefersReducedMotion) {
+    return;
+  }
+
+  const clamp01 = (value) => {
+    if (!Number.isFinite(value)) {
+      return 0.5;
+    }
+    return Math.min(1, Math.max(0, value));
+  };
+
+  const applyAvatarPose = (xRatio, yRatio, engaged = false) => {
+    const x = clamp01(xRatio);
+    const y = clamp01(yRatio);
+    const deltaX = x - 0.5;
+    const deltaY = y - 0.5;
+    const tiltY = deltaX * 20;
+    const tiltX = -deltaY * 20;
+    const distance = Math.min(1, Math.hypot(deltaX, deltaY) / 0.72);
+    const auraScale = 1 + (1 - distance) * 0.16;
+    const auraAlpha = 0.58 + (1 - distance) * 0.26;
+
+    avatar.style.setProperty('--saarthi-tilt-x', `${tiltX.toFixed(2)}deg`);
+    avatar.style.setProperty('--saarthi-tilt-y', `${tiltY.toFixed(2)}deg`);
+    avatar.style.setProperty('--saarthi-aura-x', `${(x * 100).toFixed(2)}%`);
+    avatar.style.setProperty('--saarthi-aura-y', `${(y * 100).toFixed(2)}%`);
+    avatar.style.setProperty('--saarthi-aura-scale', auraScale.toFixed(3));
+    avatar.style.setProperty('--saarthi-aura-alpha', auraAlpha.toFixed(3));
+    avatar.classList.toggle('is-interacting', Boolean(engaged));
+  };
+
+  const applyFromPointer = (event, engaged = true) => {
+    const rect = avatar.getBoundingClientRect();
+    if (!rect.width || !rect.height) {
+      return;
+    }
+    const xRatio = (event.clientX - rect.left) / rect.width;
+    const yRatio = (event.clientY - rect.top) / rect.height;
+    applyAvatarPose(xRatio, yRatio, engaged);
+  };
+
+  const resetAvatarPose = () => {
+    applyAvatarPose(0.5, 0.5, false);
+    avatar.classList.remove('is-pressed');
+  };
+
+  avatar.addEventListener('pointerenter', (event) => {
+    applyFromPointer(event, true);
+  });
+  avatar.addEventListener('pointermove', (event) => {
+    applyFromPointer(event, true);
+  });
+  avatar.addEventListener('pointerleave', () => {
+    resetAvatarPose();
+  });
+  avatar.addEventListener('pointerdown', (event) => {
+    avatar.classList.add('is-pressed');
+    applyFromPointer(event, true);
+  });
+  avatar.addEventListener('pointerup', () => {
+    avatar.classList.remove('is-pressed');
+  });
+  avatar.addEventListener('pointercancel', () => {
+    resetAvatarPose();
+  });
+  window.addEventListener('blur', () => {
+    resetAvatarPose();
+  });
+
+  resetAvatarPose();
+}
+
 async function refreshAll() {
   if (!authState.user) {
     return;
@@ -18018,8 +19446,7 @@ async function refreshAll() {
   if (role === 'student') {
     const studentSteps = [
       () => loadStudentProfilePhoto(),
-      () => refreshStudentKpiTimetable({ forceNetwork: true }),
-      () => loadStudentTimetable({ forceNetwork: true }),
+      () => refreshStudentTimetableSurface({ forceNetwork: true }),
       () => loadStudentAttendanceInsights(),
       () => loadSaarthiStatus({ silent: true }),
       () => refreshRemedialMessages(),
@@ -18101,6 +19528,8 @@ async function refreshAll() {
 }
 
 function bindEvents() {
+  bindAdminSubmodulePickers();
+
   document.getElementById('refresh-btn').addEventListener('click', async () => {
     try {
       await refreshAll();
@@ -18411,6 +19840,47 @@ function bindEvents() {
     });
   }
 
+  if (els.authName) {
+    els.authName.addEventListener('input', () => {
+      els.authName.value = normalizedAuthUppercaseInput(els.authName.value || '');
+    });
+  }
+
+  if (els.authDepartment) {
+    els.authDepartment.addEventListener('input', () => {
+      els.authDepartment.value = normalizedAuthUppercaseInput(els.authDepartment.value || '');
+    });
+  }
+
+  if (els.authSignupSection) {
+    els.authSignupSection.addEventListener('input', () => {
+      els.authSignupSection.value = normalizedAuthUppercaseInput(els.authSignupSection.value || '', { compact: true });
+    });
+  }
+
+  if (els.authSignupAdminPhoto) {
+    els.authSignupAdminPhoto.addEventListener('change', async () => {
+      const file = els.authSignupAdminPhoto.files?.[0];
+      if (!file) {
+        resetSignupAdminPhoto();
+        return;
+      }
+      if (!file.type || !file.type.startsWith('image/')) {
+        resetSignupAdminPhoto();
+        setAuthMessage('Admin photo must be an image file.');
+        return;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        authState.signupAdminPhotoDataUrl = dataUrl;
+        setSignupAdminPhotoPreview(dataUrl);
+      } catch (error) {
+        resetSignupAdminPhoto();
+        setAuthMessage(String(error?.message || 'Unable to read selected photo.'));
+      }
+    });
+  }
+
   if (els.forgotRegistrationNumber) {
     els.forgotRegistrationNumber.addEventListener('input', () => {
       const value = normalizedRegistrationInput(els.forgotRegistrationNumber.value || '');
@@ -18433,6 +19903,7 @@ function bindEvents() {
 
   const topModuleButtons = [
     els.topNavAttendanceBtn,
+    els.topNavSaarthiBtn,
     els.topNavFoodBtn,
     els.topNavAdministrativeBtn,
     els.topNavRmsBtn,
@@ -18812,6 +20283,19 @@ function bindEvents() {
     });
   }
 
+  if (els.foodDemoToggleBtn) {
+    els.foodDemoToggleBtn.addEventListener('click', () => {
+      const nextEnabled = !isFoodDemoEnabled();
+      setFoodDemoEnabled(nextEnabled);
+      setFoodStatus(
+        nextEnabled
+          ? 'Food Hall demo bypass enabled. Orders can ignore normal constraints temporarily.'
+          : 'Food Hall demo bypass disabled. Normal ordering rules are active again.',
+        false,
+      );
+    });
+  }
+
   if (els.foodCartCheckoutBtn) {
     els.foodCartCheckoutBtn.addEventListener('click', async () => {
       try {
@@ -18966,7 +20450,7 @@ function bindEvents() {
     els.verlynToggleBtn.addEventListener('click', () => {
       toggleVerlynOpen();
       if (state.ui.verlynOpen) {
-        setVerlynStatus('Supported prompts only. Every result is evidence-backed and audited.');
+        setVerlynStatus('Ready.');
         renderVerlynQuickActions();
         if (els.verlynOutput) {
           els.verlynOutput.textContent = getVerlynDefaultOutput();
@@ -19006,13 +20490,12 @@ function bindEvents() {
           await runVerlynCopilot({ query_text: 'What do I need to fix before I lose eligibility?' });
           return;
         }
-        if (action === 'open_attendance_module') {
-          setActiveModule('attendance');
-          setVerlynStatus('Attendance quick actions loaded.', false, 'neutral');
-          if (els.verlynOutput) {
-            els.verlynOutput.textContent = getVerlynDefaultOutput();
-          }
-          renderVerlynQuickActions();
+        if (action === 'student_module_summary') {
+          await runVerlynCopilot({ query_text: 'Summarize my pending tasks across attendance, food, Saarthi, and remedial.' });
+          return;
+        }
+        if (action === 'owner_food_summary') {
+          await runVerlynCopilot({ query_text: 'Summarize active food orders and delivery flow for my shops today.' });
           return;
         }
         if (action === 'focus_audit_timeline') {
@@ -19487,6 +20970,25 @@ function bindEvents() {
     });
   }
 
+  if (els.directEmailSendBtn) {
+    els.directEmailSendBtn.addEventListener('click', async () => {
+      const button = els.directEmailSendBtn;
+      const original = button.textContent || 'Send Email';
+      button.disabled = true;
+      button.textContent = 'Sending...';
+      setDirectEmailStatus('Sending email. This can take up to a minute.');
+      try {
+        await sendDirectStudentEmail();
+      } catch (error) {
+        setDirectEmailStatus(error.message, true);
+        log(error.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    });
+  }
+
   if (els.remedialCodeDetails) {
     els.remedialCodeDetails.addEventListener('click', (event) => {
       const target = event.target;
@@ -19644,7 +21146,7 @@ function bindEvents() {
       state.student.demoAttendanceEnabled = !state.student.demoAttendanceEnabled;
       updateSelectedClassState();
       if (state.student.demoAttendanceEnabled) {
-        setStudentResult('Demo attendance enabled. You can simulate attendance during the full live class hour. Nothing will be saved.');
+        setStudentResult('Demo attendance enabled. You can run full live verification anytime. Nothing will be saved.');
         log('Student attendance demo mode enabled');
       } else {
         setStudentResult('Demo attendance disabled. Official first-10-minute attendance window is active again.');
@@ -19659,6 +21161,16 @@ function bindEvents() {
         await sendSaarthiMessage();
       } catch (error) {
         setSaarthiStatus(error.message || 'Failed to send message to Saarthi.', 'error');
+      }
+    });
+  }
+
+  if (els.saarthiNewChatBtn) {
+    els.saarthiNewChatBtn.addEventListener('click', async () => {
+      try {
+        await startNewSaarthiChat();
+      } catch (error) {
+        setSaarthiStatus(error.message || 'Failed to start a new Saarthi chat.', 'error');
       }
     });
   }
@@ -19868,7 +21380,6 @@ function bindEvents() {
       closeAttendanceDetailsModal();
     }
   });
-
   els.profilePhotoInput.addEventListener('change', async () => {
     const role = authState.user?.role;
     if (role !== 'student' && role !== 'faculty') {
@@ -20390,6 +21901,7 @@ function bindEvents() {
       els.rmsAttendanceRegistration.value = normalizedRegistrationInput(els.rmsAttendanceRegistration.value || '');
       state.rms.attendanceContext = null;
       state.rms.attendanceSelectedCourseCode = '';
+      state.rms.attendanceSelectedScheduleId = null;
       renderRmsAttendanceStudentSummary(null);
       renderRmsAttendanceSubjectOptions(null);
       syncVisibleVerlynQuickActions();
@@ -20413,6 +21925,16 @@ function bindEvents() {
       state.rms.attendanceSelectedCourseCode = String(els.rmsAttendanceSubjectSelect.value || '')
         .trim()
         .toUpperCase();
+      state.rms.attendanceSelectedScheduleId = null;
+      renderRmsAttendanceSlotOptions();
+      syncRmsAttendanceCurrentStatus();
+    });
+  }
+
+  if (els.rmsAttendanceSlotSelect) {
+    els.rmsAttendanceSlotSelect.addEventListener('change', () => {
+      const selectedScheduleId = Number(String(els.rmsAttendanceSlotSelect.value || '').trim() || 0) || null;
+      state.rms.attendanceSelectedScheduleId = selectedScheduleId;
       syncRmsAttendanceCurrentStatus();
     });
   }
@@ -20737,6 +22259,10 @@ async function init() {
   if (els.rmsAttendanceCurrentStatus) {
     els.rmsAttendanceCurrentStatus.value = 'Not marked';
   }
+  if (els.rmsAttendanceSlotSelect) {
+    els.rmsAttendanceSlotSelect.innerHTML = '<option value="">Select time slot</option>';
+    els.rmsAttendanceSlotSelect.value = '';
+  }
   syncRmsThreadActionForm();
   renderRmsSelectedThreadSummary(null);
   renderRmsStudentSummary(null);
@@ -20754,6 +22280,7 @@ async function init() {
   state.food.orderDate = els.foodOrderDate?.value || todayISO();
   state.ui.activeModule = normalizeModuleKey(moduleFromHash() || state.ui.activeModule);
   applyTheme(getInitialTheme(''), { persist: false, userEmail: '' });
+  restoreFoodDemoEnabled();
   bindStaticAssetFallbacks();
   startLiveDateTimeTicker();
   setAuthMode('login');
@@ -20762,9 +22289,11 @@ async function init() {
     initTiltCards();
   }
   initMicroInteractions();
+  initSaarthiAvatarAura();
   bindSessionActivityWatchdog();
   bindEvents();
   initModalFocusTrapObserver();
+  renderFoodDemoToggle();
   syncFoodOrderActionState();
   renderWorkloadChart();
   renderMongoStatus();

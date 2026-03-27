@@ -303,6 +303,36 @@ class AdminRmsFlowTests(unittest.TestCase):
         )
         self.assertEqual(len(out.subjects), 1)
         self.assertEqual(out.subjects[0].course_code, "CSE101")
+        self.assertEqual(len(out.subjects[0].slots), 1)
+
+    def test_attendance_context_only_shows_subjects_with_class_on_selected_day(self):
+        other_weekday = (date.today().weekday() + 1) % 7
+        self.db.add(
+            models.ClassSchedule(
+                id=1799,
+                course_id=501,
+                faculty_id=11,
+                weekday=other_weekday,
+                start_time=time(8, 0),
+                end_time=time(9, 0),
+                classroom_label="34-103",
+                is_active=True,
+            )
+        )
+        self.db.commit()
+
+        out = rms_attendance_student_context(
+            registration_number="22BCS101",
+            attendance_date=date.today(),
+            db=self.db,
+            current_user=self._user(models.UserRole.ADMIN, user_id=28),
+        )
+        self.assertEqual(len(out.subjects), 2)
+        by_code = {row.course_code: row for row in out.subjects}
+        self.assertIn("CSE101", by_code)
+        cse_slots = by_code["CSE101"].slots
+        self.assertEqual(len(cse_slots), 1)
+        self.assertEqual(cse_slots[0].schedule_id, 1701)
 
     def test_admin_can_override_rms_attendance_status(self):
         with patch("app.routers.admin.mirror_document", return_value=True):
@@ -356,6 +386,112 @@ class AdminRmsFlowTests(unittest.TestCase):
         self.assertIsNotNone(notification)
         self.assertIn("Your attendance has been updated for subject", notification.message)
         self.assertIn("CSE101", notification.message)
+
+    def test_admin_override_updates_only_selected_slot(self):
+        now_dt = datetime.utcnow()
+        self.db.add(
+            models.ClassSchedule(
+                id=1703,
+                course_id=501,
+                faculty_id=11,
+                weekday=date.today().weekday(),
+                start_time=time(12, 0),
+                end_time=time(13, 0),
+                classroom_label="34-105",
+                is_active=True,
+            )
+        )
+        self.db.add_all(
+            [
+                models.AttendanceSubmission(
+                    id=3301,
+                    schedule_id=1701,
+                    course_id=501,
+                    faculty_id=11,
+                    student_id=101,
+                    class_date=date.today(),
+                    status=models.AttendanceSubmissionStatus.APPROVED,
+                    ai_match=True,
+                    ai_confidence=1.0,
+                    ai_model="seed",
+                    ai_reason="seed",
+                    submitted_at=now_dt,
+                    reviewed_by_faculty_id=11,
+                    reviewed_at=now_dt,
+                    review_note="seed",
+                ),
+                models.AttendanceSubmission(
+                    id=3302,
+                    schedule_id=1703,
+                    course_id=501,
+                    faculty_id=11,
+                    student_id=101,
+                    class_date=date.today(),
+                    status=models.AttendanceSubmissionStatus.APPROVED,
+                    ai_match=True,
+                    ai_confidence=1.0,
+                    ai_model="seed",
+                    ai_reason="seed",
+                    submitted_at=now_dt,
+                    reviewed_by_faculty_id=11,
+                    reviewed_at=now_dt,
+                    review_note="seed",
+                ),
+            ]
+        )
+        self.db.commit()
+
+        with patch("app.routers.admin.mirror_document", return_value=True):
+            out = rms_update_attendance_status(
+                payload=schemas.RMSAttendanceStatusUpdateRequest(
+                    registration_number="22BCS101",
+                    course_code="CSE101",
+                    schedule_id=1703,
+                    attendance_date=date.today(),
+                    status=models.AttendanceStatus.ABSENT,
+                    note="Admin override for selected slot",
+                ),
+                db=self.db,
+                current_user=self._user(models.UserRole.ADMIN, user_id=33),
+            )
+
+        self.assertEqual(out.schedule_id, 1703)
+        self.assertEqual(out.updated_status, models.AttendanceStatus.ABSENT)
+
+        unchanged_slot = (
+            self.db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == 101,
+                models.AttendanceSubmission.schedule_id == 1701,
+                models.AttendanceSubmission.class_date == date.today(),
+            )
+            .first()
+        )
+        updated_slot = (
+            self.db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == 101,
+                models.AttendanceSubmission.schedule_id == 1703,
+                models.AttendanceSubmission.class_date == date.today(),
+            )
+            .first()
+        )
+        self.assertIsNotNone(unchanged_slot)
+        self.assertIsNotNone(updated_slot)
+        self.assertEqual(unchanged_slot.status, models.AttendanceSubmissionStatus.APPROVED)
+        self.assertEqual(updated_slot.status, models.AttendanceSubmissionStatus.REJECTED)
+
+        aggregate_record = (
+            self.db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == 101,
+                models.AttendanceRecord.course_id == 501,
+                models.AttendanceRecord.attendance_date == date.today(),
+            )
+            .first()
+        )
+        self.assertIsNotNone(aggregate_record)
+        self.assertEqual(aggregate_record.status, models.AttendanceStatus.PRESENT)
 
     def test_faculty_can_override_rms_attendance_status_for_own_course(self):
         with patch("app.routers.admin.mirror_document", return_value=True):

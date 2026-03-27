@@ -3,7 +3,7 @@ from enum import Enum
 import re
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
 from .models import (
     AttendanceRecoveryActionStatus,
@@ -21,8 +21,10 @@ from .models import (
     RMSCaseStatus,
     UserRole,
 )
+from .validation import StrictSchemaModel
 
 DEFAULT_REMEDIAL_ONLINE_LINK = "https://myclass.lpu.in/"
+BaseModel = StrictSchemaModel
 
 
 class StudentBase(BaseModel):
@@ -150,6 +152,7 @@ class IdentityVerificationCaseOut(BaseModel):
 
 class ApplicantRiskAssessmentRequest(BaseModel):
     applicant_email: str = Field(min_length=5, max_length=120)
+    external_subject_key: Optional[str] = Field(default=None, max_length=160)
     claimed_role: str = Field(default="student", min_length=3, max_length=30)
     registration_number: Optional[str] = Field(default=None, min_length=3, max_length=40)
     parent_email: Optional[str] = Field(default=None, min_length=5, max_length=120)
@@ -645,6 +648,10 @@ class FoodPaymentRecoveryItemOut(BaseModel):
     updated_at: datetime
 
 
+class FoodDemoPaymentCompleteRequest(BaseModel):
+    payment_reference: str = Field(min_length=5, max_length=120)
+
+
 class FoodMetricsOut(BaseModel):
     active_orders: int
     completed_today: int
@@ -953,6 +960,36 @@ class FacultyMessageSend(BaseModel):
     message: str = Field(min_length=3, max_length=600)
 
 
+class StudentDirectEmailRequest(BaseModel):
+    student_id: Optional[int] = Field(default=None, ge=1)
+    registration_number: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    email: Optional[str] = Field(default=None, min_length=5, max_length=160)
+    subject: str = Field(min_length=3, max_length=140)
+    message: str = Field(min_length=3, max_length=2000)
+
+    @model_validator(mode="after")
+    def normalize_direct_email_fields(self):
+        if self.registration_number is not None:
+            self.registration_number = re.sub(r"\s+", "", str(self.registration_number).strip().upper())
+        if self.email is not None:
+            self.email = str(self.email).strip().lower()
+        self.subject = re.sub(r"\s+", " ", str(self.subject or "").strip())
+        if not (self.student_id or self.registration_number or self.email):
+            raise ValueError("Provide student_id, registration_number, or email.")
+        if not self.subject:
+            raise ValueError("Subject cannot be empty.")
+        return self
+
+
+class StudentDirectEmailOut(BaseModel):
+    message: str
+    student_id: int
+    delivered_to: str
+    subject: str
+    channel: str
+    notification_id: Optional[int] = None
+
+
 class StudentMessageOut(BaseModel):
     id: int
     faculty_id: int
@@ -1117,10 +1154,27 @@ class RMSQueryActionOut(BaseModel):
 
 class RMSAttendanceStatusUpdateRequest(BaseModel):
     registration_number: str = Field(min_length=3, max_length=40)
-    course_code: str = Field(min_length=2, max_length=20)
+    course_code: Optional[str] = Field(default=None, min_length=2, max_length=20)
+    schedule_id: Optional[int] = Field(default=None, ge=1)
     attendance_date: date
     status: AttendanceStatus
     note: Optional[str] = Field(default=None, max_length=400)
+
+    @model_validator(mode="after")
+    def ensure_course_or_schedule(self):
+        if not self.course_code and not self.schedule_id:
+            raise ValueError("course_code or schedule_id is required")
+        return self
+
+
+class RMSAttendanceSubjectSlotOut(BaseModel):
+    schedule_id: int
+    weekday: int = Field(ge=0, le=6)
+    start_time: time
+    end_time: time
+    classroom_label: Optional[str] = None
+    current_status: Optional[AttendanceStatus] = None
+    current_status_label: str = "Not marked"
 
 
 class RMSAttendanceStudentSubjectOut(BaseModel):
@@ -1131,6 +1185,7 @@ class RMSAttendanceStudentSubjectOut(BaseModel):
     faculty_name: Optional[str] = None
     current_status: Optional[AttendanceStatus] = None
     current_status_label: str = "Not marked"
+    slots: list[RMSAttendanceSubjectSlotOut] = Field(default_factory=list)
 
 
 class RMSAttendanceStudentContextOut(BaseModel):
@@ -1142,6 +1197,10 @@ class RMSAttendanceStudentContextOut(BaseModel):
 
 class RMSAttendanceStatusUpdateOut(BaseModel):
     record_id: int
+    schedule_id: int
+    class_start_time: time
+    class_end_time: time
+    classroom_label: Optional[str] = None
     student_id: int
     student_name: str
     registration_number: Optional[str] = None
@@ -1529,6 +1588,7 @@ class AuthRegisterRequest(BaseModel):
     role: UserRole
     name: str = Field(min_length=2, max_length=100)
     department: str = Field(min_length=2, max_length=100)
+    profile_photo_data_url: Optional[str] = None
     registration_number: Optional[str] = Field(default=None, min_length=3, max_length=40)
     faculty_identifier: Optional[str] = Field(default=None, min_length=3, max_length=40)
     section: Optional[str] = Field(default=None, min_length=1, max_length=80)
@@ -1536,6 +1596,25 @@ class AuthRegisterRequest(BaseModel):
     parent_email: Optional[str] = None
     invite_token: Optional[str] = Field(default=None, min_length=12, max_length=240)
     provisioning_token: Optional[str] = Field(default=None, min_length=12, max_length=240)
+
+    @model_validator(mode="after")
+    def normalize_signup_fields(self):
+        self.email = str(self.email or "").strip().lower()
+        self.name = re.sub(r"\s+", " ", str(self.name or "").strip()).upper()
+        self.department = re.sub(r"\s+", " ", str(self.department or "").strip()).upper()
+        if self.registration_number is not None:
+            self.registration_number = re.sub(r"\s+", "", str(self.registration_number).strip().upper())
+        if self.faculty_identifier is not None:
+            self.faculty_identifier = re.sub(r"\s+", "", str(self.faculty_identifier).strip().upper())
+        if self.section is not None:
+            self.section = re.sub(r"\s+", "", str(self.section).strip().upper())
+        if self.parent_email is not None:
+            self.parent_email = str(self.parent_email).strip().lower() or None
+        if self.invite_token is not None:
+            self.invite_token = str(self.invite_token).strip() or None
+        if self.provisioning_token is not None:
+            self.provisioning_token = str(self.provisioning_token).strip() or None
+        return self
 
 
 class AuthUserCreate(BaseModel):
@@ -1774,7 +1853,8 @@ class DefaultTimetableLoadResponse(BaseModel):
 
 
 class RealtimeAttendanceMarkRequest(BaseModel):
-    schedule_id: int
+    schedule_id: Optional[int] = Field(default=None, ge=1)
+    demo_mode: bool = False
     selfie_photo_data_url: Optional[str] = Field(default=None, min_length=20)
     selfie_frames_data_urls: Optional[list[str]] = Field(default=None, min_length=1, max_length=12)
     ai_match: Optional[bool] = None
@@ -1784,6 +1864,8 @@ class RealtimeAttendanceMarkRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_selfie_payload(self):
+        if not self.demo_mode and not self.schedule_id:
+            raise ValueError("schedule_id is required unless demo_mode is true")
         if not self.selfie_photo_data_url and not self.selfie_frames_data_urls:
             raise ValueError("Provide selfie_photo_data_url or selfie_frames_data_urls")
         if self.selfie_frames_data_urls:
@@ -1801,6 +1883,8 @@ class RealtimeAttendanceMarkResponse(BaseModel):
     status: AttendanceSubmissionStatus
     requires_faculty_review: bool
     message: str
+    demo_mode: bool = False
+    persistence_skipped: bool = False
     verification_engine: str = "ai"
     verification_confidence: float = 0.0
     verification_reason: Optional[str] = None
@@ -2113,6 +2197,7 @@ class CopilotIntent(str, Enum):
     ELIGIBILITY_RISK = "eligibility_risk"
     CREATE_REMEDIAL_PLAN = "create_remedial_plan"
     STUDENT_FLAG_REASON = "student_flag_reason"
+    MODULE_ASSIST = "module_assist"
     UNSUPPORTED = "unsupported"
 
 
@@ -2136,6 +2221,11 @@ class CopilotQueryRequest(BaseModel):
     end_time: Optional[time] = None
     class_mode: Optional[str] = Field(default=None, pattern="^(online|offline)$")
     room_number: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    active_module: Optional[str] = Field(
+        default=None,
+        pattern="^(attendance|food|saarthi|remedial|rms|administrative)$",
+    )
+    client_context: dict[str, Any] = Field(default_factory=dict)
     send_message: bool = True
 
     @model_validator(mode="after")
@@ -2151,6 +2241,11 @@ class CopilotQueryRequest(BaseModel):
             self.class_mode = str(self.class_mode).strip().lower()
         if self.room_number is not None:
             self.room_number = re.sub(r"\s+", " ", str(self.room_number).strip())
+        if self.active_module is not None:
+            normalized_module = re.sub(r"\s+", "", str(self.active_module).strip().lower())
+            self.active_module = normalized_module or None
+        if not isinstance(self.client_context, dict):
+            self.client_context = {}
         return self
 
 

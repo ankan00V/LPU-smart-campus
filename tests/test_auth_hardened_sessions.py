@@ -1,6 +1,5 @@
-import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
@@ -12,10 +11,8 @@ from app.auth_utils import (
     ACCESS_COOKIE_NAME,
     create_session_tokens,
     get_current_user,
-    hash_otp,
     rotate_session_tokens,
 )
-from app.routers.auth import _enforce_privileged_registration_gate
 
 
 class _UpdateResult:
@@ -192,57 +189,6 @@ class AuthHardenedSessionTests(unittest.TestCase):
                     credentials=None,
                 )
         self.assertEqual(ctx.exception.status_code, 401)
-
-    def test_privileged_registration_requires_invite_or_provisioning_token(self):
-        with self.assertRaises(HTTPException) as denied_ctx:
-            _enforce_privileged_registration_gate(
-                self.mongo,
-                email="admin@gmail.com",
-                role=models.UserRole.ADMIN,
-                invite_token=None,
-                provisioning_token=None,
-            )
-        self.assertEqual(denied_ctx.exception.status_code, 403)
-
-        invite_token = "invite-token-123"
-        invite_hash, invite_salt = hash_otp(invite_token)
-        self.mongo["auth_role_invites"].insert_one(
-            {
-                "id": 1,
-                "email": "admin@gmail.com",
-                "role": models.UserRole.ADMIN.value,
-                "token_hash": invite_hash,
-                "token_salt": invite_salt,
-                "used_at": None,
-                "expires_at": datetime.utcnow() + timedelta(minutes=30),
-            }
-        )
-        _enforce_privileged_registration_gate(
-            self.mongo,
-            email="admin@gmail.com",
-            role=models.UserRole.ADMIN,
-            invite_token=invite_token,
-            provisioning_token=None,
-        )
-        invite_row = self.mongo["auth_role_invites"].find_one({"id": 1})
-        self.assertIsNotNone(invite_row.get("used_at"))
-
-        previous = os.getenv("PRIVILEGED_ROLE_PROVISIONING_TOKEN")
-        try:
-            os.environ["PRIVILEGED_ROLE_PROVISIONING_TOKEN"] = "bootstrap-secret"
-            _enforce_privileged_registration_gate(
-                self.mongo,
-                email="faculty@gmail.com",
-                role=models.UserRole.FACULTY,
-                invite_token=None,
-                provisioning_token="bootstrap-secret",
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PRIVILEGED_ROLE_PROVISIONING_TOKEN", None)
-            else:
-                os.environ["PRIVILEGED_ROLE_PROVISIONING_TOKEN"] = previous
-
 
 if __name__ == "__main__":
     unittest.main()

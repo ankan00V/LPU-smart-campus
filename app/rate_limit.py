@@ -45,12 +45,17 @@ def enforce_rate_limit(
     principal: str | None = None,
     limit: int | None = None,
     window_seconds: int | None = None,
+    include_ip: bool = True,
 ) -> RateLimitDecision:
     effective_limit = int(limit or _default_limit())
     effective_window = int(window_seconds or _default_window_seconds())
 
     actor = (principal or "").strip().lower() or "anon"
-    key = f"{scope}:{_client_ip(request)}:{actor}"
+    scope_token = (scope or "").strip().lower() or "default"
+    if include_ip:
+        key = f"{scope_token}:{_client_ip(request)}:{actor}"
+    else:
+        key = f"{scope_token}:{actor}"
     try:
         decision = rate_limit_hit(key, limit=effective_limit, window_seconds=effective_window)
     except RuntimeError as exc:
@@ -61,18 +66,26 @@ def enforce_rate_limit(
     if decision.allowed:
         return decision
 
+    headers = rate_limit_headers(decision)
+    headers["Retry-After"] = str(decision.retry_after_seconds)
     raise HTTPException(
         status_code=429,
-        detail=(
-            f"Rate limit exceeded for {scope}. Retry in {decision.retry_after_seconds} seconds."
-        ),
-        headers={"Retry-After": str(decision.retry_after_seconds)},
+        detail={
+            "error": "rate_limit_exceeded",
+            "scope": scope_token,
+            "message": "Too many requests for this endpoint window.",
+            "limit": decision.limit,
+            "remaining": decision.remaining,
+            "retry_after_seconds": decision.retry_after_seconds,
+        },
+        headers=headers,
     )
 
 
-def rate_limit_headers(decision: RateLimitDecision) -> dict[str, Any]:
+def rate_limit_headers(decision: RateLimitDecision, *, prefix: str = "X-RateLimit") -> dict[str, Any]:
+    root = (prefix or "X-RateLimit").strip()
     return {
-        "X-RateLimit-Limit": str(decision.limit),
-        "X-RateLimit-Remaining": str(decision.remaining),
-        "Retry-After": str(decision.retry_after_seconds),
+        f"{root}-Limit": str(decision.limit),
+        f"{root}-Remaining": str(decision.remaining),
+        f"{root}-Reset": str(decision.retry_after_seconds),
     }

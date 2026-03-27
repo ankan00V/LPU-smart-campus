@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bson import json_util
@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 _OUTBOX_BATCH_SIZE = max(1, int(os.getenv("OUTBOX_DISPATCH_BATCH_SIZE", "100")))
 _OUTBOX_RETRY_SECONDS = max(2, int(os.getenv("OUTBOX_RETRY_SECONDS", "10")))
 _OUTBOX_MAX_ATTEMPTS = max(1, int(os.getenv("OUTBOX_MAX_ATTEMPTS", "8")))
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _encode_payload(payload: dict[str, Any] | None) -> str | None:
@@ -50,16 +54,45 @@ def enqueue_mongo_upsert(
         required=bool(required),
         status="pending",
         attempts=0,
-        available_at=datetime.utcnow(),
-        created_at=datetime.utcnow(),
+        available_at=_utcnow_naive(),
+        created_at=_utcnow_naive(),
     )
     db.add(event)
     db.flush()
     return event
 
 
+def enqueue_realtime_event(
+    db: Session,
+    *,
+    event: dict[str, Any],
+    required: bool = False,
+) -> models.OutboxEvent:
+    outbox_event = models.OutboxEvent(
+        destination="realtime",
+        collection_name="realtime_events",
+        operation="publish",
+        payload_json=_encode_payload(event) or "{}",
+        upsert_filter_json=None,
+        required=bool(required),
+        status="pending",
+        attempts=0,
+        available_at=_utcnow_naive(),
+        created_at=_utcnow_naive(),
+    )
+    db.add(outbox_event)
+    db.flush()
+    return outbox_event
+
+
 def _dispatch_one(event: models.OutboxEvent) -> None:
     payload = _decode_payload(event.payload_json) or {}
+    if event.destination == "realtime":
+        from .realtime_bus import publish_prebuilt_realtime_event
+
+        publish_prebuilt_realtime_event(payload, allow_outbox=False)
+        return
+
     upsert_filter = _decode_payload(event.upsert_filter_json)
     mirror_document(
         event.collection_name,
@@ -71,7 +104,7 @@ def _dispatch_one(event: models.OutboxEvent) -> None:
 
 
 def dispatch_outbox_batch(db: Session, *, limit: int | None = None) -> dict[str, int]:
-    now = datetime.utcnow()
+    now = _utcnow_naive()
     batch_limit = max(1, int(limit or _OUTBOX_BATCH_SIZE))
     rows = (
         db.query(models.OutboxEvent)
@@ -102,7 +135,7 @@ def dispatch_outbox_batch(db: Session, *, limit: int | None = None) -> dict[str,
                 row.status = "failed"
             else:
                 row.status = "pending"
-            row.available_at = datetime.utcnow() + timedelta(seconds=_OUTBOX_RETRY_SECONDS)
+            row.available_at = _utcnow_naive() + timedelta(seconds=_OUTBOX_RETRY_SECONDS)
             logger.warning(
                 "outbox_dispatch_failed id=%s collection=%s attempt=%s err=%s",
                 row.id,
@@ -113,7 +146,7 @@ def dispatch_outbox_batch(db: Session, *, limit: int | None = None) -> dict[str,
             continue
 
         row.status = "sent"
-        row.processed_at = datetime.utcnow()
+        row.processed_at = _utcnow_naive()
         row.available_at = row.processed_at
         row.last_error = None
         dispatched += 1

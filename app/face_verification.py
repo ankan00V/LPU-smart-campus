@@ -57,6 +57,10 @@ class FaceVerificationConfig:
     min_liveness_texture_jitter: float
     min_liveness_contrast_jitter: float
     min_primary_face_dominance_ratio: float
+    min_valid_frame_ratio: float = 0.85
+    min_detection_score: float = 0.90
+    max_ignorable_secondary_face_area_ratio: float = 0.035
+    min_secondary_face_center_offset_ratio: float = 0.30
 
 
 def _env_float(name: str, default: float) -> float:
@@ -124,6 +128,16 @@ def _load_config() -> FaceVerificationConfig:
         min_primary_face_dominance_ratio=max(
             1.3,
             _env_float("FACE_PRIMARY_FACE_DOMINANCE_RATIO", 3.0),
+        ),
+        min_valid_frame_ratio=max(0.6, min(1.0, _env_float("FACE_MIN_VALID_FRAME_RATIO", 0.85))),
+        min_detection_score=max(0.6, min(0.99, _env_float("FACE_DNN_DETECTION_SCORE_THRESHOLD", 0.90))),
+        max_ignorable_secondary_face_area_ratio=max(
+            0.005,
+            min(0.20, _env_float("FACE_MAX_IGNORABLE_SECONDARY_FACE_AREA_RATIO", 0.035)),
+        ),
+        min_secondary_face_center_offset_ratio=max(
+            0.0,
+            min(0.95, _env_float("FACE_MIN_SECONDARY_FACE_CENTER_OFFSET_RATIO", 0.30)),
         ),
     )
 
@@ -774,6 +788,120 @@ def _detect_face_rows_dnn(image_bgr: np.ndarray) -> tuple[list[np.ndarray], str 
     return rows, None
 
 
+def _face_row_metrics_dnn(row: np.ndarray, *, image_w: int, image_h: int) -> dict[str, float]:
+    x, y, w, h = [float(value) for value in row[:4]]
+    detection_score = float(row[14]) if row.size >= 15 else 1.0
+    area_ratio = float((w * h) / max(float(image_w * image_h), 1.0))
+    center_x = (x + (w / 2.0)) / max(float(image_w), 1.0)
+    center_y = (y + (h / 2.0)) / max(float(image_h), 1.0)
+    center_offset_ratio = float(np.hypot(center_x - 0.5, center_y - 0.5) / np.hypot(0.5, 0.5))
+    return {
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+        "detection_score": detection_score,
+        "area_ratio": area_ratio,
+        "center_x": center_x,
+        "center_y": center_y,
+        "center_offset_ratio": center_offset_ratio,
+    }
+
+
+def _select_primary_face_row_dnn(
+    face_rows: Sequence[np.ndarray],
+    *,
+    image_w: int,
+    image_h: int,
+) -> tuple[int, list[dict[str, float]]]:
+    metrics = [_face_row_metrics_dnn(row, image_w=image_w, image_h=image_h) for row in face_rows]
+    if not metrics:
+        return 0, []
+
+    best_idx = 0
+    best_score = float("-inf")
+    for idx, item in enumerate(metrics):
+        detection_component = _clamp01(item["detection_score"])
+        area_component = _clamp01(item["area_ratio"] / 0.20)
+        center_component = _clamp01(1.0 - item["center_offset_ratio"])
+        # Bias toward the intended focal face: confident + prominent + centered.
+        focus_score = (0.55 * detection_component) + (0.30 * area_component) + (0.15 * center_component)
+        item["focus_score"] = float(focus_score)
+        if focus_score > best_score:
+            best_score = float(focus_score)
+            best_idx = idx
+
+    return best_idx, metrics
+
+
+def _secondary_faces_are_ignorable_dnn(
+    face_metrics: Sequence[dict[str, float]],
+    *,
+    primary_index: int,
+    config: FaceVerificationConfig,
+) -> tuple[bool, dict[str, float]]:
+    if not face_metrics or primary_index < 0 or primary_index >= len(face_metrics):
+        return False, {"offending_faces": 0}
+    primary = face_metrics[primary_index]
+    primary_area_ratio = float(primary.get("area_ratio", 0.0))
+
+    ignored = 0
+    offending = 0
+    worst_secondary_area = 0.0
+    closest_secondary_offset = 1.0
+    min_primary_dominance = float("inf")
+
+    for idx, item in enumerate(face_metrics):
+        if idx == primary_index:
+            continue
+        secondary_area_ratio = float(item.get("area_ratio", 0.0))
+        secondary_offset_ratio = float(item.get("center_offset_ratio", 1.0))
+        dominance = primary_area_ratio / max(secondary_area_ratio, 1e-6)
+        worst_secondary_area = max(worst_secondary_area, secondary_area_ratio)
+        closest_secondary_offset = min(closest_secondary_offset, secondary_offset_ratio)
+        min_primary_dominance = min(min_primary_dominance, dominance)
+
+        is_ignorable = (
+            secondary_area_ratio <= config.max_ignorable_secondary_face_area_ratio
+            and secondary_offset_ratio >= config.min_secondary_face_center_offset_ratio
+            and dominance >= config.min_primary_face_dominance_ratio
+        )
+        if is_ignorable:
+            ignored += 1
+        else:
+            offending += 1
+
+    return (
+        offending == 0,
+        {
+            "ignored_faces": float(ignored),
+            "offending_faces": float(offending),
+            "worst_secondary_area_ratio": float(worst_secondary_area),
+            "closest_secondary_offset_ratio": float(closest_secondary_offset if closest_secondary_offset != 1.0 else 0.0),
+            "min_primary_dominance": float(min_primary_dominance if min_primary_dominance != float("inf") else 0.0),
+        },
+    )
+
+
+def _focus_face_region_bgr(aligned_bgr: np.ndarray) -> np.ndarray:
+    if cv2 is None:
+        return aligned_bgr
+    h, w = aligned_bgr.shape[:2]
+    if h <= 0 or w <= 0:
+        return aligned_bgr
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    center = (int(w * 0.5), int(h * 0.50))
+    axes = (max(1, int(w * 0.42)), max(1, int(h * 0.50)))
+    cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+
+    # Keep the focal face region sharp while suppressing background texture/noise.
+    blurred_bg = cv2.GaussianBlur(aligned_bgr, (0, 0), sigmaX=5.0, sigmaY=5.0)
+    focused = blurred_bg.copy()
+    focused[mask > 0] = aligned_bgr[mask > 0]
+    return focused
+
+
 def _extract_embedding_bundle_dnn(
     image_bgr: np.ndarray,
     *,
@@ -798,27 +926,46 @@ def _extract_embedding_bundle_dnn(
     if not faces:
         return {"ok": False, "reason": "No face detected"}
 
-    face = faces[0]
+    primary_index, face_metrics = _select_primary_face_row_dnn(
+        faces,
+        image_w=int(image_w),
+        image_h=int(image_h),
+    )
+    if not face_metrics:
+        return {"ok": False, "reason": "No face detected"}
+    face = faces[primary_index]
+    primary_metrics = face_metrics[primary_index]
     if len(faces) > 1:
-        primary_area = float(face[2] * face[3])
-        secondary_area = float(faces[1][2] * faces[1][3])
-        dominance = primary_area / max(1.0, secondary_area)
-        if strict_anti_spoof or dominance < config.min_primary_face_dominance_ratio:
+        secondaries_ok, secondary_meta = _secondary_faces_are_ignorable_dnn(
+            face_metrics,
+            primary_index=primary_index,
+            config=config,
+        )
+        if strict_anti_spoof and not secondaries_ok:
             return {
                 "ok": False,
                 "reason": "Multiple faces detected",
-                "primary_face_dominance": dominance,
+                "primary_face_dominance": float(secondary_meta.get("min_primary_dominance", 0.0)),
+                "primary_focus_score": float(primary_metrics.get("focus_score", 0.0)),
+                "worst_secondary_area_ratio": float(secondary_meta.get("worst_secondary_area_ratio", 0.0)),
+                "closest_secondary_offset_ratio": float(secondary_meta.get("closest_secondary_offset_ratio", 0.0)),
                 "faces_detected": len(faces),
             }
 
-    x, y, w, h = [float(value) for value in face[:4]]
-    detection_score = float(face[14]) if face.size >= 15 else 1.0
-    face_area_ratio = float((w * h) / max(float(image_w * image_h), 1.0))
-    center_x = (x + (w / 2.0)) / max(float(image_w), 1.0)
-    center_y = (y + (h / 2.0)) / max(float(image_h), 1.0)
-    center_offset_ratio = float(np.hypot(center_x - 0.5, center_y - 0.5) / np.hypot(0.5, 0.5))
+    w = float(primary_metrics["w"])
+    h = float(primary_metrics["h"])
+    detection_score = float(primary_metrics["detection_score"])
+    face_area_ratio = float(primary_metrics["area_ratio"])
+    center_x = float(primary_metrics["center_x"])
+    center_y = float(primary_metrics["center_y"])
+    center_offset_ratio = float(primary_metrics["center_offset_ratio"])
 
-    if detection_score < max(0.5, min(0.98, _env_float("FACE_DNN_DETECTION_SCORE_THRESHOLD", 0.88))):
+    detection_threshold = (
+        config.min_detection_score
+        if strict_anti_spoof
+        else max(0.72, min(0.95, config.min_detection_score - 0.12))
+    )
+    if detection_score < detection_threshold:
         return {"ok": False, "reason": "Low detection confidence", "face_area_ratio": face_area_ratio}
     if face_area_ratio < config.min_face_area_ratio:
         return {"ok": False, "reason": "Low detection confidence", "face_area_ratio": face_area_ratio}
@@ -837,7 +984,8 @@ def _extract_embedding_bundle_dnn(
     try:
         with _DNN_INFERENCE_LOCK:
             aligned_bgr = recognizer.alignCrop(image_bgr, face)
-            face_feature = recognizer.feature(aligned_bgr)
+            focused_bgr = _focus_face_region_bgr(aligned_bgr)
+            face_feature = recognizer.feature(focused_bgr)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "reason": str(exc).strip() or "OpenCV face recognition failed"}
 
@@ -848,7 +996,7 @@ def _extract_embedding_bundle_dnn(
     if embedding.size < 16:
         return {"ok": False, "reason": "Embedding extraction failed"}
 
-    aligned_gray = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2GRAY)
+    aligned_gray = cv2.cvtColor(focused_bgr, cv2.COLOR_BGR2GRAY)
     blur = _blur_score(aligned_gray)
     contrast = float(np.std(aligned_gray))
     texture_ratio = _occlusion_texture_ratio(aligned_gray)
@@ -896,6 +1044,7 @@ def _extract_embedding_bundle_dnn(
         "yaw_proxy": yaw_proxy,
         "pitch_proxy": pitch_proxy,
         "detection_score": detection_score,
+        "primary_focus_score": float(primary_metrics.get("focus_score", 0.0)),
     }
 
 
@@ -1082,13 +1231,19 @@ def _template_embeddings_from_payload(profile_template: dict[str, Any] | None) -
     embeddings: list[np.ndarray] = []
     if isinstance(embeddings_raw, list):
         for item in embeddings_raw:
-            arr = np.asarray(item, dtype=np.float32).ravel()
-            if arr.size:
+            try:
+                arr = np.asarray(item, dtype=np.float32).ravel()
+            except (TypeError, ValueError):
+                continue
+            if arr.size and np.all(np.isfinite(arr)):
                 embeddings.append(_l2_normalize(arr))
     signature_raw = profile_template.get("signature")
     if not embeddings and isinstance(signature_raw, list):
-        arr = np.asarray(signature_raw, dtype=np.float32).ravel()
-        if arr.size:
+        try:
+            arr = np.asarray(signature_raw, dtype=np.float32).ravel()
+        except (TypeError, ValueError):
+            arr = np.asarray([], dtype=np.float32)
+        if arr.size and np.all(np.isfinite(arr)):
             embeddings.append(_l2_normalize(arr))
     return embeddings
 
@@ -1519,6 +1674,10 @@ def _verify_face_sequence_dnn(
         frame_reasons=frame_reasons,
         frame_timestamps=frame_timestamps,
     )
+    valid_frames = int(sequence.get("valid_frames", 0))
+    total_frames = int(sequence.get("total_frames", len(frames)))
+    valid_frame_ratio = float(valid_frames / max(total_frames, 1))
+
     liveness = evaluate_liveness_sequence(
         frame_live_meta,
         config=config,
@@ -1540,14 +1699,24 @@ def _verify_face_sequence_dnn(
         "Multiple faces detected",
         "Face not centered",
         "Low resolution frame",
+        "Low detection confidence",
         "Poor lighting or low contrast",
         "Face appears covered",
+        "Face partially covered or landmarks unstable",
         "Face is blurry",
+        "No facial landmarks detected",
         "No face detected",
+        "Invalid frame payload",
     }
     fatal_reason = next((reason for reason in rejection_reasons if reason in fatal_reasons), "")
+    quality_gate_reason = ""
+    if valid_frames < config.min_consecutive_frames or valid_frame_ratio < config.min_valid_frame_ratio:
+        quality_gate_reason = (
+            "Insufficient valid face frames "
+            f"({valid_frames}/{total_frames}; required ratio {config.min_valid_frame_ratio:.2f})"
+        )
 
-    match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason
+    match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason and not quality_gate_reason
     confidence = float(sequence["confidence"])
     if not match:
         confidence = min(confidence, max(0.0, confidence * 0.65))
@@ -1560,6 +1729,8 @@ def _verify_face_sequence_dnn(
         )
     elif fatal_reason:
         reason = fatal_reason
+    elif quality_gate_reason:
+        reason = quality_gate_reason
     elif not liveness["ok"]:
         reason = str(liveness.get("reason") or "Liveness check failed")
     elif not bool(sequence.get("majority_met", False)):
@@ -1597,6 +1768,8 @@ def _verify_face_sequence_dnn(
         "required_consecutive_frames": config.min_consecutive_frames,
         "consecutive_frames_matched": int(sequence["best_streak"]),
         "accepted_frames": int(sequence.get("accepted_frames", 0)),
+        "valid_frames": valid_frames,
+        "valid_frame_ratio": valid_frame_ratio,
         "total_frames": int(sequence.get("total_frames", len(frames))),
         "majority_required": int(sequence.get("majority_required", config.min_consecutive_frames)),
         "frame_audit": frame_audit,
@@ -1611,7 +1784,26 @@ def verify_face_sequence_opencv(
     subject_label: str = "unknown",
     min_consecutive_frames: int | None = None,
     profile_template: dict[str, Any] | None = None,
+    require_dnn: bool = False,
 ) -> dict[str, Any]:
+    if require_dnn:
+        runtime, runtime_error = _load_dnn_runtime()
+        if runtime is None:
+            return {
+                "available": False,
+                "match": False,
+                "confidence": 0.0,
+                "engine": "opencv-dnn-yunet-sface-v1",
+                "reason": runtime_error or "OpenCV DNN runtime unavailable",
+            }
+        return _verify_face_sequence_dnn(
+            profile_photo_data_url,
+            selfie_frames_data_urls,
+            subject_label=subject_label,
+            min_consecutive_frames=min_consecutive_frames,
+            profile_template=profile_template,
+        )
+
     provider, provider_error = _resolve_active_provider()
     if provider == "dnn":
         return _verify_face_sequence_dnn(
@@ -1740,6 +1932,9 @@ def verify_face_sequence_opencv(
         frame_reasons=frame_reasons,
         frame_timestamps=frame_timestamps,
     )
+    valid_frames = int(sequence.get("valid_frames", 0))
+    total_frames = int(sequence.get("total_frames", len(frames)))
+    valid_frame_ratio = float(valid_frames / max(total_frames, 1))
 
     liveness = evaluate_liveness_sequence(
         frame_live_meta,
@@ -1762,14 +1957,24 @@ def verify_face_sequence_opencv(
         "Multiple faces detected",
         "Face not centered",
         "Low resolution frame",
+        "Low detection confidence",
         "Poor lighting or low contrast",
         "Face appears covered",
+        "Face partially covered or landmarks unstable",
         "Face is blurry",
+        "No facial landmarks detected",
         "No face detected",
+        "Invalid frame payload",
     }
     fatal_reason = next((reason for reason in rejection_reasons if reason in fatal_reasons), "")
+    quality_gate_reason = ""
+    if valid_frames < config.min_consecutive_frames or valid_frame_ratio < config.min_valid_frame_ratio:
+        quality_gate_reason = (
+            "Insufficient valid face frames "
+            f"({valid_frames}/{total_frames}; required ratio {config.min_valid_frame_ratio:.2f})"
+        )
 
-    match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason
+    match = bool(sequence["match"]) and bool(liveness["ok"]) and not fatal_reason and not quality_gate_reason
     confidence = float(sequence["confidence"])
     if not match:
         confidence = min(confidence, max(0.0, confidence * 0.65))
@@ -1782,6 +1987,8 @@ def verify_face_sequence_opencv(
         )
     elif fatal_reason:
         reason = fatal_reason
+    elif quality_gate_reason:
+        reason = quality_gate_reason
     elif not liveness["ok"]:
         reason = str(liveness.get("reason") or "Liveness check failed")
     elif not bool(sequence.get("majority_met", False)):
@@ -1819,6 +2026,8 @@ def verify_face_sequence_opencv(
         "required_consecutive_frames": config.min_consecutive_frames,
         "consecutive_frames_matched": int(sequence["best_streak"]),
         "accepted_frames": int(sequence.get("accepted_frames", 0)),
+        "valid_frames": valid_frames,
+        "valid_frame_ratio": valid_frame_ratio,
         "total_frames": int(sequence.get("total_frames", len(frames))),
         "majority_required": int(sequence.get("majority_required", config.min_consecutive_frames)),
         "frame_audit": frame_audit,

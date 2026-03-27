@@ -1,24 +1,64 @@
+import ipaddress
 import os
+import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-from .runtime_infra import is_remote_service_host, managed_services_required
+from .runtime_infra import is_remote_service_host, managed_services_required, resolve_service_hostaddr
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+_ORIGINAL_ENV = dict(os.environ)
+
+
+def _running_under_pytest() -> bool:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return True
+    if "pytest" in sys.modules:
+        return True
+    return any("pytest" in str(arg).lower() for arg in sys.argv)
+
+
+if _running_under_pytest():
+    _DOTENV_LOCAL: dict[str, str] = {}
+else:
+    load_dotenv(PROJECT_ROOT / ".env")
+    _DOTENV_LOCAL = dotenv_values(PROJECT_ROOT / ".env.local")
+    for _key, _value in _DOTENV_LOCAL.items():
+        if _value is None:
+            continue
+        if _key in _ORIGINAL_ENV:
+            continue
+        os.environ[_key] = str(_value)
+
+
+def _env(name: str, default: str = "") -> str:
+    # Shell/session exports should have highest priority.
+    shell_value = _ORIGINAL_ENV.get(name)
+    if shell_value is not None and str(shell_value).strip():
+        return str(shell_value)
+
+    # Local development overrides should win over .env file values.
+    local_value = _DOTENV_LOCAL.get(name)
+    if local_value is not None and str(local_value).strip():
+        return str(local_value).strip()
+
+    value = os.getenv(name)
+    if value is None:
+        return str(default)
+    return str(value)
 
 
 def _strict_runtime_enabled() -> bool:
-    raw = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower()
+    raw = (_env("APP_RUNTIME_STRICT", "true") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
-    raw = (os.getenv(name, str(default)) or "").strip()
+    raw = (_env(name, str(default)) or "").strip()
     try:
         value = int(raw)
     except ValueError:
@@ -27,7 +67,7 @@ def _env_int(name: str, default: int, minimum: int = 0) -> int:
 
 
 def _explicit_bool_env(name: str) -> bool | None:
-    raw = (os.getenv(name) or "").strip().lower()
+    raw = (_env(name) or "").strip().lower()
     if not raw:
         return None
     if raw in {"1", "true", "yes", "on"}:
@@ -47,7 +87,7 @@ def _normalized_postgres_url(raw: str) -> str:
 
 
 def _normalized_database_url() -> str:
-    raw = (os.getenv("SQLALCHEMY_DATABASE_URL") or "").strip()
+    raw = (_env("SQLALCHEMY_DATABASE_URL") or "").strip()
     if not raw:
         if _strict_runtime_enabled():
             raise RuntimeError(
@@ -73,8 +113,8 @@ def _normalized_database_url() -> str:
 
 def _normalized_admin_database_url() -> str | None:
     raw = (
-        os.getenv("POSTGRES_ADMIN_DATABASE_URL")
-        or os.getenv("POSTGRES_TARGET_DATABASE_URL")
+        _env("POSTGRES_ADMIN_DATABASE_URL")
+        or _env("POSTGRES_TARGET_DATABASE_URL")
         or SQLALCHEMY_DATABASE_URL
     )
     normalized = _normalized_postgres_url(str(raw or "").strip())
@@ -96,7 +136,7 @@ def postgres_libpq_url(raw: str | None) -> str | None:
 
 def _database_ssl_mode() -> str | None:
     safe_url = make_url(SQLALCHEMY_DATABASE_URL)
-    env_mode = (os.getenv("DATABASE_SSL_MODE") or "").strip().lower()
+    env_mode = (_env("DATABASE_SSL_MODE") or "").strip().lower()
     if env_mode:
         return env_mode
     query_mode = str(safe_url.query.get("sslmode") or "").strip().lower()
@@ -113,8 +153,44 @@ def _database_tls_enabled() -> bool:
 
 
 def _database_application_name() -> str | None:
-    value = (os.getenv("DATABASE_APPLICATION_NAME") or "lpu-smart-campus-api").strip()
+    value = (_env("DATABASE_APPLICATION_NAME", "lpu-smart-campus-api") or "").strip()
     return value or None
+
+
+def _resolve_hostaddr_with_nslookup(host: str) -> str | None:
+    return resolve_service_hostaddr(host)
+
+
+def _database_hostaddr() -> str | None:
+    explicit = (_env("DATABASE_HOSTADDR") or "").strip()
+    if explicit:
+        try:
+            parsed = ipaddress.ip_address(explicit)
+            if parsed.version == 4:
+                return explicit
+        except ValueError:
+            return None
+
+    explicit_prefer_ipv4 = _explicit_bool_env("DATABASE_PREFER_IPV4")
+    prefer_ipv4 = (
+        bool(explicit_prefer_ipv4)
+        if explicit_prefer_ipv4 is not None
+        else managed_services_required() or _database_pooler_host()
+    )
+    if not prefer_ipv4 or not _is_postgresql:
+        return None
+
+    host = str(make_url(SQLALCHEMY_DATABASE_URL).host or "").strip()
+    if not host:
+        return None
+
+    try:
+        parsed_host = ipaddress.ip_address(host)
+        if parsed_host.version == 4:
+            return host
+        return None
+    except ValueError:
+        return resolve_service_hostaddr(host)
 
 
 SQLALCHEMY_DATABASE_URL = _normalized_database_url()
@@ -154,15 +230,19 @@ def _engine_options() -> dict:
         if ssl_mode:
             connect_args["sslmode"] = ssl_mode
 
-        ssl_root_cert = (os.getenv("DATABASE_SSL_ROOT_CERT") or "").strip()
-        ssl_cert = (os.getenv("DATABASE_SSL_CERT") or "").strip()
-        ssl_key = (os.getenv("DATABASE_SSL_KEY") or "").strip()
+        ssl_root_cert = (_env("DATABASE_SSL_ROOT_CERT") or "").strip()
+        ssl_cert = (_env("DATABASE_SSL_CERT") or "").strip()
+        ssl_key = (_env("DATABASE_SSL_KEY") or "").strip()
         if ssl_root_cert:
             connect_args["sslrootcert"] = ssl_root_cert
         if ssl_cert:
             connect_args["sslcert"] = ssl_cert
         if ssl_key:
             connect_args["sslkey"] = ssl_key
+
+        hostaddr = _database_hostaddr()
+        if hostaddr:
+            connect_args["hostaddr"] = hostaddr
 
         statement_timeout_ms = _env_int("DATABASE_STATEMENT_TIMEOUT_MS", 0, minimum=0)
         if statement_timeout_ms > 0:
@@ -244,5 +324,11 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         db.close()

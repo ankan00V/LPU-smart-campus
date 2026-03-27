@@ -1,8 +1,15 @@
+import json
 import unittest
 
 import numpy as np
 
-from app.face_verification import FaceVerificationConfig, evaluate_embedding_sequence, evaluate_liveness_sequence
+from app.face_verification import (
+    FaceVerificationConfig,
+    _template_embeddings_from_payload,
+    evaluate_embedding_sequence,
+    evaluate_liveness_sequence,
+)
+from app.routers.attendance import _parse_face_template
 
 
 def _vec(seed: int) -> np.ndarray:
@@ -15,6 +22,40 @@ def _vec(seed: int) -> np.ndarray:
 
 
 class FaceVerificationSequenceTests(unittest.TestCase):
+    def test_template_embedding_parser_ignores_invalid_rows_and_uses_valid_signature(self):
+        payload = {
+            "embeddings": [["bad"], [0.1, 0.2, 0.3], None],
+            "signature": [0.4, 0.5, 0.6],
+        }
+        embeddings = _template_embeddings_from_payload(payload)
+        self.assertEqual(len(embeddings), 1)
+        self.assertEqual(tuple(embeddings[0].shape), (3,))
+
+    def test_attendance_template_parser_rejects_non_numeric_embeddings(self):
+        parsed = _parse_face_template(
+            json.dumps(
+                {
+                    "embeddings": [["bad"], [], None],
+                    "signature": ["also-bad"],
+                }
+            )
+        )
+        self.assertIsNone(parsed)
+
+    def test_attendance_template_parser_sanitizes_numeric_embeddings(self):
+        parsed = _parse_face_template(
+            json.dumps(
+                {
+                    "embeddings": [["0.1", 0.2, 0.3], ["bad"], [0.9]],
+                    "signature": ["0.4", 0.5, 0.6],
+                }
+            )
+        )
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["embeddings"], [[0.1, 0.2, 0.3], [0.9]])
+        self.assertEqual(parsed["signature"], [0.4, 0.5, 0.6])
+
     def test_rejects_wrong_person_even_with_multiple_frames(self):
         profile = _vec(1)
         wrong = [_vec(100 + idx) for idx in range(6)]

@@ -67,7 +67,7 @@ class RemedialTimetableTests(unittest.TestCase):
                     start_time=absent_start.time(),
                     end_time=absent_end.time(),
                     topic="Remedial DSA",
-                    sections_json=json.dumps(["P132"]),
+                    sections_json=json.dumps([" p 132 , p 999 "]),
                     class_mode="offline",
                     room_number="25-801",
                     online_link=None,

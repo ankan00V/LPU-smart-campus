@@ -1,11 +1,18 @@
 import logging
 import os
+import sys
+import time as pytime
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 from urllib.parse import SplitResult
+import ssl
+
+from dotenv import dotenv_values, load_dotenv
 
 from .otp_delivery import send_login_otp
 from .runtime_infra import (
+    install_socket_dns_fallback,
     is_remote_service_host,
     managed_services_required,
     normalize_host,
@@ -13,6 +20,30 @@ from .runtime_infra import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ORIGINAL_ENV = dict(os.environ)
+_ENV_LOADED = False
+
+
+def _load_environment_files() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    project_root = Path(__file__).resolve().parent.parent
+    load_dotenv(project_root / ".env")
+    local_values = dotenv_values(project_root / ".env.local")
+    for key, value in local_values.items():
+        if value is None:
+            continue
+        if key in _ORIGINAL_ENV:
+            continue
+        os.environ[key] = str(value)
+    _ENV_LOADED = True
+
+
+_load_environment_files()
 
 try:  # pragma: no cover - optional dependency
     from celery import Celery
@@ -24,6 +55,7 @@ TASK_SEND_OTP = "smartcampus.tasks.send_login_otp"
 TASK_NOTIFY = "smartcampus.tasks.send_notification"
 TASK_FACE_REVERIFY = "smartcampus.tasks.face_reverify"
 TASK_RECOMPUTE = "smartcampus.tasks.recompute"
+_OTP_DELIVERY_CHANNELS = {"smtp-email", "graph-email"}
 
 _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="smartcampus-worker")
 _celery_app = None
@@ -36,6 +68,110 @@ def _bool_env(name: str, default: bool = False) -> bool:
 
 def _otp_wait_for_result() -> bool:
     return _bool_env("WORKER_WAIT_FOR_OTP_RESULT", default=True)
+
+
+def _otp_direct_sync_enabled() -> bool:
+    return _bool_env("OTP_DELIVERY_DIRECT_SYNC", default=True)
+
+
+def _app_runtime_strict_enabled() -> bool:
+    return _bool_env("APP_RUNTIME_STRICT", default=True)
+
+
+def _running_under_pytest() -> bool:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return True
+    if "pytest" in sys.modules:
+        return True
+    return any("pytest" in str(arg).lower() for arg in sys.argv)
+
+
+def _otp_inline_fallback_runtime_allowed() -> bool:
+    app_env = (os.getenv("APP_ENV", "") or "").strip().lower()
+    return app_env in {"dev", "development", "local"}
+
+
+def _otp_inline_fallback_enabled() -> bool:
+    return _bool_env("OTP_INLINE_FALLBACK_ENABLED", default=False)
+
+
+def _worker_startup_max_attempts() -> int:
+    raw = (os.getenv("WORKER_STARTUP_MAX_ATTEMPTS", "4") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 4
+    return max(1, min(20, value))
+
+
+def _worker_startup_retry_delay_seconds() -> float:
+    raw = (os.getenv("WORKER_STARTUP_RETRY_DELAY_SECONDS", "1.0") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0.0, min(10.0, value))
+
+
+def _worker_startup_ping_timeout_seconds() -> float:
+    raw = (os.getenv("WORKER_STARTUP_PING_TIMEOUT_SECONDS", "2.0") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 2.0
+    return max(0.2, min(10.0, value))
+
+
+def _redis_socket_timeout_seconds() -> float:
+    raw = (os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "1.5") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.5
+    return max(0.2, min(10.0, value))
+
+
+def _redis_retry_on_timeout() -> bool:
+    raw = (os.getenv("REDIS_RETRY_ON_TIMEOUT", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _redis_socket_keepalive() -> bool:
+    raw = (os.getenv("REDIS_SOCKET_KEEPALIVE", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _celery_transport_options() -> dict[str, Any]:
+    timeout = _redis_socket_timeout_seconds()
+    return {
+        "socket_timeout": timeout,
+        "socket_connect_timeout": timeout,
+        "retry_on_timeout": _redis_retry_on_timeout(),
+        "health_check_interval": 30,
+        "socket_keepalive": _redis_socket_keepalive(),
+    }
+
+
+def _ssl_cert_reqs_setting() -> int:
+    raw = (os.getenv("REDIS_SSL_CERT_REQS") or "").strip().lower() or "required"
+    if raw in {"none", "false", "0"}:
+        return ssl.CERT_NONE
+    return ssl.CERT_REQUIRED
+
+
+def _is_transient_redis_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    if "connection closed by server" in message:
+        return True
+    if "connection reset" in message:
+        return True
+    if "connection aborted" in message:
+        return True
+    if "connection refused" in message:
+        return True
+    if "connection error" in message:
+        return True
+    return False
 
 
 def worker_required() -> bool:
@@ -105,6 +241,7 @@ def get_celery_app():
             return None
         if _transport_status(backend).get("tls_enabled") is not True:
             return None
+    install_socket_dns_fallback()
     app = Celery("smartcampus", broker=broker, backend=backend)
     app.conf.update(
         task_serializer="json",
@@ -113,6 +250,13 @@ def get_celery_app():
         task_track_started=True,
         task_time_limit=int(os.getenv("WORKER_TASK_TIME_LIMIT_SECONDS", "60")),
     )
+    transport_options = _celery_transport_options()
+    app.conf.broker_transport_options = dict(transport_options)
+    app.conf.result_backend_transport_options = dict(transport_options)
+    if _worker_redis_tls_required():
+        ssl_options = {"ssl_cert_reqs": _ssl_cert_reqs_setting()}
+        app.conf.broker_use_ssl = dict(ssl_options)
+        app.conf.redis_backend_use_ssl = dict(ssl_options)
     _celery_app = app
     return app
 
@@ -150,10 +294,26 @@ def assert_worker_ready() -> None:
         raise RuntimeError(
             "WORKER_REQUIRED=true but Celery broker/backend is not configured or unavailable."
         )
-    if not worker_live():
-        raise RuntimeError(
-            "WORKER_REQUIRED=true but no active Celery worker responded to ping."
-        )
+
+    attempts = _worker_startup_max_attempts()
+    retry_delay_seconds = _worker_startup_retry_delay_seconds()
+    ping_timeout_seconds = _worker_startup_ping_timeout_seconds()
+    for attempt in range(1, attempts + 1):
+        if worker_live(timeout_seconds=ping_timeout_seconds):
+            return
+        if attempt < attempts:
+            logger.warning(
+                "Worker ping failed during startup (%s/%s). Retrying in %.1fs.",
+                attempt,
+                attempts,
+                retry_delay_seconds,
+            )
+            if retry_delay_seconds > 0:
+                pytime.sleep(retry_delay_seconds)
+    raise RuntimeError(
+        "WORKER_REQUIRED=true but no active Celery worker responded to ping "
+        f"after {attempts} startup checks."
+    )
 
 
 def _send_login_otp_task(destination_email: str, otp_code: str) -> dict[str, Any]:
@@ -187,6 +347,15 @@ def _send_task(task_name: str, kwargs: dict[str, Any]) -> bool:
         return False
 
 
+def _validated_otp_delivery_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError("OTP delivery returned an invalid payload.")
+    channel = str(payload.get("channel") or "").strip()
+    if channel not in _OTP_DELIVERY_CHANNELS:
+        raise RuntimeError("OTP delivery returned an invalid delivery channel.")
+    return {"channel": channel}
+
+
 def dispatch_login_otp(
     destination_email: str,
     otp_code: str,
@@ -201,9 +370,39 @@ def dispatch_login_otp(
             "WORKER_WAIT_FOR_OTP_RESULT must remain true because OTP requests must confirm delivery before succeeding."
         )
 
+    # Login OTP is a user-blocking action. By default, send it directly through
+    # the verified delivery backend instead of depending on worker/result-backend health.
+    if _otp_direct_sync_enabled():
+        payload = _send_login_otp_task(destination_email, otp_code)
+        return _validated_otp_delivery_payload(payload)
+
+    required = worker_required()
+    # OTP inline fallback is only allowed outside strict runtime mode.
+    fallback_enabled = (
+        (not _app_runtime_strict_enabled())
+        and (not _running_under_pytest())
+        and _otp_inline_fallback_runtime_allowed()
+        and inline_fallback_enabled()
+        and _otp_inline_fallback_enabled()
+    )
+
+    def _run_inline_fallback(reason: str) -> dict[str, Any]:
+        if required or not fallback_enabled:
+            raise RuntimeError(reason)
+        payload = _send_login_otp_task(destination_email, otp_code)
+        try:
+            return _validated_otp_delivery_payload(payload)
+        except RuntimeError as exc:
+            raise RuntimeError("OTP inline fallback returned an invalid delivery channel.") from exc
+
+    # In local/dev mode we prefer inline delivery when worker health is unstable,
+    # so login is not blocked by queue latency.
+    if fallback_enabled and not required and not worker_live(timeout_seconds=0.6):
+        return _run_inline_fallback("OTP worker is not live.")
+
     app = get_celery_app()
     if app is None:
-        raise RuntimeError("OTP worker backend is unavailable.")
+        return _run_inline_fallback("OTP worker backend is unavailable.")
 
     try:
         result = app.send_task(
@@ -211,23 +410,42 @@ def dispatch_login_otp(
             kwargs={"destination_email": destination_email, "otp_code": otp_code},
         )
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"OTP worker enqueue failed: {exc}") from exc
+        return _run_inline_fallback(f"OTP worker enqueue failed: {exc}")
+
+    def _get_result_with_retry() -> dict[str, Any]:
+        attempts = max(1, int(os.getenv("WORKER_RESULT_MAX_ATTEMPTS", "2")))
+        delay = float(os.getenv("WORKER_RESULT_RETRY_DELAY_SECONDS", "0.4") or 0.4)
+        timeout = max(3, int(timeout_seconds))
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                payload = result.get(timeout=timeout)
+                return payload
+            except FuturesTimeoutError as exc:
+                last_exc = exc
+                if attempt >= attempts:
+                    raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt >= attempts or not _is_transient_redis_error(exc):
+                    raise
+            if delay > 0:
+                pytime.sleep(delay)
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("OTP worker result unavailable.")
 
     try:
-        payload = result.get(timeout=max(3, int(timeout_seconds)))
-    except FuturesTimeoutError as exc:
-        raise RuntimeError(f"OTP delivery timed out after {timeout_seconds} seconds.") from exc
+        payload = _get_result_with_retry()
+    except FuturesTimeoutError:
+        return _run_inline_fallback(f"OTP delivery timed out after {timeout_seconds} seconds.")
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"OTP worker execution failed: {exc}") from exc
+        return _run_inline_fallback(f"OTP worker execution failed: {exc}")
 
-    if not isinstance(payload, dict):
-        raise RuntimeError("OTP worker returned an invalid payload.")
-
-    channel = str(payload.get("channel") or "").strip()
-    if not channel:
-        raise RuntimeError("OTP worker returned an invalid delivery channel.")
-
-    return {"channel": channel}
+    try:
+        return _validated_otp_delivery_payload(payload)
+    except RuntimeError as exc:
+        return _run_inline_fallback(str(exc))
 
 
 def enqueue_notification(payload: dict[str, Any]) -> str:

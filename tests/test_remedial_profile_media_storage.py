@@ -75,12 +75,13 @@ class RemedialProfileMediaStorageTests(unittest.TestCase):
             )
 
         data_url_for_object.assert_called_once_with(self.db, "student-profile/2026/03/04/photo.jpg")
-        verify_args, _verify_kwargs = verify_face_sequence_opencv.call_args
-        self.assertEqual(verify_args[0], "data:image/jpeg;base64,PROFILEA")
+        self.assertEqual(verify_face_sequence_opencv.call_count, 2)
+        for verify_args, _verify_kwargs in verify_face_sequence_opencv.call_args_list:
+            self.assertEqual(verify_args[0], "data:image/jpeg;base64,PROFILEA")
         self.assertEqual(primary_selfie, "data:image/jpeg;base64,SELFIEA")
         self.assertGreaterEqual(confidence, 0.98)
         self.assertEqual(engine, "opencv-embedding")
-        self.assertEqual(reason, "verified")
+        self.assertIn("Verified against enrollment and profile templates", reason)
 
 
 if __name__ == "__main__":

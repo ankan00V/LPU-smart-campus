@@ -1,5 +1,6 @@
 import logging
 import os
+import time as pytime
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
@@ -10,12 +11,13 @@ from pymongo.errors import PyMongoError
 
 from .enterprise_controls import apply_pii_encryption_policy
 from .realtime_bus import infer_topics, publish_domain_event
-from .runtime_infra import is_remote_service_host, normalize_host, split_url
+from .runtime_infra import install_socket_dns_fallback, is_remote_service_host, normalize_host, split_url
 
 _mongo_client: MongoClient | None = None
 _mongo_db = None
 _mongo_error: str | None = None
 _last_init_attempt: datetime | None = None
+_mongo_backend: str | None = None
 LOGGER = logging.getLogger(__name__)
 
 try:
@@ -27,6 +29,16 @@ except Exception:  # noqa: BLE001
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = (os.getenv(name, "true" if default else "false") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _is_production_env() -> bool:
+    env = (os.getenv("APP_ENV", "development") or "development").strip().lower()
+    return env in {"prod", "production"}
+
+
+def _mongita_fallback_enabled() -> bool:
+    default = not _is_production_env()
+    return _bool_env("MONGO_MONGITA_FALLBACK", default=default)
 
 
 def _int_env(name: str, default: int, minimum: int = 0) -> int:
@@ -177,6 +189,8 @@ def _mongo_tls_enabled() -> bool:
 
 
 def _ensure_indexes(db) -> None:
+    if _mongo_backend == "mongita":
+        return
     db["students"].create_index([("id", ASCENDING)], unique=True)
     db["students"].create_index([("email", ASCENDING)], unique=True)
     db["students"].create_index([("section", ASCENDING), ("department", ASCENDING)])
@@ -447,6 +461,23 @@ def _ensure_indexes(db) -> None:
     db["dr_restore_drills"].create_index([("id", ASCENDING)], unique=True)
     db["dr_restore_drills"].create_index([("started_at", ASCENDING)])
     db["static_assets"].create_index([("key", ASCENDING)], unique=True)
+    media_collection = (os.getenv("MEDIA_MONGO_COLLECTION", "media_blobs") or "media_blobs").strip() or "media_blobs"
+    db[media_collection].create_index([("object_key", ASCENDING)], unique=True)
+    db[media_collection].create_index([("owner_table", ASCENDING), ("owner_id", ASCENDING)])
+    db[media_collection].create_index([("updated_at", ASCENDING)])
+    realtime_collection = (
+        os.getenv("REALTIME_MONGO_COLLECTION", "realtime_events") or "realtime_events"
+    ).strip() or "realtime_events"
+    ttl_raw = (os.getenv("REALTIME_MONGO_TTL_SECONDS", "86400") or "86400").strip()
+    try:
+        ttl_seconds = int(ttl_raw)
+    except ValueError:
+        ttl_seconds = 86400
+    if ttl_seconds > 0:
+        db[realtime_collection].create_index(
+            [("created_at_dt", ASCENDING)],
+            expireAfterSeconds=ttl_seconds,
+        )
 
 
 def _retry_cooldown_seconds() -> int:
@@ -472,7 +503,7 @@ def mongo_persistence_required() -> bool:
 
 
 def init_mongo(force: bool = False) -> bool:
-    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt
+    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend
 
     uri = _mongo_uri()
     fallback_uri = _mongo_uri_fallback()
@@ -508,6 +539,7 @@ def init_mongo(force: bool = False) -> bool:
         "socketTimeoutMS": _int_env("MONGO_SOCKET_TIMEOUT_MS", 20000, minimum=1000),
         "tls": True,
     }
+    install_socket_dns_fallback()
 
     ca_file = (os.getenv("MONGO_TLS_CA_FILE") or "").strip()
     if not ca_file:
@@ -527,36 +559,70 @@ def init_mongo(force: bool = False) -> bool:
         mongo_kwargs["tlsAllowInvalidHostnames"] = True
 
     errors: list[str] = []
+    candidate_attempts = _int_env("MONGO_CANDIDATE_ATTEMPTS", 2, minimum=1)
+    candidate_retry_delay_ms = _int_env("MONGO_CANDIDATE_RETRY_DELAY_MS", 750, minimum=0)
     for idx, candidate_uri in enumerate(uri_candidates):
+        for attempt in range(1, candidate_attempts + 1):
+            client = None
+            try:
+                client = MongoClient(candidate_uri, **mongo_kwargs)
+                client.admin.command("ping")
+                _mongo_client = client
+                _mongo_db = client[_mongo_db_name()]
+                _mongo_backend = "pymongo"
+                _ensure_indexes(_mongo_db)
+                _mongo_error = None
+                return True
+            except PyMongoError as exc:
+                errors.append(f"candidate[{idx + 1}] attempt[{attempt}] failed: {exc}")
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                if attempt < candidate_attempts and candidate_retry_delay_ms > 0:
+                    pytime.sleep(candidate_retry_delay_ms / 1000.0)
+
+    if _mongita_fallback_enabled():
         try:
-            client = MongoClient(candidate_uri, **mongo_kwargs)
-            client.admin.command("ping")
+            from mongita import MongitaClientDisk  # type: ignore
+
+            client = MongitaClientDisk(os.getenv("MONGO_MONGITA_PATH") or ".mongita")
             _mongo_client = client
             _mongo_db = client[_mongo_db_name()]
-            _ensure_indexes(_mongo_db)
+            _mongo_backend = "mongita"
+            try:
+                _ensure_indexes(_mongo_db)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("Mongo index setup skipped for fallback backend: %s", exc)
             _mongo_error = None
             return True
-        except PyMongoError as exc:
-            errors.append(f"candidate[{idx + 1}] failed: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"mongita fallback failed: {exc}")
 
     _mongo_client = None
     _mongo_db = None
+    _mongo_backend = None
     _mongo_error = " | ".join(errors) if errors else "MongoDB connection failed"
     return False
 
 
 def close_mongo() -> None:
-    global _mongo_client, _mongo_db, _last_init_attempt
+    global _mongo_client, _mongo_db, _last_init_attempt, _mongo_backend
 
     if _mongo_client is not None:
-        _mongo_client.close()
+        try:
+            _mongo_client.close()
+        except Exception:
+            pass
     _mongo_client = None
     _mongo_db = None
     _last_init_attempt = None
+    _mongo_backend = None
 
 
 def invalidate_mongo_connection(exc: Exception | None = None) -> None:
-    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt
+    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend
 
     if exc is not None:
         _mongo_error = str(exc)
@@ -570,7 +636,9 @@ def invalidate_mongo_connection(exc: Exception | None = None) -> None:
 
     _mongo_client = None
     _mongo_db = None
-    _last_init_attempt = datetime.now(timezone.utc)
+    _mongo_backend = None
+    # Allow immediate reconnect attempts after an operation-level failure.
+    _last_init_attempt = None
 
 
 def _get_mongo_db():
@@ -592,6 +660,7 @@ def mongo_status() -> dict[str, Any]:
     remote_host = bool(hosts) and all(is_remote_service_host(host) for host in hosts)
     return {
         "enabled": enabled,
+        "backend": _mongo_backend,
         "database": _mongo_db_name() if enabled else None,
         "uri_scheme": _mongo_scheme(),
         "host": hosts[0] if hosts else None,

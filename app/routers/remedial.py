@@ -4,7 +4,8 @@ import os
 import re
 import secrets
 import string
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
@@ -24,13 +25,29 @@ logger = logging.getLogger(__name__)
 REMEDIAL_ATTENDANCE_WINDOW_MINUTES = 15
 REMEDIAL_MIN_SCHEDULE_LEAD_MINUTES = 60
 REMEDIAL_REJECT_WINDOW_MINUTES = 30
+REMEDIAL_CODE_COMMIT_RETRIES = 3
 REMEDIAL_ONLINE_CLASS_LINK = schemas.DEFAULT_REMEDIAL_ONLINE_LINK
+REMEDIAL_TIMEZONE_DEFAULT = "Asia/Kolkata"
 REMEDIAL_FACE_MATCH_PASS_THRESHOLD = max(
     0.80,
     min(0.99, float(os.getenv("FACE_MATCH_PASS_THRESHOLD", "0.80"))),
 )
 REMEDIAL_FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
 SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
+
+
+def _utcnow_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _remedial_now() -> datetime:
+    # Remedial schedules are expressed in campus local time, not the host OS timezone.
+    zone_name = (os.getenv("APP_TIMEZONE", REMEDIAL_TIMEZONE_DEFAULT) or "").strip() or REMEDIAL_TIMEZONE_DEFAULT
+    try:
+        zone = ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo(REMEDIAL_TIMEZONE_DEFAULT)
+    return datetime.now(zone).replace(tzinfo=None)
 
 
 def _normalize_sections(raw_sections: list[str]) -> list[str]:
@@ -64,10 +81,16 @@ def _parse_sections_json(raw_value: str | None) -> list[str]:
     if not isinstance(parsed, list):
         return []
     output: list[str] = []
+    seen: set[str] = set()
     for item in parsed:
-        value = str(item or "").strip().upper()
-        if value:
-            output.append(value)
+        normalized = re.sub(r"\s+", "", str(item or "").strip().upper())
+        if not normalized:
+            continue
+        for token in normalized.split(","):
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            output.append(token)
     return output
 
 
@@ -201,7 +224,7 @@ def _get_student_remedial_messages_from_mongo(*, mongo_db, student_id: int, limi
         if doc.get("id") is not None
     } if faculty_ids else {}
 
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     output: list[schemas.RemedialMessageOut] = []
     for msg in message_docs:
         class_value = msg.get("class_id", msg.get("makeup_class_id"))
@@ -248,7 +271,7 @@ def _get_student_remedial_messages_from_mongo(*, mongo_db, student_id: int, limi
                 class_mode=str(class_doc.get("class_mode") or "offline"),
                 room_number=(str(class_doc.get("room_number")).strip() if class_doc.get("room_number") else None),
                 online_link=(str(class_doc.get("online_link")).strip() if class_doc.get("online_link") else None),
-                created_at=created_at or datetime.utcnow(),
+                created_at=created_at or _utcnow_naive(),
             )
         )
         if len(output) >= int(limit):
@@ -276,7 +299,7 @@ def _class_is_finished(*, class_date: date, start_time, end_time, now_dt: dateti
     class_end = datetime.combine(class_date, end_time)
     if class_end <= class_start:
         class_end += timedelta(days=1)
-    return (now_dt or datetime.now()) > class_end
+    return (now_dt or _remedial_now()) > class_end
 
 
 def _attendance_window_close(class_row: models.MakeUpClass) -> datetime:
@@ -286,18 +309,18 @@ def _attendance_window_close(class_row: models.MakeUpClass) -> datetime:
 
 
 def _reject_window_close(class_row: models.MakeUpClass) -> datetime:
-    base = class_row.scheduled_at or class_row.created_at or class_row.code_generated_at or datetime.utcnow()
+    base = class_row.scheduled_at or class_row.created_at or class_row.code_generated_at or _utcnow_naive()
     return base + timedelta(minutes=REMEDIAL_REJECT_WINDOW_MINUTES)
 
 
 def _reject_window_open(class_row: models.MakeUpClass, *, now_utc: datetime | None = None) -> bool:
-    now_dt = now_utc or datetime.utcnow()
+    now_dt = now_utc or _utcnow_naive()
     return now_dt <= _reject_window_close(class_row)
 
 
 def _resolved_online_link(class_row: models.MakeUpClass) -> str | None:
     if str(class_row.class_mode or "").strip().lower() == "online":
-        return REMEDIAL_ONLINE_CLASS_LINK
+        return str(class_row.online_link or "").strip() or REMEDIAL_ONLINE_CLASS_LINK
     return class_row.online_link
 
 
@@ -309,6 +332,143 @@ def _generate_remedial_code(db: Session, length: int = 8) -> str:
         if not exists:
             return code
     raise RuntimeError("Unable to generate unique remedial code")
+
+
+def _is_unique_integrity_error(exc: IntegrityError, *tokens: str) -> bool:
+    message = str(getattr(exc, "orig", exc) or exc).lower()
+    if "unique" not in message and "duplicate" not in message:
+        return False
+    normalized_tokens = [str(token or "").strip().lower() for token in tokens if str(token or "").strip()]
+    if not normalized_tokens:
+        return True
+    return any(token in message for token in normalized_tokens)
+
+
+def _create_makeup_class_with_retry(
+    db: Session,
+    *,
+    course_id: int,
+    faculty_id: int,
+    class_date: date,
+    start_time,
+    end_time,
+    topic: str,
+    sections: list[str],
+    class_mode: str,
+    room_number: str | None,
+    online_link: str | None,
+    code_expires_at: datetime,
+) -> models.MakeUpClass:
+    for attempt in range(REMEDIAL_CODE_COMMIT_RETRIES):
+        class_row = models.MakeUpClass(
+            course_id=course_id,
+            faculty_id=faculty_id,
+            class_date=class_date,
+            start_time=start_time,
+            end_time=end_time,
+            topic=topic,
+            sections_json=json.dumps(sections),
+            class_mode=class_mode,
+            room_number=room_number,
+            online_link=(str(online_link or "").strip() or REMEDIAL_ONLINE_CLASS_LINK) if class_mode == "online" else None,
+            remedial_code=_generate_remedial_code(db),
+            code_generated_at=_utcnow_naive(),
+            code_expires_at=code_expires_at,
+            attendance_open_minutes=REMEDIAL_ATTENDANCE_WINDOW_MINUTES,
+            scheduled_at=_utcnow_naive(),
+            is_active=True,
+        )
+        db.add(class_row)
+        try:
+            db.commit()
+            db.refresh(class_row)
+            return class_row
+        except IntegrityError as exc:
+            db.rollback()
+            if attempt + 1 < REMEDIAL_CODE_COMMIT_RETRIES and _is_unique_integrity_error(exc, "remedial_code"):
+                logger.warning("Retrying remedial class creation after code collision: %s", exc)
+                continue
+            raise
+    raise HTTPException(status_code=503, detail="Unable to reserve a unique remedial code. Retry scheduling.")
+
+
+def _regenerate_makeup_code_with_retry(db: Session, *, class_row: models.MakeUpClass, class_start: datetime) -> None:
+    for attempt in range(REMEDIAL_CODE_COMMIT_RETRIES):
+        class_row.remedial_code = _generate_remedial_code(db)
+        class_row.code_generated_at = _utcnow_naive()
+        class_row.code_expires_at = class_start + timedelta(
+            minutes=class_row.attendance_open_minutes or REMEDIAL_ATTENDANCE_WINDOW_MINUTES
+        )
+        try:
+            db.commit()
+            db.refresh(class_row)
+            return
+        except IntegrityError as exc:
+            db.rollback()
+            class_row = db.get(models.MakeUpClass, class_row.id)
+            if class_row is None:
+                raise HTTPException(status_code=404, detail="Remedial class not found") from exc
+            if attempt + 1 < REMEDIAL_CODE_COMMIT_RETRIES and _is_unique_integrity_error(exc, "remedial_code"):
+                logger.warning("Retrying remedial code regeneration after collision for class_id=%s: %s", class_row.id, exc)
+                continue
+            raise
+    raise HTTPException(status_code=503, detail="Unable to regenerate a unique remedial code. Retry again.")
+
+
+def _persist_remedial_messages(
+    db: Session,
+    *,
+    class_row: models.MakeUpClass,
+    students: list[models.Student],
+    section_set: set[str],
+    message_text: str,
+) -> int:
+    for attempt in range(2):
+        now_dt = _utcnow_naive()
+        recipients = 0
+        for student in students:
+            student_section = _normalized_section_token(student.section)
+            if not student_section or student_section not in section_set:
+                continue
+
+            existing = (
+                db.query(models.RemedialMessage)
+                .filter(
+                    models.RemedialMessage.makeup_class_id == class_row.id,
+                    models.RemedialMessage.student_id == student.id,
+                )
+                .first()
+            )
+            if existing:
+                existing.section = student_section
+                existing.remedial_code = class_row.remedial_code
+                existing.message = message_text
+                existing.created_at = now_dt
+                existing.read_at = None
+            else:
+                db.add(
+                    models.RemedialMessage(
+                        makeup_class_id=class_row.id,
+                        faculty_id=class_row.faculty_id,
+                        student_id=student.id,
+                        section=student_section,
+                        remedial_code=class_row.remedial_code,
+                        message=message_text,
+                        created_at=now_dt,
+                    )
+                )
+            recipients += 1
+
+        try:
+            db.commit()
+            return recipients
+        except IntegrityError as exc:
+            db.rollback()
+            if attempt == 0 and _is_unique_integrity_error(exc, "uq_remedial_message_class_student", "remedial_messages"):
+                logger.warning("Retrying remedial message fan-out after concurrent upsert conflict for class_id=%s: %s", class_row.id, exc)
+                continue
+            raise
+    raise HTTPException(status_code=503, detail="Unable to persist remedial messages right now. Retry sending.")
 
 
 def _serialize_makeup_class(class_row: models.MakeUpClass) -> schemas.MakeUpClassOut:
@@ -363,6 +523,37 @@ def _sync_makeup_class_to_mongo(class_row: models.MakeUpClass, *, source: str) -
     )
 
 
+def _safe_sync_makeup_class_to_mongo(class_row: models.MakeUpClass, *, source: str) -> None:
+    try:
+        _sync_makeup_class_to_mongo(class_row, source=source)
+    except Exception as exc:
+        logger.warning(
+            "Non-blocking remedial class mirror failure for class_id=%s source=%s: %s",
+            class_row.id,
+            source,
+            exc,
+        )
+
+
+def _safe_mirror_document(collection: str, document: dict, *, upsert_filter: dict | None = None) -> None:
+    try:
+        mirror_document(collection, document, upsert_filter=upsert_filter, required=False)
+    except Exception as exc:
+        logger.warning(
+            "Non-blocking remedial document mirror failure for collection=%s document_id=%s: %s",
+            collection,
+            document.get("id"),
+            exc,
+        )
+
+
+def _safe_mirror_event(event_name: str, payload: dict, *, actor: dict | None = None) -> None:
+    try:
+        mirror_event(event_name, payload, actor=actor, required=False)
+    except Exception as exc:
+        logger.warning("Non-blocking remedial event mirror failure for event=%s: %s", event_name, exc)
+
+
 def _ensure_faculty_can_manage_class(
     db: Session,
     *,
@@ -392,6 +583,42 @@ def _student_section(student: models.Student) -> str:
 
 def _normalized_section_token(raw_section: str | None) -> str:
     return re.sub(r"\s+", "", str(raw_section or "").strip().upper())
+
+
+def _students_matching_sections(db: Session, sections: list[str]) -> list[models.Student]:
+    target_sections = [_normalized_section_token(item) for item in sections if item]
+    target_section_set = {item for item in target_sections if item}
+    if not target_section_set:
+        return []
+
+    direct_matches = (
+        db.query(models.Student)
+        .filter(models.Student.section.in_(target_section_set))
+        .order_by(models.Student.section.asc(), models.Student.name.asc(), models.Student.id.asc())
+        .all()
+    )
+    matched_by_id: dict[int, models.Student] = {
+        int(row.id): row
+        for row in direct_matches
+        if _normalized_section_token(row.section) in target_section_set
+    }
+
+    # Legacy student records may carry whitespace or mixed casing in section values.
+    normalized_matches = (
+        db.query(models.Student)
+        .filter(models.Student.section.is_not(None))
+        .order_by(models.Student.section.asc(), models.Student.name.asc(), models.Student.id.asc())
+        .all()
+    )
+    for row in normalized_matches:
+        if _normalized_section_token(row.section) not in target_section_set:
+            continue
+        matched_by_id.setdefault(int(row.id), row)
+
+    return sorted(
+        matched_by_id.values(),
+        key=lambda row: (_normalized_section_token(row.section), str(row.name or ""), int(row.id)),
+    )
 
 
 def _student_has_remedial_access(
@@ -539,8 +766,7 @@ def _verify_remedial_face_payload(
 
     enrollment_template = _parse_face_template(student.enrollment_video_template_json)
     profile_template = _parse_face_template(student.profile_face_template_json)
-    combined_template = _merge_face_templates(enrollment_template, profile_template)
-    if combined_template is None:
+    if enrollment_template is None:
         raise HTTPException(
             status_code=400,
             detail="Complete one-time enrollment video before marking attendance",
@@ -550,22 +776,56 @@ def _verify_remedial_face_payload(
             profile_template = build_profile_face_template(profile_photo_data_url)
         except ValueError:
             profile_template = None
-        combined_template = _merge_face_templates(enrollment_template, profile_template)
+    if profile_template is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a valid profile face photo before marking attendance",
+        )
 
-    opencv_verdict = verify_face_sequence_opencv(
-        profile_photo_data_url,
-        selfie_frames,
-        subject_label=student.email,
-        profile_template=combined_template,
+    def _run_reference_verification(template: dict, reference_name: str) -> tuple[dict, bool, float, str, str]:
+        verdict = verify_face_sequence_opencv(
+            profile_photo_data_url,
+            selfie_frames,
+            subject_label=f"{student.email}:{reference_name}",
+            profile_template=template,
+            require_dnn=True,
+        )
+        if not bool(verdict.get("available")):
+            reason = str(verdict.get("reason", "OpenCV verification unavailable"))
+            raise HTTPException(status_code=503, detail=f"OpenCV verification unavailable: {reason}")
+        confidence = max(0.0, min(1.0, float(verdict.get("confidence", 0.0))))
+        engine = str(verdict.get("engine") or "opencv-dnn-yunet-sface-v1")
+        reason = str(verdict.get("reason") or "Face not recognized")
+        matched = bool(verdict.get("match")) and confidence >= REMEDIAL_FACE_MATCH_PASS_THRESHOLD
+        return verdict, matched, confidence, engine, reason
+
+    _, enrollment_match, enrollment_confidence, enrollment_engine, enrollment_reason = _run_reference_verification(
+        enrollment_template,
+        "enrollment",
     )
-    if not bool(opencv_verdict.get("available")):
-        reason = str(opencv_verdict.get("reason", "OpenCV verification unavailable"))
-        raise HTTPException(status_code=503, detail=f"OpenCV verification unavailable: {reason}")
+    _, profile_match, profile_confidence, profile_engine, profile_reason = _run_reference_verification(
+        profile_template,
+        "profile",
+    )
 
-    final_confidence = max(0.0, min(1.0, float(opencv_verdict.get("confidence", 0.0))))
-    final_engine = str(opencv_verdict.get("engine") or "opencv-embedding")
-    final_reason = str(opencv_verdict.get("reason") or "Face not recognized")
-    final_match = bool(opencv_verdict.get("match")) and final_confidence >= REMEDIAL_FACE_MATCH_PASS_THRESHOLD
+    final_match = bool(enrollment_match and profile_match)
+    final_confidence = min(enrollment_confidence, profile_confidence)
+    final_engine = enrollment_engine if enrollment_engine == profile_engine else f"{enrollment_engine}+{profile_engine}"
+    if final_match:
+        final_reason = (
+            "Verified against enrollment and profile templates "
+            f"(enrollment={enrollment_confidence:.3f}, profile={profile_confidence:.3f})."
+        )
+    elif not enrollment_match and not profile_match:
+        final_reason = (
+            f"Enrollment mismatch: {enrollment_reason} | "
+            f"Profile mismatch: {profile_reason}"
+        )
+    elif not enrollment_match:
+        final_reason = f"Enrollment mismatch: {enrollment_reason}"
+    else:
+        final_reason = f"Profile mismatch: {profile_reason}"
+
     if not final_match:
         raise HTTPException(
             status_code=403,
@@ -675,7 +935,7 @@ def create_makeup_class(
     if course.faculty_id != payload.faculty_id:
         raise HTTPException(status_code=400, detail="Faculty is not assigned to this course.")
 
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     if payload.class_date < now_dt.date():
         raise HTTPException(status_code=400, detail="Remedial class date cannot be in the past.")
 
@@ -712,34 +972,24 @@ def create_makeup_class(
                 detail="Selected section(s) are outside your allocated section scope.",
             )
 
-    code = _generate_remedial_code(db)
-    code_generated_at = datetime.utcnow()
     code_expires_at = class_start + timedelta(minutes=REMEDIAL_ATTENDANCE_WINDOW_MINUTES)
-
-    class_row = models.MakeUpClass(
+    class_row = _create_makeup_class_with_retry(
+        db,
         course_id=course.id,
         faculty_id=payload.faculty_id,
         class_date=effective_class_date,
         start_time=payload.start_time,
         end_time=payload.end_time,
         topic=payload.topic.strip(),
-        sections_json=json.dumps(sections),
+        sections=sections,
         class_mode=payload.class_mode,
         room_number=(payload.room_number or "").strip() or None,
-        online_link=REMEDIAL_ONLINE_CLASS_LINK if payload.class_mode == "online" else None,
-        remedial_code=code,
-        code_generated_at=code_generated_at,
+        online_link=(payload.online_link or "").strip() or None,
         code_expires_at=code_expires_at,
-        attendance_open_minutes=REMEDIAL_ATTENDANCE_WINDOW_MINUTES,
-        scheduled_at=datetime.utcnow(),
-        is_active=True,
     )
-    db.add(class_row)
-    db.commit()
-    db.refresh(class_row)
 
     if used_manual_course_entry:
-        mirror_document(
+        _safe_mirror_document(
             "courses",
             {
                 "id": course.id,
@@ -750,7 +1000,7 @@ def create_makeup_class(
             },
             upsert_filter={"id": course.id},
         )
-        mirror_event(
+        _safe_mirror_event(
             "remedial.course_manual_bound",
             {
                 "course_id": course.id,
@@ -766,8 +1016,8 @@ def create_makeup_class(
             },
         )
 
-    _sync_makeup_class_to_mongo(class_row, source="faculty-remedial-scheduler")
-    mirror_event(
+    _safe_sync_makeup_class_to_mongo(class_row, source="faculty-remedial-scheduler")
+    _safe_mirror_event(
         "remedial.class_scheduled",
         {
             "class_id": class_row.id,
@@ -844,20 +1094,14 @@ def regenerate_remedial_code(
     _ensure_faculty_can_manage_class(db, current_user=current_user, class_row=class_row)
 
     class_start, _ = _class_datetimes(class_row)
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     if now_dt > class_start + timedelta(minutes=class_row.attendance_open_minutes or REMEDIAL_ATTENDANCE_WINDOW_MINUTES):
         raise HTTPException(status_code=400, detail="Cannot regenerate code after attendance window has ended.")
 
-    class_row.remedial_code = _generate_remedial_code(db)
-    class_row.code_generated_at = datetime.utcnow()
-    class_row.code_expires_at = class_start + timedelta(
-        minutes=class_row.attendance_open_minutes or REMEDIAL_ATTENDANCE_WINDOW_MINUTES
-    )
-    db.commit()
-    db.refresh(class_row)
+    _regenerate_makeup_code_with_retry(db, class_row=class_row, class_start=class_start)
 
-    _sync_makeup_class_to_mongo(class_row, source="faculty-remedial-code-regenerated")
-    mirror_event(
+    _safe_sync_makeup_class_to_mongo(class_row, source="faculty-remedial-code-regenerated")
+    _safe_mirror_event(
         "remedial.code_regenerated",
         {
             "class_id": class_row.id,
@@ -901,11 +1145,7 @@ def send_remedial_code_to_sections(
     if not sections:
         raise HTTPException(status_code=400, detail="No target sections configured on remedial class.")
     section_set = set(sections)
-    students = (
-        db.query(models.Student)
-        .filter(models.Student.section.in_(section_set))
-        .all()
-    )
+    students = _students_matching_sections(db, sections)
     if not students:
         return schemas.RemedialSendMessageOut(
             class_id=class_row.id,
@@ -925,42 +1165,13 @@ def send_remedial_code_to_sections(
     )
     message_text = custom or default_message
 
-    now_dt = datetime.utcnow()
-    recipients = 0
-    for student in students:
-        student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
-        if not student_section or student_section not in section_set:
-            continue
-
-        existing = (
-            db.query(models.RemedialMessage)
-            .filter(
-                models.RemedialMessage.makeup_class_id == class_row.id,
-                models.RemedialMessage.student_id == student.id,
-            )
-            .first()
-        )
-        if existing:
-            existing.section = student_section
-            existing.remedial_code = class_row.remedial_code
-            existing.message = message_text
-            existing.created_at = now_dt
-            existing.read_at = None
-            message_row = existing
-        else:
-            message_row = models.RemedialMessage(
-                makeup_class_id=class_row.id,
-                faculty_id=class_row.faculty_id,
-                student_id=student.id,
-                section=student_section,
-                remedial_code=class_row.remedial_code,
-                message=message_text,
-                created_at=now_dt,
-            )
-            db.add(message_row)
-        recipients += 1
-
-    db.commit()
+    recipients = _persist_remedial_messages(
+        db,
+        class_row=class_row,
+        students=students,
+        section_set=section_set,
+        message_text=message_text,
+    )
 
     mirror_errors = 0
     message_rows = (
@@ -1065,7 +1276,7 @@ def cancel_makeup_class(
     db.commit()
     db.refresh(class_row)
 
-    _sync_makeup_class_to_mongo(class_row, source="faculty-remedial-cancel")
+    _safe_sync_makeup_class_to_mongo(class_row, source="faculty-remedial-cancel")
     try:
         mongo_db = get_mongo_db(required=False)
         if mongo_db is not None:
@@ -1076,7 +1287,7 @@ def cancel_makeup_class(
             class_row.id,
             exc,
         )
-    mirror_event(
+    _safe_mirror_event(
         "remedial.class_cancelled",
         {
             "class_id": class_row.id,
@@ -1094,7 +1305,6 @@ def cancel_makeup_class(
             "role": current_user.role.value,
             "faculty_id": current_user.faculty_id,
         },
-        required=False,
     )
 
     return _serialize_makeup_class(class_row)
@@ -1167,7 +1377,7 @@ def get_student_remedial_messages(
     )
     course_map = {row.id: row for row in courses}
 
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     out: list[schemas.RemedialMessageOut] = []
     for row in rows:
         class_row = class_map.get(row.makeup_class_id)
@@ -1244,7 +1454,7 @@ def validate_remedial_code(
 
     class_start, _ = _class_datetimes(class_row)
     window_close = _attendance_window_close(class_row)
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     if class_row.code_expires_at and now_dt > class_row.code_expires_at:
         raise HTTPException(status_code=400, detail="Remedial code has expired")
 
@@ -1304,7 +1514,7 @@ def mark_remedial_attendance(
         raise HTTPException(status_code=400, detail="Student is not enrolled in this course")
 
     class_start, _ = _class_datetimes(class_row)
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     if now_dt < class_start:
         raise HTTPException(status_code=400, detail="Attendance is not open yet for this remedial class")
 
@@ -1345,21 +1555,42 @@ def mark_remedial_attendance(
         source=source,
     )
     db.add(attendance_row)
-    db.flush()
-    complete_remedial_recovery_action(
-        db,
-        student_id=int(payload.student_id),
-        makeup_class_id=int(class_row.id),
-    )
-    evaluate_attendance_recovery(
-        db,
-        student_id=int(payload.student_id),
-        course_id=int(class_row.course_id),
-    )
-    db.commit()
-    db.refresh(attendance_row)
+    try:
+        db.flush()
+        complete_remedial_recovery_action(
+            db,
+            student_id=int(payload.student_id),
+            makeup_class_id=int(class_row.id),
+        )
+        evaluate_attendance_recovery(
+            db,
+            student_id=int(payload.student_id),
+            course_id=int(class_row.course_id),
+        )
+        db.commit()
+        db.refresh(attendance_row)
+    except IntegrityError as exc:
+        db.rollback()
+        with db.no_autoflush:
+            existing = (
+                db.query(models.RemedialAttendance)
+                .filter(
+                    models.RemedialAttendance.makeup_class_id == class_row.id,
+                    models.RemedialAttendance.student_id == payload.student_id,
+                )
+                .first()
+            )
+        if existing and _is_unique_integrity_error(exc, "uq_remedial_attendance", "remedial_attendance"):
+            logger.warning(
+                "Duplicate remedial attendance request collapsed to existing row for class_id=%s student_id=%s: %s",
+                class_row.id,
+                payload.student_id,
+                exc,
+            )
+            return {"message": "Attendance already marked", "makeup_class_id": class_row.id}
+        raise
 
-    mirror_document(
+    _safe_mirror_document(
         "remedial_attendance",
         {
             "id": attendance_row.id,
@@ -1371,11 +1602,11 @@ def mark_remedial_attendance(
             "verification_confidence": verification_confidence,
             "verification_engine": verification_engine,
             "verification_reason": verification_reason,
-            "recorded_at": datetime.utcnow(),
+            "recorded_at": _utcnow_naive(),
         },
         upsert_filter={"id": attendance_row.id},
     )
-    mirror_event(
+    _safe_mirror_event(
         "remedial.attendance_marked",
         {
             "class_id": class_row.id,
@@ -1444,7 +1675,7 @@ def get_student_remedial_attendance_history(
         .all()
     )
 
-    now_dt = datetime.now()
+    now_dt = _remedial_now()
     out: list[schemas.RemedialAttendanceHistoryItemOut] = []
     for class_row, course_row, attendance_row, _message_row in rows:
         if not bool(class_row.is_active) and attendance_row is None:
@@ -1503,27 +1734,7 @@ def get_makeup_class_attendance(
     )
 
     target_sections = [_normalized_section_token(item) for item in _parse_sections_json(class_row.sections_json) if item]
-    target_section_set = set(target_sections)
-    if target_section_set:
-        target_students = (
-            db.query(models.Student)
-            .filter(models.Student.section.in_(target_section_set))
-            .order_by(models.Student.section.asc(), models.Student.name.asc(), models.Student.id.asc())
-            .all()
-        )
-        # Fallback for legacy section values that may include spacing/casing differences.
-        if not target_students:
-            all_students = (
-                db.query(models.Student)
-                .filter(models.Student.section.is_not(None))
-                .order_by(models.Student.name.asc(), models.Student.id.asc())
-                .all()
-            )
-            target_students = [
-                row for row in all_students if _normalized_section_token(row.section) in target_section_set
-            ]
-    else:
-        target_students = []
+    target_students = _students_matching_sections(db, target_sections)
 
     attendance_by_student_id: dict[int, models.RemedialAttendance] = {}
     for record in records:

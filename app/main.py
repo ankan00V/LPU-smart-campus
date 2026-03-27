@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import threading
+import sys
 from decimal import Decimal
 from datetime import date, datetime, time, timedelta
 from enum import Enum as PyEnum
@@ -9,9 +10,9 @@ from pathlib import Path
 import time as pytime
 from typing import Any
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import DuplicateKeyError
 from sqlalchemy import inspect as sa_inspect, text
@@ -19,10 +20,16 @@ from sqlalchemy.orm import Session
 
 from . import models
 from .attendance_ledger import append_attendance_event, recompute_attendance_record
-from .auth_utils import hash_password, require_roles
+from .auth_utils import ACCESS_COOKIE_NAME, decode_access_token, hash_password, require_roles
 from .database import Base, SessionLocal, database_status, engine
 from .enterprise_controls import validate_production_secrets
 from .food_bootstrap import bootstrap_food_hall_catalog
+from .id_alignment import (
+    align_auth_user_id_with_sql,
+    align_faculty_profile_id_with_sql,
+    align_student_profile_id_with_sql,
+)
+from .media_storage import assert_media_storage_ready
 from .mongo import (
     close_mongo,
     get_mongo_db,
@@ -30,15 +37,16 @@ from .mongo import (
     mirror_document,
     mongo_persistence_required,
     mongo_status,
-    next_sequence,
 )
 from .outbox import dispatch_outbox_batch
 from .observability import install_observability, metrics_response, observability_router
 from .otp_delivery import assert_otp_delivery_ready
 from .performance import record_request_metric
 from .redis_client import close_redis, init_redis, redis_required, redis_status
+from .rate_limit import enforce_rate_limit, rate_limit_headers
 from .realtime_bus import realtime_hub
 from .runtime_infra import managed_services_required
+from .validation import validate_request_security_constraints
 from .workers import (
     assert_worker_ready,
     inline_fallback_enabled as worker_inline_fallback_enabled,
@@ -66,7 +74,31 @@ from .routers import (
 from .routers.assets import build_static_asset_response, seed_static_assets_to_mongo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(PROJECT_ROOT / ".env")
+_ORIGINAL_ENV = dict(os.environ)
+
+
+def _running_under_pytest() -> bool:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return True
+    if "pytest" in sys.modules:
+        return True
+    return any("pytest" in str(arg).lower() for arg in sys.argv)
+
+
+def _load_environment_files() -> None:
+    if _running_under_pytest():
+        return
+    load_dotenv(PROJECT_ROOT / ".env")
+    local_values = dotenv_values(PROJECT_ROOT / ".env.local")
+    for key, value in local_values.items():
+        if value is None:
+            continue
+        if key in _ORIGINAL_ENV:
+            continue
+        os.environ[key] = str(value)
+
+
+_load_environment_files()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -82,6 +114,8 @@ _health_cache_lock = threading.Lock()
 _health_cache_payload: dict[str, Any] | None = None
 _health_cache_expires_at = 0.0
 _health_cache_refreshing = False
+_startup_sql_snapshot_sync_lock = threading.Lock()
+_startup_sql_snapshot_sync_thread: threading.Thread | None = None
 
 
 def _strict_runtime_mode_enabled() -> bool:
@@ -94,9 +128,74 @@ def _enabled_flag(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _otp_verify_connection_on_startup() -> bool:
+    return _enabled_flag(
+        "OTP_VERIFY_CONNECTION_ON_STARTUP",
+        default=_strict_runtime_mode_enabled(),
+    )
+
+
 def _managed_services_contract_enabled() -> bool:
     raw = (os.getenv("APP_MANAGED_SERVICES_REQUIRED") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _redis_startup_max_attempts() -> int:
+    raw = (os.getenv("REDIS_STARTUP_MAX_ATTEMPTS", "5") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 5
+    return max(1, min(20, value))
+
+
+def _redis_startup_retry_delay_seconds() -> float:
+    raw = (os.getenv("REDIS_STARTUP_RETRY_DELAY_SECONDS", "1.0") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0.0, min(10.0, value))
+
+
+def _database_startup_max_attempts() -> int:
+    raw = (os.getenv("DATABASE_STARTUP_MAX_ATTEMPTS", "3") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return max(1, min(20, value))
+
+
+def _database_startup_retry_delay_seconds() -> float:
+    raw = (os.getenv("DATABASE_STARTUP_RETRY_DELAY_SECONDS", "1.0") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0.0, min(10.0, value))
+
+
+def _database_status_with_startup_retry() -> dict[str, Any]:
+    attempts = _database_startup_max_attempts()
+    retry_delay_seconds = _database_startup_retry_delay_seconds()
+    last_state: dict[str, Any] | None = None
+    for attempt in range(1, attempts + 1):
+        state = database_status()
+        last_state = state
+        if str(state.get("backend") or "").strip().lower() == "postgresql" and bool(state.get("connected")):
+            return state
+        if attempt < attempts:
+            logger.warning(
+                "PostgreSQL startup connection failed (%s/%s). Retrying in %.1fs. error=%s",
+                attempt,
+                attempts,
+                retry_delay_seconds,
+                str(state.get("error") or "").strip() or "unknown",
+            )
+            if retry_delay_seconds > 0:
+                pytime.sleep(retry_delay_seconds)
+    return last_state or database_status()
 
 
 def _health_cache_ttl_seconds() -> float:
@@ -115,6 +214,93 @@ def _health_worker_live_timeout_seconds() -> float:
     except ValueError:
         value = 0.8
     return max(0.2, min(5.0, value))
+
+
+def _api_rate_limit_enabled() -> bool:
+    return _enabled_flag("API_RATE_LIMIT_ENABLED", default=True)
+
+
+def _api_rate_limit_window_seconds() -> int:
+    raw = (os.getenv("API_RATE_LIMIT_WINDOW_SECONDS", "60") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 60
+    return max(10, min(3600, value))
+
+
+def _api_rate_limit_ip_default() -> int:
+    raw = (os.getenv("API_RATE_LIMIT_IP_DEFAULT", "240") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 240
+    return max(20, min(10_000, value))
+
+
+def _api_rate_limit_user_default() -> int:
+    raw = (os.getenv("API_RATE_LIMIT_USER_DEFAULT", "160") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 160
+    return max(10, min(10_000, value))
+
+
+def _api_rate_limit_exempt_paths() -> tuple[str, ...]:
+    defaults = [
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/metrics",
+        "/web",
+        "/ui",
+        "/assets/static",
+        "/assets/media",
+        "/favicon.ico",
+        "/apple-touch-icon.png",
+        "/apple-touch-icon-precomposed.png",
+    ]
+    raw = (os.getenv("API_RATE_LIMIT_EXEMPT_PATHS", "") or "").strip()
+    if not raw:
+        return tuple(defaults)
+    values = [part.strip() for part in raw.split(",") if part.strip()]
+    return tuple(values or defaults)
+
+
+def _path_exempt_from_security(path: str) -> bool:
+    cleaned = str(path or "").strip() or "/"
+    for candidate in _api_rate_limit_exempt_paths():
+        token = candidate.strip()
+        if not token:
+            continue
+        if cleaned == token or cleaned.startswith(f"{token}/"):
+            return True
+    return False
+
+
+def _rate_limit_user_principal(request: Request) -> str | None:
+    token = ""
+    auth_header = (request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = (request.cookies.get(ACCESS_COOKIE_NAME) or "").strip()
+    if not token:
+        return None
+    try:
+        payload = decode_access_token(token)
+    except HTTPException:
+        return None
+    except Exception:
+        return None
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        return None
+    if user_id <= 0:
+        return None
+    return f"user:{user_id}"
 
 
 def _build_health_payload() -> dict[str, Any]:
@@ -169,6 +355,41 @@ def _refresh_health_payload_async() -> None:
     thread.start()
 
 
+def _background_startup_sql_snapshot_sync() -> None:
+    global _startup_sql_snapshot_sync_thread
+
+    db = SessionLocal()
+    started_at = pytime.perf_counter()
+    try:
+        sync_sql_snapshot_to_mongo(db)
+        logger.info(
+            "Background startup SQL->Mongo snapshot sync completed in %.2fs.",
+            pytime.perf_counter() - started_at,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Background startup SQL->Mongo sync failed: %s", exc)
+    finally:
+        db.close()
+        with _startup_sql_snapshot_sync_lock:
+            _startup_sql_snapshot_sync_thread = None
+
+
+def _start_background_sql_snapshot_sync() -> bool:
+    global _startup_sql_snapshot_sync_thread
+
+    with _startup_sql_snapshot_sync_lock:
+        if _startup_sql_snapshot_sync_thread is not None and _startup_sql_snapshot_sync_thread.is_alive():
+            return False
+        thread = threading.Thread(
+            target=_background_startup_sql_snapshot_sync,
+            name="smartcampus-startup-sql-sync",
+            daemon=True,
+        )
+        _startup_sql_snapshot_sync_thread = thread
+        thread.start()
+        return True
+
+
 def _health_payload() -> dict[str, Any]:
     now = pytime.monotonic()
     with _health_cache_lock:
@@ -186,12 +407,16 @@ def _health_payload() -> dict[str, Any]:
 def _assert_strict_runtime_contract() -> None:
     if not _strict_runtime_mode_enabled():
         return
-    db_state = database_status()
+    managed_services_required = _managed_services_contract_enabled()
+    db_state = _database_status_with_startup_retry()
     mongo_state = mongo_status()
     redis_state = redis_status()
     if str(db_state.get("backend") or "").strip().lower() != "postgresql" or not bool(db_state.get("connected")):
+        db_error = str(db_state.get("error") or "").strip()
+        detail = f" Details: {db_error}" if db_error else ""
         raise RuntimeError(
             "APP_RUNTIME_STRICT=true requires a live PostgreSQL SQLALCHEMY_DATABASE_URL."
+            + detail
         )
     if not mongo_persistence_required():
         raise RuntimeError(
@@ -201,8 +426,6 @@ def _assert_strict_runtime_contract() -> None:
         raise RuntimeError("APP_RUNTIME_STRICT=true requires REDIS_REQUIRED=true.")
     if not worker_required():
         raise RuntimeError("APP_RUNTIME_STRICT=true requires WORKER_REQUIRED=true.")
-    if not _enabled_flag("MONGO_STARTUP_STRICT", default=True):
-        raise RuntimeError("APP_RUNTIME_STRICT=true requires MONGO_STARTUP_STRICT=true.")
     if worker_inline_fallback_enabled():
         raise RuntimeError(
             "APP_RUNTIME_STRICT=true requires WORKER_INLINE_FALLBACK_ENABLED=false."
@@ -215,6 +438,11 @@ def _assert_strict_runtime_contract() -> None:
     if otp_mode not in {"smtp", "graph"}:
         raise RuntimeError(
             "APP_RUNTIME_STRICT=true requires OTP_DELIVERY_MODE to be 'smtp' or 'graph'."
+        )
+    if managed_services_required and not _otp_verify_connection_on_startup():
+        raise RuntimeError(
+            "APP_RUNTIME_STRICT=true with APP_MANAGED_SERVICES_REQUIRED=true requires "
+            "OTP_VERIFY_CONNECTION_ON_STARTUP=true."
         )
     required_worker_flags = [
         "WORKER_ENABLE_OTP",
@@ -229,7 +457,7 @@ def _assert_strict_runtime_contract() -> None:
             + ", ".join(disabled)
             + "."
         )
-    if _managed_services_contract_enabled() and ("remote_host" in db_state or "tls_enabled" in db_state):
+    if managed_services_required and ("remote_host" in db_state or "tls_enabled" in db_state):
         if not bool(db_state.get("remote_host")):
             raise RuntimeError(
                 "APP_MANAGED_SERVICES_REQUIRED=true requires SQLALCHEMY_DATABASE_URL to use a non-local PostgreSQL host."
@@ -283,6 +511,56 @@ async def request_latency_middleware(request: Request, call_next):
     latency_ms = (pytime.perf_counter() - started_at) * 1000.0
     record_request_metric(request.url.path, request.method, int(response.status_code), latency_ms)
     response.headers["X-Request-Latency-Ms"] = f"{latency_ms:.2f}"
+    return response
+
+
+@app.middleware("http")
+async def security_hardening_middleware(request: Request, call_next):
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+
+    path = str(request.url.path or "/")
+    if _path_exempt_from_security(path):
+        return await call_next(request)
+
+    ip_decision = None
+    user_decision = None
+    try:
+        validate_request_security_constraints(request)
+
+        if _api_rate_limit_enabled():
+            window_seconds = _api_rate_limit_window_seconds()
+            ip_decision = enforce_rate_limit(
+                request,
+                scope="public-ip",
+                principal="ip",
+                limit=_api_rate_limit_ip_default(),
+                window_seconds=window_seconds,
+                include_ip=True,
+            )
+            principal = _rate_limit_user_principal(request)
+            if principal:
+                user_decision = enforce_rate_limit(
+                    request,
+                    scope="public-user",
+                    principal=principal,
+                    limit=_api_rate_limit_user_default(),
+                    window_seconds=window_seconds,
+                    include_ip=False,
+                )
+    except HTTPException as exc:
+        if exc.status_code == 429:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"error": "rate_limit_exceeded", "message": str(exc.detail)}
+            return JSONResponse(status_code=429, content=detail, headers=exc.headers or {})
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers or {})
+
+    response = await call_next(request)
+    if ip_decision is not None:
+        for key, value in rate_limit_headers(ip_decision, prefix="X-RateLimit-IP").items():
+            response.headers[key] = str(value)
+    if user_decision is not None:
+        for key, value in rate_limit_headers(user_decision, prefix="X-RateLimit-User").items():
+            response.headers[key] = str(value)
     return response
 
 
@@ -756,9 +1034,52 @@ def apply_mysql_enrollment_schema_migrations() -> None:
                 continue
             connection.execute(text(f"ALTER TABLE students MODIFY COLUMN {column_name} LONGTEXT NULL"))
 
-Base.metadata.create_all(bind=engine)
-apply_sqlite_migrations()
-apply_mysql_enrollment_schema_migrations()
+def _sql_startup_max_attempts() -> int:
+    raw = (os.getenv("SQL_STARTUP_MAX_ATTEMPTS", "3") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return max(1, value)
+
+
+def _sql_startup_retry_delay_seconds() -> float:
+    raw = (os.getenv("SQL_STARTUP_RETRY_DELAY_SECONDS", "1.0") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0.0, value)
+
+
+def init_sql_schema() -> None:
+    attempts = _sql_startup_max_attempts()
+    retry_delay_seconds = _sql_startup_retry_delay_seconds()
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            Base.metadata.create_all(bind=engine)
+            apply_sqlite_migrations()
+            apply_mysql_enrollment_schema_migrations()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < attempts:
+                logger.warning(
+                    "SQL schema init failed (%s/%s). Retrying in %.1fs. error=%s",
+                    attempt,
+                    attempts,
+                    retry_delay_seconds,
+                    exc,
+                )
+                if retry_delay_seconds > 0:
+                    pytime.sleep(retry_delay_seconds)
+                continue
+            break
+    if last_exc is not None:
+        raise RuntimeError(
+            "SQL schema init failed; check SQLALCHEMY_DATABASE_URL connectivity and permissions."
+        ) from last_exc
 
 app.include_router(assets_router)
 app.include_router(auth_router)
@@ -817,11 +1138,33 @@ def apple_touch_icon_precomposed():
 @app.on_event("startup")
 async def startup_event() -> None:
     _assert_strict_runtime_contract()
+    init_sql_schema()
     validate_production_secrets()
-    assert_otp_delivery_ready(verify_connection=True)
-    redis_ok = init_redis(force=True)
+    assert_otp_delivery_ready(verify_connection=_otp_verify_connection_on_startup())
+    redis_attempts = _redis_startup_max_attempts()
+    redis_retry_delay_seconds = _redis_startup_retry_delay_seconds()
+    redis_ok = False
+    redis_error = None
+    for attempt in range(1, redis_attempts + 1):
+        redis_ok = init_redis(force=True)
+        redis_state = redis_status()
+        if redis_ok or bool(redis_state.get("enabled")):
+            redis_ok = True
+            break
+        redis_error = str(redis_state.get("error") or "").strip() or None
+        if attempt < redis_attempts:
+            logger.warning(
+                "Redis startup connection failed (%s/%s). Retrying in %.1fs. error=%s",
+                attempt,
+                redis_attempts,
+                redis_retry_delay_seconds,
+                redis_error or "unknown",
+            )
+            if redis_retry_delay_seconds > 0:
+                await asyncio.sleep(redis_retry_delay_seconds)
     if not redis_ok and redis_required():
-        raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup.")
+        detail = f" Details: {redis_error}" if redis_error else ""
+        raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup." + detail)
     assert_worker_ready()
     realtime_hub.bind_loop(asyncio.get_running_loop())
     await realtime_hub.start()
@@ -860,7 +1203,7 @@ async def startup_event() -> None:
                 retry_delay_seconds,
             )
             if retry_delay_seconds > 0:
-                pytime.sleep(retry_delay_seconds)
+                await asyncio.sleep(retry_delay_seconds)
 
     if not ok:
         status = mongo_status()
@@ -875,7 +1218,8 @@ async def startup_event() -> None:
             strict_startup,
         )
     else:
-        seed_static_assets_to_mongo()
+        seed_static_assets_to_mongo(required=requires_mongo and strict_startup)
+    assert_media_storage_ready()
     db = SessionLocal()
     try:
         dispatch_outbox_batch(db, limit=200)
@@ -887,9 +1231,17 @@ async def startup_event() -> None:
             "yes",
             "on",
         }
-        if ok and startup_snapshot_sync:
-            sync_sql_snapshot_to_mongo(db)
-            logger.info("Startup SQL->Mongo snapshot sync completed.")
+        backend = mongo_status().get("backend")
+        if ok and (startup_snapshot_sync or backend == "mongita"):
+            if backend == "mongita":
+                sync_sql_snapshot_to_mongo(db)
+                logger.info("Startup SQL->Mongo snapshot sync completed.")
+            else:
+                started = _start_background_sql_snapshot_sync()
+                if started:
+                    logger.info("Startup SQL->Mongo snapshot sync scheduled in background.")
+                else:
+                    logger.info("Startup SQL->Mongo snapshot sync already running in background.")
     except Exception as exc:
         if requires_mongo and strict_startup:
             raise RuntimeError(f"Startup SQL->Mongo sync failed: {exc}") from exc
@@ -960,6 +1312,26 @@ def ensure_auth_user(
 
 def sync_sql_snapshot_to_mongo(db: Session) -> None:
     mongo_db = get_mongo_db(required=False)
+    if mongo_db is not None:
+        for student in db.query(models.Student).all():
+            email = str(student.email or "").strip().lower()
+            if not email:
+                continue
+            align_student_profile_id_with_sql(mongo_db, db, email=email, user_doc=None)
+        for faculty in db.query(models.Faculty).all():
+            email = str(faculty.email or "").strip().lower()
+            if not email:
+                continue
+            align_faculty_profile_id_with_sql(mongo_db, db, email=email, user_doc=None)
+        for auth_user in db.query(models.AuthUser).all():
+            email = str(auth_user.email or "").strip().lower()
+            if not email:
+                continue
+            user_doc = mongo_db["auth_users"].find_one({"email": email}) or {
+                "email": email,
+                "id": int(auth_user.id),
+            }
+            align_auth_user_id_with_sql(mongo_db, db, user_doc)
 
     def _normalize_value(value: Any) -> Any:
         if isinstance(value, PyEnum):
@@ -1009,6 +1381,14 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
             return {"id": payload["id"]}
         raise RuntimeError(f"Unable to build Mongo upsert filter for {row.__class__.__name__}")
 
+    def _strict_mongo_id_sync_enabled() -> bool:
+        raw = (os.getenv("MONGO_ID_SYNC_STRICT", "") or "").strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return _strict_runtime_mode_enabled()
+
     def _safe_update_one(collection_name: str, match_filter: dict[str, Any], payload: dict[str, Any]) -> None:
         if mongo_db is None:
             mirror_document(
@@ -1023,6 +1403,8 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
             collection.update_one(match_filter, {"$set": payload}, upsert=True)
             return
         except DuplicateKeyError as exc:
+            if _strict_mongo_id_sync_enabled():
+                raise
             details = getattr(exc, "details", {}) or {}
             key_value = details.get("keyValue")
             if not isinstance(key_value, dict) or not key_value:
@@ -1093,17 +1475,7 @@ def sync_sql_snapshot_to_mongo(db: Session) -> None:
             )
 
     for auth_user in db.query(models.AuthUser).all():
-        if mongo_db is None:
-            auth_id = int(auth_user.id)
-        else:
-            auth_collection = mongo_db["auth_users"]
-            existing_by_email = auth_collection.find_one({"email": auth_user.email})
-            if existing_by_email:
-                auth_id = int(existing_by_email["id"])
-            else:
-                auth_id = next_sequence("auth_users")
-                while auth_collection.find_one({"id": auth_id}):
-                    auth_id = next_sequence("auth_users")
+        auth_id = int(auth_user.id)
 
         _safe_update_one(
             "auth_users",

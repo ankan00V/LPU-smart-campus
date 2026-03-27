@@ -93,8 +93,9 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
             is_active=True,
         )
 
+    @mock.patch("app.routers.attendance.publish_domain_event", autospec=True)
     @mock.patch("app.routers.attendance._upsert_mongo_by_id", autospec=True)
-    def test_student_can_create_rectification_request(self, _mongo_upsert):
+    def test_student_can_create_rectification_request(self, _mongo_upsert, publish_event):
         payload = schemas.AttendanceRectificationRequestCreate(
             course_id=21,
             class_date=self.class_date,
@@ -121,10 +122,24 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
         )
         self.assertEqual(len(listed.requests), 1)
         self.assertEqual(listed.requests[0].status, models.AttendanceRectificationStatus.PENDING)
+        publish_event.assert_called_once()
+        self.assertEqual(publish_event.call_args.args[0], "attendance.rectification.requested")
+        self.assertEqual(
+            publish_event.call_args.kwargs["scopes"],
+            {"student:1", "faculty:11", "role:admin"},
+        )
 
+    @mock.patch("app.routers.attendance.enqueue_recompute", autospec=True)
+    @mock.patch("app.routers.attendance.publish_domain_event", autospec=True)
     @mock.patch("app.routers.attendance.mirror_document", autospec=True)
     @mock.patch("app.routers.attendance._upsert_mongo_by_id", autospec=True)
-    def test_faculty_approval_marks_present_and_updates_submission(self, _mongo_upsert, _mirror):
+    def test_faculty_approval_marks_present_and_updates_submission(
+        self,
+        _mongo_upsert,
+        _mirror,
+        _publish_event,
+        _enqueue_recompute,
+    ):
         create_payload = schemas.AttendanceRectificationRequestCreate(
             course_id=21,
             class_date=self.class_date,

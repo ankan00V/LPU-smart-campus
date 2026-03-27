@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, time
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from . import models
@@ -8,6 +9,10 @@ from .mongo import mirror_document, mirror_event
 
 DEFAULT_AVAILABLE_FROM = time(10, 0)
 DEFAULT_AVAILABLE_TO = time(21, 0)
+MIN_EXPECTED_FOOD_SHOPS = 20
+MIN_EXPECTED_FOOD_MENU_ITEMS = 80
+MIN_EXPECTED_FOOD_ITEMS = 80
+MIN_EXPECTED_BREAK_SLOTS = 11
 
 HavmorFlavors = [
     "Vanilla",
@@ -61,6 +66,30 @@ def _menu_row(name: str, price: float, **kwargs):
         "is_active": bool(kwargs.get("is_active", True)),
     }
     return row
+
+
+def _json_text(value) -> str:
+    return json.dumps(value or [])
+
+
+def _set_if_changed(row, attr: str, value) -> bool:
+    if getattr(row, attr) == value:
+        return False
+    setattr(row, attr, value)
+    return True
+
+
+def _catalog_seeded(db: Session) -> bool:
+    shops = int(db.query(func.count(models.FoodShop.id)).scalar() or 0)
+    menu_items = int(db.query(func.count(models.FoodMenuItem.id)).scalar() or 0)
+    slots = int(db.query(func.count(models.BreakSlot.id)).scalar() or 0)
+    items = int(db.query(func.count(models.FoodItem.id)).scalar() or 0)
+    return (
+        shops >= MIN_EXPECTED_FOOD_SHOPS
+        and menu_items >= MIN_EXPECTED_FOOD_MENU_ITEMS
+        and slots >= MIN_EXPECTED_BREAK_SLOTS
+        and items >= MIN_EXPECTED_FOOD_ITEMS
+    )
 
 
 FOOD_MENU_BY_SHOP = {
@@ -312,7 +341,7 @@ def _key(name: str, block: str) -> tuple[str, str]:
     return name.strip().lower(), block.strip().lower()
 
 
-def bootstrap_food_hall_catalog(db: Session) -> dict:
+def bootstrap_food_hall_catalog(db: Session, *, skip_if_seeded: bool = True) -> dict:
     summary = {
         "shops_created": 0,
         "shops_updated": 0,
@@ -323,57 +352,70 @@ def bootstrap_food_hall_catalog(db: Session) -> dict:
         "slots_created": 0,
         "slots_updated": 0,
     }
+    if skip_if_seeded and _catalog_seeded(db):
+        return summary
     now = datetime.utcnow()
 
     shops_by_key: dict[tuple[str, str], models.FoodShop] = {}
     for shop_data in FOOD_SHOPS:
         name = str(shop_data["name"]).strip()
         block = str(shop_data["block"]).strip()
+        desired_is_popular = bool(shop_data.get("is_popular", False))
+        desired_rating = float(shop_data.get("rating", 4.0))
+        desired_prep_minutes = int(shop_data.get("average_prep_minutes", 18))
         row = (
             db.query(models.FoodShop)
             .filter(models.FoodShop.name == name, models.FoodShop.block == block)
             .first()
         )
+        shop_changed = False
         if row is None:
             row = models.FoodShop(
                 name=name,
                 block=block,
                 owner_user_id=None,
                 is_active=True,
-                is_popular=bool(shop_data.get("is_popular", False)),
-                rating=float(shop_data.get("rating", 4.0)),
-                average_prep_minutes=int(shop_data.get("average_prep_minutes", 18)),
+                is_popular=desired_is_popular,
+                rating=desired_rating,
+                average_prep_minutes=desired_prep_minutes,
                 updated_at=now,
             )
             db.add(row)
             db.flush()
             summary["shops_created"] += 1
+            shop_changed = True
         else:
-            row.is_active = True
-            row.is_popular = bool(shop_data.get("is_popular", row.is_popular))
-            row.rating = float(shop_data.get("rating", row.rating or 4.0))
-            row.average_prep_minutes = int(shop_data.get("average_prep_minutes", row.average_prep_minutes or 18))
-            row.updated_at = now
-            summary["shops_updated"] += 1
+            shop_changed = any(
+                (
+                    _set_if_changed(row, "is_active", True),
+                    _set_if_changed(row, "is_popular", desired_is_popular),
+                    _set_if_changed(row, "rating", desired_rating),
+                    _set_if_changed(row, "average_prep_minutes", desired_prep_minutes),
+                )
+            )
+            if shop_changed:
+                row.updated_at = now
+                summary["shops_updated"] += 1
 
         shops_by_key[_key(name, block)] = row
-        mirror_document(
-            "food_shops",
-            {
-                "id": row.id,
-                "shop_id": row.id,
-                "name": row.name,
-                "block": row.block,
-                "owner_user_id": row.owner_user_id,
-                "is_active": row.is_active,
-                "is_popular": row.is_popular,
-                "rating": row.rating,
-                "average_prep_minutes": row.average_prep_minutes,
-                "updated_at": now,
-                "source": "food-bootstrap",
-            },
-            upsert_filter={"shop_id": row.id},
-        )
+        if shop_changed:
+            mirror_document(
+                "food_shops",
+                {
+                    "id": row.id,
+                    "shop_id": row.id,
+                    "name": row.name,
+                    "block": row.block,
+                    "owner_user_id": row.owner_user_id,
+                    "is_active": row.is_active,
+                    "is_popular": row.is_popular,
+                    "rating": row.rating,
+                    "average_prep_minutes": row.average_prep_minutes,
+                    "updated_at": now,
+                    "source": "food-bootstrap",
+                },
+                upsert_filter={"shop_id": row.id},
+            )
 
     for shop_tuple, item_rows in FOOD_MENU_BY_SHOP.items():
         shop_row = shops_by_key.get(_key(shop_tuple[0], shop_tuple[1]))
@@ -382,100 +424,125 @@ def bootstrap_food_hall_catalog(db: Session) -> dict:
 
         for item_data in item_rows:
             item_name = str(item_data["name"]).strip()
+            variants = item_data.get("variants") or []
+            addons = item_data.get("addons") or []
+            variants_json = _json_text(variants)
+            addons_json = _json_text(addons)
+            desired_description = item_data.get("description")
+            desired_price = float(item_data["base_price"])
+            desired_is_veg = bool(item_data.get("is_veg", True))
+            desired_spicy_level = int(item_data.get("spicy_level", 0))
+            desired_stock = int(item_data.get("stock_quantity", 120))
+            desired_sold_out = bool(item_data.get("sold_out", False))
+            desired_is_active = bool(item_data.get("is_active", True))
             menu_row = (
                 db.query(models.FoodMenuItem)
                 .filter(models.FoodMenuItem.shop_id == shop_row.id, models.FoodMenuItem.name == item_name)
                 .first()
             )
-
-            variants = item_data.get("variants") or []
-            addons = item_data.get("addons") or []
+            menu_changed = False
             if menu_row is None:
                 menu_row = models.FoodMenuItem(
                     shop_id=shop_row.id,
                     name=item_name,
-                    description=item_data.get("description"),
-                    base_price=float(item_data["base_price"]),
-                    is_veg=bool(item_data.get("is_veg", True)),
-                    spicy_level=int(item_data.get("spicy_level", 0)),
-                    variants_json=json.dumps(variants),
-                    addons_json=json.dumps(addons),
+                    description=desired_description,
+                    base_price=desired_price,
+                    is_veg=desired_is_veg,
+                    spicy_level=desired_spicy_level,
+                    variants_json=variants_json,
+                    addons_json=addons_json,
                     available_from=DEFAULT_AVAILABLE_FROM,
                     available_to=DEFAULT_AVAILABLE_TO,
-                    stock_quantity=int(item_data.get("stock_quantity", 120)),
-                    sold_out=bool(item_data.get("sold_out", False)),
-                    is_active=bool(item_data.get("is_active", True)),
+                    stock_quantity=desired_stock,
+                    sold_out=desired_sold_out,
+                    is_active=desired_is_active,
                     updated_at=now,
                 )
                 db.add(menu_row)
                 db.flush()
                 summary["menu_created"] += 1
+                menu_changed = True
             else:
-                menu_row.description = item_data.get("description")
-                menu_row.base_price = float(item_data["base_price"])
-                menu_row.is_veg = bool(item_data.get("is_veg", True))
-                menu_row.spicy_level = int(item_data.get("spicy_level", 0))
-                menu_row.variants_json = json.dumps(variants)
-                menu_row.addons_json = json.dumps(addons)
-                menu_row.available_from = DEFAULT_AVAILABLE_FROM
-                menu_row.available_to = DEFAULT_AVAILABLE_TO
-                menu_row.stock_quantity = int(item_data.get("stock_quantity", menu_row.stock_quantity or 120))
-                menu_row.sold_out = bool(item_data.get("sold_out", False))
-                menu_row.is_active = bool(item_data.get("is_active", True))
-                menu_row.updated_at = now
-                summary["menu_updated"] += 1
+                menu_changed = any(
+                    (
+                        _set_if_changed(menu_row, "description", desired_description),
+                        _set_if_changed(menu_row, "base_price", desired_price),
+                        _set_if_changed(menu_row, "is_veg", desired_is_veg),
+                        _set_if_changed(menu_row, "spicy_level", desired_spicy_level),
+                        _set_if_changed(menu_row, "variants_json", variants_json),
+                        _set_if_changed(menu_row, "addons_json", addons_json),
+                        _set_if_changed(menu_row, "available_from", DEFAULT_AVAILABLE_FROM),
+                        _set_if_changed(menu_row, "available_to", DEFAULT_AVAILABLE_TO),
+                        _set_if_changed(menu_row, "stock_quantity", desired_stock),
+                        _set_if_changed(menu_row, "sold_out", desired_sold_out),
+                        _set_if_changed(menu_row, "is_active", desired_is_active),
+                    )
+                )
+                if menu_changed:
+                    menu_row.updated_at = now
+                    summary["menu_updated"] += 1
 
             food_item = db.query(models.FoodItem).filter(models.FoodItem.name == item_name).first()
+            item_changed = False
             if food_item is None:
-                food_item = models.FoodItem(name=item_name, price=float(item_data["base_price"]), is_active=True)
+                food_item = models.FoodItem(name=item_name, price=desired_price, is_active=True)
                 db.add(food_item)
                 db.flush()
                 summary["items_created"] += 1
+                item_changed = True
             else:
-                food_item.price = float(item_data["base_price"])
-                food_item.is_active = True
-                summary["items_updated"] += 1
+                item_changed = any(
+                    (
+                        _set_if_changed(food_item, "price", desired_price),
+                        _set_if_changed(food_item, "is_active", True),
+                    )
+                )
+                if item_changed:
+                    summary["items_updated"] += 1
 
-            mirror_document(
-                "food_menu_items",
-                {
-                    "id": menu_row.id,
-                    "menu_item_id": menu_row.id,
-                    "shop_id": menu_row.shop_id,
-                    "name": menu_row.name,
-                    "description": menu_row.description,
-                    "base_price": menu_row.base_price,
-                    "is_veg": menu_row.is_veg,
-                    "spicy_level": menu_row.spicy_level,
-                    "variants": variants,
-                    "addons": addons,
-                    "available_from": str(menu_row.available_from) if menu_row.available_from else None,
-                    "available_to": str(menu_row.available_to) if menu_row.available_to else None,
-                    "stock_quantity": menu_row.stock_quantity,
-                    "sold_out": menu_row.sold_out,
-                    "is_active": menu_row.is_active,
-                    "updated_at": now,
-                    "source": "food-bootstrap",
-                },
-                upsert_filter={"menu_item_id": menu_row.id},
-            )
-            mirror_document(
-                "food_items",
-                {
-                    "id": food_item.id,
-                    "food_item_id": food_item.id,
-                    "name": food_item.name,
-                    "price": food_item.price,
-                    "is_active": food_item.is_active,
-                    "updated_at": now,
-                    "source": "food-bootstrap",
-                },
-                upsert_filter={"food_item_id": food_item.id},
-            )
+            if menu_changed:
+                mirror_document(
+                    "food_menu_items",
+                    {
+                        "id": menu_row.id,
+                        "menu_item_id": menu_row.id,
+                        "shop_id": menu_row.shop_id,
+                        "name": menu_row.name,
+                        "description": menu_row.description,
+                        "base_price": menu_row.base_price,
+                        "is_veg": menu_row.is_veg,
+                        "spicy_level": menu_row.spicy_level,
+                        "variants": variants,
+                        "addons": addons,
+                        "available_from": str(menu_row.available_from) if menu_row.available_from else None,
+                        "available_to": str(menu_row.available_to) if menu_row.available_to else None,
+                        "stock_quantity": menu_row.stock_quantity,
+                        "sold_out": menu_row.sold_out,
+                        "is_active": menu_row.is_active,
+                        "updated_at": now,
+                        "source": "food-bootstrap",
+                    },
+                    upsert_filter={"menu_item_id": menu_row.id},
+                )
+            if item_changed:
+                mirror_document(
+                    "food_items",
+                    {
+                        "id": food_item.id,
+                        "food_item_id": food_item.id,
+                        "name": food_item.name,
+                        "price": food_item.price,
+                        "is_active": food_item.is_active,
+                        "updated_at": now,
+                        "source": "food-bootstrap",
+                    },
+                    upsert_filter={"food_item_id": food_item.id},
+                )
 
     for hour in range(10, 21):
         slot_label = f"{hour:02d}:00 - {hour + 1:02d}:00"
         slot_row = db.query(models.BreakSlot).filter(models.BreakSlot.label == slot_label).first()
+        slot_changed = False
         if slot_row is None:
             slot_row = models.BreakSlot(
                 label=slot_label,
@@ -486,34 +553,42 @@ def bootstrap_food_hall_catalog(db: Session) -> dict:
             db.add(slot_row)
             db.flush()
             summary["slots_created"] += 1
+            slot_changed = True
         else:
-            slot_row.start_time = time(hour, 0)
-            slot_row.end_time = time(hour + 1, 0)
-            slot_row.max_orders = max(100, int(slot_row.max_orders or 250))
-            summary["slots_updated"] += 1
+            slot_changed = any(
+                (
+                    _set_if_changed(slot_row, "start_time", time(hour, 0)),
+                    _set_if_changed(slot_row, "end_time", time(hour + 1, 0)),
+                    _set_if_changed(slot_row, "max_orders", max(100, int(slot_row.max_orders or 250))),
+                )
+            )
+            if slot_changed:
+                summary["slots_updated"] += 1
 
-        mirror_document(
-            "break_slots",
-            {
-                "id": slot_row.id,
-                "slot_id": slot_row.id,
-                "label": slot_row.label,
-                "start_time": str(slot_row.start_time),
-                "end_time": str(slot_row.end_time),
-                "max_orders": slot_row.max_orders,
-                "updated_at": now,
-                "source": "food-bootstrap",
-            },
-            upsert_filter={"slot_id": slot_row.id},
-        )
+        if slot_changed:
+            mirror_document(
+                "break_slots",
+                {
+                    "id": slot_row.id,
+                    "slot_id": slot_row.id,
+                    "label": slot_row.label,
+                    "start_time": str(slot_row.start_time),
+                    "end_time": str(slot_row.end_time),
+                    "max_orders": slot_row.max_orders,
+                    "updated_at": now,
+                    "source": "food-bootstrap",
+                },
+                upsert_filter={"slot_id": slot_row.id},
+            )
 
     db.commit()
-    mirror_event(
-        "food.bootstrap",
-        {
-            **summary,
-            "updated_at": now.isoformat(),
-        },
-        source="food-bootstrap",
-    )
+    if any(summary.values()):
+        mirror_event(
+            "food.bootstrap",
+            {
+                **summary,
+                "updated_at": now.isoformat(),
+            },
+            source="food-bootstrap",
+        )
     return summary

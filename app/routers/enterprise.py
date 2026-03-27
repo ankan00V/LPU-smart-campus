@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from .. import models, schemas
+from sqlalchemy.orm import Session
+
 from ..auth_utils import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
@@ -23,8 +25,9 @@ from ..auth_utils import (
     create_session_tokens,
     hash_password,
     require_roles,
+    upsert_sql_auth_user_record,
 )
-from ..database import POSTGRES_ADMIN_LIBPQ_URL, SQLALCHEMY_DATABASE_URL, postgres_libpq_url
+from ..database import POSTGRES_ADMIN_LIBPQ_URL, SQLALCHEMY_DATABASE_URL, get_db, postgres_libpq_url
 from ..enterprise_controls import (
     compute_rpo_reference,
     decode_hs256_jwt,
@@ -37,13 +40,16 @@ from ..enterprise_controls import (
     rotate_collection_encryption,
     validate_production_secrets,
 )
+from ..id_alignment import bump_mongo_counter
 from ..mongo import get_mongo_db, mirror_event, next_sequence
 from ..performance import build_capacity_plan, get_sla_targets_ms, snapshot_sla
 from ..postgres_tools import require_postgres_command
+from ..validation import StrictSchemaModel
 
 router = APIRouter(prefix="/enterprise", tags=["Enterprise Controls"])
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+BaseModel = StrictSchemaModel
 
 
 class OIDCExchangeRequest(BaseModel):
@@ -106,14 +112,39 @@ class DRRestoreDrillRequest(BaseModel):
     backup_id: str | None = None
 
 
+class SCIMEmailEntry(BaseModel):
+    value: str = Field(min_length=5, max_length=254)
+    type: str | None = Field(default=None, max_length=40)
+    primary: bool | None = None
+
+
+class SCIMNameEntry(BaseModel):
+    formatted: str | None = Field(default=None, max_length=120)
+    givenName: str | None = Field(default=None, max_length=80)
+    familyName: str | None = Field(default=None, max_length=80)
+
+
+class SCIMCreateRequest(BaseModel):
+    schemas: list[str] = Field(default_factory=list, max_length=8)
+    userName: str | None = Field(default=None, min_length=5, max_length=254)
+    emails: list[SCIMEmailEntry] = Field(default_factory=list, max_length=8)
+    name: SCIMNameEntry | None = None
+    displayName: str | None = Field(default=None, max_length=120)
+    active: bool = True
+    externalId: str | None = Field(default=None, max_length=120)
+    groups: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    roles: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+    userType: str | None = Field(default=None, max_length=40)
+
+
 class SCIMPatchOperation(BaseModel):
-    op: str
-    path: str | None = None
+    op: str = Field(min_length=3, max_length=20)
+    path: str | None = Field(default=None, max_length=120)
     value: Any = None
 
 
 class SCIMPatchRequest(BaseModel):
-    Operations: list[SCIMPatchOperation] = Field(default_factory=list)
+    Operations: list[SCIMPatchOperation] = Field(default_factory=list, max_length=100)
 
 
 class EvidencePackageRequest(BaseModel):
@@ -524,6 +555,7 @@ def _deletion_dual_control_required() -> bool:
 
 def _upsert_federated_user(
     db,
+    sql_db: Session,
     *,
     email: str,
     name: str | None,
@@ -536,9 +568,23 @@ def _upsert_federated_user(
     now = datetime.utcnow()
     existing = db["auth_users"].find_one({"email": email})
     if existing:
+        sql_auth_user, _ = upsert_sql_auth_user_record(
+            sql_db,
+            email=email,
+            password_hash=str(existing.get("password_hash") or hash_password(secrets_token_placeholder())),
+            role=role,
+            student_id=existing.get("student_id"),
+            faculty_id=existing.get("faculty_id"),
+            is_active=True,
+            last_login_at=now,
+            created_at=existing.get("created_at"),
+            requested_id=int(existing.get("id")) if existing.get("id") else None,
+        )
         update = {
+            "id": int(sql_auth_user.id),
             "name": name or existing.get("name"),
             "role": role.value,
+            "password_hash": str(sql_auth_user.password_hash),
             "sso_provider": provider,
             "sso_tenant": tenant,
             "sso_subject": subject,
@@ -551,17 +597,30 @@ def _upsert_federated_user(
             update["mfa_enabled"] = True
             update["mfa_source"] = "idp"
             update["mfa_last_verified_at"] = now
-        db["auth_users"].update_one({"id": int(existing["id"])}, {"$set": update})
-        updated = db["auth_users"].find_one({"id": int(existing["id"])})
+        db["auth_users"].update_one({"email": email}, {"$set": update})
+        updated = db["auth_users"].find_one({"id": int(sql_auth_user.id)}) or db["auth_users"].find_one({"email": email})
         if not updated:
             raise HTTPException(status_code=500, detail="Failed to update federated user")
+        sql_db.commit()
         return updated
 
+    password_hash = hash_password(secrets_token_placeholder())
+    sql_auth_user, _ = upsert_sql_auth_user_record(
+        sql_db,
+        email=email,
+        password_hash=password_hash,
+        role=role,
+        student_id=None,
+        faculty_id=None,
+        is_active=True,
+        last_login_at=now,
+        created_at=now,
+    )
     new_user = {
-        "id": next_sequence("auth_users"),
+        "id": int(sql_auth_user.id),
         "name": name or email.split("@", 1)[0],
         "email": email,
-        "password_hash": hash_password(secrets_token_placeholder()),
+        "password_hash": password_hash,
         "role": role.value,
         "student_id": None,
         "faculty_id": None,
@@ -587,6 +646,8 @@ def _upsert_federated_user(
         "mfa_setup_expires_at": None,
     }
     db["auth_users"].insert_one(new_user)
+    bump_mongo_counter(db, "auth_users", int(sql_auth_user.id))
+    sql_db.commit()
     return new_user
 
 
@@ -665,6 +726,7 @@ def oidc_exchange(
     payload: OIDCExchangeRequest,
     response: Response,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     db = _mongo_or_503()
     provider = payload.provider.strip().upper()
@@ -709,6 +771,7 @@ def oidc_exchange(
 
     user_doc = _upsert_federated_user(
         db,
+        sql_db,
         email=email,
         name=str(claims.get("name") or "").strip() or None,
         role=role,
@@ -745,6 +808,7 @@ def saml_acs(
     payload: SAMLACSRequest,
     response: Response,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     db = _mongo_or_503()
     provider = payload.provider.strip().upper()
@@ -793,6 +857,7 @@ def saml_acs(
     name = (attrs.get("displayname", [None])[0]) or (attrs.get("name", [None])[0])
     user_doc = _upsert_federated_user(
         db,
+        sql_db,
         email=email,
         name=str(name).strip() if name else None,
         role=role,
@@ -826,8 +891,8 @@ def saml_acs(
 @router.get("/scim/v2/Users")
 def scim_list_users(
     request: Request,
-    startIndex: int = 1,
-    count: int = 100,
+    startIndex: int = Query(default=1, ge=1, le=1_000_000),
+    count: int = Query(default=100, ge=1, le=500),
 ):
     _require_scim_token(request)
     db = _mongo_or_503()
@@ -849,35 +914,51 @@ def scim_list_users(
 
 @router.post("/scim/v2/Users", status_code=201)
 def scim_create_user(
-    payload: dict[str, Any],
+    payload: SCIMCreateRequest,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     _require_scim_token(request)
     db = _mongo_or_503()
+    payload_data = payload.model_dump(mode="python")
     email = _normalize_email(
-        str(payload.get("userName") or "")
-        or str((payload.get("emails") or [{}])[0].get("value") or "")
+        str(payload_data.get("userName") or "")
+        or str((payload_data.get("emails") or [{}])[0].get("value") or "")
     )
     if not email:
         raise HTTPException(status_code=400, detail="SCIM userName/email is required")
 
-    scim_groups = _extract_scim_groups(payload)
-    explicit_role = _scim_explicit_role(payload)
+    scim_groups = _extract_scim_groups(payload_data)
+    explicit_role = _scim_explicit_role(payload_data)
     mapped_role = _scim_role_from_groups(scim_groups)
     role = explicit_role or mapped_role or models.UserRole.STUDENT
     name = None
-    if isinstance(payload.get("name"), dict):
-        name = payload["name"].get("formatted") or payload["name"].get("givenName")
-    name = str(name or payload.get("displayName") or "").strip() or None
-    active = bool(payload.get("active", True))
-    external_id = str(payload.get("externalId") or "").strip() or None
+    if isinstance(payload_data.get("name"), dict):
+        name = payload_data["name"].get("formatted") or payload_data["name"].get("givenName")
+    name = str(name or payload_data.get("displayName") or "").strip() or None
+    active = bool(payload_data.get("active", True))
+    external_id = str(payload_data.get("externalId") or "").strip() or None
 
     user_doc = db["auth_users"].find_one({"email": email})
     now = datetime.utcnow()
     if user_doc:
+        sql_auth_user, _ = upsert_sql_auth_user_record(
+            sql_db,
+            email=email,
+            password_hash=str(user_doc.get("password_hash") or hash_password(secrets_token_placeholder())),
+            role=role,
+            student_id=user_doc.get("student_id"),
+            faculty_id=user_doc.get("faculty_id"),
+            is_active=active,
+            last_login_at=user_doc.get("last_login_at"),
+            created_at=user_doc.get("created_at"),
+            requested_id=int(user_doc.get("id")) if user_doc.get("id") else None,
+        )
         update = {
+            "id": int(sql_auth_user.id),
             "name": name or user_doc.get("name"),
             "role": role.value,
+            "password_hash": str(sql_auth_user.password_hash),
             "is_active": active,
             "scim_external_id": external_id,
             "scim_last_sync_at": now,
@@ -885,14 +966,26 @@ def scim_create_user(
             "scim_managed": True,
             "updated_at": now,
         }
-        db["auth_users"].update_one({"id": int(user_doc["id"])}, {"$set": update})
-        user_doc = db["auth_users"].find_one({"id": int(user_doc["id"])})
+        db["auth_users"].update_one({"email": email}, {"$set": update})
+        user_doc = db["auth_users"].find_one({"id": int(sql_auth_user.id)}) or db["auth_users"].find_one({"email": email})
     else:
+        password_hash = hash_password(secrets_token_placeholder())
+        sql_auth_user, _ = upsert_sql_auth_user_record(
+            sql_db,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            student_id=None,
+            faculty_id=None,
+            is_active=active,
+            last_login_at=None,
+            created_at=now,
+        )
         user_doc = {
-            "id": next_sequence("auth_users"),
+            "id": int(sql_auth_user.id),
             "name": name or email.split("@", 1)[0],
             "email": email,
-            "password_hash": hash_password(secrets_token_placeholder()),
+            "password_hash": password_hash,
             "role": role.value,
             "student_id": None,
             "faculty_id": None,
@@ -911,6 +1004,9 @@ def scim_create_user(
             "scim_managed": True,
         }
         db["auth_users"].insert_one(user_doc)
+        bump_mongo_counter(db, "auth_users", int(sql_auth_user.id))
+
+    sql_db.commit()
 
     mirror_event(
         "auth.scim.user_upserted",

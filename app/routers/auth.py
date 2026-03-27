@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pymongo.errors import DuplicateKeyError, PyMongoError
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -26,6 +27,7 @@ from ..auth_utils import (
     revoke_access_token,
     revoke_session,
     rotate_session_tokens,
+    upsert_sql_auth_user_record,
     verify_otp,
     verify_password,
 )
@@ -42,7 +44,14 @@ from ..enterprise_controls import (
     verify_backup_code,
 )
 from ..identity_shield import assess_applicant_risk
-from ..mongo import get_mongo_db, invalidate_mongo_connection, mirror_event, next_sequence
+from ..id_alignment import (
+    align_auth_user_id_with_sql,
+    align_faculty_profile_id_with_sql,
+    align_student_profile_id_with_sql,
+    bump_mongo_counter,
+)
+from ..media_storage import mark_media_deleted, store_data_url_object
+from ..mongo import get_mongo_db, init_mongo, invalidate_mongo_connection, mirror_event, next_sequence
 from ..otp_delivery import otp_expiry_minutes
 from ..rate_limit import enforce_rate_limit
 from ..workers import dispatch_login_otp
@@ -69,19 +78,40 @@ def _otp_resend_cooldown_seconds() -> int:
 
 
 def _otp_delivery_timeout_seconds() -> int:
-    raw = os.getenv("OTP_DELIVERY_TIMEOUT_SECONDS", "12").strip()
+    raw = os.getenv("OTP_DELIVERY_TIMEOUT_SECONDS", "25").strip()
     try:
         value = int(raw)
     except ValueError:
-        value = 12
+        value = 25
     return max(5, min(30, value))
 
 
 def _mongo_db_or_503():
+    def _acquire_writable_db():
+        db = get_mongo_db(required=True)
+        hello = db.client.admin.command("hello")
+        if not bool(hello.get("isWritablePrimary", False)):
+            raise RuntimeError("MongoDB writable primary is unavailable")
+        return db
+
     try:
-        return get_mongo_db(required=True)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return _acquire_writable_db()
+    except (RuntimeError, PyMongoError) as exc:
+        invalidate_mongo_connection(exc)
+
+    if init_mongo(force=True):
+        try:
+            return _acquire_writable_db()
+        except (RuntimeError, PyMongoError) as exc:
+            invalidate_mongo_connection(exc)
+
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Authentication datastore is temporarily unavailable for writes. "
+            "Please retry in a few seconds."
+        ),
+    )
 
 
 def _request_ip(request: Request | None) -> str | None:
@@ -120,7 +150,11 @@ def _raise_auth_datastore_unavailable(exc: Exception) -> None:
     ) from exc
 
 
-def _ensure_auth_user_id(db, user_doc: dict) -> int:
+def _ensure_auth_user_id(db, user_doc: dict, sql_db: Session | None = None) -> int:
+    aligned = align_auth_user_id_with_sql(db, sql_db, user_doc)
+    if aligned is not None:
+        return aligned
+
     raw_id = user_doc.get("id")
     try:
         user_id = int(raw_id)
@@ -252,6 +286,7 @@ def _upsert_mongo_by_id(db, collection: str, doc_id: int, payload: dict) -> None
         body[f"{field_name}_encrypted"] = encrypt_pii(clean, aad=aad)
         body[field_name] = None
     db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    bump_mongo_counter(db, collection, int(doc_id))
 
 
 def _validate_alternate_email(email: str) -> str:
@@ -274,92 +309,6 @@ def _privileged_mfa_required() -> bool:
 
 def _is_privileged_role(role: models.UserRole) -> bool:
     return role in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}
-
-
-def _privileged_provisioning_tokens() -> set[str]:
-    raw = str(os.getenv("PRIVILEGED_ROLE_PROVISIONING_TOKENS", "") or "").strip()
-    if not raw:
-        fallback = str(os.getenv("PRIVILEGED_ROLE_PROVISIONING_TOKEN", "") or "").strip()
-        return {fallback} if fallback else set()
-    return {token.strip() for token in raw.split(",") if token.strip()}
-
-
-def _verify_invite_token(token: str, invite_hash: str, invite_salt: str) -> bool:
-    try:
-        return verify_otp(token, invite_hash, invite_salt)
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _consume_privileged_role_invite(
-    db,
-    *,
-    email: str,
-    role: models.UserRole,
-    invite_token: str,
-) -> dict[str, Any] | None:
-    token = str(invite_token or "").strip()
-    if not token:
-        return None
-
-    now = datetime.utcnow()
-    candidates = list(
-        db["auth_role_invites"].find(
-            {
-                "email": email,
-                "role": role.value,
-                "used_at": None,
-                "expires_at": {"$gt": now},
-            }
-        )
-    )
-    for invite in candidates:
-        invite_hash = str(invite.get("token_hash") or "")
-        invite_salt = str(invite.get("token_salt") or "")
-        if not invite_hash or not invite_salt:
-            continue
-        if not _verify_invite_token(token, invite_hash, invite_salt):
-            continue
-        db["auth_role_invites"].update_one(
-            {"id": int(invite["id"]), "used_at": None},
-            {"$set": {"used_at": now}},
-        )
-        return invite
-    return None
-
-
-def _enforce_privileged_registration_gate(
-    db,
-    *,
-    email: str,
-    role: models.UserRole,
-    invite_token: str | None,
-    provisioning_token: str | None,
-) -> None:
-    if not _is_privileged_role(role):
-        return
-
-    invite = _consume_privileged_role_invite(
-        db,
-        email=email,
-        role=role,
-        invite_token=str(invite_token or "").strip(),
-    )
-    if invite is not None:
-        return
-
-    provided_token = str(provisioning_token or "").strip()
-    allowed_tokens = _privileged_provisioning_tokens()
-    if provided_token and provided_token in allowed_tokens:
-        return
-
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Privileged role registration requires a valid invite token or provisioning token."
-        ),
-    )
-
 
 def _mfa_setup_ttl_minutes() -> int:
     raw = (os.getenv("MFA_SETUP_TTL_MINUTES", "15") or "").strip()
@@ -406,6 +355,14 @@ def _match_user_totp(secret: str, code: str, user_doc: dict, *, allowed_drift_st
     )
 
 
+def _normalize_otp_candidate(code: str | None) -> str:
+    return re.sub(r"\D+", "", str(code or ""))
+
+
+def _normalize_backup_code_candidate(code: str | None) -> str:
+    return re.sub(r"[\s-]+", "", str(code or "").strip()).upper()
+
+
 def _get_alternate_email(user_doc: dict) -> str | None:
     encrypted = str(user_doc.get("alternate_email_encrypted") or "").strip()
     if encrypted:
@@ -441,14 +398,15 @@ def _issue_backup_codes() -> tuple[list[str], list[str]]:
 
 
 def _verify_and_consume_mfa_code(db, user_doc: dict, mfa_code: str | None) -> bool:
-    code = re.sub(r"\s+", "", str(mfa_code or "").strip())
-    if not code:
+    raw_code = str(mfa_code or "").strip()
+    if not raw_code:
         return False
     secret = str(user_doc.get("mfa_totp_secret") or "").strip()
+    totp_candidate = _normalize_otp_candidate(raw_code)
     if secret:
         matched_delta = _match_user_totp(
             secret,
-            code,
+            totp_candidate,
             user_doc,
             allowed_drift_steps=_mfa_totp_login_drift_steps(),
         )
@@ -463,7 +421,7 @@ def _verify_and_consume_mfa_code(db, user_doc: dict, mfa_code: str | None) -> bo
             return True
 
     backup_hashes = [str(item) for item in (user_doc.get("mfa_backup_code_hashes") or []) if str(item)]
-    backup_candidate = code.upper()
+    backup_candidate = _normalize_backup_code_candidate(raw_code)
     for idx, stored_hash in enumerate(backup_hashes):
         if not verify_backup_code(backup_candidate, stored_hash):
             continue
@@ -487,6 +445,14 @@ def _normalize_registration_number(value: str) -> str:
             detail="registration_number can contain only letters, numbers, slash, and hyphen",
         )
     return normalized
+
+
+def _generate_admin_registration_number(db) -> str:
+    for _ in range(25):
+        candidate = f"{secrets.randbelow(90000) + 10000:05d}"
+        if not db["auth_users"].find_one({"registration_number": candidate}):
+            return candidate
+    raise HTTPException(status_code=500, detail="Unable to generate admin registration number")
 
 
 def _normalize_faculty_identifier(value: str) -> str:
@@ -656,6 +622,15 @@ def _ensure_role_profile_link(
     if not field_name:
         return
 
+    if role == models.UserRole.STUDENT:
+        aligned = align_student_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
+        if aligned is not None:
+            return
+    if role == models.UserRole.FACULTY:
+        aligned = align_faculty_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
+        if aligned is not None:
+            return
+
     if profile_id:
         return
 
@@ -692,13 +667,9 @@ def register_auth_user(
     email = _normalize_email(payload.email)
     _validate_role_email(email, role)
     _validate_password_strength(payload.password)
-    _enforce_privileged_registration_gate(
-        db,
-        email=email,
-        role=role,
-        invite_token=payload.invite_token,
-        provisioning_token=payload.provisioning_token,
-    )
+    admin_photo_data_url = str(payload.profile_photo_data_url or "").strip()
+    if role == models.UserRole.ADMIN and not admin_photo_data_url:
+        raise HTTPException(status_code=400, detail="Admin profile photo is required for registration")
 
     try:
         assess_applicant_risk(
@@ -721,10 +692,21 @@ def register_auth_user(
 
     if db["auth_users"].find_one({"email": email}):
         raise HTTPException(status_code=409, detail="Email already exists")
+    if (
+        sql_db.query(models.AuthUser)
+        .filter(func.lower(models.AuthUser.email) == email)
+        .first()
+    ):
+        raise HTTPException(status_code=409, detail="Email already exists")
 
     now = datetime.utcnow()
+    password_hash = hash_password(payload.password)
     student_id = None
     faculty_id = None
+    user_id = None
+    admin_photo_object_key = None
+    admin_photo_updated_at = None
+    admin_registration_number = None
 
     try:
         if role == models.UserRole.STUDENT:
@@ -878,11 +860,35 @@ def register_auth_user(
                 current_email=email,
             )
 
+        sql_auth_user, _ = upsert_sql_auth_user_record(
+            sql_db,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            student_id=student_id,
+            faculty_id=faculty_id,
+            is_active=True,
+            created_at=now,
+        )
+        user_id = int(sql_auth_user.id)
+
+        if role == models.UserRole.ADMIN:
+            admin_registration_number = _generate_admin_registration_number(db)
+            media = store_data_url_object(
+                sql_db,
+                owner_table="auth_users",
+                owner_id=user_id,
+                media_kind="admin-profile-photo",
+                data_url=admin_photo_data_url,
+            )
+            admin_photo_object_key = media.object_key
+            admin_photo_updated_at = now
+
         user_doc = {
-            "id": _next_unique_id(db, collection="auth_users", sequence_name="auth_users"),
+            "id": user_id,
             "name": payload.name.strip(),
             "email": email,
-            "password_hash": hash_password(payload.password),
+            "password_hash": password_hash,
             "role": role.value,
             "student_id": student_id,
             "faculty_id": faculty_id,
@@ -903,16 +909,36 @@ def register_auth_user(
             "created_at": now,
             "last_login_at": None,
         }
+        if admin_photo_object_key:
+            user_doc["profile_photo_object_key"] = admin_photo_object_key
+            user_doc["profile_photo_updated_at"] = admin_photo_updated_at
+        if admin_registration_number:
+            user_doc["registration_number"] = admin_registration_number
 
-        db["auth_users"].insert_one(user_doc)
+        _upsert_mongo_by_id(db, "auth_users", user_id, user_doc)
         sql_db.commit()
     except DuplicateKeyError as exc:
+        if admin_photo_object_key:
+            try:
+                mark_media_deleted(sql_db, admin_photo_object_key)
+            except Exception:
+                pass
         sql_db.rollback()
         raise HTTPException(status_code=409, detail="Email or linked profile already exists") from exc
     except HTTPException:
+        if admin_photo_object_key:
+            try:
+                mark_media_deleted(sql_db, admin_photo_object_key)
+            except Exception:
+                pass
         sql_db.rollback()
         raise
     except Exception as exc:  # noqa: BLE001
+        if admin_photo_object_key:
+            try:
+                mark_media_deleted(sql_db, admin_photo_object_key)
+            except Exception:
+                pass
         sql_db.rollback()
         raise HTTPException(status_code=500, detail="Failed to register user") from exc
 
@@ -936,8 +962,7 @@ def bootstrap_admin(payload: schemas.AdminBootstrapRequest):
     raise HTTPException(
         status_code=410,
         detail=(
-            "Admin bootstrap is disabled. Use /auth/register and provide a privileged invite/provisioning token "
-            "for admin/faculty/owner roles."
+            "Admin bootstrap is disabled. Use /auth/register for admin/faculty/owner roles."
         ),
     )
 
@@ -1033,7 +1058,7 @@ def request_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
-        user_id = _ensure_auth_user_id(db, user)
+        user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
 
         destination_email = user["email"]
@@ -1046,7 +1071,7 @@ def request_login_otp(
         now = datetime.utcnow()
         cooldown_seconds = _otp_resend_cooldown_seconds()
         last_otp = db["auth_otps"].find_one(
-            {"user_id": user_id, "purpose": "login"},
+            {"user_id": user_id, "purpose": "login", "used_at": None},
             sort=[("created_at", -1)],
         )
         if last_otp:
@@ -1114,7 +1139,7 @@ def request_login_otp(
                 "id": _next_unique_id(db, collection="auth_otp_delivery", sequence_name="auth_otp_delivery"),
                 "user_id": user_id,
                 "destination": destination_email,
-                "channel": delivery.get("channel", "email"),
+                "channel": str(delivery["channel"]),
                 "status": "sent",
                 "created_at": datetime.utcnow(),
             }
@@ -1178,7 +1203,9 @@ def verify_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
-        user_id = _ensure_auth_user_id(db, user)
+        if not bool(user.get("is_active", True)):
+            raise HTTPException(status_code=403, detail="User account is inactive")
+        user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
 
         otp_row = db["auth_otps"].find_one(
@@ -1208,14 +1235,13 @@ def verify_login_otp(
             db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
             raise HTTPException(status_code=400, detail="OTP attempts exceeded")
 
-        if not verify_otp(payload.otp_code, otp_row.get("otp_hash", ""), otp_row.get("otp_salt", "")):
+        otp_candidate = _normalize_otp_candidate(payload.otp_code)
+        if not verify_otp(otp_candidate, otp_row.get("otp_hash", ""), otp_row.get("otp_salt", "")):
             db["auth_otps"].update_one(
                 {"id": otp_row["id"]},
                 {"$inc": {"attempts_count": 1}},
             )
             raise HTTPException(status_code=400, detail="Invalid OTP")
-
-        db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
 
         mfa_required = _privileged_mfa_required() and _is_privileged_role(role)
         mfa_enabled = bool(user.get("mfa_enabled", False))
@@ -1227,6 +1253,13 @@ def verify_login_otp(
                     detail="MFA code is required and must be a valid TOTP or backup code.",
                 )
             mfa_authenticated = True
+
+        consume_result = db["auth_otps"].update_one(
+            {"id": otp_row["id"], "used_at": None},
+            {"$set": {"used_at": now}},
+        )
+        if int(getattr(consume_result, "matched_count", 0)) != 1:
+            raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
         if mfa_authenticated:
@@ -1358,6 +1391,7 @@ def refresh_auth_token(
 def request_password_reset_otp(
     payload: schemas.PasswordResetOTPRequest,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     db = _mongo_db_or_503()
     try:
@@ -1371,7 +1405,67 @@ def request_password_reset_otp(
         )
         user = db["auth_users"].find_one({"email": email})
         if not user:
-            raise HTTPException(status_code=401, detail="Invalid email or registration number")
+            sql_auth_user = (
+                sql_db.query(models.AuthUser).filter(models.AuthUser.email == email).first()
+            )
+            if sql_auth_user:
+                user = {
+                    "id": int(sql_auth_user.id),
+                    "email": str(sql_auth_user.email or "").strip().lower(),
+                    "password_hash": str(sql_auth_user.password_hash or "").strip(),
+                    "role": sql_auth_user.role.value,
+                    "student_id": sql_auth_user.student_id,
+                    "faculty_id": sql_auth_user.faculty_id,
+                    "is_active": bool(sql_auth_user.is_active),
+                    "created_at": sql_auth_user.created_at,
+                    "last_login_at": sql_auth_user.last_login_at,
+                }
+                _upsert_mongo_by_id(db, "auth_users", int(sql_auth_user.id), user)
+            else:
+                sql_student = sql_db.query(models.Student).filter(models.Student.email == email).first()
+                if sql_student and str(sql_student.registration_number or "").strip():
+                    provided_registration = _normalize_registration_number(payload.registration_number)
+                    linked_registration = _normalize_registration_number(str(sql_student.registration_number))
+                    if provided_registration == linked_registration:
+                        generated_password_hash = hash_password(secrets.token_urlsafe(24))
+                        sql_auth_user, _ = upsert_sql_auth_user_record(
+                            sql_db,
+                            email=email,
+                            password_hash=generated_password_hash,
+                            role=models.UserRole.STUDENT,
+                            student_id=int(sql_student.id),
+                            faculty_id=None,
+                            is_active=True,
+                            created_at=datetime.utcnow(),
+                        )
+                        user_id = int(sql_auth_user.id)
+                        user = {
+                            "id": user_id,
+                            "email": email,
+                            "password_hash": generated_password_hash,
+                            "role": models.UserRole.STUDENT.value,
+                            "student_id": int(sql_student.id),
+                            "faculty_id": None,
+                            "alternate_email": None,
+                            "alternate_email_encrypted": None,
+                            "alternate_email_hash": None,
+                            "primary_login_verified": False,
+                            "mfa_enabled": False,
+                            "mfa_totp_secret": None,
+                            "mfa_backup_code_hashes": [],
+                            "mfa_enrolled_at": None,
+                            "mfa_last_verified_at": None,
+                            "mfa_totp_skew_steps": 0,
+                            "mfa_setup_secret": None,
+                            "mfa_setup_backup_code_hashes": [],
+                            "mfa_setup_expires_at": None,
+                            "is_active": True,
+                            "created_at": datetime.utcnow(),
+                            "last_login_at": None,
+                        }
+                        _upsert_mongo_by_id(db, "auth_users", user_id, user)
+                if not user:
+                    raise HTTPException(status_code=401, detail="Invalid email or registration number")
 
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
@@ -1383,25 +1477,69 @@ def request_password_reset_otp(
         if role == models.UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin password reset is disabled")
         _validate_role_email(email, role)
-        user_id = _ensure_auth_user_id(db, user)
+        user_id = _ensure_auth_user_id(db, user, sql_db)
+        if role == models.UserRole.STUDENT:
+            align_student_profile_id_with_sql(db, sql_db, email=email, user_doc=user)
+        elif role == models.UserRole.FACULTY:
+            align_faculty_profile_id_with_sql(db, sql_db, email=email, user_doc=user)
 
-        student_id = user.get("student_id")
-        if not student_id:
-            raise HTTPException(status_code=401, detail="Invalid email or registration number")
-        student = db["students"].find_one({"id": int(student_id)})
-        registration_number = str(student.get("registration_number", "")).strip() if student else ""
-        if not student or not registration_number:
-            raise HTTPException(status_code=401, detail="Invalid email or registration number")
+        if role == models.UserRole.STUDENT:
+            student_id = user.get("student_id")
+            registration_number = ""
+            student = None
+            if student_id:
+                student = db["students"].find_one({"id": int(student_id)})
+                registration_number = str(student.get("registration_number", "")).strip() if student else ""
 
-        provided_registration = _normalize_registration_number(payload.registration_number)
-        linked_registration = _normalize_registration_number(registration_number)
-        if provided_registration != linked_registration:
-            raise HTTPException(status_code=401, detail="Invalid email or registration number")
+            if not registration_number:
+                sql_student = None
+                if student_id:
+                    sql_student = (
+                        sql_db.query(models.Student).filter(models.Student.id == int(student_id)).first()
+                    )
+                if not sql_student:
+                    sql_student = sql_db.query(models.Student).filter(models.Student.email == email).first()
+                if sql_student:
+                    registration_number = str(sql_student.registration_number or "").strip()
+                    if not student_id:
+                        student_id = int(sql_student.id)
+                        db["auth_users"].update_one({"id": user_id}, {"$set": {"student_id": student_id}})
+                        user["student_id"] = student_id
+                    if student_id and registration_number:
+                        _upsert_mongo_by_id(
+                            db,
+                            "students",
+                            int(student_id),
+                            {
+                                "name": sql_student.name,
+                                "email": sql_student.email,
+                                "registration_number": sql_student.registration_number,
+                                "parent_email": sql_student.parent_email,
+                                "section": sql_student.section,
+                                "section_updated_at": sql_student.section_updated_at,
+                                "profile_photo_data_url": sql_student.profile_photo_data_url,
+                                "profile_photo_object_key": sql_student.profile_photo_object_key,
+                                "profile_photo_updated_at": sql_student.profile_photo_updated_at,
+                                "profile_photo_locked_until": sql_student.profile_photo_locked_until,
+                                "department": sql_student.department,
+                                "semester": sql_student.semester,
+                                "created_at": sql_student.created_at,
+                                "source": "password-reset-sync",
+                            },
+                        )
+
+            if not registration_number:
+                raise HTTPException(status_code=401, detail="Invalid email or registration number")
+
+            provided_registration = _normalize_registration_number(payload.registration_number)
+            linked_registration = _normalize_registration_number(registration_number)
+            if provided_registration != linked_registration:
+                raise HTTPException(status_code=401, detail="Invalid email or registration number")
 
         now = datetime.utcnow()
         cooldown_seconds = _otp_resend_cooldown_seconds()
         last_otp = db["auth_otps"].find_one(
-            {"user_id": user_id, "purpose": "password_reset"},
+            {"user_id": user_id, "purpose": "password_reset", "used_at": None},
             sort=[("created_at", -1)],
         )
         if last_otp:
@@ -1481,6 +1619,8 @@ def request_password_reset_otp(
             actor={"user_id": user_id, "email": user["email"], "role": user["role"]},
         )
 
+        sql_db.commit()
+
         return schemas.OTPRequestResponse(
             message="Password reset OTP sent successfully",
             expires_at=expires_at,
@@ -1506,6 +1646,7 @@ def request_password_reset_otp(
 def verify_password_reset_otp(
     payload: schemas.PasswordResetVerifyOTPRequest,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     db = _mongo_db_or_503()
     try:
@@ -1526,7 +1667,7 @@ def verify_password_reset_otp(
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
         if role == models.UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin password reset is disabled")
-        user_id = _ensure_auth_user_id(db, user)
+        user_id = _ensure_auth_user_id(db, user, sql_db)
 
         otp_row = db["auth_otps"].find_one(
             {"user_id": user_id, "purpose": "password_reset", "used_at": None},
@@ -1550,11 +1691,17 @@ def verify_password_reset_otp(
             db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
             raise HTTPException(status_code=400, detail="OTP attempts exceeded")
 
-        if not verify_otp(payload.otp_code, otp_row.get("otp_hash", ""), otp_row.get("otp_salt", "")):
+        otp_candidate = _normalize_otp_candidate(payload.otp_code)
+        if not verify_otp(otp_candidate, otp_row.get("otp_hash", ""), otp_row.get("otp_salt", "")):
             db["auth_otps"].update_one({"id": otp_row["id"]}, {"$inc": {"attempts_count": 1}})
             raise HTTPException(status_code=400, detail="Invalid OTP")
 
-        db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
+        consume_result = db["auth_otps"].update_one(
+            {"id": otp_row["id"], "used_at": None},
+            {"$set": {"used_at": now}},
+        )
+        if int(getattr(consume_result, "matched_count", 0)) != 1:
+            raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
         db["auth_password_resets"].update_many(
             {"user_id": user_id, "used_at": None},
             {"$set": {"used_at": now}},
@@ -1608,6 +1755,7 @@ def verify_password_reset_otp(
 def reset_password(
     payload: schemas.PasswordResetConfirmRequest,
     request: Request,
+    sql_db: Session = Depends(get_db),
 ):
     db = _mongo_db_or_503()
     try:
@@ -1628,7 +1776,7 @@ def reset_password(
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
         if role == models.UserRole.ADMIN:
             raise HTTPException(status_code=403, detail="Admin password reset is disabled")
-        user_id = _ensure_auth_user_id(db, user)
+        user_id = _ensure_auth_user_id(db, user, sql_db)
 
         _validate_password_strength(payload.new_password)
 
@@ -1686,24 +1834,29 @@ def reset_password(
 @router.get("/mfa/status", response_model=schemas.MFAStatusResponse)
 def mfa_status(current_user: CurrentUser = Depends(get_current_user)):
     db = _mongo_db_or_503()
-    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="Invalid user session")
     try:
-        role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
-    except ValueError:
-        role = models.UserRole.STUDENT
-    required = _privileged_mfa_required() and _is_privileged_role(role)
-    setup_expires = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
-    pending_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
-    return schemas.MFAStatusResponse(
-        required=required,
-        enabled=bool(user_doc.get("mfa_enabled", False)),
-        enrolled_at=_coerce_datetime(user_doc.get("mfa_enrolled_at")),
-        backup_codes_remaining=len([x for x in (user_doc.get("mfa_backup_code_hashes") or []) if str(x).strip()]),
-        setup_pending=bool(pending_secret and setup_expires and _to_utc_naive(setup_expires) >= datetime.utcnow()),
-        setup_expires_at=setup_expires,
-    )
+        user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="Invalid user session")
+        try:
+            role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
+        except ValueError:
+            role = models.UserRole.STUDENT
+        required = _privileged_mfa_required() and _is_privileged_role(role)
+        setup_expires = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
+        pending_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
+        return schemas.MFAStatusResponse(
+            required=required,
+            enabled=bool(user_doc.get("mfa_enabled", False)),
+            enrolled_at=_coerce_datetime(user_doc.get("mfa_enrolled_at")),
+            backup_codes_remaining=len([x for x in (user_doc.get("mfa_backup_code_hashes") or []) if str(x).strip()]),
+            setup_pending=bool(pending_secret and setup_expires and _to_utc_naive(setup_expires) >= datetime.utcnow()),
+            setup_expires_at=setup_expires,
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        _raise_auth_datastore_unavailable(exc)
 
 
 @router.post("/mfa/enroll", response_model=schemas.MFAEnrollResponse)
@@ -1711,51 +1864,56 @@ def mfa_enroll(current_user: CurrentUser = Depends(get_current_user)):
     if current_user.role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
         raise HTTPException(status_code=403, detail="MFA enrollment is reserved for privileged roles.")
     db = _mongo_db_or_503()
-    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="Invalid user session")
+    try:
+        user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="Invalid user session")
 
-    secret = generate_totp_secret()
-    backup_codes, backup_hashes = _issue_backup_codes()
-    now = datetime.utcnow()
-    expires_at = now + timedelta(minutes=_mfa_setup_ttl_minutes())
-    db["auth_users"].update_one(
-        {"id": int(current_user.id)},
-        {
-            "$set": {
-                "mfa_setup_secret": secret,
-                "mfa_setup_backup_code_hashes": backup_hashes,
-                "mfa_setup_expires_at": expires_at,
-            }
-        },
-    )
+        secret = generate_totp_secret()
+        backup_codes, backup_hashes = _issue_backup_codes()
+        now = datetime.utcnow()
+        expires_at = now + timedelta(minutes=_mfa_setup_ttl_minutes())
+        db["auth_users"].update_one(
+            {"id": int(current_user.id)},
+            {
+                "$set": {
+                    "mfa_setup_secret": secret,
+                    "mfa_setup_backup_code_hashes": backup_hashes,
+                    "mfa_setup_expires_at": expires_at,
+                }
+            },
+        )
 
-    issuer = quote((os.getenv("MFA_ISSUER_NAME", "LPU Smart Campus") or "LPU Smart Campus").strip(), safe="")
-    label = quote(str(user_doc.get("email", f"user-{current_user.id}")), safe="")
-    otpauth_uri = (
-        f"otpauth://totp/{issuer}:{label}"
-        f"?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
-    )
-    qr_svg_data_uri = generate_totp_qr_svg_data_uri(otpauth_uri)
+        issuer = quote((os.getenv("MFA_ISSUER_NAME", "LPU Smart Campus") or "LPU Smart Campus").strip(), safe="")
+        label = quote(str(user_doc.get("email", f"user-{current_user.id}")), safe="")
+        otpauth_uri = (
+            f"otpauth://totp/{issuer}:{label}"
+            f"?secret={secret}&issuer={issuer}&algorithm=SHA1&digits=6&period=30"
+        )
+        qr_svg_data_uri = generate_totp_qr_svg_data_uri(otpauth_uri)
 
-    mirror_event(
-        "auth.mfa_setup_initiated",
-        {
-            "user_id": int(current_user.id),
-            "email": user_doc.get("email"),
-            "expires_at": expires_at,
-        },
-        actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
-    )
+        mirror_event(
+            "auth.mfa_setup_initiated",
+            {
+                "user_id": int(current_user.id),
+                "email": user_doc.get("email"),
+                "expires_at": expires_at,
+            },
+            actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
+        )
 
-    return schemas.MFAEnrollResponse(
-        message="MFA setup initiated. Add the secret to your authenticator and verify one TOTP code.",
-        secret=secret,
-        otpauth_uri=otpauth_uri,
-        qr_svg_data_uri=qr_svg_data_uri,
-        backup_codes=backup_codes,
-        setup_expires_at=expires_at,
-    )
+        return schemas.MFAEnrollResponse(
+            message="MFA setup initiated. Add the secret to your authenticator and verify one TOTP code.",
+            secret=secret,
+            otpauth_uri=otpauth_uri,
+            qr_svg_data_uri=qr_svg_data_uri,
+            backup_codes=backup_codes,
+            setup_expires_at=expires_at,
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        _raise_auth_datastore_unavailable(exc)
 
 
 @router.post("/mfa/activate", response_model=schemas.MessageResponse)
@@ -1764,67 +1922,76 @@ def mfa_activate(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     db = _mongo_db_or_503()
-    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="Invalid user session")
     try:
-        role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
-    except ValueError:
-        role = models.UserRole.STUDENT
-    if role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
-        raise HTTPException(status_code=403, detail="MFA activation is reserved for privileged roles.")
+        user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="Invalid user session")
+        try:
+            role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
+        except ValueError:
+            role = models.UserRole.STUDENT
+        if role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
+            raise HTTPException(status_code=403, detail="MFA activation is reserved for privileged roles.")
 
-    setup_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
-    setup_expires_at = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
-    if not setup_secret or not setup_expires_at or _to_utc_naive(setup_expires_at) < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="MFA setup has expired. Start enrollment again.")
-    totp_code = re.sub(r"\s+", "", str(payload.totp_code or ""))
-    matched_delta = _match_user_totp(
-        setup_secret,
-        totp_code,
-        user_doc,
-        allowed_drift_steps=_mfa_totp_activation_drift_steps(),
-    )
-    if matched_delta is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid TOTP code. Ensure Microsoft Authenticator account type is time-based "
-                "and your device time is set to automatic. If this persists, wait for a fresh code "
-                "and try again."
-            ),
+        setup_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
+        setup_expires_at = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
+        if not setup_secret or not setup_expires_at or _to_utc_naive(setup_expires_at) < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="MFA setup has expired. Start enrollment again.")
+        totp_code = _normalize_otp_candidate(payload.totp_code)
+        if len(totp_code) != 6:
+            raise HTTPException(status_code=400, detail="Enter a valid 6-digit authenticator TOTP code.")
+        matched_delta = _match_user_totp(
+            setup_secret,
+            totp_code,
+            user_doc,
+            allowed_drift_steps=_mfa_totp_activation_drift_steps(),
         )
+        if matched_delta is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid TOTP code. Ensure Microsoft Authenticator account type is time-based "
+                    "and your device time is set to automatic. If this persists, wait for a fresh code "
+                    "and try again."
+                ),
+            )
 
-    now = datetime.utcnow()
-    backup_hashes = [str(item) for item in (user_doc.get("mfa_setup_backup_code_hashes") or []) if str(item).strip()]
-    db["auth_users"].update_one(
-        {"id": int(current_user.id)},
-        {
-            "$set": {
-                "mfa_enabled": True,
-                "mfa_totp_secret": setup_secret,
-                "mfa_backup_code_hashes": backup_hashes,
-                "mfa_enrolled_at": now,
-                "mfa_last_verified_at": now,
-                "mfa_totp_skew_steps": int(matched_delta),
-                "mfa_setup_secret": None,
-                "mfa_setup_backup_code_hashes": [],
-                "mfa_setup_expires_at": None,
-            }
-        },
-    )
-    if current_user.session_id:
-        db["auth_sessions"].update_one(
-            {"sid": str(current_user.session_id), "user_id": int(current_user.id)},
-            {"$set": {"mfa_verified": True, "mfa_verified_at": now, "last_seen_at": now}},
+        now = datetime.utcnow()
+        backup_hashes = [str(item) for item in (user_doc.get("mfa_setup_backup_code_hashes") or []) if str(item).strip()]
+        db["auth_users"].update_one(
+            {"id": int(current_user.id)},
+            {
+                "$set": {
+                    "mfa_enabled": True,
+                    "mfa_totp_secret": setup_secret,
+                    "mfa_backup_code_hashes": backup_hashes,
+                    "mfa_enrolled_at": now,
+                    "mfa_last_verified_at": now,
+                    "mfa_totp_skew_steps": int(matched_delta),
+                    "mfa_setup_secret": None,
+                    "mfa_setup_backup_code_hashes": [],
+                    "mfa_setup_expires_at": None,
+                }
+            },
         )
+        if current_user.session_id:
+            db["auth_sessions"].update_one(
+                {"sid": str(current_user.session_id), "user_id": int(current_user.id)},
+                {"$set": {"mfa_verified": True, "mfa_verified_at": now, "last_seen_at": now}},
+            )
 
-    mirror_event(
-        "auth.mfa_enabled",
-        {"user_id": int(current_user.id), "email": user_doc.get("email"), "enabled_at": now},
-        actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
-    )
-    return schemas.MessageResponse(message="MFA has been activated. Use a fresh login with OTP + TOTP for protected routes.")
+        mirror_event(
+            "auth.mfa_enabled",
+            {"user_id": int(current_user.id), "email": user_doc.get("email"), "enabled_at": now},
+            actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
+        )
+        return schemas.MessageResponse(
+            message="MFA has been activated. Use a fresh login with OTP + TOTP for protected routes."
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        _raise_auth_datastore_unavailable(exc)
 
 
 @router.post("/mfa/backup-codes/rotate", response_model=schemas.MFABackupCodeRotateResponse)
@@ -1833,49 +2000,56 @@ def mfa_rotate_backup_codes(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     db = _mongo_db_or_503()
-    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
-    if not user_doc:
-        raise HTTPException(status_code=401, detail="Invalid user session")
-    if not bool(user_doc.get("mfa_enabled", False)):
-        raise HTTPException(status_code=400, detail="MFA is not enabled for this account.")
-    secret = str(user_doc.get("mfa_totp_secret") or "").strip()
-    totp_code = re.sub(r"\s+", "", str(payload.totp_code or ""))
-    matched_delta = _match_user_totp(
-        secret,
-        totp_code,
-        user_doc,
-        allowed_drift_steps=_mfa_totp_login_drift_steps(),
-    )
-    if not secret or matched_delta is None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid TOTP code. Ensure authenticator account type is time-based "
-                "and your device time is set to automatic."
-            ),
+    try:
+        user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+        if not user_doc:
+            raise HTTPException(status_code=401, detail="Invalid user session")
+        if not bool(user_doc.get("mfa_enabled", False)):
+            raise HTTPException(status_code=400, detail="MFA is not enabled for this account.")
+        secret = str(user_doc.get("mfa_totp_secret") or "").strip()
+        totp_code = _normalize_otp_candidate(payload.totp_code)
+        if len(totp_code) != 6:
+            raise HTTPException(status_code=400, detail="Enter a valid 6-digit authenticator TOTP code.")
+        matched_delta = _match_user_totp(
+            secret,
+            totp_code,
+            user_doc,
+            allowed_drift_steps=_mfa_totp_login_drift_steps(),
         )
+        if not secret or matched_delta is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Invalid TOTP code. Ensure authenticator account type is time-based "
+                    "and your device time is set to automatic."
+                ),
+            )
 
-    backup_codes, backup_hashes = _issue_backup_codes()
-    now = datetime.utcnow()
-    db["auth_users"].update_one(
-        {"id": int(current_user.id)},
-        {
-            "$set": {
-                "mfa_backup_code_hashes": backup_hashes,
-                "mfa_last_verified_at": now,
-                "mfa_totp_skew_steps": int(matched_delta),
-            }
-        },
-    )
-    mirror_event(
-        "auth.mfa_backup_codes_rotated",
-        {"user_id": int(current_user.id), "email": user_doc.get("email")},
-        actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
-    )
-    return schemas.MFABackupCodeRotateResponse(
-        message="Backup codes rotated successfully.",
-        backup_codes=backup_codes,
-    )
+        backup_codes, backup_hashes = _issue_backup_codes()
+        now = datetime.utcnow()
+        db["auth_users"].update_one(
+            {"id": int(current_user.id)},
+            {
+                "$set": {
+                    "mfa_backup_code_hashes": backup_hashes,
+                    "mfa_last_verified_at": now,
+                    "mfa_totp_skew_steps": int(matched_delta),
+                }
+            },
+        )
+        mirror_event(
+            "auth.mfa_backup_codes_rotated",
+            {"user_id": int(current_user.id), "email": user_doc.get("email")},
+            actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
+        )
+        return schemas.MFABackupCodeRotateResponse(
+            message="Backup codes rotated successfully.",
+            backup_codes=backup_codes,
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        _raise_auth_datastore_unavailable(exc)
 
 
 @router.post("/logout", response_model=schemas.MessageResponse)

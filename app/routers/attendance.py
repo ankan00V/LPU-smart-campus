@@ -4,12 +4,14 @@ import logging
 import math
 import os
 import re
+from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
+from typing import TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pymongo.errors import DuplicateKeyError
 from sqlalchemy import or_
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -40,11 +42,16 @@ from ..media_storage import (
 )
 from ..mongo import get_mongo_db, mirror_document
 from ..realtime_bus import publish_domain_event
-from ..saarthi_service import materialize_saarthi_attendance
+from ..saarthi_service import (
+    is_saarthi_course,
+    materialize_saarthi_attendance,
+    should_materialize_saarthi_attendance,
+)
 from ..workers import enqueue_face_reverification, enqueue_recompute
 
 router = APIRouter(prefix="/attendance", tags=["Attendance Management"])
 logger = logging.getLogger(__name__)
+_RowT = TypeVar("_RowT")
 
 PROFILE_PHOTO_LOCK_DAYS = 14
 PROFILE_PHOTO_LOCK_MESSAGE = "Profile photo can only be changed once every 14 days. Please try again later."
@@ -80,6 +87,114 @@ def _academic_start_date() -> date:
         return date.fromisoformat(raw)
     except ValueError:
         return date.fromisoformat(ACADEMIC_START_DATE_DEFAULT)
+
+
+def _student_saarthi_materialization_through_date(
+    db: Session,
+    *,
+    student_id: int,
+    academic_start: date,
+    today: date,
+) -> date:
+    bundle_course = (
+        db.query(models.Course.id)
+        .filter(models.Course.code == "CON111")
+        .first()
+    )
+    if bundle_course is None:
+        return today
+
+    course_id = int(bundle_course[0])
+    evidence_dates: list[date] = []
+
+    session_rows = (
+        db.query(models.SaarthiSession.mandatory_date)
+        .filter(
+            models.SaarthiSession.student_id == int(student_id),
+            models.SaarthiSession.course_id == course_id,
+            models.SaarthiSession.mandatory_date >= academic_start,
+            models.SaarthiSession.mandatory_date <= today,
+        )
+        .all()
+    )
+    evidence_dates.extend(
+        row[0]
+        for row in session_rows
+        if row and row[0] is not None
+    )
+
+    attendance_rows = (
+        db.query(models.AttendanceRecord.attendance_date)
+        .filter(
+            models.AttendanceRecord.student_id == int(student_id),
+            models.AttendanceRecord.course_id == course_id,
+            models.AttendanceRecord.attendance_date >= academic_start,
+            models.AttendanceRecord.attendance_date <= today,
+        )
+        .all()
+    )
+    evidence_dates.extend(
+        row[0]
+        for row in attendance_rows
+        if row and row[0] is not None
+    )
+
+    if evidence_dates:
+        return min(today, max(evidence_dates))
+    return today
+
+
+def _enrolled_student_ids_for_course(db: Session, *, course_id: int) -> list[int]:
+    return [
+        int(row[0])
+        for row in (
+            db.query(models.Enrollment.student_id)
+            .filter(models.Enrollment.course_id == int(course_id))
+            .all()
+        )
+        if row and row[0] is not None
+    ]
+
+
+def _saarthi_missed_student_ids(
+    db: Session,
+    *,
+    course_id: int,
+    attendance_date: date,
+    enrolled_student_ids: list[int] | None = None,
+) -> set[int]:
+    if attendance_date.weekday() != 6:  # Sunday
+        return set()
+    if attendance_date >= datetime.now().date():
+        return set()
+
+    normalized_enrolled_ids = {
+        int(student_id)
+        for student_id in (
+            enrolled_student_ids
+            if enrolled_student_ids is not None
+            else _enrolled_student_ids_for_course(db, course_id=int(course_id))
+        )
+        if int(student_id) > 0
+    }
+    if not normalized_enrolled_ids:
+        return set()
+
+    credited_ids = {
+        int(row[0])
+        for row in (
+            db.query(models.SaarthiSession.student_id)
+            .filter(
+                models.SaarthiSession.course_id == int(course_id),
+                models.SaarthiSession.mandatory_date == attendance_date,
+                models.SaarthiSession.attendance_marked_at.isnot(None),
+                models.SaarthiSession.student_id.in_(sorted(normalized_enrolled_ids)),
+            )
+            .all()
+        )
+        if row and row[0] is not None
+    }
+    return normalized_enrolled_ids - credited_ids
 
 
 def _parse_recovery_action_metadata(raw_value: str | None) -> dict[str, object]:
@@ -241,9 +356,15 @@ def _parse_remedial_sections(raw_value: str | None) -> list[str]:
     if not isinstance(parsed, list):
         return []
     out: list[str] = []
+    seen: set[str] = set()
     for item in parsed:
-        token = re.sub(r"\s+", "", str(item or "").strip().upper())
-        if token:
+        normalized = re.sub(r"\s+", "", str(item or "").strip().upper())
+        if not normalized:
+            continue
+        for token in normalized.split(","):
+            if not token or token in seen:
+                continue
+            seen.add(token)
             out.append(token)
     return out
 
@@ -724,6 +845,26 @@ def _parse_face_template(raw_value: str | None) -> dict | None:
     embeddings = parsed.get("embeddings")
     if not isinstance(embeddings, list) or not embeddings:
         return None
+    normalized_embeddings: list[list[float]] = []
+    for item in embeddings:
+        if not isinstance(item, list) or not item:
+            continue
+        try:
+            normalized = [float(value) for value in item]
+        except (TypeError, ValueError):
+            continue
+        if all(math.isfinite(value) for value in normalized):
+            normalized_embeddings.append(normalized)
+    if not normalized_embeddings:
+        return None
+    parsed["embeddings"] = normalized_embeddings
+    signature = parsed.get("signature")
+    if isinstance(signature, list) and signature:
+        try:
+            normalized_signature = [float(value) for value in signature]
+        except (TypeError, ValueError):
+            normalized_signature = []
+        parsed["signature"] = normalized_signature if all(math.isfinite(value) for value in normalized_signature) else []
     return parsed
 
 
@@ -1388,6 +1529,32 @@ def _student_enrollment_status_out(student: models.Student) -> schemas.StudentEn
     )
 
 
+def _get_or_create_sql_row(
+    db: Session,
+    *,
+    lookup: Callable[[], _RowT | None],
+    factory: Callable[[], _RowT],
+) -> tuple[_RowT, bool]:
+    existing = lookup()
+    if existing is not None:
+        return existing, False
+
+    savepoint = db.begin_nested()
+    instance = factory()
+    db.add(instance)
+    try:
+        db.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        existing = lookup()
+        if existing is None:
+            raise
+        return existing, False
+
+    savepoint.commit()
+    return instance, True
+
+
 def _ensure_default_timetable_for_student(db: Session, student: models.Student) -> dict[str, int]:
     created = {
         "faculty": 0,
@@ -1410,15 +1577,16 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
     allowed_weekdays_by_course: dict[int, set[int]] = {}
 
     for item in DEFAULT_TIMETABLE_BLUEPRINT:
-        faculty = db.query(models.Faculty).filter(models.Faculty.email == item["faculty_email"]).first()
-        if not faculty:
-            faculty = models.Faculty(
+        faculty, faculty_created = _get_or_create_sql_row(
+            db,
+            lookup=lambda: db.query(models.Faculty).filter(models.Faculty.email == item["faculty_email"]).first(),
+            factory=lambda: models.Faculty(
                 name=item["faculty_name"],
                 email=item["faculty_email"],
                 department=student.department,
-            )
-            db.add(faculty)
-            db.flush()
+            ),
+        )
+        if faculty_created:
             created["faculty"] += 1
         _upsert_mongo_by_id(
             "faculty",
@@ -1443,15 +1611,16 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             },
         )
 
-        course = db.query(models.Course).filter(models.Course.code == item["course_code"]).first()
-        if not course:
-            course = models.Course(
+        course, course_created = _get_or_create_sql_row(
+            db,
+            lookup=lambda: db.query(models.Course).filter(models.Course.code == item["course_code"]).first(),
+            factory=lambda: models.Course(
                 code=item["course_code"],
                 title=item["course_title"],
                 faculty_id=faculty.id,
-            )
-            db.add(course)
-            db.flush()
+            ),
+        )
+        if course_created:
             created["courses"] += 1
         else:
             course_changed = False
@@ -1475,22 +1644,23 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
         )
         default_course_ids.add(course.id)
 
-        classroom = (
-            db.query(models.Classroom)
-            .filter(
-                models.Classroom.block == item["classroom_block"],
-                models.Classroom.room_number == item["classroom_room"],
-            )
-            .first()
-        )
-        if not classroom:
-            classroom = models.Classroom(
+        classroom, classroom_created = _get_or_create_sql_row(
+            db,
+            lookup=lambda: (
+                db.query(models.Classroom)
+                .filter(
+                    models.Classroom.block == item["classroom_block"],
+                    models.Classroom.room_number == item["classroom_room"],
+                )
+                .first()
+            ),
+            factory=lambda: models.Classroom(
                 block=item["classroom_block"],
                 room_number=item["classroom_room"],
                 capacity=70,
-            )
-            db.add(classroom)
-            db.flush()
+            ),
+        )
+        if classroom_created:
             created["classrooms"] += 1
         _upsert_mongo_by_id(
             "classrooms",
@@ -1509,9 +1679,15 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             .first()
         )
         if not assignment:
-            assignment = models.CourseClassroom(course_id=course.id, classroom_id=classroom.id)
-            db.add(assignment)
-            db.flush()
+            assignment, _ = _get_or_create_sql_row(
+                db,
+                lookup=lambda: (
+                    db.query(models.CourseClassroom)
+                    .filter(models.CourseClassroom.course_id == course.id)
+                    .first()
+                ),
+                factory=lambda: models.CourseClassroom(course_id=course.id, classroom_id=classroom.id),
+            )
         else:
             if assignment.classroom_id != classroom.id:
                 assignment.classroom_id = classroom.id
@@ -1538,17 +1714,30 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             .first()
         )
         if not schedule:
-            schedule = models.ClassSchedule(
-                course_id=course.id,
-                faculty_id=faculty.id,
-                weekday=item["weekday"],
-                start_time=start_t,
-                end_time=end_t,
-                classroom_label=item["classroom_label"],
-                is_active=True,
+            schedule, schedule_created = _get_or_create_sql_row(
+                db,
+                lookup=lambda: (
+                    db.query(models.ClassSchedule)
+                    .filter(
+                        models.ClassSchedule.course_id == course.id,
+                        models.ClassSchedule.weekday == item["weekday"],
+                        models.ClassSchedule.start_time == start_t,
+                    )
+                    .first()
+                ),
+                factory=lambda: models.ClassSchedule(
+                    course_id=course.id,
+                    faculty_id=faculty.id,
+                    weekday=item["weekday"],
+                    start_time=start_t,
+                    end_time=end_t,
+                    classroom_label=item["classroom_label"],
+                    is_active=True,
+                ),
             )
-            db.add(schedule)
-            db.flush()
+        else:
+            schedule_created = False
+        if schedule_created:
             created["schedules"] += 1
         else:
             schedule_changed = False
@@ -1593,9 +1782,21 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
             .first()
         )
         if not enrollment:
-            enrollment = models.Enrollment(student_id=student.id, course_id=course.id)
-            db.add(enrollment)
-            db.flush()
+            enrollment, enrollment_created = _get_or_create_sql_row(
+                db,
+                lookup=lambda: (
+                    db.query(models.Enrollment)
+                    .filter(
+                        models.Enrollment.student_id == student.id,
+                        models.Enrollment.course_id == course.id,
+                    )
+                    .first()
+                ),
+                factory=lambda: models.Enrollment(student_id=student.id, course_id=course.id),
+            )
+        else:
+            enrollment_created = False
+        if enrollment_created:
             created["enrollments"] += 1
         _upsert_mongo_by_id(
             "enrollments",
@@ -2871,13 +3072,25 @@ def get_student_attendance_history(
     academic_start = _academic_start_date()
     now_dt = datetime.now()
     today = now_dt.date()
-    materialize_saarthi_attendance(
+    saarthi_today = _student_saarthi_materialization_through_date(
         db,
         student_id=int(current_user.student_id),
         academic_start=academic_start,
         today=today,
     )
-    db.commit()
+    if should_materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=academic_start,
+        today=saarthi_today,
+    ):
+        materialize_saarthi_attendance(
+            db,
+            student_id=int(current_user.student_id),
+            academic_start=academic_start,
+            today=saarthi_today,
+        )
+        db.commit()
     fetch_limit = min(365, max(limit * 3, 80))
     submissions = (
         db.query(models.AttendanceSubmission)
@@ -3065,13 +3278,25 @@ def get_student_attendance_aggregate(
     academic_start = _academic_start_date()
     now_dt = datetime.now()
     today = now_dt.date()
-    materialize_saarthi_attendance(
+    saarthi_today = _student_saarthi_materialization_through_date(
         db,
         student_id=int(current_user.student_id),
         academic_start=academic_start,
         today=today,
     )
-    db.commit()
+    if should_materialize_saarthi_attendance(
+        db,
+        student_id=int(current_user.student_id),
+        academic_start=academic_start,
+        today=saarthi_today,
+    ):
+        materialize_saarthi_attendance(
+            db,
+            student_id=int(current_user.student_id),
+            academic_start=academic_start,
+            today=saarthi_today,
+        )
+        db.commit()
 
     enrollments = (
         db.query(models.Enrollment)
@@ -3185,6 +3410,7 @@ def get_student_attendance_aggregate(
         .all()
     )
     delivered_record_dates: dict[int, set[date]] = {}
+    delivered_record_fallback_counts: dict[int, int] = {}
     attended_record_fallback_counts: dict[int, int] = {}
     delivered_schedule_ids_cache: dict[tuple[int, date], set[int]] = {}
 
@@ -3215,6 +3441,11 @@ def get_student_attendance_aggregate(
         if not delivered_schedule_ids_for_day and not submission_schedule_ids:
             fallback_slots = 1
 
+        if fallback_slots > 0:
+            delivered_record_fallback_counts[normalized_course_id] = (
+                delivered_record_fallback_counts.get(normalized_course_id, 0) + fallback_slots
+            )
+
         if status_value == models.AttendanceStatus.PRESENT and fallback_slots > 0:
             attended_record_fallback_counts[normalized_course_id] = (
                 attended_record_fallback_counts.get(normalized_course_id, 0) + fallback_slots
@@ -3238,7 +3469,12 @@ def get_student_attendance_aggregate(
         )
         delivered_by_submissions = len(delivered_submission_keys.get(course_id, set()))
         delivered_by_records = len(delivered_record_dates.get(course_id, set()))
-        delivered = max(delivered_by_schedule, delivered_by_submissions, delivered_by_records)
+        delivered_by_record_fallback = delivered_record_fallback_counts.get(course_id, 0)
+        delivered_from_evidence = delivered_by_submissions + delivered_by_record_fallback
+        if delivered_from_evidence > 0:
+            delivered = max(delivered_from_evidence, delivered_by_records)
+        else:
+            delivered = max(delivered_by_schedule, delivered_by_records)
         if delivered <= 0:
             continue
 
@@ -3603,6 +3839,30 @@ def create_student_rectification_request(
     db.refresh(request)
 
     _sync_rectification_request_to_mongo(request, source=source)
+    publish_domain_event(
+        "attendance.rectification.requested",
+        payload={
+            "request_id": int(request.id),
+            "student_id": int(request.student_id),
+            "faculty_id": int(request.faculty_id or 0),
+            "schedule_id": int(request.schedule_id),
+            "course_id": int(request.course_id),
+            "class_date": request.class_date.isoformat(),
+            "status": request.status.value,
+        },
+        scopes={
+            f"student:{int(request.student_id)}",
+            f"faculty:{int(request.faculty_id or 0)}",
+            "role:admin",
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "student_id": int(current_user.student_id or 0),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
     faculty = db.get(models.Faculty, request.faculty_id)
 
     return _student_rectification_out(
@@ -3612,12 +3872,11 @@ def create_student_rectification_request(
     )
 
 
-def _resolve_student_schedule_context(
+def _resolve_student_face_context(
     *,
     db: Session,
     current_user: models.AuthUser,
-    schedule_id: int,
-) -> tuple[models.Student, models.ClassSchedule, models.Course]:
+) -> models.Student:
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
@@ -3632,6 +3891,16 @@ def _resolve_student_schedule_context(
         raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
     if not student.enrollment_video_template_json:
         raise HTTPException(status_code=400, detail="Complete one-time enrollment video before marking attendance")
+    return student
+
+
+def _resolve_student_schedule_context(
+    *,
+    db: Session,
+    current_user: models.AuthUser,
+    schedule_id: int,
+) -> tuple[models.Student, models.ClassSchedule, models.Course]:
+    student = _resolve_student_face_context(db=db, current_user=current_user)
 
     schedule = db.get(models.ClassSchedule, schedule_id)
     if not schedule or not schedule.is_active:
@@ -3703,7 +3972,7 @@ def _verify_student_face_payload(
     *,
     db: Session,
     student: models.Student,
-    schedule: models.ClassSchedule,
+    schedule: models.ClassSchedule | None,
     payload: schemas.RealtimeAttendanceMarkRequest,
 ) -> tuple[str, float, str, models.AttendanceSubmissionStatus, str]:
     selfie_frames = payload.selfie_frames_data_urls or []
@@ -3723,11 +3992,10 @@ def _verify_student_face_payload(
 
     enrollment_template = _parse_face_template(student.enrollment_video_template_json)
     profile_template = _parse_face_template(student.profile_face_template_json)
-    combined_template = _merge_face_templates(enrollment_template, profile_template)
     profile_photo_data_url = _student_profile_photo_data_url(db, student)
     if not profile_photo_data_url:
         raise HTTPException(status_code=400, detail="Upload profile photo before marking attendance")
-    if combined_template is None:
+    if enrollment_template is None:
         raise HTTPException(
             status_code=400,
             detail="Complete one-time enrollment video before marking attendance",
@@ -3741,30 +4009,62 @@ def _verify_student_face_payload(
             profile_template = build_profile_face_template(profile_photo_data_url)
         except ValueError:
             profile_template = None
-        combined_template = _merge_face_templates(enrollment_template, profile_template)
+    if profile_template is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload a valid profile face photo before marking attendance",
+        )
 
-    # Backend OpenCV verification is mandatory for attendance marking.
-    opencv_verdict = verify_face_sequence_opencv(
-        profile_photo_data_url,
-        selfie_frames,
-        subject_label=student.email,
-        profile_template=combined_template,
+    def _run_reference_verification(template: dict, reference_name: str) -> tuple[dict, bool, float, str, str]:
+        verdict = verify_face_sequence_opencv(
+            profile_photo_data_url,
+            selfie_frames,
+            subject_label=f"{student.email}:{reference_name}",
+            profile_template=template,
+            require_dnn=True,
+        )
+        if not bool(verdict.get("available")):
+            reason = str(verdict.get("reason", "OpenCV verification unavailable"))
+            raise HTTPException(status_code=503, detail=f"OpenCV verification unavailable: {reason}")
+        confidence = max(0.0, min(1.0, float(verdict.get("confidence", 0.0))))
+        engine = str(verdict.get("engine") or "opencv-dnn-yunet-sface-v1")
+        reason = str(verdict.get("reason") or "Face not recognized")
+        matched = bool(verdict.get("match")) and confidence >= FACE_MATCH_PASS_THRESHOLD
+        return verdict, matched, confidence, engine, reason
+
+    enrollment_verdict, enrollment_match, enrollment_confidence, enrollment_engine, enrollment_reason = (
+        _run_reference_verification(enrollment_template, "enrollment")
     )
-    if not bool(opencv_verdict.get("available")):
-        reason = str(opencv_verdict.get("reason", "OpenCV verification unavailable"))
-        raise HTTPException(status_code=503, detail=f"OpenCV verification unavailable: {reason}")
+    profile_verdict, profile_match, profile_confidence, profile_engine, profile_reason = _run_reference_verification(
+        profile_template,
+        "profile",
+    )
 
-    final_confidence = max(0.0, min(1.0, float(opencv_verdict.get("confidence", 0.0))))
-    final_engine = str(opencv_verdict.get("engine") or "opencv-embedding")
-    final_reason = str(opencv_verdict.get("reason") or "Face not recognized")
-    final_match = bool(opencv_verdict.get("match")) and final_confidence >= FACE_MATCH_PASS_THRESHOLD
+    final_match = bool(enrollment_match and profile_match)
+    final_confidence = min(enrollment_confidence, profile_confidence)
+    final_engine = enrollment_engine if enrollment_engine == profile_engine else f"{enrollment_engine}+{profile_engine}"
+    if final_match:
+        final_reason = (
+            "Verified against enrollment and profile templates "
+            f"(enrollment={enrollment_confidence:.3f}, profile={profile_confidence:.3f})."
+        )
+    elif not enrollment_match and not profile_match:
+        final_reason = (
+            f"Enrollment mismatch: {enrollment_reason} | "
+            f"Profile mismatch: {profile_reason}"
+        )
+    elif not enrollment_match:
+        final_reason = f"Enrollment mismatch: {enrollment_reason}"
+    else:
+        final_reason = f"Profile mismatch: {profile_reason}"
 
     ai_verdict = _client_ai_verdict(payload)
+    schedule_log_value = int(schedule.id) if schedule is not None else 0
     if ai_verdict:
         logger.info(
             "attendance_client_ai_observation student=%s schedule_id=%s ai_match=%s ai_confidence=%.4f ai_reason=%s",
             student.email,
-            schedule.id,
+            schedule_log_value,
             bool(ai_verdict.get("match")),
             float(ai_verdict.get("confidence", 0.0)),
             str(ai_verdict.get("reason") or ""),
@@ -3775,18 +4075,31 @@ def _verify_student_face_payload(
         if final_match and final_confidence >= FACE_MATCH_PASS_THRESHOLD
         else models.AttendanceSubmissionStatus.REJECTED
     )
-    liveness_meta = opencv_verdict.get("liveness", {})
-    liveness_ok = bool((liveness_meta or {}).get("ok"))
-    required_frames = int(opencv_verdict.get("required_consecutive_frames", FACE_MULTI_FRAME_MIN))
-    matched_frames = int(opencv_verdict.get("consecutive_frames_matched", 0))
-    accepted_frames = int(opencv_verdict.get("accepted_frames", 0))
-    total_frames = int(opencv_verdict.get("total_frames", len(selfie_frames)))
+    enrollment_liveness_ok = bool((enrollment_verdict.get("liveness") or {}).get("ok"))
+    profile_liveness_ok = bool((profile_verdict.get("liveness") or {}).get("ok"))
+    liveness_ok = bool(enrollment_liveness_ok and profile_liveness_ok)
+    required_frames = max(
+        int(enrollment_verdict.get("required_consecutive_frames", FACE_MULTI_FRAME_MIN)),
+        int(profile_verdict.get("required_consecutive_frames", FACE_MULTI_FRAME_MIN)),
+    )
+    matched_frames = min(
+        int(enrollment_verdict.get("consecutive_frames_matched", 0)),
+        int(profile_verdict.get("consecutive_frames_matched", 0)),
+    )
+    accepted_frames = min(
+        int(enrollment_verdict.get("accepted_frames", 0)),
+        int(profile_verdict.get("accepted_frames", 0)),
+    )
+    total_frames = max(
+        int(enrollment_verdict.get("total_frames", len(selfie_frames))),
+        int(profile_verdict.get("total_frames", len(selfie_frames))),
+    )
     logger.info(
         "attendance_security_audit ts=%s student=%s schedule_id=%s confidence=%.4f threshold=%.2f decision=%s "
         "engine=%s streak=%s/%s accepted=%s/%s liveness=%s reason=%s",
         datetime.utcnow().isoformat(),
         student.email,
-        schedule.id,
+        schedule_log_value,
         final_confidence,
         FACE_MATCH_PASS_THRESHOLD,
         status_value.value,
@@ -3839,20 +4152,31 @@ def mark_realtime_attendance(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    student, schedule, course = _resolve_student_schedule_context(
-        db=db,
-        current_user=current_user,
-        schedule_id=payload.schedule_id,
-    )
+    if payload.demo_mode:
+        student = _resolve_student_face_context(
+            db=db,
+            current_user=current_user,
+        )
+        schedule = None
+        today = date.today()
+    else:
+        if not payload.schedule_id:
+            raise HTTPException(status_code=400, detail="schedule_id is required")
+        student, schedule, course = _resolve_student_schedule_context(
+            db=db,
+            current_user=current_user,
+            schedule_id=int(payload.schedule_id),
+        )
 
-    today = date.today()
-    if schedule.weekday != today.weekday():
-        raise HTTPException(status_code=400, detail="This class is not scheduled for today")
+        today = date.today()
+        if schedule.weekday != today.weekday():
+            raise HTTPException(status_code=400, detail="This class is not scheduled for today")
 
-    now_dt = datetime.now()
-    is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
-    if not is_open_now:
-        raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
+        now_dt = datetime.now()
+        is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
+        if not is_open_now:
+            raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
+
     primary_selfie, final_confidence, final_engine, status_value, final_reason = _verify_student_face_payload(
         db=db,
         student=student,
@@ -3860,6 +4184,24 @@ def mark_realtime_attendance(
         payload=payload,
     )
     final_match = status_value == models.AttendanceSubmissionStatus.VERIFIED
+
+    if payload.demo_mode:
+        message = (
+            "Demo face verification succeeded. Demo mode did not save any attendance data."
+            if status_value == models.AttendanceSubmissionStatus.VERIFIED
+            else f"{_public_rejection_message(final_reason, final_confidence)} Demo mode did not save any attendance data."
+        )
+        return schemas.RealtimeAttendanceMarkResponse(
+            submission_id=0,
+            status=status_value,
+            requires_faculty_review=False,
+            message=message,
+            demo_mode=True,
+            persistence_skipped=True,
+            verification_engine=final_engine,
+            verification_confidence=final_confidence,
+            verification_reason=final_reason,
+        )
 
     submission = (
         db.query(models.AttendanceSubmission)
@@ -3905,6 +4247,8 @@ def mark_realtime_attendance(
                 status=submission.status,
                 requires_faculty_review=False,
                 message="Attendance already verified for this class",
+                demo_mode=False,
+                persistence_skipped=False,
                 verification_engine=submission.ai_model or "previous-verification",
                 verification_confidence=float(submission.ai_confidence or 0.0),
                 verification_reason=submission.ai_reason,
@@ -4019,6 +4363,8 @@ def mark_realtime_attendance(
             if status_value == models.AttendanceSubmissionStatus.VERIFIED
             else _public_rejection_message(final_reason, final_confidence)
         ),
+        demo_mode=False,
+        persistence_skipped=False,
         verification_engine=final_engine,
         verification_confidence=final_confidence,
         verification_reason=final_reason,
@@ -4613,8 +4959,22 @@ def mark_attendance_bulk(
 
     db.flush()
 
+    notification_student_ids = list(absent_student_ids)
+    if is_saarthi_course(course) and payload.attendance_date.weekday() == 6:
+        missed_student_ids = _saarthi_missed_student_ids(
+            db,
+            course_id=int(course.id),
+            attendance_date=payload.attendance_date,
+            enrolled_student_ids=[int(item.student_id) for item in enrollments],
+        )
+        notification_student_ids = [
+            int(student_id)
+            for student_id in absent_student_ids
+            if int(student_id) in missed_student_ids
+        ]
+
     notifications_sent = 0
-    for student_id in absent_student_ids:
+    for student_id in notification_student_ids:
         student = db.get(models.Student, student_id)
         if not student:
             continue
@@ -4699,6 +5059,21 @@ def get_absentees(
     db: Session = Depends(get_db),
     _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
+    course = db.get(models.Course, int(course_id))
+    if course is not None and is_saarthi_course(course) and attendance_date.weekday() == 6:
+        missed_student_ids = _saarthi_missed_student_ids(
+            db,
+            course_id=int(course.id),
+            attendance_date=attendance_date,
+        )
+        if not missed_student_ids:
+            return []
+        return (
+            db.query(models.Student)
+            .filter(models.Student.id.in_(sorted(missed_student_ids)))
+            .all()
+        )
+
     records = (
         db.query(models.AttendanceRecord)
         .filter(

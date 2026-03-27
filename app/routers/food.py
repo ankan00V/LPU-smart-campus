@@ -9,36 +9,118 @@ import secrets
 import razorpay
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time
-from threading import Lock
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from pymongo.errors import DuplicateKeyError
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..auth_utils import CurrentUser, require_roles
 from ..database import get_db
+from ..enterprise_controls import resolve_secret
 from ..food_bootstrap import bootstrap_food_hall_catalog
-from ..mongo import get_mongo_db, mirror_document, mirror_event
+from ..mongo import get_mongo_db, mirror_document as _mirror_document, mirror_event
+from ..rate_limit import rate_limit_headers
+from ..redis_client import rate_limit_hit
+from ..realtime_bus import publish_domain_event
 
 router = APIRouter(prefix="/food", tags=["Food Pre-Ordering"])
 logger = logging.getLogger(__name__)
 
-_order_rate_lock = Lock()
-_order_rate_buckets: dict[int, list[datetime]] = {}
 _FOOD_SERVICE_START = dt_time(10, 0)
 _FOOD_SERVICE_END = dt_time(21, 0)
 _DEMAND_EXCLUDED_STATUSES = {
     models.FoodOrderStatus.CANCELLED.value,
     models.FoodOrderStatus.REJECTED.value,
+    models.FoodOrderStatus.REFUND_PENDING.value,
+    models.FoodOrderStatus.REFUNDED.value,
 }
 _DEMAND_INACTIVE_STATUSES = _DEMAND_EXCLUDED_STATUSES | {
     models.FoodOrderStatus.DELIVERED.value,
     models.FoodOrderStatus.COLLECTED.value,
-    models.FoodOrderStatus.REFUNDED.value,
 }
+_CONFIRMED_PAYMENT_STATUSES = {"paid", "captured"}
+
+
+def mirror_document(
+    collection_name: str,
+    payload: dict[str, Any],
+    *,
+    required: bool | None = None,
+    upsert_filter: dict[str, Any] | None = None,
+    allow_outbox: bool = True,
+) -> bool:
+    try:
+        return _mirror_document(
+            collection_name,
+            payload,
+            required=required,
+            upsert_filter=upsert_filter,
+            allow_outbox=allow_outbox,
+        )
+    except Exception:
+        logger.warning(
+            "Food mirror write deferred for collection=%s",
+            collection_name,
+            exc_info=True,
+        )
+        return False
+
+
+def _food_payment_mirror_filter(payment: models.FoodPayment) -> dict[str, Any]:
+    payment_id = getattr(payment, "id", None)
+    if payment_id is not None:
+        return {"payment_id": int(payment_id)}
+
+    payment_reference = str(getattr(payment, "payment_reference", "") or "").strip()
+    if payment_reference:
+        return {"payment_reference": payment_reference}
+
+    provider_order_id = str(getattr(payment, "provider_order_id", "") or "").strip()
+    if provider_order_id:
+        return {"provider_order_id": provider_order_id}
+
+    raise RuntimeError("Food payment mirror requires a payment id, payment reference, or provider order id.")
+
+
+def _mirror_food_payment(
+    payment: models.FoodPayment,
+    *,
+    source: str,
+    order_ids: list[int] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> bool:
+    payload = {
+        "payment_id": payment.id,
+        "payment_reference": payment.payment_reference,
+        "provider_order_id": payment.provider_order_id,
+        "provider_payment_id": payment.provider_payment_id,
+        "provider_signature": payment.provider_signature,
+        "student_id": payment.student_id,
+        "amount": payment.amount,
+        "currency": payment.currency,
+        "provider": payment.provider,
+        "status": payment.status,
+        "order_state": payment.order_state,
+        "payment_state": payment.payment_state,
+        "attempt_count": payment.attempt_count,
+        "failed_reason": payment.failed_reason,
+        "created_at": payment.created_at,
+        "updated_at": payment.updated_at,
+        "verified_at": payment.verified_at,
+        "source": source,
+    }
+    if order_ids is not None:
+        payload["order_ids"] = order_ids
+    if extra:
+        payload.update(extra)
+    return mirror_document(
+        "food_payments",
+        payload,
+        upsert_filter=_food_payment_mirror_filter(payment),
+    )
 
 
 def _float_env(name: str, default: float) -> float:
@@ -98,19 +180,110 @@ def _platform_fee_inr() -> float:
 
 
 def _payment_webhook_token() -> str:
-    return str(os.getenv("FOOD_PAYMENT_WEBHOOK_TOKEN", "")).strip()
+    return str(resolve_secret("FOOD_PAYMENT_WEBHOOK_TOKEN", default="") or "").strip()
 
 
-def _razorpay_webhook_secret() -> str:
-    return str(os.getenv("RAZORPAY_WEBHOOK_SECRET", "")).strip()
+def _dedupe_non_empty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in values:
+        token = str(item or "").strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
+
+
+def _resolve_razorpay_keyring() -> list[tuple[str, str]]:
+    # Supports active-key rotation via a managed keyring without exposing secrets to clients.
+    ordered_pairs: list[tuple[str, str]] = []
+    keyring_raw = str(resolve_secret("RAZORPAY_KEYRING_JSON", default="") or "").strip()
+    active_key_id = str(resolve_secret("RAZORPAY_ACTIVE_KEY_ID", default="") or "").strip()
+    if keyring_raw:
+        try:
+            parsed = json.loads(keyring_raw)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            keyring_map: dict[str, tuple[str, str]] = {}
+            for item_key, item_value in parsed.items():
+                key_id = ""
+                key_secret = ""
+                if isinstance(item_value, dict):
+                    key_id = str(item_value.get("key_id") or "").strip()
+                    key_secret = str(item_value.get("key_secret") or "").strip()
+                elif isinstance(item_value, (list, tuple)) and len(item_value) >= 2:
+                    key_id = str(item_value[0] or "").strip()
+                    key_secret = str(item_value[1] or "").strip()
+                if key_id and key_secret:
+                    keyring_map[str(item_key or "").strip()] = (key_id, key_secret)
+            if active_key_id and active_key_id in keyring_map:
+                ordered_pairs.append(keyring_map[active_key_id])
+            for item_key, pair in keyring_map.items():
+                if active_key_id and item_key == active_key_id:
+                    continue
+                ordered_pairs.append(pair)
+
+    key_id = str(resolve_secret("RAZORPAY_KEY_ID", default="") or "").strip()
+    key_secret = str(resolve_secret("RAZORPAY_KEY_SECRET", default="") or "").strip()
+    if key_id and key_secret:
+        ordered_pairs.append((key_id, key_secret))
+
+    deduped: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for pair in ordered_pairs:
+        if pair in seen:
+            continue
+        seen.add(pair)
+        deduped.append(pair)
+    return deduped
+
+
+def _razorpay_key_id() -> str:
+    pairs = _resolve_razorpay_keyring()
+    if not pairs:
+        return ""
+    return str(pairs[0][0]).strip()
+
+
+def _razorpay_webhook_secrets() -> list[str]:
+    secrets_out: list[str] = []
+    structured = str(resolve_secret("RAZORPAY_WEBHOOK_SECRETS_JSON", default="") or "").strip()
+    if structured:
+        try:
+            parsed = json.loads(structured)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            active_id = str(resolve_secret("RAZORPAY_WEBHOOK_ACTIVE_SECRET_ID", default="") or "").strip()
+            if active_id:
+                active_secret = str(parsed.get(active_id) or "").strip()
+                if active_secret:
+                    secrets_out.append(active_secret)
+            secrets_out.extend(str(value or "").strip() for value in parsed.values())
+        elif isinstance(parsed, list):
+            secrets_out.extend(str(item or "").strip() for item in parsed)
+        elif isinstance(parsed, str):
+            secrets_out.append(parsed.strip())
+
+    csv_blob = str(resolve_secret("RAZORPAY_WEBHOOK_SECRETS", default="") or "").strip()
+    if csv_blob:
+        secrets_out.extend(part.strip() for part in csv_blob.split(","))
+
+    single_secret = str(resolve_secret("RAZORPAY_WEBHOOK_SECRET", default="") or "").strip()
+    if single_secret:
+        secrets_out.append(single_secret)
+
+    return _dedupe_non_empty(secrets_out)
 
 
 def _get_razorpay_client():
-    key_id = os.getenv("RAZORPAY_KEY_ID", "")
-    key_secret = os.getenv("RAZORPAY_KEY_SECRET", "")
-    if key_id and key_secret:
-        return razorpay.Client(auth=(key_id, key_secret))
-    return None
+    credentials = _resolve_razorpay_keyring()
+    if not credentials:
+        return None
+    key_id, key_secret = credentials[0]
+    return razorpay.Client(auth=(key_id, key_secret))
 
 
 def _haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -187,6 +360,11 @@ def _strict_runtime_enabled() -> bool:
 
 def _mongo_read_required() -> bool:
     return _mongo_read_preferred() and _strict_runtime_enabled()
+
+
+def _food_demo_mode_enabled(x_food_demo_mode: str | None) -> bool:
+    raw = str(x_food_demo_mode or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "demo"}
 
 
 def _coerce_mongo_datetime(value) -> datetime | None:
@@ -487,7 +665,7 @@ def _slot_demand_from_mongo(*, order_date: date, db: Session) -> list[schemas.Sl
     docs = list(
         mongo_db["food_orders"].find(
             query_filter,
-            {"slot_id": 1, "status": 1},
+            {"slot_id": 1, "status": 1, "payment_status": 1},
         )
     )
 
@@ -496,8 +674,10 @@ def _slot_demand_from_mongo(*, order_date: date, db: Session) -> list[schemas.Sl
         slot_id = int(doc.get("slot_id") or 0)
         if slot_id <= 0:
             continue
-        status_value = str(doc.get("status") or "").strip().lower()
-        if status_value in _DEMAND_EXCLUDED_STATUSES:
+        if not _order_counts_towards_food_hall_totals(
+            status_value=doc.get("status"),
+            payment_status=doc.get("payment_status"),
+        ):
             continue
         counts_by_slot[slot_id] = counts_by_slot.get(slot_id, 0) + 1
 
@@ -571,27 +751,36 @@ def _slot_demand_live_from_mongo(
     order_docs = list(
         mongo_db["food_orders"].find(
             query_filter,
-            {"order_id": 1, "id": 1, "slot_id": 1, "status": 1},
+            {"order_id": 1, "id": 1, "slot_id": 1, "status": 1, "payment_status": 1},
         )
     )
 
     active_orders = 0
     slot_count_by_id: dict[int, int] = {}
     order_slot_by_id: dict[int, int] = {}
+    counted_order_ids: set[int] = set()
 
     for doc in order_docs:
         slot_id = int(doc.get("slot_id") or 0)
         if slot_id <= 0:
             continue
         order_id_raw = doc.get("order_id", doc.get("id"))
+        order_id = int(order_id_raw) if order_id_raw is not None else 0
         if order_id_raw is not None:
-            order_slot_by_id[int(order_id_raw)] = slot_id
+            order_slot_by_id[order_id] = slot_id
 
-        status_value = str(doc.get("status") or "").strip().lower()
-        if status_value not in _DEMAND_INACTIVE_STATUSES:
+        if _order_is_active_for_food_hall_totals(
+            status_value=doc.get("status"),
+            payment_status=doc.get("payment_status"),
+        ):
             active_orders += 1
-        if status_value in _DEMAND_EXCLUDED_STATUSES:
+        if not _order_counts_towards_food_hall_totals(
+            status_value=doc.get("status"),
+            payment_status=doc.get("payment_status"),
+        ):
             continue
+        if order_id > 0:
+            counted_order_ids.add(order_id)
         slot_count_by_id[slot_id] = slot_count_by_id.get(slot_id, 0) + 1
 
     hottest_slot_label: str | None = None
@@ -623,6 +812,8 @@ def _slot_demand_live_from_mongo(
         if order_id_raw is None:
             continue
         order_id = int(order_id_raw)
+        if order_id not in counted_order_ids:
+            continue
         slot_id = int(order_slot_by_id.get(order_id) or 0)
         if slot_id <= 0:
             continue
@@ -695,7 +886,7 @@ def _peak_times_from_mongo(*, lookback_days: int, db: Session) -> list[schemas.P
     docs = list(
         mongo_db["food_orders"].find(
             query_filter,
-            {"slot_id": 1, "order_date": 1, "status": 1},
+            {"slot_id": 1, "order_date": 1, "status": 1, "payment_status": 1},
         )
     )
 
@@ -704,8 +895,10 @@ def _peak_times_from_mongo(*, lookback_days: int, db: Session) -> list[schemas.P
         slot_id = int(doc.get("slot_id") or 0)
         if slot_id <= 0:
             continue
-        status_value = str(doc.get("status") or "").strip().lower()
-        if status_value in _DEMAND_EXCLUDED_STATUSES:
+        if not _order_counts_towards_food_hall_totals(
+            status_value=doc.get("status"),
+            payment_status=doc.get("payment_status"),
+        ):
             continue
         order_day = _coerce_mongo_date(doc.get("order_date"))
         if order_day is None or order_day < start_date or order_day > today:
@@ -986,19 +1179,27 @@ def _assert_shop_owner_access(current_user: CurrentUser, shop: models.FoodShop) 
 
 
 def _enforce_order_rate_limit(student_id: int) -> None:
-    now = datetime.utcnow()
-    window = timedelta(seconds=_rate_limit_window_seconds())
-    with _order_rate_lock:
-        bucket = _order_rate_buckets.setdefault(int(student_id), [])
-        bucket[:] = [stamp for stamp in bucket if now - stamp <= window]
-        if len(bucket) >= _rate_limit_max_orders():
-            retry_after = max(1, int(window.total_seconds()))
-            raise HTTPException(
-                status_code=429,
-                detail="Too many order attempts. Please wait before placing another order.",
-                headers={"Retry-After": str(retry_after)},
-            )
-        bucket.append(now)
+    key = f"food-order:{int(student_id)}"
+    limit = _rate_limit_max_orders()
+    window_seconds = _rate_limit_window_seconds()
+    try:
+        decision = rate_limit_hit(key, limit=limit, window_seconds=window_seconds)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Food order rate limiter unavailable: {exc}",
+        ) from exc
+
+    if decision.allowed:
+        return
+
+    headers = rate_limit_headers(decision)
+    headers["Retry-After"] = str(decision.retry_after_seconds)
+    raise HTTPException(
+        status_code=429,
+        detail="Too many order attempts. Please wait before placing another order.",
+        headers=headers,
+    )
 
 
 def _is_order_final(status_value: models.FoodOrderStatus) -> bool:
@@ -1008,6 +1209,73 @@ def _is_order_final(status_value: models.FoodOrderStatus) -> bool:
         models.FoodOrderStatus.REJECTED,
         models.FoodOrderStatus.REFUNDED,
     }
+
+
+def _normalize_food_order_status_token(status_value: models.FoodOrderStatus | str | None) -> str:
+    if isinstance(status_value, models.FoodOrderStatus):
+        return status_value.value
+    return str(status_value or "").strip().lower()
+
+
+def _normalize_food_payment_status_token(payment_status: str | None) -> str:
+    return str(payment_status or "").strip().lower()
+
+
+def _order_counts_towards_food_hall_totals(
+    *,
+    status_value: models.FoodOrderStatus | str | None,
+    payment_status: str | None,
+) -> bool:
+    normalized_status = _normalize_food_order_status_token(status_value)
+    if not normalized_status or normalized_status in _DEMAND_EXCLUDED_STATUSES:
+        return False
+    if _normalize_food_payment_status_token(payment_status) in _CONFIRMED_PAYMENT_STATUSES:
+        return True
+    return normalized_status != models.FoodOrderStatus.PLACED.value
+
+
+def _order_is_active_for_food_hall_totals(
+    *,
+    status_value: models.FoodOrderStatus | str | None,
+    payment_status: str | None,
+) -> bool:
+    normalized_status = _normalize_food_order_status_token(status_value)
+    return (
+        _order_counts_towards_food_hall_totals(status_value=status_value, payment_status=payment_status)
+        and normalized_status not in _DEMAND_INACTIVE_STATUSES
+    )
+
+
+def _food_order_counts_towards_totals_clause():
+    confirmed_payment_clause = func.lower(func.coalesce(models.FoodOrder.payment_status, "")).in_(
+        tuple(_CONFIRMED_PAYMENT_STATUSES)
+    )
+    return and_(
+        models.FoodOrder.status.notin_(
+            [
+                models.FoodOrderStatus.CANCELLED,
+                models.FoodOrderStatus.REJECTED,
+                models.FoodOrderStatus.REFUND_PENDING,
+                models.FoodOrderStatus.REFUNDED,
+            ]
+        ),
+        or_(
+            confirmed_payment_clause,
+            models.FoodOrder.status != models.FoodOrderStatus.PLACED,
+        ),
+    )
+
+
+def _food_order_is_active_clause():
+    return and_(
+        _food_order_counts_towards_totals_clause(),
+        models.FoodOrder.status.notin_(
+            [
+                models.FoodOrderStatus.DELIVERED,
+                models.FoodOrderStatus.COLLECTED,
+            ]
+        ),
+    )
 
 
 def _normalize_webhook_payment_state(raw_status: str) -> tuple[str, str, str]:
@@ -1021,6 +1289,19 @@ def _normalize_webhook_payment_state(raw_status: str) -> tuple[str, str, str]:
 
 def _is_payment_paid(payment: models.FoodPayment) -> bool:
     return str(payment.status or "").strip().lower() == "paid"
+
+
+def _canonical_payment_reference(payment: models.FoodPayment, fallback: str | None = None) -> str | None:
+    for candidate in (
+        getattr(payment, "payment_reference", None),
+        getattr(payment, "provider_order_id", None),
+        getattr(payment, "provider_payment_id", None),
+        fallback,
+    ):
+        normalized = str(candidate or "").strip()
+        if normalized:
+            return normalized
+    return None
 
 
 def _normalize_razorpay_gateway_status(raw_status: str | None) -> str | None:
@@ -1209,6 +1490,32 @@ def _sync_order_document(order: models.FoodOrder, source: str) -> None:
         },
         upsert_filter={"order_id": order.id},
     )
+    event_scopes: set[str] = {
+        "role:admin",
+        f"student:{int(order.student_id)}",
+    }
+    if order.shop_id:
+        event_scopes.add(f"shop:{int(order.shop_id)}")
+    publish_domain_event(
+        "food.order.updated",
+        payload={
+            "order_id": int(order.id),
+            "student_id": int(order.student_id),
+            "shop_id": int(order.shop_id) if order.shop_id else None,
+            "status": order.status.value,
+            "payment_status": str(order.payment_status or ""),
+            "payment_reference": str(order.payment_reference or "") or None,
+            "source": source,
+            "updated_at": (
+                order.last_status_updated_at.isoformat()
+                if order.last_status_updated_at is not None
+                else datetime.utcnow().isoformat()
+            ),
+        },
+        scopes=event_scopes,
+        topics={"food"},
+        source="food-router",
+    )
 
 
 def _record_order_audit(
@@ -1293,19 +1600,140 @@ def _notify_order_status(db: Session, order: models.FoodOrder, message: str) -> 
     )
     db.add(row)
     db.flush()
-    mirror_document(
-        "notification_logs",
-        {
-            "id": row.id,
-            "student_id": order.student_id,
-            "message": row.message,
-            "channel": row.channel,
-            "sent_to": row.sent_to,
-            "created_at": datetime.utcnow(),
-            "source": "food-status",
-        },
-        upsert_filter={"id": row.id},
+    try:
+        mirror_document(
+            "notification_logs",
+            {
+                "id": row.id,
+                "student_id": order.student_id,
+                "message": row.message,
+                "channel": row.channel,
+                "sent_to": row.sent_to,
+                "created_at": datetime.utcnow(),
+                "source": "food-status",
+            },
+            upsert_filter={"id": row.id},
+            required=False,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to mirror food notification for order_id=%s notification_id=%s",
+            order.id,
+            row.id,
+            exc_info=True,
+        )
+
+
+def _prepare_food_checkout_transaction(
+    db: Session,
+    *,
+    slot_id: int,
+    menu_item_ids: list[int] | None = None,
+) -> None:
+    bind = db.get_bind()
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "") or "").strip().lower()
+    if dialect_name == "sqlite":
+        db.execute(text("BEGIN IMMEDIATE"))
+        return
+
+    # PostgreSQL does not support BEGIN IMMEDIATE. Lock the slot row so
+    # concurrent checkouts for the same slot serialize before capacity checks.
+    db.query(models.BreakSlot).filter(models.BreakSlot.id == int(slot_id)).with_for_update().first()
+
+    normalized_menu_item_ids = sorted({int(item_id) for item_id in (menu_item_ids or []) if int(item_id) > 0})
+    if normalized_menu_item_ids:
+        db.query(models.FoodMenuItem).filter(models.FoodMenuItem.id.in_(normalized_menu_item_ids)).with_for_update().all()
+
+
+def _apply_paid_payment_state(
+    *,
+    db: Session,
+    payment: models.FoodPayment,
+    provider: str,
+    actor: CurrentUser | None,
+    source: str,
+    provider_payment_id: str | None = None,
+    provider_signature: str | None = None,
+    event_type: str = "payment_verified_client",
+    message: str = "Payment verified",
+    payment_reference_payload: str | None = None,
+) -> list[models.FoodOrder]:
+    if provider_payment_id:
+        payment.provider_payment_id = provider_payment_id
+    if provider_signature:
+        payment.provider_signature = provider_signature
+    payment.attempt_count = int(payment.attempt_count or 0) + 1
+    payment.order_state = "paid"
+    payment.payment_state = "captured"
+    payment.provider = provider
+    payment.status = "paid"
+    payment.failed_reason = None
+    payment.updated_at = datetime.utcnow()
+    payment.verified_at = payment.verified_at or datetime.utcnow()
+
+    order_ids = json.loads(payment.order_ids_json or "[]")
+    if not isinstance(order_ids, list):
+        order_ids = []
+    orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(order_ids)).all()
+    canonical_reference = _canonical_payment_reference(payment, payment.payment_reference)
+
+    orders_changed: list[tuple[models.FoodOrder, models.FoodOrderStatus, str, str, bool]] = []
+    for order in orders:
+        previous_status = order.status
+        previous_payment_status = str(order.payment_status or "")
+        previous_payment_ref = str(order.payment_reference or "")
+        transitioned = False
+
+        order.payment_status = "paid"
+        order.payment_provider = provider
+        order.payment_reference = canonical_reference
+        if order.status == models.FoodOrderStatus.PLACED:
+            _apply_status_transition(order, models.FoodOrderStatus.VERIFIED, note=message)
+            transitioned = True
+        order_mutated = (
+            previous_status != order.status
+            or previous_payment_status != str(order.payment_status or "")
+            or previous_payment_ref != str(order.payment_reference or "")
+        )
+        if not order_mutated:
+            continue
+        orders_changed.append((order, previous_status, previous_payment_status, previous_payment_ref, transitioned))
+
+    for order, previous_status, previous_payment_status, previous_payment_ref, transitioned in orders_changed:
+        if transitioned:
+            _notify_order_status(db, order, "Order verified.")
+        _record_order_audit(
+            db,
+            order,
+            event_type=event_type,
+            actor=actor,
+            from_status=previous_status.value,
+            to_status=order.status.value,
+            message=message,
+            payload={
+                "provider": provider,
+                "payment_reference": payment_reference_payload or payment.payment_reference,
+                "provider_order_id": payment.provider_order_id,
+                "provider_payment_id": payment.provider_payment_id,
+                "order_state": payment.order_state,
+                "payment_state": payment.payment_state,
+                "previous_payment_status": previous_payment_status,
+                "previous_payment_reference": previous_payment_ref,
+                "source": source,
+            },
+        )
+
+    db.commit()
+    for order, _, _, _, _ in orders_changed:
+        _sync_order_document(order, source)
+    if payment.student_id:
+        _try_clear_food_cart(student_id=int(payment.student_id), user_id=(actor.id if actor else None))
+    _mirror_food_payment(
+        payment,
+        source=source,
+        order_ids=order_ids,
     )
+    return [order for order, _, _, _, _ in orders_changed]
 
 
 def _refresh_shop_rating_from_orders(db: Session, shop_id: int | None) -> tuple[models.FoodShop | None, int]:
@@ -1583,7 +2011,7 @@ def bootstrap_food_catalog(
     db: Session = Depends(get_db),
     _: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
-    summary = bootstrap_food_hall_catalog(db)
+    summary = bootstrap_food_hall_catalog(db, skip_if_seeded=False)
     return schemas.MessageResponse(
         message=(
             "Food catalog synced. "
@@ -1948,15 +2376,17 @@ def get_food_cart(
 @router.post("/cart/items", response_model=schemas.FoodCartOut)
 def mutate_food_cart_item(
     payload: schemas.FoodCartItemMutationRequest,
+    x_food_demo_mode: str | None = Header(default=None, alias="X-Food-Demo-Mode"),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
+    demo_mode = _food_demo_mode_enabled(x_food_demo_mode)
     student_id = _require_student_id(current_user)
     _ensure_food_catalog_seeded(db)
     shop = db.get(models.FoodShop, payload.shop_id)
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
-    if not shop.is_active:
+    if not demo_mode and not shop.is_active:
         raise HTTPException(status_code=409, detail="Shop is not active")
 
     menu_item = db.get(models.FoodMenuItem, payload.menu_item_id)
@@ -1964,7 +2394,7 @@ def mutate_food_cart_item(
         raise HTTPException(status_code=404, detail="Menu item not found")
     if int(menu_item.shop_id) != int(payload.shop_id):
         raise HTTPException(status_code=400, detail="Menu item does not belong to selected shop")
-    if payload.quantity_delta > 0:
+    if payload.quantity_delta > 0 and not demo_mode:
         if not menu_item.is_active or menu_item.sold_out:
             raise HTTPException(status_code=409, detail="Selected menu item is unavailable")
         if menu_item.stock_quantity is not None and int(menu_item.stock_quantity) <= 0:
@@ -1995,7 +2425,7 @@ def mutate_food_cart_item(
         (idx for idx, entry in enumerate(existing_items) if str(entry.get("cart_key", "")).strip() == cart_key),
         -1,
     )
-    if shop_id and shop_id != int(shop.id) and delta > 0 and existing_index < 0:
+    if not demo_mode and shop_id and shop_id != int(shop.id) and delta > 0 and existing_index < 0:
         raise HTTPException(
             status_code=409,
             detail="Orders are accepted only from a single shop at a time. Clear or checkout the current cart first.",
@@ -2164,9 +2594,11 @@ def clear_food_cart(
 def create_food_order(
     payload: schemas.FoodOrderCreate,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+    x_food_demo_mode: str | None = Header(default=None, alias="X-Food-Demo-Mode"),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.STUDENT)),
 ):
+    demo_mode = _food_demo_mode_enabled(x_food_demo_mode)
     _ensure_food_catalog_seeded(db)
     idempotency_key = (payload.idempotency_key or x_idempotency_key or "").strip() or None
     if idempotency_key and len(idempotency_key) < 8:
@@ -2177,19 +2609,21 @@ def create_food_order(
             raise HTTPException(status_code=403, detail="Student account is not linked correctly")
         if payload.student_id != current_user.student_id:
             raise HTTPException(status_code=403, detail="Students can only place orders for themselves")
-        _enforce_order_rate_limit(payload.student_id)
-        if payload.location_latitude is None or payload.location_longitude is None:
+        if not demo_mode:
+            _enforce_order_rate_limit(payload.student_id)
+        if not demo_mode and (payload.location_latitude is None or payload.location_longitude is None):
             raise HTTPException(
                 status_code=400,
                 detail="Location access is required. Enable location and retry inside LPU campus.",
             )
-        location_allowed, location_message, _ = _evaluate_location_gate(
-            latitude=payload.location_latitude,
-            longitude=payload.location_longitude,
-            accuracy_m=payload.location_accuracy_m,
-        )
-        if not location_allowed:
-            raise HTTPException(status_code=403, detail=location_message)
+        if not demo_mode:
+            location_allowed, location_message, _ = _evaluate_location_gate(
+                latitude=payload.location_latitude,
+                longitude=payload.location_longitude,
+                accuracy_m=payload.location_accuracy_m,
+            )
+            if not location_allowed:
+                raise HTTPException(status_code=403, detail=location_message)
 
     student = db.get(models.Student, payload.student_id)
     if not student:
@@ -2198,7 +2632,8 @@ def create_food_order(
     slot = db.get(models.BreakSlot, payload.slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Break slot not found")
-    _validate_order_time_window(order_date=payload.order_date, slot=slot)
+    if not demo_mode:
+        _validate_order_time_window(order_date=payload.order_date, slot=slot)
 
     menu_item = None
     shop = None
@@ -2209,14 +2644,14 @@ def create_food_order(
         menu_item = db.get(models.FoodMenuItem, payload.menu_item_id)
         if not menu_item:
             raise HTTPException(status_code=404, detail="Menu item not found")
-        if not menu_item.is_active or menu_item.sold_out:
+        if not demo_mode and (not menu_item.is_active or menu_item.sold_out):
             raise HTTPException(status_code=409, detail="Selected menu item is unavailable")
         if payload.shop_id and payload.shop_id != menu_item.shop_id:
             raise HTTPException(status_code=400, detail="menu_item does not belong to the selected shop")
         shop = db.get(models.FoodShop, menu_item.shop_id)
-        if not shop or not shop.is_active:
+        if not shop or (not demo_mode and not shop.is_active):
             raise HTTPException(status_code=409, detail="Shop is not active")
-        if menu_item.stock_quantity is not None and menu_item.stock_quantity < payload.quantity:
+        if not demo_mode and menu_item.stock_quantity is not None and menu_item.stock_quantity < payload.quantity:
             raise HTTPException(status_code=409, detail="Insufficient stock for selected menu item")
         legacy_item = _resolve_legacy_food_item_for_menu(
             db,
@@ -2260,13 +2695,15 @@ def create_food_order(
         )
         normalized_resolved_shop_name = (resolved_shop_name or "").strip().lower()
         for existing in active_orders:
-            if resolved_shop_id and existing.shop_id and int(existing.shop_id) != int(resolved_shop_id):
+            if not demo_mode and resolved_shop_id and existing.shop_id and int(existing.shop_id) != int(resolved_shop_id):
                 raise HTTPException(
                     status_code=409,
                     detail="Orders are accepted only from a single shop at a time.",
                 )
             existing_shop_name = (existing.shop_name or "").strip().lower()
             if (
+                not demo_mode
+                and
                 normalized_resolved_shop_name
                 and existing_shop_name
                 and existing_shop_name != normalized_resolved_shop_name
@@ -2294,7 +2731,11 @@ def create_food_order(
     now = datetime.utcnow()
 
     try:
-        db.execute(text("BEGIN IMMEDIATE"))
+        _prepare_food_checkout_transaction(
+            db,
+            slot_id=payload.slot_id,
+            menu_item_ids=([int(menu_item.id)] if menu_item and menu_item.id else None),
+        )
         current_orders_count = (
             db.query(func.count(models.FoodOrder.id))
             .filter(
@@ -2307,13 +2748,13 @@ def create_food_order(
             .scalar()
             or 0
         )
-        if current_orders_count + payload.quantity > slot.max_orders:
+        if not demo_mode and current_orders_count + payload.quantity > slot.max_orders:
             raise HTTPException(
                 status_code=409,
                 detail="Selected slot is full. Choose another slot to avoid congestion.",
             )
 
-        if menu_item and menu_item.stock_quantity is not None:
+        if not demo_mode and menu_item and menu_item.stock_quantity is not None:
             if menu_item.stock_quantity < payload.quantity:
                 raise HTTPException(status_code=409, detail="Insufficient stock for selected menu item")
             menu_item.stock_quantity = max(0, menu_item.stock_quantity - payload.quantity)
@@ -2378,9 +2819,11 @@ def create_food_order(
 def create_food_orders_checkout(
     payload: schemas.FoodCheckoutCreate,
     x_idempotency_key: str | None = Header(default=None, alias="X-Idempotency-Key"),
+    x_food_demo_mode: str | None = Header(default=None, alias="X-Food-Demo-Mode"),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.STUDENT)),
 ):
+    demo_mode = _food_demo_mode_enabled(x_food_demo_mode)
     _ensure_food_catalog_seeded(db)
     idempotency_key = (payload.idempotency_key or x_idempotency_key or "").strip() or None
     if idempotency_key and len(idempotency_key) < 8:
@@ -2391,19 +2834,21 @@ def create_food_orders_checkout(
             raise HTTPException(status_code=403, detail="Student account is not linked correctly")
         if payload.student_id != current_user.student_id:
             raise HTTPException(status_code=403, detail="Students can only place orders for themselves")
-        _enforce_order_rate_limit(payload.student_id)
-        if payload.location_latitude is None or payload.location_longitude is None:
+        if not demo_mode:
+            _enforce_order_rate_limit(payload.student_id)
+        if not demo_mode and (payload.location_latitude is None or payload.location_longitude is None):
             raise HTTPException(
                 status_code=400,
                 detail="Location access is required. Enable location and retry inside LPU campus.",
             )
-        location_allowed, location_message, _ = _evaluate_location_gate(
-            latitude=payload.location_latitude,
-            longitude=payload.location_longitude,
-            accuracy_m=payload.location_accuracy_m,
-        )
-        if not location_allowed:
-            raise HTTPException(status_code=403, detail=location_message)
+        if not demo_mode:
+            location_allowed, location_message, _ = _evaluate_location_gate(
+                latitude=payload.location_latitude,
+                longitude=payload.location_longitude,
+                accuracy_m=payload.location_accuracy_m,
+            )
+            if not location_allowed:
+                raise HTTPException(status_code=403, detail=location_message)
 
     student = db.get(models.Student, payload.student_id)
     if not student:
@@ -2412,7 +2857,8 @@ def create_food_orders_checkout(
     slot = db.get(models.BreakSlot, payload.slot_id)
     if not slot:
         raise HTTPException(status_code=404, detail="Break slot not found")
-    _validate_order_time_window(order_date=payload.order_date, slot=slot)
+    if not demo_mode:
+        _validate_order_time_window(order_date=payload.order_date, slot=slot)
 
     if idempotency_key:
         line_pattern = f"{idempotency_key}:%"
@@ -2438,9 +2884,9 @@ def create_food_orders_checkout(
         menu_item = db.get(models.FoodMenuItem, line.menu_item_id)
         if not menu_item:
             raise HTTPException(status_code=404, detail=f"Menu item not found: {line.menu_item_id}")
-        if not menu_item.is_active or menu_item.sold_out:
+        if not demo_mode and (not menu_item.is_active or menu_item.sold_out):
             raise HTTPException(status_code=409, detail=f"Selected menu item is unavailable: {line.menu_item_id}")
-        if resolved_shop_id and int(menu_item.shop_id) != int(resolved_shop_id):
+        if not demo_mode and resolved_shop_id and int(menu_item.shop_id) != int(resolved_shop_id):
             raise HTTPException(
                 status_code=409,
                 detail="Orders are accepted only from a single shop at a time.",
@@ -2455,7 +2901,7 @@ def create_food_orders_checkout(
         raise HTTPException(status_code=400, detail="Unable to resolve shop for checkout")
 
     shop = db.get(models.FoodShop, resolved_shop_id)
-    if not shop or not shop.is_active:
+    if not shop or (not demo_mode and not shop.is_active):
         raise HTTPException(status_code=409, detail="Shop is not active")
     resolved_shop_name = shop.name.strip() or (payload.shop_name or "").strip() or None
 
@@ -2478,13 +2924,15 @@ def create_food_orders_checkout(
         )
         normalized_resolved_shop_name = (resolved_shop_name or "").strip().lower()
         for existing in active_orders:
-            if existing.shop_id and int(existing.shop_id) != int(resolved_shop_id):
+            if not demo_mode and existing.shop_id and int(existing.shop_id) != int(resolved_shop_id):
                 raise HTTPException(
                     status_code=409,
                     detail="Orders are accepted only from a single shop at a time.",
                 )
             existing_shop_name = (existing.shop_name or "").strip().lower()
             if (
+                not demo_mode
+                and
                 normalized_resolved_shop_name
                 and existing_shop_name
                 and existing_shop_name != normalized_resolved_shop_name
@@ -2499,7 +2947,11 @@ def create_food_orders_checkout(
     created_orders: list[models.FoodOrder] = []
 
     try:
-        db.execute(text("BEGIN IMMEDIATE"))
+        _prepare_food_checkout_transaction(
+            db,
+            slot_id=payload.slot_id,
+            menu_item_ids=list(menu_totals.keys()),
+        )
         current_orders_count = (
             db.query(func.count(models.FoodOrder.id))
             .filter(
@@ -2512,7 +2964,7 @@ def create_food_orders_checkout(
             .scalar()
             or 0
         )
-        if current_orders_count + total_cart_quantity > slot.max_orders:
+        if not demo_mode and current_orders_count + total_cart_quantity > slot.max_orders:
             raise HTTPException(
                 status_code=409,
                 detail="Selected slot is full. Choose another slot to avoid congestion.",
@@ -2521,11 +2973,11 @@ def create_food_orders_checkout(
         for menu_item_id, required_qty in menu_totals.items():
             menu_item = menu_by_id[menu_item_id]
             db.refresh(menu_item)
-            if not menu_item.is_active or menu_item.sold_out:
+            if not demo_mode and (not menu_item.is_active or menu_item.sold_out):
                 raise HTTPException(status_code=409, detail=f"Selected menu item is unavailable: {menu_item.id}")
-            if menu_item.stock_quantity is not None and menu_item.stock_quantity < required_qty:
+            if not demo_mode and menu_item.stock_quantity is not None and menu_item.stock_quantity < required_qty:
                 raise HTTPException(status_code=409, detail=f"Insufficient stock for menu item: {menu_item.id}")
-            if menu_item.stock_quantity is not None:
+            if not demo_mode and menu_item.stock_quantity is not None:
                 menu_item.stock_quantity = max(0, int(menu_item.stock_quantity - required_qty))
                 if menu_item.stock_quantity == 0:
                     menu_item.sold_out = True
@@ -2608,12 +3060,15 @@ def create_food_orders_checkout(
 def list_orders(
     order_date: date | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=500),
+    fresh: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(
         require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.STUDENT, models.UserRole.OWNER)
     ),
 ):
-    mongo_rows = _list_orders_from_mongo(order_date=order_date, limit=limit, current_user=current_user, db=db)
+    mongo_rows = None
+    if not fresh:
+        mongo_rows = _list_orders_from_mongo(order_date=order_date, limit=limit, current_user=current_user, db=db)
     if mongo_rows is not None:
         return mongo_rows
 
@@ -2870,14 +3325,22 @@ def create_payment_intent(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.STUDENT)),
 ):
-    orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(payload.order_ids)).all()
-    if len(orders) != len(payload.order_ids):
+    requested_order_ids = [int(order_id) for order_id in payload.order_ids]
+    unique_order_ids = sorted({order_id for order_id in requested_order_ids if order_id > 0})
+    if len(unique_order_ids) != len(requested_order_ids):
+        raise HTTPException(status_code=400, detail="order_ids must be unique positive integers")
+
+    orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(unique_order_ids)).all()
+    if len(orders) != len(unique_order_ids):
         raise HTTPException(status_code=404, detail="Some orders were not found")
     if current_user.role == models.UserRole.STUDENT:
         if not current_user.student_id:
             raise HTTPException(status_code=403, detail="Student account is not linked correctly")
         if any(order.student_id != current_user.student_id for order in orders):
             raise HTTPException(status_code=403, detail="Cannot create payment for another student's order")
+    student_ids = sorted({int(order.student_id) for order in orders if order.student_id is not None})
+    if len(student_ids) != 1:
+        raise HTTPException(status_code=409, detail="Payment intent requires orders from a single student")
 
     if any(_is_order_final(order.status) for order in orders):
         raise HTTPException(status_code=409, detail="Payment cannot be created for finalized orders")
@@ -2961,29 +3424,15 @@ def create_payment_intent(
                 },
             )
     db.commit()
-    mirror_document(
-        "food_payments",
-        {
-            "payment_id": payment.id,
-            "payment_reference": reference,
-            "provider_order_id": provider_order_id,
-            "student_id": payment.student_id,
-            "amount": payment.amount,
+    _mirror_food_payment(
+        payment,
+        source="payment-intent",
+        order_ids=payload.order_ids,
+        extra={
             "subtotal_amount": subtotal_amount,
             "delivery_fee": delivery_fee,
             "platform_fee": platform_fee,
-            "currency": payment.currency,
-            "provider": payment.provider,
-            "status": payment.status,
-            "order_state": payment.order_state,
-            "payment_state": payment.payment_state,
-            "attempt_count": payment.attempt_count,
-            "order_ids": payload.order_ids,
-            "created_at": payment.created_at,
-            "updated_at": payment.updated_at,
-            "source": "payment-intent",
         },
-        upsert_filter={"payment_reference": reference},
     )
     return schemas.FoodPaymentIntentOut(
         payment_reference=reference,
@@ -2995,8 +3444,51 @@ def create_payment_intent(
         delivery_fee=delivery_fee,
         platform_fee=platform_fee,
         currency="INR",
-        order_ids=payload.order_ids,
+        order_ids=unique_order_ids,
     )
+
+
+@router.post("/payments/demo-complete", response_model=schemas.MessageResponse)
+def complete_demo_payment(
+    payload: schemas.FoodDemoPaymentCompleteRequest,
+    x_food_demo_mode: str | None = Header(default=None, alias="X-Food-Demo-Mode"),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_roles(models.UserRole.STUDENT, models.UserRole.ADMIN)),
+):
+    if not _food_demo_mode_enabled(x_food_demo_mode):
+        raise HTTPException(status_code=403, detail="Food demo mode is not enabled")
+
+    payment = (
+        db.query(models.FoodPayment)
+        .filter(models.FoodPayment.payment_reference == payload.payment_reference)
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment reference not found")
+    if current_user.role == models.UserRole.STUDENT:
+        if not current_user.student_id or payment.student_id != current_user.student_id:
+            raise HTTPException(status_code=403, detail="Cannot complete demo payment for another student")
+
+    if _is_payment_paid(payment):
+        return schemas.MessageResponse(message="Demo payment already completed")
+
+    payment.webhook_payload_json = json.dumps({
+        "demo_mode": True,
+        "payment_reference": payload.payment_reference,
+        "source": "food-demo-complete",
+    })
+    _apply_paid_payment_state(
+        db=db,
+        payment=payment,
+        provider="sandbox",
+        actor=current_user,
+        source="food-demo-payment",
+        provider_payment_id=(str(payment.provider_payment_id or "").strip() or f"demo_paid_{secrets.token_hex(6)}"),
+        event_type="payment_demo_completed",
+        message="Payment completed in Food Hall demo mode",
+        payment_reference_payload=payload.payment_reference,
+    )
+    return schemas.MessageResponse(message="Demo payment completed successfully")
 
 
 @router.post("/payments/webhook", response_model=schemas.MessageResponse)
@@ -3035,13 +3527,20 @@ async def payment_webhook(
     provider_signature: str | None = None
 
     if provider == "razorpay":
-        secret = _razorpay_webhook_secret()
-        if not secret:
+        secrets_pool = _razorpay_webhook_secrets()
+        if not secrets_pool:
             raise HTTPException(status_code=500, detail="Razorpay webhook secret is not configured")
         incoming_signature = str(x_razorpay_signature or "").strip()
         if not incoming_signature:
             raise HTTPException(status_code=401, detail="Missing Razorpay webhook signature")
-        if not _verify_razorpay_webhook_signature(secret=secret, raw_body=raw_body, incoming_signature=incoming_signature):
+        if not any(
+            _verify_razorpay_webhook_signature(
+                secret=secret,
+                raw_body=raw_body,
+                incoming_signature=incoming_signature,
+            )
+            for secret in secrets_pool
+        ):
             raise HTTPException(status_code=401, detail="Invalid Razorpay webhook signature")
 
         custom_payment_id = str(
@@ -3080,6 +3579,19 @@ async def payment_webhook(
         raise HTTPException(status_code=400, detail="payment_reference is required in webhook payload")
     if not webhook_status:
         raise HTTPException(status_code=400, detail="status is required in webhook payload")
+    try:
+        normalized = schemas.FoodPaymentWebhookRequest(
+            payment_reference=payment_reference,
+            status=webhook_status,
+            provider=provider,
+            payload=webhook_payload if isinstance(webhook_payload, dict) else {},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid webhook payload: {exc}") from exc
+    payment_reference = normalized.payment_reference
+    webhook_status = normalized.status
+    provider = normalized.provider
+    webhook_payload = normalized.payload
 
     fingerprint_seed = raw_body or json.dumps(incoming_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     fingerprint = hashlib.sha256(fingerprint_seed).hexdigest()
@@ -3159,23 +3671,24 @@ async def payment_webhook(
         previous_status = order.status
         previous_payment_status = str(order.payment_status or "")
         previous_payment_ref = str(order.payment_reference or "")
+        canonical_reference = _canonical_payment_reference(payment, payment_reference)
 
         if paid:
             order.payment_status = "paid"
             order.payment_provider = provider
-            order.payment_reference = provider_payment_id or payment_reference
+            order.payment_reference = canonical_reference
             if order.status == models.FoodOrderStatus.PLACED:
                 _apply_status_transition(order, models.FoodOrderStatus.VERIFIED, note="Payment verified")
         elif next_status == "failed":
             if not str(order.payment_status or "").lower() == "paid":
                 order.payment_status = "failed"
                 order.payment_provider = provider
-                order.payment_reference = provider_payment_id or payment_reference
+                order.payment_reference = canonical_reference
         else:
             if not str(order.payment_status or "").lower() == "paid":
                 order.payment_status = "attempted"
                 order.payment_provider = provider
-                order.payment_reference = provider_payment_id or payment_reference
+                order.payment_reference = canonical_reference
 
         order_mutated = (
             previous_status != order.status
@@ -3217,26 +3730,11 @@ async def payment_webhook(
         _sync_order_document(order, "payment-webhook")
     if paid and payment.student_id:
         _try_clear_food_cart(student_id=int(payment.student_id))
-    mirror_document(
-        "food_payments",
-        {
-            "payment_reference": payment_reference,
-            "provider": provider,
-            "status": payment.status,
-            "order_state": payment.order_state,
-            "payment_state": payment.payment_state,
-            "provider_order_id": payment.provider_order_id,
-            "provider_payment_id": payment.provider_payment_id,
-            "provider_signature": payment.provider_signature,
-            "failed_reason": payment.failed_reason,
-            "attempt_count": payment.attempt_count,
-            "order_ids": order_ids,
-            "verified_at": payment.verified_at,
-            "updated_at": payment.updated_at,
-            "event_id": event_id,
-            "source": "payment-webhook",
-        },
-        upsert_filter={"payment_reference": payment_reference},
+    _mirror_food_payment(
+        payment,
+        source="payment-webhook",
+        order_ids=order_ids,
+        extra={"event_id": event_id},
     )
     return schemas.MessageResponse(message="Webhook processed")
 
@@ -3254,20 +3752,23 @@ def get_slot_demand(
         return mongo_rows
 
     slots = _query_food_slots(db)
+    slot_count_rows = (
+        db.query(
+            models.FoodOrder.slot_id.label("slot_id"),
+            func.count(models.FoodOrder.id).label("order_count"),
+        )
+        .filter(
+            models.FoodOrder.order_date == order_date,
+            _food_order_counts_towards_totals_clause(),
+        )
+        .group_by(models.FoodOrder.slot_id)
+        .all()
+    )
+    counts_by_slot = {int(row.slot_id): int(row.order_count or 0) for row in slot_count_rows if row.slot_id}
     response: list[schemas.SlotDemand] = []
 
     for slot in slots:
-        order_count = (
-            db.query(func.count(models.FoodOrder.id))
-            .filter(
-                models.FoodOrder.slot_id == slot.id,
-                models.FoodOrder.order_date == order_date,
-                models.FoodOrder.status != models.FoodOrderStatus.CANCELLED,
-                models.FoodOrder.status != models.FoodOrderStatus.REJECTED,
-            )
-            .scalar()
-            or 0
-        )
+        order_count = int(counts_by_slot.get(int(slot.id), 0))
         utilization = (order_count / slot.max_orders * 100.0) if slot.max_orders else 0.0
         response.append(
             schemas.SlotDemand(
@@ -3309,17 +3810,7 @@ def get_slot_demand_live_signal(
 
     active_orders = (
         base_order_query
-        .filter(
-            ~models.FoodOrder.status.in_(
-                [
-                    models.FoodOrderStatus.CANCELLED,
-                    models.FoodOrderStatus.REJECTED,
-                    models.FoodOrderStatus.DELIVERED,
-                    models.FoodOrderStatus.COLLECTED,
-                    models.FoodOrderStatus.REFUNDED,
-                ]
-            )
-        )
+        .filter(_food_order_is_active_clause())
         .count()
     )
 
@@ -3329,10 +3820,7 @@ def get_slot_demand_live_signal(
             models.FoodOrder.slot_id.label("slot_id"),
             func.count(models.FoodOrder.id).label("order_count"),
         )
-        .filter(
-            models.FoodOrder.status != models.FoodOrderStatus.CANCELLED,
-            models.FoodOrder.status != models.FoodOrderStatus.REJECTED,
-        )
+        .filter(_food_order_counts_towards_totals_clause())
         .group_by(models.FoodOrder.slot_id)
         .all()
     )
@@ -3357,6 +3845,7 @@ def get_slot_demand_live_signal(
         .filter(
             models.FoodOrder.order_date == order_date,
             models.FoodOrderAudit.created_at >= window_start,
+            _food_order_counts_towards_totals_clause(),
         )
     )
     if current_user.role == models.UserRole.OWNER:
@@ -3455,8 +3944,7 @@ def get_peak_times(
         .filter(
             models.FoodOrder.order_date >= start_date,
             models.FoodOrder.order_date <= today,
-            models.FoodOrder.status != models.FoodOrderStatus.CANCELLED,
-            models.FoodOrder.status != models.FoodOrderStatus.REJECTED,
+            _food_order_counts_towards_totals_clause(),
         )
         .group_by(models.FoodOrder.slot_id, models.FoodOrder.order_date)
         .all()
@@ -3566,7 +4054,14 @@ def food_ops_metrics(
 
     rows = query.all()
     today_rows = [row for row in rows if row.order_date == today]
-    active_orders = sum(1 for row in rows if not _is_order_final(row.status))
+    active_orders = sum(
+        1
+        for row in rows
+        if _order_is_active_for_food_hall_totals(
+            status_value=row.status,
+            payment_status=row.payment_status,
+        )
+    )
     completed_today = sum(
         1
         for row in today_rows
@@ -4037,7 +4532,8 @@ def vendor_reconciliation_resolve(
 def get_payment_config(
     _: CurrentUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.STUDENT, models.UserRole.FACULTY, models.UserRole.OWNER)),
 ):
-    key_id = os.getenv("RAZORPAY_KEY_ID", "")
+    # Expose only Razorpay publishable key id to the client (never server secrets).
+    key_id = _razorpay_key_id()
     if not key_id:
         raise HTTPException(status_code=500, detail="Razorpay configuration is missing")
     return schemas.RazorpayConfigOut(key_id=key_id)
@@ -4137,22 +4633,9 @@ def verify_payment(
             payment.provider_signature = payload.razorpay_signature
             payment.updated_at = datetime.utcnow()
             db.commit()
-            mirror_document(
-                "food_payments",
-                {
-                    "payment_reference": payment.payment_reference,
-                    "provider": "razorpay",
-                    "status": payment.status,
-                    "order_state": payment.order_state,
-                    "payment_state": payment.payment_state,
-                    "provider_order_id": payment.provider_order_id,
-                    "provider_payment_id": payment.provider_payment_id,
-                    "provider_signature": payment.provider_signature,
-                    "attempt_count": payment.attempt_count,
-                    "updated_at": payment.updated_at,
-                    "source": "payment-verify-backfill",
-                },
-                upsert_filter={"payment_reference": payment.payment_reference},
+            _mirror_food_payment(
+                payment,
+                source="payment-verify-backfill",
             )
             return schemas.MessageResponse(message="Payment already verified")
         raise HTTPException(status_code=409, detail="Payment already captured")
@@ -4177,6 +4660,7 @@ def verify_payment(
     if not isinstance(order_ids, list):
         order_ids = []
     orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(order_ids)).all()
+    canonical_reference = _canonical_payment_reference(payment, payload.razorpay_order_id)
 
     orders_changed: list[tuple[models.FoodOrder, models.FoodOrderStatus, str, str, bool]] = []
     for order in orders:
@@ -4187,7 +4671,7 @@ def verify_payment(
 
         order.payment_status = "paid"
         order.payment_provider = "razorpay"
-        order.payment_reference = payload.razorpay_payment_id
+        order.payment_reference = canonical_reference
         if order.status == models.FoodOrderStatus.PLACED:
             _apply_status_transition(order, models.FoodOrderStatus.VERIFIED, note="Payment verified via Razorpay")
             transitioned = True
@@ -4226,24 +4710,10 @@ def verify_payment(
     for order, _, _, _, _ in orders_changed:
         _sync_order_document(order, "payment-verify")
     _try_clear_food_cart(student_id=int(payment.student_id), user_id=current_user.id)
-    mirror_document(
-        "food_payments",
-        {
-            "payment_reference": payload.razorpay_order_id,
-            "provider": "razorpay",
-            "status": "paid",
-            "order_state": payment.order_state,
-            "payment_state": payment.payment_state,
-            "provider_order_id": payment.provider_order_id,
-            "provider_payment_id": payment.provider_payment_id,
-            "provider_signature": payment.provider_signature,
-            "attempt_count": payment.attempt_count,
-            "order_ids": order_ids,
-            "verified_at": payment.verified_at,
-            "updated_at": payment.updated_at,
-            "source": "payment-verify",
-        },
-        upsert_filter={"payment_reference": payment.payment_reference},
+    _mirror_food_payment(
+        payment,
+        source="payment-verify",
+        order_ids=order_ids,
     )
     if payment_was_already_paid:
         return schemas.MessageResponse(message="Payment already verified")
@@ -4304,6 +4774,7 @@ def report_payment_failure(
         if not isinstance(order_ids, list):
             order_ids = []
         orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(order_ids)).all()
+        canonical_reference = _canonical_payment_reference(payment, payload.razorpay_order_id)
         orders_changed: list[tuple[models.FoodOrder, models.FoodOrderStatus, str, str, bool]] = []
         for order in orders:
             previous_status = order.status
@@ -4313,7 +4784,7 @@ def report_payment_failure(
 
             order.payment_status = "paid"
             order.payment_provider = "razorpay"
-            order.payment_reference = resolved_payment_id
+            order.payment_reference = canonical_reference
             if order.status == models.FoodOrderStatus.PLACED:
                 _apply_status_transition(order, models.FoodOrderStatus.VERIFIED, note="Payment verified via Razorpay")
                 transitioned = True
@@ -4351,23 +4822,10 @@ def report_payment_failure(
         for order, _, _, _, _ in orders_changed:
             _sync_order_document(order, "payment-failure-reconciled")
         _try_clear_food_cart(student_id=int(payment.student_id), user_id=current_user.id)
-        mirror_document(
-            "food_payments",
-            {
-                "payment_reference": payment.payment_reference,
-                "provider": "razorpay",
-                "status": payment.status,
-                "order_state": payment.order_state,
-                "payment_state": payment.payment_state,
-                "provider_order_id": payment.provider_order_id,
-                "provider_payment_id": payment.provider_payment_id,
-                "attempt_count": payment.attempt_count,
-                "order_ids": order_ids,
-                "verified_at": payment.verified_at,
-                "updated_at": payment.updated_at,
-                "source": "payment-failure-reconciled",
-            },
-            upsert_filter={"payment_reference": payment.payment_reference},
+        _mirror_food_payment(
+            payment,
+            source="payment-failure-reconciled",
+            order_ids=order_ids,
         )
         return schemas.MessageResponse(message="Payment already captured on Razorpay; reconciled successfully")
 
@@ -4418,6 +4876,7 @@ def report_payment_failure(
     if not isinstance(order_ids, list):
         order_ids = []
     orders = db.query(models.FoodOrder).filter(models.FoodOrder.id.in_(order_ids)).all()
+    canonical_reference = _canonical_payment_reference(payment, payload.razorpay_order_id)
     orders_changed: list[tuple[models.FoodOrder, models.FoodOrderStatus, str, str]] = []
     for order in orders:
         previous_status = order.status
@@ -4425,7 +4884,7 @@ def report_payment_failure(
         previous_payment_ref = str(order.payment_reference or "")
         order.payment_status = "failed"
         order.payment_provider = "razorpay"
-        order.payment_reference = payload.razorpay_order_id
+        order.payment_reference = canonical_reference
         order_mutated = (
             previous_status != order.status
             or previous_payment_status != str(order.payment_status or "")
@@ -4462,22 +4921,9 @@ def report_payment_failure(
     db.commit()
     for order, _, _, _ in orders_changed:
         _sync_order_document(order, "payment-failure")
-    mirror_document(
-        "food_payments",
-        {
-            "payment_reference": payment.payment_reference,
-            "provider": "razorpay",
-            "status": payment.status,
-            "order_state": payment.order_state,
-            "payment_state": payment.payment_state,
-            "provider_order_id": payment.provider_order_id,
-            "provider_payment_id": payment.provider_payment_id,
-            "attempt_count": payment.attempt_count,
-            "failed_reason": payment.failed_reason,
-            "order_ids": order_ids,
-            "updated_at": payment.updated_at,
-            "source": "payment-failure",
-        },
-        upsert_filter={"payment_reference": payment.payment_reference},
+    _mirror_food_payment(
+        payment,
+        source="payment-failure",
+        order_ids=order_ids,
     )
     return schemas.MessageResponse(message="Payment failure recorded")

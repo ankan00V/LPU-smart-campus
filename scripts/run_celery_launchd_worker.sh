@@ -2,20 +2,31 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${ROOT_DIR}/.env"
+ENV_FILES=()
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  ENV_FILES+=("${ROOT_DIR}/.env")
+fi
+if [[ -f "${ROOT_DIR}/.env.local" ]]; then
+  ENV_FILES+=("${ROOT_DIR}/.env.local")
+fi
 CELERY_BIN="${ROOT_DIR}/.venv/bin/celery"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 
 load_env_from_dotenv() {
-  eval "$("${PYTHON_BIN}" - "${ENV_FILE}" <<'PY'
+  eval "$("${PYTHON_BIN}" - "${ENV_FILES[@]}" <<'PY'
 import shlex
 import sys
 
 from dotenv import dotenv_values
 
-for key, value in dotenv_values(sys.argv[1]).items():
-    if value is None:
-        continue
+data = {}
+for path in sys.argv[1:]:
+    for key, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        data[key] = value
+
+for key, value in data.items():
     print(f"export {key}={shlex.quote(value)}")
 PY
 )"
@@ -33,8 +44,8 @@ require_value() {
   fi
 }
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "FATAL: missing env file at ${ENV_FILE}" >&2
+if [[ "${#ENV_FILES[@]}" -eq 0 ]]; then
+  echo "FATAL: missing env file at ${ROOT_DIR}/.env (or .env.local)" >&2
   exit 1
 fi
 

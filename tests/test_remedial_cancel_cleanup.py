@@ -168,6 +168,24 @@ class RemedialCancelCleanupTests(unittest.TestCase):
         self.assertIsNotNone(class_row)
         self.assertTrue(bool(class_row.is_active))
 
+    def test_cancel_succeeds_when_post_commit_mirror_side_effects_fail(self):
+        with patch("app.routers.remedial.mirror_document", side_effect=RuntimeError("mongo down")), patch(
+            "app.routers.remedial.mirror_event",
+            side_effect=RuntimeError("event down"),
+        ), patch("app.routers.remedial.get_mongo_db", side_effect=RuntimeError("cleanup down")):
+            out = cancel_makeup_class(class_id=51, db=self.db, current_user=self._faculty_user())
+
+        self.assertFalse(bool(out.is_active))
+        class_row = self.db.get(models.MakeUpClass, 51)
+        self.assertIsNotNone(class_row)
+        self.assertFalse(bool(class_row.is_active))
+        self.assertEqual(
+            self.db.query(models.RemedialMessage)
+            .filter(models.RemedialMessage.makeup_class_id == 51)
+            .count(),
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

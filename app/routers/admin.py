@@ -384,6 +384,55 @@ def _resolve_student_course_attendance_status(
     return None
 
 
+def _resolve_student_schedule_attendance_status(
+    db: Session,
+    *,
+    student_id: int,
+    schedule_id: int,
+    attendance_date: date,
+    fallback_course_id: int | None = None,
+) -> models.AttendanceStatus | None:
+    submission = (
+        db.query(models.AttendanceSubmission.status)
+        .filter(
+            models.AttendanceSubmission.student_id == int(student_id),
+            models.AttendanceSubmission.schedule_id == int(schedule_id),
+            models.AttendanceSubmission.class_date == attendance_date,
+        )
+        .first()
+    )
+    if submission is not None:
+        status_out = _submission_status_to_attendance_status(getattr(submission, "status", None))
+        if status_out is not None:
+            return status_out
+    if fallback_course_id is not None:
+        return _resolve_student_course_attendance_status(
+            db,
+            student_id=int(student_id),
+            course_id=int(fallback_course_id),
+            attendance_date=attendance_date,
+        )
+    return None
+
+
+def _derive_attendance_status_from_submissions(
+    rows: list[models.AttendanceSubmission] | list[tuple[models.AttendanceSubmissionStatus]] | list[Any],
+) -> models.AttendanceStatus | None:
+    resolved: list[models.AttendanceStatus] = []
+    for row in rows:
+        status_value = getattr(row, "status", None)
+        if status_value is None and isinstance(row, tuple) and row:
+            status_value = row[0]
+        resolved_status = _submission_status_to_attendance_status(status_value)
+        if resolved_status is not None:
+            resolved.append(resolved_status)
+    if any(item == models.AttendanceStatus.PRESENT for item in resolved):
+        return models.AttendanceStatus.PRESENT
+    if any(item == models.AttendanceStatus.ABSENT for item in resolved):
+        return models.AttendanceStatus.ABSENT
+    return None
+
+
 def _attendance_status_label(status_value: models.AttendanceStatus | None) -> str:
     if status_value == models.AttendanceStatus.PRESENT:
         return "Present"
@@ -2271,51 +2320,134 @@ def rms_attendance_student_context(
                 detail="Student is outside your allocated section(s) and teaching scope.",
             )
 
-    course_query = (
-        db.query(models.Course)
+    schedule_query = (
+        db.query(models.ClassSchedule, models.Course)
+        .join(models.Course, models.Course.id == models.ClassSchedule.course_id)
         .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
-        .filter(models.Enrollment.student_id == int(student.id))
+        .filter(
+            models.Enrollment.student_id == int(student.id),
+            models.ClassSchedule.weekday == int(target_date.weekday()),
+            models.ClassSchedule.is_active.is_(True),
+        )
     )
     if faculty_scope_id is not None:
-        course_query = course_query.filter(models.Course.faculty_id == faculty_scope_id)
-    courses = course_query.order_by(models.Course.code.asc(), models.Course.id.asc()).all()
-    faculty_ids = sorted({int(item.faculty_id) for item in courses if item.faculty_id})
+        schedule_query = schedule_query.filter(models.Course.faculty_id == faculty_scope_id)
+    schedule_rows = (
+        schedule_query
+        .order_by(
+            models.Course.code.asc(),
+            models.ClassSchedule.start_time.asc(),
+            models.ClassSchedule.id.asc(),
+        )
+        .all()
+    )
+
+    schedule_ids = sorted({int(schedule.id) for schedule, _ in schedule_rows})
+    course_ids = sorted({int(course.id) for _, course in schedule_rows})
+    submission_rows = (
+        db.query(models.AttendanceSubmission.schedule_id, models.AttendanceSubmission.status)
+        .filter(
+            models.AttendanceSubmission.student_id == int(student.id),
+            models.AttendanceSubmission.class_date == target_date,
+            models.AttendanceSubmission.schedule_id.in_(schedule_ids),
+        )
+        .all()
+        if schedule_ids
+        else []
+    )
+    submission_status_by_schedule_id: dict[int, models.AttendanceStatus] = {}
+    for schedule_id_value, submission_status in submission_rows:
+        mapped_status = _submission_status_to_attendance_status(submission_status)
+        if mapped_status is not None:
+            submission_status_by_schedule_id[int(schedule_id_value)] = mapped_status
+
+    record_rows = (
+        db.query(models.AttendanceRecord.course_id, models.AttendanceRecord.status)
+        .filter(
+            models.AttendanceRecord.student_id == int(student.id),
+            models.AttendanceRecord.attendance_date == target_date,
+            models.AttendanceRecord.course_id.in_(course_ids),
+        )
+        .all()
+        if course_ids
+        else []
+    )
+    record_status_by_course_id = {
+        int(course_id_value): status_value
+        for course_id_value, status_value in record_rows
+    }
+
+    faculty_ids = sorted({int(course.faculty_id) for _, course in schedule_rows if course.faculty_id})
     faculty_map = (
         {int(row.id): row for row in db.query(models.Faculty).filter(models.Faculty.id.in_(faculty_ids)).all()}
         if faculty_ids
         else {}
     )
 
-    subjects: list[schemas.RMSAttendanceStudentSubjectOut] = []
-    for course in courses:
-        current_status = _resolve_student_course_attendance_status(
-            db,
-            student_id=int(student.id),
-            course_id=int(course.id),
-            attendance_date=target_date,
-        )
-        faculty = faculty_map.get(int(course.faculty_id)) if course.faculty_id else None
-        subjects.append(
-            schemas.RMSAttendanceStudentSubjectOut(
-                course_id=int(course.id),
-                course_code=str(course.code or "").strip().upper(),
-                course_title=str(course.title or ""),
-                faculty_id=int(course.faculty_id),
-                faculty_name=(str(faculty.name or "").strip() or None) if faculty else None,
-                current_status=current_status,
-                current_status_label=_attendance_status_label(current_status),
+    grouped_subjects: dict[int, dict[str, Any]] = {}
+    for schedule, course in schedule_rows:
+        course_id = int(course.id)
+        subject_entry = grouped_subjects.get(course_id)
+        if subject_entry is None:
+            faculty = faculty_map.get(int(course.faculty_id)) if course.faculty_id else None
+            subject_entry = {
+                "course_id": course_id,
+                "course_code": str(course.code or "").strip().upper(),
+                "course_title": str(course.title or ""),
+                "faculty_id": int(course.faculty_id),
+                "faculty_name": (str(faculty.name or "").strip() or None) if faculty else None,
+                "slots": [],
+            }
+            grouped_subjects[course_id] = subject_entry
+
+        slot_status = submission_status_by_schedule_id.get(int(schedule.id))
+        if slot_status is None:
+            slot_status = record_status_by_course_id.get(course_id)
+        subject_entry["slots"].append(
+            schemas.RMSAttendanceSubjectSlotOut(
+                schedule_id=int(schedule.id),
+                weekday=int(schedule.weekday),
+                start_time=schedule.start_time,
+                end_time=schedule.end_time,
+                classroom_label=(str(schedule.classroom_label or "").strip() or None),
+                current_status=slot_status,
+                current_status_label=_attendance_status_label(slot_status),
             )
         )
+
+    subjects: list[schemas.RMSAttendanceStudentSubjectOut] = []
+    for subject_entry in grouped_subjects.values():
+        slot_models = list(subject_entry.get("slots") or [])
+        slot_statuses = [item.current_status for item in slot_models if item.current_status is not None]
+        current_status: models.AttendanceStatus | None = None
+        if any(status == models.AttendanceStatus.PRESENT for status in slot_statuses):
+            current_status = models.AttendanceStatus.PRESENT
+        elif any(status == models.AttendanceStatus.ABSENT for status in slot_statuses):
+            current_status = models.AttendanceStatus.ABSENT
+        subjects.append(
+            schemas.RMSAttendanceStudentSubjectOut(
+                course_id=int(subject_entry["course_id"]),
+                course_code=str(subject_entry["course_code"]),
+                course_title=str(subject_entry["course_title"]),
+                faculty_id=int(subject_entry["faculty_id"]),
+                faculty_name=subject_entry["faculty_name"],
+                current_status=current_status,
+                current_status_label=_attendance_status_label(current_status),
+                slots=slot_models,
+            )
+        )
+    subjects.sort(key=lambda item: (item.course_code, item.course_id))
 
     student_out = _rms_student_lookup_out(
         db,
         student=student,
         faculty_scope_id=faculty_scope_id,
     )
+    slot_count = sum(len(item.slots) for item in subjects)
     message = (
-        f"Loaded {len(subjects)} subject(s) for attendance date {target_date.isoformat()}."
+        f"Loaded {len(subjects)} subject(s) and {slot_count} class slot(s) for {target_date.isoformat()}."
         if subjects
-        else "No enrolled subjects found for this student in your scope."
+        else "No class slot found for this student on the selected date in your scope."
     )
     return schemas.RMSAttendanceStudentContextOut(
         student=student_out,
@@ -2340,14 +2472,66 @@ def rms_update_attendance_status(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found for this registration number.")
 
-    course_code = _normalize_admin_course_code(payload.course_code)
+    normalized_course_code = (
+        _normalize_admin_course_code(payload.course_code)
+        if payload.course_code
+        else ""
+    )
     course = (
         db.query(models.Course)
-        .filter(func.upper(models.Course.code) == course_code)
+        .filter(func.upper(models.Course.code) == normalized_course_code)
         .first()
+        if normalized_course_code
+        else None
     )
-    if not course:
+    if payload.course_code and not course:
         raise HTTPException(status_code=404, detail="Course not found for this course code.")
+
+    target_schedule: models.ClassSchedule | None = None
+    if payload.schedule_id:
+        target_schedule = db.get(models.ClassSchedule, int(payload.schedule_id))
+        if not target_schedule or not target_schedule.is_active:
+            raise HTTPException(status_code=404, detail="Schedule not found for selected slot.")
+        if int(target_schedule.weekday) != int(payload.attendance_date.weekday()):
+            raise HTTPException(
+                status_code=400,
+                detail="Selected schedule is not configured on the chosen attendance date.",
+            )
+        schedule_course = db.get(models.Course, int(target_schedule.course_id))
+        if not schedule_course:
+            raise HTTPException(status_code=404, detail="Course not found for selected schedule.")
+        if course is not None and int(course.id) != int(schedule_course.id):
+            raise HTTPException(
+                status_code=409,
+                detail="Selected schedule does not belong to the provided subject.",
+            )
+        course = schedule_course
+    else:
+        if course is None:
+            raise HTTPException(
+                status_code=400,
+                detail="course_code or schedule_id is required for attendance update.",
+            )
+        candidate_schedules = (
+            db.query(models.ClassSchedule)
+            .filter(
+                models.ClassSchedule.course_id == int(course.id),
+                models.ClassSchedule.weekday == int(payload.attendance_date.weekday()),
+                models.ClassSchedule.is_active.is_(True),
+            )
+            .order_by(models.ClassSchedule.start_time.asc(), models.ClassSchedule.id.asc())
+            .all()
+        )
+        if not candidate_schedules:
+            raise HTTPException(
+                status_code=409,
+                detail="No active class slot configured for this subject on the selected date.",
+            )
+        target_schedule = candidate_schedules[0]
+
+    if course is None or target_schedule is None:
+        raise HTTPException(status_code=500, detail="Unable to resolve course and schedule for attendance update.")
+    course_code = str(course.code or "").strip().upper()
 
     if current_user.role == models.UserRole.FACULTY:
         if not current_user.faculty_id:
@@ -2381,26 +2565,79 @@ def rms_update_attendance_status(
         acting_faculty_id = int(current_user.faculty_id or course.faculty_id)
         source = "rms-faculty-attendance-override"
 
-    previous_status = (
-        _resolve_student_course_attendance_status(
-            db,
-            student_id=int(student.id),
-            course_id=int(course.id),
-            attendance_date=payload.attendance_date,
-        )
+    previous_status = _resolve_student_schedule_attendance_status(
+        db,
+        student_id=int(student.id),
+        schedule_id=int(target_schedule.id),
+        attendance_date=payload.attendance_date,
+        fallback_course_id=int(course.id),
     )
 
     note = _normalize_rms_action_note(payload.note)
+    slot_label = f"{target_schedule.start_time.strftime('%H:%M')}-{target_schedule.end_time.strftime('%H:%M')}"
     review_note = (
         note
-        or f"Attendance {payload.status.value} override via RMS by {current_user.role.value}."
+        or (
+            f"Attendance {payload.status.value} override via RMS by "
+            f"{current_user.role.value} for slot {slot_label}."
+        )
     )
+    submission_status = (
+        models.AttendanceSubmissionStatus.APPROVED
+        if payload.status == models.AttendanceStatus.PRESENT
+        else models.AttendanceSubmissionStatus.REJECTED
+    )
+    target_submission = (
+        db.query(models.AttendanceSubmission)
+        .filter(
+            models.AttendanceSubmission.student_id == int(student.id),
+            models.AttendanceSubmission.course_id == int(course.id),
+            models.AttendanceSubmission.class_date == payload.attendance_date,
+            models.AttendanceSubmission.schedule_id == int(target_schedule.id),
+        )
+        .order_by(models.AttendanceSubmission.id.asc())
+        .first()
+    )
+    if target_submission is None:
+        target_submission = models.AttendanceSubmission(
+            schedule_id=int(target_schedule.id),
+            course_id=int(course.id),
+            faculty_id=int(target_schedule.faculty_id),
+            student_id=int(student.id),
+            class_date=payload.attendance_date,
+            selfie_photo_data_url=None,
+            submitted_at=now_dt,
+        )
+        db.add(target_submission)
+
+    target_submission.status = submission_status
+    target_submission.ai_match = payload.status == models.AttendanceStatus.PRESENT
+    target_submission.ai_confidence = 1.0 if payload.status == models.AttendanceStatus.PRESENT else 0.0
+    target_submission.ai_model = "rms-attendance-override"
+    target_submission.ai_reason = review_note
+    target_submission.reviewed_by_faculty_id = int(acting_faculty_id)
+    target_submission.reviewed_at = now_dt
+    target_submission.review_note = review_note
+    if not target_submission.submitted_at:
+        target_submission.submitted_at = now_dt
+
+    db.flush()
+    submission_rows = (
+        db.query(models.AttendanceSubmission.status)
+        .filter(
+            models.AttendanceSubmission.student_id == int(student.id),
+            models.AttendanceSubmission.course_id == int(course.id),
+            models.AttendanceSubmission.class_date == payload.attendance_date,
+        )
+        .all()
+    )
+    aggregate_status = _derive_attendance_status_from_submissions(submission_rows) or payload.status
     _, record = append_event_and_recompute(
         db,
         student_id=int(student.id),
         course_id=int(course.id),
         attendance_date=payload.attendance_date,
-        status=payload.status,
+        status=aggregate_status,
         source=source,
         actor_user_id=int(current_user.id),
         actor_faculty_id=int(acting_faculty_id),
@@ -2415,72 +2652,13 @@ def rms_update_attendance_status(
         course_id=int(course.id),
     )
 
-    submission_status = (
-        models.AttendanceSubmissionStatus.APPROVED
-        if payload.status == models.AttendanceStatus.PRESENT
-        else models.AttendanceSubmissionStatus.REJECTED
-    )
-    submission_rows = (
-        db.query(models.AttendanceSubmission)
-        .filter(
-            models.AttendanceSubmission.student_id == int(student.id),
-            models.AttendanceSubmission.course_id == int(course.id),
-            models.AttendanceSubmission.class_date == payload.attendance_date,
-        )
-        .all()
-    )
-    submissions_by_schedule = {int(item.schedule_id): item for item in submission_rows}
-    target_schedules = (
-        db.query(models.ClassSchedule)
-        .filter(
-            models.ClassSchedule.course_id == int(course.id),
-            models.ClassSchedule.weekday == int(payload.attendance_date.weekday()),
-            models.ClassSchedule.is_active.is_(True),
-        )
-        .order_by(models.ClassSchedule.start_time.asc(), models.ClassSchedule.id.asc())
-        .all()
-    )
-    submissions_for_sync: list[models.AttendanceSubmission] = []
-    for submission in submission_rows:
-        submission.status = submission_status
-        submission.ai_match = payload.status == models.AttendanceStatus.PRESENT
-        submission.ai_confidence = 1.0 if payload.status == models.AttendanceStatus.PRESENT else 0.0
-        submission.ai_model = "rms-attendance-override"
-        submission.ai_reason = review_note
-        submission.reviewed_by_faculty_id = int(acting_faculty_id)
-        submission.reviewed_at = now_dt
-        submission.review_note = review_note
-        if not submission.submitted_at:
-            submission.submitted_at = now_dt
-        submissions_for_sync.append(submission)
-
-    for schedule in target_schedules:
-        if int(schedule.id) in submissions_by_schedule:
-            continue
-        created_submission = models.AttendanceSubmission(
-            schedule_id=int(schedule.id),
-            course_id=int(course.id),
-            faculty_id=int(schedule.faculty_id),
-            student_id=int(student.id),
-            class_date=payload.attendance_date,
-            selfie_photo_data_url=None,
-            ai_match=payload.status == models.AttendanceStatus.PRESENT,
-            ai_confidence=1.0 if payload.status == models.AttendanceStatus.PRESENT else 0.0,
-            ai_model="rms-attendance-override",
-            ai_reason=review_note,
-            status=submission_status,
-            submitted_at=now_dt,
-            reviewed_by_faculty_id=int(acting_faculty_id),
-            reviewed_at=now_dt,
-            review_note=review_note,
-        )
-        db.add(created_submission)
-        submissions_for_sync.append(created_submission)
+    submissions_for_sync: list[models.AttendanceSubmission] = [target_submission]
 
     section_token = re.sub(r"\s+", "", str(student.section or "").strip().upper()) or "UNASSIGNED"
     notification_text = (
         f"Your attendance has been updated for subject {str(course.title or '').strip()} "
-        f"({str(course.code or '').strip().upper()}) for date {payload.attendance_date.isoformat()}. "
+        f"({str(course.code or '').strip().upper()}) on {payload.attendance_date.isoformat()} "
+        f"for slot {slot_label}. "
         f"Updated at {now_dt.strftime('%Y-%m-%d %H:%M:%S')} (server time). "
         "Please check your attendance module for more information."
     )
@@ -2567,6 +2745,9 @@ def rms_update_attendance_status(
             "registration_number": registration_number,
             "course_id": int(course.id),
             "course_code": course_code,
+            "schedule_id": int(target_schedule.id),
+            "class_start_time": str(target_schedule.start_time),
+            "class_end_time": str(target_schedule.end_time),
             "attendance_date": payload.attendance_date.isoformat(),
             "previous_status": previous_status.value if previous_status else None,
             "updated_status": payload.status.value,
@@ -2588,24 +2769,26 @@ def rms_update_attendance_status(
     status_label = str(payload.status.value).upper()
     message = (
         f"Attendance status set to {status_label} for {registration_number} "
-        f"in {course_code} on {payload.attendance_date.isoformat()}."
+        f"in {course_code} on {payload.attendance_date.isoformat()} for slot {slot_label}."
     )
     if previous_status and previous_status == payload.status:
         message = (
             f"Attendance status already {status_label} for {registration_number} "
-            f"in {course_code} on {payload.attendance_date.isoformat()}."
+            f"in {course_code} on {payload.attendance_date.isoformat()} for slot {slot_label}."
         )
 
     publish_domain_event(
         "rms.attendance.updated",
         payload={
             "record_id": int(record.id),
+            "schedule_id": int(target_schedule.id),
             "student_id": int(student.id),
             "course_id": int(course.id),
             "course_code": course_code,
             "attendance_date": payload.attendance_date.isoformat(),
             "previous_status": previous_status.value if previous_status else None,
-            "updated_status": record.status.value,
+            "updated_status": payload.status.value,
+            "aggregate_status": record.status.value,
             "updated_at": now_dt.isoformat(),
         },
         scopes={
@@ -2626,8 +2809,10 @@ def rms_update_attendance_status(
             "student_id": int(student.id),
             "course_id": int(course.id),
             "course_code": course_code,
+            "schedule_id": int(target_schedule.id),
             "attendance_date": payload.attendance_date.isoformat(),
-            "status": record.status.value,
+            "status": payload.status.value,
+            "aggregate_status": record.status.value,
             "message_id": int(student_notification.id),
         }
     )
@@ -2641,6 +2826,10 @@ def rms_update_attendance_status(
 
     return schemas.RMSAttendanceStatusUpdateOut(
         record_id=int(record.id),
+        schedule_id=int(target_schedule.id),
+        class_start_time=target_schedule.start_time,
+        class_end_time=target_schedule.end_time,
+        classroom_label=(str(target_schedule.classroom_label or "").strip() or None),
         student_id=int(student.id),
         student_name=str(student.name or f"Student #{student.id}"),
         registration_number=(str(student.registration_number or "").strip().upper() or None),
@@ -2651,7 +2840,7 @@ def rms_update_attendance_status(
         faculty_name=(str(faculty.name or "").strip() or None) if faculty else None,
         attendance_date=record.attendance_date,
         previous_status=previous_status,
-        updated_status=record.status,
+        updated_status=payload.status,
         source=str(record.source or source),
         note=note,
         updated_at=now_dt,

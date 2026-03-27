@@ -3,6 +3,8 @@ import hmac
 import logging
 import os
 import secrets
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -12,8 +14,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 import jwt
 from jwt import ExpiredSignatureError, ImmatureSignatureError, InvalidTokenError
 from pymongo.errors import PyMongoError
+from sqlalchemy import func, text
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from . import models
+from .database import SessionLocal
+from .id_alignment import align_faculty_profile_id_with_sql, align_student_profile_id_with_sql
 from .enterprise_controls import resolve_secret
 from .identity_shield import observe_identity_session
 from .mongo import get_mongo_db, invalidate_mongo_connection
@@ -27,6 +34,10 @@ REQUIRED_JWT_CLAIMS = ("sub", "role", "sid", "jti", "typ", "exp", "iat", "nbf")
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+_SQL_REQUEST_SYNC_TTL_SECONDS = max(30, min(3600, int(os.getenv("AUTH_SQL_SYNC_TTL_SECONDS", "900"))))
+_SQL_REQUEST_SYNC_CACHE: dict[str, float] = {}
+_SQL_REQUEST_SYNC_IN_PROGRESS: set[str] = set()
+_SQL_REQUEST_SYNC_LOCK = threading.Lock()
 
 
 @dataclass
@@ -50,6 +61,168 @@ class CurrentUser:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sql_request_sync_key(*, user_id: int, role: models.UserRole, student_id: Any, faculty_id: Any) -> str:
+    return f"{int(user_id)}:{role.value}:{_int_or_zero(student_id)}:{_int_or_zero(faculty_id)}"
+
+
+def _prune_sql_request_sync_cache(now_monotonic: float) -> None:
+    if not _SQL_REQUEST_SYNC_CACHE:
+        return
+    cutoff = now_monotonic - _SQL_REQUEST_SYNC_TTL_SECONDS
+    stale_keys = [key for key, synced_at in _SQL_REQUEST_SYNC_CACHE.items() if synced_at < cutoff]
+    for key in stale_keys:
+        _SQL_REQUEST_SYNC_CACHE.pop(key, None)
+
+
+def _begin_sql_request_sync(sync_key: str) -> bool:
+    now_monotonic = time.monotonic()
+    with _SQL_REQUEST_SYNC_LOCK:
+        _prune_sql_request_sync_cache(now_monotonic)
+        last_synced = _SQL_REQUEST_SYNC_CACHE.get(sync_key)
+        if last_synced is not None and (now_monotonic - last_synced) < _SQL_REQUEST_SYNC_TTL_SECONDS:
+            return False
+        if sync_key in _SQL_REQUEST_SYNC_IN_PROGRESS:
+            return False
+        _SQL_REQUEST_SYNC_IN_PROGRESS.add(sync_key)
+        return True
+
+
+def _finish_sql_request_sync(sync_key: str, *, success: bool) -> None:
+    now_monotonic = time.monotonic()
+    with _SQL_REQUEST_SYNC_LOCK:
+        _SQL_REQUEST_SYNC_IN_PROGRESS.discard(sync_key)
+        if success:
+            _SQL_REQUEST_SYNC_CACHE[sync_key] = now_monotonic
+        _prune_sql_request_sync_cache(now_monotonic)
+
+
+def sync_auth_user_pk_sequence(db: Session) -> None:
+    bind = db.get_bind()
+    if bind is None or getattr(bind.dialect, "name", "") != "postgresql":
+        return
+    max_id = db.query(func.max(models.AuthUser.id)).scalar()
+    if max_id is None:
+        db.execute(text("SELECT setval(pg_get_serial_sequence('auth_users', 'id'), 1, false)"))
+        return
+    db.execute(
+        text("SELECT setval(pg_get_serial_sequence('auth_users', 'id'), :value, true)"),
+        {"value": int(max_id)},
+    )
+
+
+def upsert_sql_auth_user_record(
+    db: Session,
+    *,
+    email: str,
+    password_hash: str,
+    role: models.UserRole,
+    student_id: int | None = None,
+    faculty_id: int | None = None,
+    is_active: bool = True,
+    last_login_at: datetime | None = None,
+    created_at: datetime | None = None,
+    requested_id: int | None = None,
+) -> tuple[models.AuthUser, bool]:
+    email_norm = str(email or "").strip().lower()
+    if not email_norm:
+        raise HTTPException(status_code=500, detail="Invalid auth user email")
+
+    desired_student_id: int | None = None
+    desired_faculty_id: int | None = None
+    if role == models.UserRole.STUDENT:
+        desired_student_id = int(student_id) if student_id else None
+    elif role == models.UserRole.FACULTY:
+        desired_faculty_id = int(faculty_id) if faculty_id else None
+
+    existing_by_email = (
+        db.query(models.AuthUser)
+        .filter(func.lower(models.AuthUser.email) == email_norm)
+        .first()
+    )
+    if existing_by_email:
+        changed = False
+        if str(existing_by_email.email or "").strip().lower() != email_norm:
+            existing_by_email.email = email_norm
+            changed = True
+        if existing_by_email.password_hash != password_hash:
+            existing_by_email.password_hash = password_hash
+            changed = True
+        if existing_by_email.role != role:
+            existing_by_email.role = role
+            changed = True
+        if existing_by_email.student_id != desired_student_id:
+            existing_by_email.student_id = desired_student_id
+            changed = True
+        if existing_by_email.faculty_id != desired_faculty_id:
+            existing_by_email.faculty_id = desired_faculty_id
+            changed = True
+        if existing_by_email.is_active != is_active:
+            existing_by_email.is_active = is_active
+            changed = True
+        if last_login_at and existing_by_email.last_login_at != last_login_at:
+            existing_by_email.last_login_at = last_login_at
+            changed = True
+        if changed:
+            db.flush()
+        return existing_by_email, False
+
+    requested_numeric_id = int(requested_id) if requested_id else None
+    if requested_numeric_id is not None:
+        existing_by_id = db.get(models.AuthUser, requested_numeric_id)
+        if existing_by_id:
+            if str(existing_by_id.email or "").strip().lower() != email_norm:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auth user id collision detected. Contact support to reconcile auth records.",
+                )
+            changed = False
+            if existing_by_id.password_hash != password_hash:
+                existing_by_id.password_hash = password_hash
+                changed = True
+            if existing_by_id.role != role:
+                existing_by_id.role = role
+                changed = True
+            if existing_by_id.student_id != desired_student_id:
+                existing_by_id.student_id = desired_student_id
+                changed = True
+            if existing_by_id.faculty_id != desired_faculty_id:
+                existing_by_id.faculty_id = desired_faculty_id
+                changed = True
+            if existing_by_id.is_active != is_active:
+                existing_by_id.is_active = is_active
+                changed = True
+            if last_login_at and existing_by_id.last_login_at != last_login_at:
+                existing_by_id.last_login_at = last_login_at
+                changed = True
+            if changed:
+                db.flush()
+            return existing_by_id, False
+
+    new_user = models.AuthUser(
+        id=requested_numeric_id,
+        email=email_norm,
+        password_hash=password_hash,
+        role=role,
+        student_id=desired_student_id,
+        faculty_id=desired_faculty_id,
+        is_active=is_active,
+        last_login_at=last_login_at,
+        created_at=created_at or datetime.utcnow(),
+    )
+    db.add(new_user)
+    db.flush()
+    if requested_numeric_id is not None:
+        sync_auth_user_pk_sequence(db)
+    return new_user, True
 
 
 def _is_production_env() -> bool:
@@ -527,6 +700,8 @@ def get_current_user(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user role") from exc
 
+        _sync_request_user_with_sql(db, user_doc=user_doc, role=role)
+
         user = CurrentUser(
             id=int(user_doc["id"]),
             email=str(user_doc.get("email", "")),
@@ -570,12 +745,16 @@ def require_roles(*roles: models.UserRole) -> Callable[[CurrentUser], CurrentUse
             "yes",
             "on",
         }
-        if enforce_mfa and current_user.role in {models.UserRole.ADMIN, models.UserRole.FACULTY}:
+        if enforce_mfa and current_user.role in {
+            models.UserRole.ADMIN,
+            models.UserRole.FACULTY,
+            models.UserRole.OWNER,
+        }:
             if not current_user.mfa_enabled:
                 raise HTTPException(
                     status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                     detail=(
-                        "MFA enrollment is required for admin/faculty accounts. "
+                        "MFA enrollment is required for admin/faculty/owner accounts. "
                         "Complete /auth/mfa/enroll and /auth/mfa/activate first."
                     ),
                 )
@@ -587,3 +766,173 @@ def require_roles(*roles: models.UserRole) -> Callable[[CurrentUser], CurrentUse
         return current_user
 
     return dependency
+
+
+def _sync_request_user_with_sql(db, *, user_doc: dict[str, Any], role: models.UserRole) -> None:
+    user_id = _int_or_zero(user_doc.get("id"))
+    if user_id <= 0:
+        return
+
+    sync_key = _sql_request_sync_key(
+        user_id=user_id,
+        role=role,
+        student_id=user_doc.get("student_id"),
+        faculty_id=user_doc.get("faculty_id"),
+    )
+    if not _begin_sql_request_sync(sync_key):
+        return
+
+    success = False
+    try:
+        with SessionLocal() as sql_db:
+            if role == models.UserRole.STUDENT:
+                align_student_profile_id_with_sql(
+                    db,
+                    sql_db,
+                    email=str(user_doc.get("email", "")),
+                    user_doc=user_doc,
+                )
+            elif role == models.UserRole.FACULTY:
+                align_faculty_profile_id_with_sql(
+                    db,
+                    sql_db,
+                    email=str(user_doc.get("email", "")),
+                    user_doc=user_doc,
+                )
+            _ensure_sql_auth_user(user_doc, sql_db=sql_db)
+            sql_db.commit()
+        success = True
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        logger.warning(
+            "request_sql_sync_degraded user_id=%s role=%s detail=%s",
+            user_id,
+            role.value,
+            exc.detail,
+        )
+    except Exception:
+        logger.exception("request_sql_sync_failed user_id=%s role=%s", user_id, role.value)
+    finally:
+        _finish_sql_request_sync(sync_key, success=success)
+
+
+def _ensure_sql_auth_user(user_doc: dict[str, Any], sql_db: Session | None = None) -> None:
+    raw_id = user_doc.get("id")
+    try:
+        user_id = int(raw_id)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail="Invalid auth user id in session") from exc
+    if user_id <= 0:
+        raise HTTPException(status_code=500, detail="Invalid auth user id in session")
+
+    email = str(user_doc.get("email") or "").strip()
+    if not email:
+        raise HTTPException(status_code=500, detail="Invalid auth user email in session")
+    email_norm = email.lower()
+
+    try:
+        role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Invalid auth user role in session") from exc
+
+    password_hash = str(user_doc.get("password_hash") or "").strip()
+    if not password_hash:
+        raise HTTPException(status_code=500, detail="Auth user password hash missing in session")
+
+    student_id = user_doc.get("student_id")
+    faculty_id = user_doc.get("faculty_id")
+    is_active = bool(user_doc.get("is_active", True))
+    created_at = user_doc.get("created_at")
+    last_login_at = user_doc.get("last_login_at")
+
+    owns_session = sql_db is None
+    db = sql_db or SessionLocal()
+    try:
+        existing = db.get(models.AuthUser, user_id)
+        if existing:
+            if str(existing.email or "").strip().lower() != email_norm:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auth user id collision detected. Contact support to reconcile auth records.",
+                )
+            changed = False
+            if existing.role != role:
+                existing.role = role
+                changed = True
+            if existing.password_hash != password_hash:
+                existing.password_hash = password_hash
+                changed = True
+            if role == models.UserRole.STUDENT:
+                if existing.faculty_id is not None:
+                    existing.faculty_id = None
+                    changed = True
+                if student_id and existing.student_id != int(student_id):
+                    existing.student_id = int(student_id)
+                    changed = True
+            elif role == models.UserRole.FACULTY:
+                if existing.student_id is not None:
+                    existing.student_id = None
+                    changed = True
+                if faculty_id and existing.faculty_id != int(faculty_id):
+                    existing.faculty_id = int(faculty_id)
+                    changed = True
+            else:
+                if existing.student_id is not None or existing.faculty_id is not None:
+                    existing.student_id = None
+                    existing.faculty_id = None
+                    changed = True
+            if existing.is_active != is_active:
+                existing.is_active = is_active
+                changed = True
+            if last_login_at and existing.last_login_at != last_login_at:
+                existing.last_login_at = last_login_at
+                changed = True
+            if changed:
+                if owns_session:
+                    db.commit()
+                else:
+                    db.flush()
+            return
+
+        existing_by_email = (
+            db.query(models.AuthUser)
+            .filter(func.lower(models.AuthUser.email) == email_norm)
+            .first()
+        )
+        if existing_by_email:
+            if int(existing_by_email.id) != user_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Auth user email already mapped to a different id. Contact support to reconcile.",
+                )
+            return
+
+        new_user = models.AuthUser(
+            id=user_id,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            student_id=int(student_id) if student_id else None,
+            faculty_id=int(faculty_id) if faculty_id else None,
+            is_active=is_active,
+            last_login_at=last_login_at,
+            created_at=created_at or datetime.utcnow(),
+        )
+        db.add(new_user)
+        db.flush()
+        sync_auth_user_pk_sequence(db)
+        if owns_session:
+            db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        existing = db.get(models.AuthUser, user_id)
+        if existing and str(existing.email or "").strip().lower() == email_norm:
+            return
+        raise HTTPException(status_code=500, detail="Failed to sync auth user to SQL") from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Authentication SQL datastore unavailable") from exc
+    finally:
+        if owns_session:
+            db.close()

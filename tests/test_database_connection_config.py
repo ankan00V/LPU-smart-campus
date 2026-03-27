@@ -1,6 +1,7 @@
 import importlib
 import os
 import unittest
+from unittest.mock import patch
 
 
 class DatabaseConnectionConfigTests(unittest.TestCase):
@@ -62,3 +63,15 @@ class DatabaseConnectionConfigTests(unittest.TestCase):
         self.assertIn("-pooler.", database.SQLALCHEMY_DATABASE_URL)
         self.assertNotIn("-pooler.", database.POSTGRES_ADMIN_DATABASE_URL or "")
         self.assertTrue((database.POSTGRES_ADMIN_LIBPQ_URL or "").startswith("postgresql://"))
+
+    def test_nslookup_hostaddr_parser_skips_dns_server_address(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["SQLALCHEMY_DATABASE_URL"] = (
+            "postgresql://smartcampus:secret@db.example.com/lpu_smart?sslmode=require"
+        )
+        os.environ["DATABASE_PREFER_IPV4"] = "true"
+
+        database = self._reload_database()
+
+        with patch.object(database, "resolve_service_hostaddr", return_value="34.120.55.1"):
+            self.assertEqual(database._database_hostaddr(), "34.120.55.1")

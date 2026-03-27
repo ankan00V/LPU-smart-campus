@@ -140,6 +140,91 @@ class RemedialSendMessageTests(unittest.TestCase):
         self.assertEqual(rows[1].student_id, 11)
         self.assertTrue(all(row.section == "P132" for row in rows))
 
+    def test_send_message_normalizes_legacy_student_section_values(self):
+        self.db.add(
+            models.Student(
+                id=13,
+                name="Student Legacy",
+                email="stud-legacy@example.com",
+                department="CSE",
+                semester=5,
+                section=" p 132 ",
+            )
+        )
+        self.db.commit()
+
+        current_user = models.AuthUser(
+            id=101,
+            email="faculty1@example.com",
+            password_hash="x",
+            role=models.UserRole.FACULTY,
+            faculty_id=1,
+            student_id=None,
+            is_active=True,
+        )
+        payload = schemas.RemedialSendMessageRequest(custom_message="Normalization check.")
+
+        with patch("app.routers.remedial.mirror_document", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
+            return_value=None,
+        ):
+            out = send_remedial_code_to_sections(
+                class_id=1,
+                payload=payload,
+                db=self.db,
+                current_user=current_user,
+            )
+
+        self.assertEqual(out.recipients, 3)
+        rows = (
+            self.db.query(models.RemedialMessage)
+            .filter(models.RemedialMessage.makeup_class_id == 1)
+            .order_by(models.RemedialMessage.student_id.asc())
+            .all()
+        )
+        self.assertEqual([row.student_id for row in rows], [10, 11, 13])
+        self.assertEqual(rows[-1].section, "P132")
+
+    def test_send_message_normalizes_legacy_class_section_values(self):
+        faculty = self.db.get(models.Faculty, 1)
+        faculty.section = "P132, P133"
+        class_row = self.db.get(models.MakeUpClass, 1)
+        class_row.sections_json = json.dumps([" p 132 , p133 "])
+        self.db.commit()
+
+        current_user = models.AuthUser(
+            id=101,
+            email="faculty1@example.com",
+            password_hash="x",
+            role=models.UserRole.FACULTY,
+            faculty_id=1,
+            student_id=None,
+            is_active=True,
+        )
+        payload = schemas.RemedialSendMessageRequest(custom_message="Legacy class section normalization.")
+
+        with patch("app.routers.remedial.mirror_document", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
+            return_value=None,
+        ):
+            out = send_remedial_code_to_sections(
+                class_id=1,
+                payload=payload,
+                db=self.db,
+                current_user=current_user,
+            )
+
+        self.assertEqual(out.sections, ["P132", "P133"])
+        self.assertEqual(out.recipients, 3)
+        rows = (
+            self.db.query(models.RemedialMessage)
+            .filter(models.RemedialMessage.makeup_class_id == 1)
+            .order_by(models.RemedialMessage.student_id.asc())
+            .all()
+        )
+        self.assertEqual([row.student_id for row in rows], [10, 11, 12])
+        self.assertEqual([row.section for row in rows], ["P132", "P132", "P133"])
+
 
 if __name__ == "__main__":
     unittest.main()

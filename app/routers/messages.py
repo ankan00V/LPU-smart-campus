@@ -6,12 +6,14 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
 from ..auth_utils import require_roles
 from ..database import get_db
 from ..mongo import get_mongo_db, mirror_document
+from ..otp_delivery import send_notification_email
 from ..realtime_bus import publish_domain_event
 from ..workers import enqueue_notification
 from .remedial import _normalize_sections, _faculty_allowed_sections, _student_section
@@ -57,6 +59,48 @@ def _safe_student_section(student: models.Student | None) -> str:
         return "UNASSIGNED"
     token = re.sub(r"\s+", "", str(student.section or "").strip().upper())
     return token or "UNASSIGNED"
+
+
+def _normalize_registration_number(value: str | None) -> str | None:
+    normalized = re.sub(r"\s+", "", str(value or "").strip().upper())
+    return normalized or None
+
+
+def _resolve_student_for_direct_email(
+    db: Session,
+    *,
+    student_id: int | None,
+    registration_number: str | None,
+    email: str | None,
+) -> models.Student:
+    if student_id:
+        student = db.get(models.Student, int(student_id))
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found.")
+        return student
+    if registration_number:
+        reg = _normalize_registration_number(registration_number)
+        if reg:
+            student = (
+                db.query(models.Student)
+                .filter(func.upper(models.Student.registration_number) == reg)
+                .first()
+            )
+            if student:
+                return student
+        raise HTTPException(status_code=404, detail="Student not found for registration number.")
+    if email:
+        normalized = str(email or "").strip().lower()
+        if normalized:
+            student = (
+                db.query(models.Student)
+                .filter(func.lower(models.Student.email) == normalized)
+                .first()
+            )
+            if student:
+                return student
+        raise HTTPException(status_code=404, detail="Student not found for email.")
+    raise HTTPException(status_code=400, detail="Provide student_id, registration_number, or email.")
 
 
 def _student_can_contact_faculty(db: Session, *, student_id: int, faculty_id: int) -> bool:
@@ -603,6 +647,84 @@ def send_faculty_message(
 
     return schemas.MessageResponse(
         message=f"Message sent to {len(created_rows)} student(s)."
+    )
+
+
+@router.post("/direct-email", response_model=schemas.StudentDirectEmailOut)
+def send_direct_student_email(
+    payload: schemas.StudentDirectEmailRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    if current_user.role == models.UserRole.FACULTY and not current_user.faculty_id:
+        raise HTTPException(status_code=403, detail="Faculty account is not linked correctly.")
+
+    student = _resolve_student_for_direct_email(
+        db,
+        student_id=payload.student_id,
+        registration_number=payload.registration_number,
+        email=payload.email,
+    )
+    if current_user.role == models.UserRole.FACULTY:
+        if not _faculty_can_contact_student(
+            db,
+            faculty_id=int(current_user.faculty_id),
+            student=student,
+        ):
+            raise HTTPException(status_code=403, detail="This student is outside your allocated section(s).")
+
+    student_email = str(student.email or "").strip()
+    if not student_email:
+        raise HTTPException(status_code=400, detail="Student email is missing.")
+
+    actor_label = "Admin"
+    if current_user.role == models.UserRole.FACULTY:
+        faculty = db.get(models.Faculty, int(current_user.faculty_id))
+        if faculty and str(faculty.name or "").strip():
+            actor_label = str(faculty.name).strip()
+        else:
+            actor_label = "Faculty"
+    if current_user.email:
+        actor_label = f"{actor_label} ({str(current_user.email).strip().lower()})"
+
+    message_text = str(payload.message or "").strip()
+    subject_text = str(payload.subject or "").strip()
+    body = "\n".join(
+        [
+            f"Message from {actor_label}:",
+            "",
+            message_text,
+            "",
+            "Please reply using the LPU Smart Campus portal if needed.",
+        ]
+    )
+    try:
+        delivery = send_notification_email(student_email, subject=subject_text, body=body)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    subject_line = str(delivery.get("subject") or subject_text).strip() or subject_text
+    log_message = f"{subject_line} | {message_text}".strip()
+    if len(log_message) > 500:
+        log_message = f"{log_message[:497]}..."
+
+    notification = models.NotificationLog(
+        student_id=int(student.id),
+        message=log_message,
+        channel=str(delivery.get("channel") or "email"),
+        sent_to=student_email,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+
+    return schemas.StudentDirectEmailOut(
+        message="Email sent to student.",
+        student_id=int(student.id),
+        delivered_to=student_email,
+        subject=subject_line,
+        channel=str(delivery.get("channel") or "email"),
+        notification_id=int(notification.id),
     )
 
 

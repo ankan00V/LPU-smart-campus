@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import re
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, or_
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
-from ..auth_utils import CurrentUser, require_roles
+from ..auth_utils import CurrentUser, require_roles, sync_auth_user_pk_sequence
+from ..copilot_ai import generate_structured_copilot_answer
 from ..database import get_db
 from ..mongo import mirror_document, mirror_event
 from .attendance import (
@@ -28,6 +32,7 @@ from .remedial import (
 )
 
 router = APIRouter(prefix="/copilot", tags=["Explainable Campus Copilot"])
+logger = logging.getLogger(__name__)
 
 REGISTRATION_PATTERN = re.compile(r"^[A-Z0-9/-]+$")
 SCHEDULE_ID_RE = re.compile(r"\bschedule(?:\s*id)?\s*#?\s*(\d+)\b", re.IGNORECASE)
@@ -42,6 +47,113 @@ REGISTRATION_RE = re.compile(
 )
 DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
 TIME_RE = re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b")
+SENSITIVE_DISCLOSURE_MARKERS = (
+    "show me",
+    "show",
+    "reveal",
+    "give me",
+    "give us",
+    "give the",
+    "tell me",
+    "provide",
+    "print",
+    "dump",
+    "list",
+    "display",
+    "expose",
+    "share",
+    "send me",
+    "copy",
+    "read out",
+    "what is the",
+    "what's the",
+    "where is the",
+    "where are the",
+    "which is the",
+    "fetch",
+)
+SENSITIVE_LOCATION_MARKERS = (
+    "where is",
+    "where are",
+    "stored",
+    "kept",
+    "saved",
+    "located",
+    "location of",
+)
+SENSITIVE_SUBJECT_MARKERS = (
+    "api key",
+    "apikey",
+    "secret",
+    "secrets",
+    "credential",
+    "credentials",
+    "token",
+    "access token",
+    "refresh token",
+    "jwt",
+    "bearer token",
+    "session cookie",
+    "cookie",
+    "password",
+    "passcode",
+    "private key",
+    "signing key",
+    "encryption key",
+    "webhook secret",
+    "client secret",
+    "connection string",
+    "database url",
+    "database uri",
+    "db url",
+    "db uri",
+    "mongo uri",
+    "mongodb uri",
+    "postgres url",
+    "postgres uri",
+    ".env",
+    "env file",
+    "environment variable",
+    "environment variables",
+    "env var",
+    "env vars",
+    "otp code",
+    "backup code",
+    "mfa seed",
+)
+SENSITIVE_RAW_VALUE_MARKERS = (
+    "actual",
+    "current",
+    "raw",
+    "full",
+    "exact",
+    "real",
+    "plaintext",
+    "unmasked",
+)
+SENSITIVE_SAFE_CONTEXT_MARKERS = (
+    "status",
+    "rotation",
+    "rotate",
+    "rotated",
+    "expiry",
+    "expiration",
+    "expired",
+    "revoked",
+    "revoke",
+    "regenerate",
+    "reset",
+    "change",
+    "update",
+    "configured",
+    "configuration",
+    "health",
+    "invalid",
+    "failing",
+    "blocked",
+    "mask",
+    "masked",
+)
 
 
 def _safe_json_dump(value: Any) -> str:
@@ -74,12 +186,19 @@ def _supported_queries_for_role(role: models.UserRole) -> list[str]:
     if role == models.UserRole.STUDENT:
         return [
             "Why can't I mark attendance?",
+            "Attendance isn't getting marked.",
             "What do I need to fix before I lose eligibility?",
+            "Summarize my pending work across attendance, food, Saarthi, and remedial.",
         ]
     if role in {models.UserRole.ADMIN, models.UserRole.FACULTY}:
         return [
             "Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00",
             "Show why student 22BCS777 is flagged",
+            "Give me a module-wise workload summary for today's accessible modules.",
+        ]
+    if role == models.UserRole.OWNER:
+        return [
+            "Summarize active food orders and delivery flow for my food shops.",
         ]
     return []
 
@@ -98,6 +217,726 @@ def _unsupported_response(current_user: CurrentUser) -> schemas.CopilotQueryResp
         explanation=explanation,
         next_steps=supported,
     )
+
+
+def _looks_like_sensitive_data_request(query_text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower())
+    if not normalized:
+        return False
+    if not any(marker in normalized for marker in SENSITIVE_SUBJECT_MARKERS):
+        return False
+    if any(marker in normalized for marker in SENSITIVE_SAFE_CONTEXT_MARKERS) and not any(
+        marker in normalized for marker in SENSITIVE_RAW_VALUE_MARKERS
+    ):
+        return False
+    return any(marker in normalized for marker in SENSITIVE_DISCLOSURE_MARKERS) or any(
+        marker in normalized for marker in SENSITIVE_LOCATION_MARKERS
+    ) or any(marker in normalized for marker in SENSITIVE_RAW_VALUE_MARKERS)
+
+
+def _sensitive_request_denied_response(current_user: CurrentUser) -> schemas.CopilotQueryResponse:
+    accessible_modules = _accessible_modules_for_role(current_user.role)
+    module_labels = ", ".join(_copilot_module_label(module) for module in accessible_modules) or "your accessible modules"
+    return schemas.CopilotQueryResponse(
+        intent=schemas.CopilotIntent.MODULE_ASSIST,
+        outcome=schemas.CopilotOutcome.DENIED,
+        title="Sensitive Data Request Denied",
+        explanation=[
+            "Campus Copilot will not reveal secrets, credentials, tokens, API keys, environment values, or internal security material.",
+            "It only answers with safe in-app context and approved workflow guidance.",
+        ],
+        actions=[_action("sensitive_data_guardrail", "denied", "Secret disclosure request blocked")],
+        next_steps=[
+            f"Ask about module status, blockers, or available actions inside {module_labels}.",
+            "Ask why a workflow is blocked, and Campus Copilot will explain the in-app cause without exposing protected values.",
+        ],
+        entities={"guardrail": "sensitive_data_redaction", "accessible_modules": accessible_modules},
+    )
+
+
+COPILOT_MODULE_LABELS: dict[str, str] = {
+    "attendance": "Attendance",
+    "food": "Food Hall",
+    "saarthi": "Saarthi",
+    "remedial": "Remedial",
+    "rms": "RMS",
+    "administrative": "Administrative",
+}
+
+COPILOT_MODULE_QUERY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "attendance": (
+        "attendance",
+        "class",
+        "classes",
+        "timetable",
+        "schedule",
+        "eligibility",
+        "absent",
+        "present",
+    ),
+    "food": (
+        "food",
+        "order",
+        "orders",
+        "canteen",
+        "cafeteria",
+        "meal",
+        "delivery",
+        "shop",
+        "kiosk",
+        "payment",
+    ),
+    "saarthi": (
+        "saarthi",
+        "counselling",
+        "counseling",
+        "con111",
+        "sunday session",
+        "mentor",
+    ),
+    "remedial": (
+        "remedial",
+        "makeup",
+        "make-up",
+        "recovery class",
+        "recovery",
+    ),
+    "rms": (
+        "rms",
+        "support case",
+        "support ticket",
+        "rectification",
+        "correction",
+        "escalation",
+        "flagged",
+        "flag",
+    ),
+    "administrative": (
+        "administrative",
+        "admin",
+        "audit",
+        "governance",
+        "identity",
+        "verification",
+        "policy",
+    ),
+}
+
+
+def _copilot_module_label(module_key: str) -> str:
+    return COPILOT_MODULE_LABELS.get(str(module_key or "").strip().lower(), str(module_key or "").strip().title() or "Unknown")
+
+
+def _accessible_modules_for_role(role: models.UserRole) -> list[str]:
+    if role == models.UserRole.STUDENT:
+        return ["attendance", "food", "saarthi", "remedial"]
+    if role == models.UserRole.FACULTY:
+        return ["attendance", "food", "rms", "remedial"]
+    if role == models.UserRole.ADMIN:
+        return ["attendance", "rms", "administrative"]
+    if role == models.UserRole.OWNER:
+        return ["food"]
+    return []
+
+
+def _mentioned_modules_from_query(query_text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower())
+    if not normalized:
+        return []
+    mentioned: list[str] = []
+    for module_key, keywords in COPILOT_MODULE_QUERY_KEYWORDS.items():
+        if any(keyword in normalized for keyword in keywords):
+            mentioned.append(module_key)
+    return mentioned
+
+
+def _is_broad_module_summary_query(query_text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower())
+    if not normalized:
+        return False
+    markers = (
+        "summary",
+        "summarize",
+        "overview",
+        "overall",
+        "across modules",
+        "across all modules",
+        "all modules",
+        "module-wise",
+        "module wise",
+        "dashboard",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _normalize_module_key(value: str | None) -> str | None:
+    normalized = re.sub(r"\s+", "", str(value or "").strip().lower())
+    if normalized in COPILOT_MODULE_LABELS:
+        return normalized
+    return None
+
+
+def _context_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _context_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _context_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _context_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed
+
+
+def _context_date(value: Any) -> date | None:
+    raw = _context_str(value)
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _context_time(value: Any) -> time | None:
+    raw = _context_str(value)
+    if not raw:
+        return None
+    try:
+        return time.fromisoformat(raw if len(raw) > 5 else f"{raw}:00")
+    except ValueError:
+        return None
+
+
+def _append_unique(items: list[str], value: str | None) -> None:
+    normalized = str(value or "").strip()
+    if normalized and normalized not in items:
+        items.append(normalized)
+
+
+def _food_context(payload: schemas.CopilotQueryRequest) -> dict[str, Any]:
+    root = _context_dict(payload.client_context)
+    return _context_dict(root.get("food"))
+
+
+def _focused_module_assist_next_steps(
+    module_key: str,
+    *,
+    role: models.UserRole,
+) -> list[str]:
+    if module_key == "attendance":
+        if role == models.UserRole.STUDENT:
+            return [
+                "Use Attendance on this screen to inspect the selected class or attendance details, then retry the in-app action there.",
+                "If the issue is tied to one class, use the Attendance controls here instead of starting a new external flow.",
+            ]
+        if role == models.UserRole.FACULTY:
+            return [
+                "Use the Attendance schedule and rectification controls on this screen to review the affected class.",
+                "Apply the next in-app attendance, rectification, or recovery action directly from Attendance.",
+            ]
+        return [
+            "Use the Attendance admin controls on this screen to review schedules, overrides, or student updates.",
+            "Retry the exact in-app Attendance action after correcting the flagged item.",
+        ]
+    if module_key == "food":
+        if role == models.UserRole.STUDENT:
+            return [
+                "Use Food Hall on this screen: select a slot, add items from one shop, review the cart, then complete payment.",
+                "Retry only the Food Hall step that is flagged in the explanation or evidence above.",
+            ]
+        return [
+            "Use the Food Hall controls on this screen to review shops, orders, or slot setup.",
+            "Retry the flagged Food Hall action after fixing the item shown above.",
+        ]
+    if module_key == "saarthi":
+        return [
+            "Use Saarthi on this screen to continue the weekly session or start the next required chat step.",
+            "Retry the Saarthi action from this module after resolving the issue shown above.",
+        ]
+    if module_key == "remedial":
+        if role == models.UserRole.FACULTY:
+            return [
+                "Use Remedial on this screen to review the selected class and schedule or resend the in-app remedial plan.",
+                "Retry the remedial action from this module once the flagged item is corrected.",
+            ]
+        return [
+            "Use Remedial on this screen to open the next class, message, or code tied to your current issue.",
+            "Retry the same in-app remedial step after correcting the issue shown above.",
+        ]
+    if module_key == "rms":
+        return [
+            "Use RMS on this screen to review the selected student, thread, or attendance action already loaded in context.",
+            "Apply the pending RMS workflow or attendance action directly from this module.",
+        ]
+    if module_key == "administrative":
+        return [
+            "Use the Administrative module on this screen to review the live cards, recovery queue, identity cases, or audit timeline.",
+            "Retry the exact administrative action from this module after fixing the flagged item above.",
+        ]
+    return ["Retry the same action from the current module using the on-screen controls only."]
+
+
+def _looks_like_food_order_blocker_query(query_text: str, *, active_module: str | None = None) -> bool:
+    normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower().replace("’", "'"))
+    if not normalized:
+        return False
+    explicit_phrases = (
+        "why can't i order food",
+        "why cant i order food",
+        "cannot order food",
+        "can't order food",
+        "cant order food",
+        "unable to order food",
+        "food order not working",
+        "food ordering not working",
+        "food checkout blocked",
+        "can't checkout",
+        "cant checkout",
+        "cannot checkout",
+        "unable to checkout",
+        "checkout blocked",
+    )
+    if any(phrase in normalized for phrase in explicit_phrases):
+        return True
+
+    blocker_markers = (
+        "can't",
+        "cant",
+        "cannot",
+        "unable",
+        "won't",
+        "wont",
+        "blocked",
+        "not working",
+        "failed",
+        "failing",
+        "issue",
+        "problem",
+        "error",
+        "stuck",
+        "closed",
+    )
+    flow_markers = (
+        "order",
+        "checkout",
+        "cart",
+        "pay",
+        "payment",
+        "delivery",
+    )
+    in_food_scope = active_module == "food" or any(
+        keyword in normalized for keyword in COPILOT_MODULE_QUERY_KEYWORDS["food"]
+    )
+    return in_food_scope and any(marker in normalized for marker in blocker_markers) and any(
+        marker in normalized for marker in flow_markers
+    )
+
+
+def _student_food_order_blocker_assessment(
+    payload: schemas.CopilotQueryRequest,
+    *,
+    db: Session,
+    current_user: CurrentUser,
+    active_food_statuses: set[str],
+    today: date,
+) -> dict[str, Any]:
+    explanation: list[str] = []
+    evidence: list[schemas.CopilotEvidenceItem] = []
+    next_steps: list[str] = []
+
+    if not current_user.student_id:
+        explanation.append("Student account is not linked correctly for Food Hall ordering.")
+        evidence.append(_evidence("Account linkage", "Student account link missing", "fail"))
+        return {
+            "blocked": True,
+            "title": "Food Ordering Blocked",
+            "explanation": explanation,
+            "evidence": evidence,
+            "next_steps": [
+                "Log in with the linked student account before retrying Food Hall checkout.",
+            ],
+            "entities": {
+                "food": {
+                    "ordering_blocked": True,
+                    "student_linked": False,
+                }
+            },
+            "action": _action("food_order_blocker_check", "blocked", explanation[0]),
+        }
+
+    food_context = _food_context(payload)
+    slot_context = _context_dict(food_context.get("slot"))
+    cart_context = _context_dict(food_context.get("cart"))
+    checkout_context = _context_dict(food_context.get("checkout"))
+    location_context = _context_dict(food_context.get("location"))
+    order_gate_context = _context_dict(food_context.get("order_gate"))
+
+    student_id = int(current_user.student_id)
+    demo_enabled = _context_bool(food_context.get("demo_enabled")) is True
+    order_date = _context_date(food_context.get("order_date")) or today
+    selected_slot_id = _context_int(slot_context.get("slot_id"))
+    selected_slot = db.get(models.BreakSlot, selected_slot_id) if selected_slot_id else None
+    selected_slot_label = _context_str(slot_context.get("label")) or (selected_slot.label if selected_slot else "")
+    selected_slot_start = _context_time(slot_context.get("start_time")) or (selected_slot.start_time if selected_slot else None)
+    selected_slot_end = _context_time(slot_context.get("end_time")) or (selected_slot.end_time if selected_slot else None)
+    slot_signal_present = bool(slot_context) and ("selected" in slot_context or "slot_id" in slot_context)
+    selected_flag = _context_bool(slot_context.get("selected"))
+    has_selected_slot = bool(selected_slot_id or selected_slot or selected_flag)
+
+    cart_signal_present = bool(cart_context)
+    cart_item_count = _context_int(cart_context.get("item_count"))
+    cart_total_quantity = _context_int(cart_context.get("total_quantity"))
+    cart_shop_id = _context_int(cart_context.get("shop_id"))
+    cart_shop_name = _context_str(cart_context.get("shop_name"))
+    if cart_item_count is None and cart_total_quantity is not None:
+        cart_item_count = cart_total_quantity
+    has_cart_items = bool((cart_item_count or 0) > 0 or (cart_total_quantity or 0) > 0)
+
+    checkout_signal_present = bool(checkout_context)
+    review_open = _context_bool(checkout_context.get("review_open")) is True
+    delivery_point_selected = _context_bool(checkout_context.get("delivery_point_selected")) is True
+    delivery_point = _context_str(checkout_context.get("delivery_point"))
+    if delivery_point and not delivery_point_selected:
+        delivery_point_selected = True
+
+    location_signal_present = bool(location_context)
+    location_verified = _context_bool(location_context.get("verified"))
+    location_allowed = _context_bool(location_context.get("allowed"))
+    location_fresh = _context_bool(location_context.get("fresh"))
+    location_checking = _context_bool(location_context.get("checking")) is True
+    location_message = _context_str(location_context.get("message"))
+
+    order_gate_reason = _context_str(order_gate_context.get("reason")).lower()
+    order_gate_message = _context_str(order_gate_context.get("message"))
+    gate_can_order_now = _context_bool(order_gate_context.get("can_order_now"))
+    gate_service_open_now = _context_bool(order_gate_context.get("service_open_now"))
+    gate_date_allowed = _context_bool(order_gate_context.get("date_allowed"))
+    gate_slot_elapsed = _context_bool(order_gate_context.get("slot_elapsed"))
+
+    active_shop_count = int(
+        db.query(func.count(models.FoodShop.id))
+        .filter(models.FoodShop.is_active.is_(True))
+        .scalar()
+        or 0
+    )
+    active_orders_today = (
+        db.query(models.FoodOrder)
+        .filter(
+            models.FoodOrder.student_id == student_id,
+            models.FoodOrder.order_date == today,
+            models.FoodOrder.status.in_([models.FoodOrderStatus(value) for value in active_food_statuses]),
+        )
+        .order_by(models.FoodOrder.created_at.desc(), models.FoodOrder.id.desc())
+        .all()
+    )
+    latest_active_order = active_orders_today[0] if active_orders_today else None
+    latest_order = (
+        db.query(models.FoodOrder)
+        .filter(models.FoodOrder.student_id == student_id)
+        .order_by(models.FoodOrder.created_at.desc(), models.FoodOrder.id.desc())
+        .first()
+    )
+    latest_active_shop_names = sorted({str(row.shop_name or "").strip() for row in active_orders_today if str(row.shop_name or "").strip()})
+
+    single_shop_conflict = bool(
+        cart_shop_id
+        and any(row.shop_id and int(row.shop_id) != int(cart_shop_id) for row in active_orders_today)
+    )
+    slot_full = False
+    slot_load_label = ""
+    if selected_slot is not None:
+        active_slot_orders = int(
+            db.query(func.count(models.FoodOrder.id))
+            .filter(
+                models.FoodOrder.slot_id == int(selected_slot.id),
+                models.FoodOrder.order_date == order_date,
+                models.FoodOrder.status.notin_(
+                    [
+                        models.FoodOrderStatus.CANCELLED,
+                        models.FoodOrderStatus.REJECTED,
+                        models.FoodOrderStatus.REFUNDED,
+                    ]
+                ),
+            )
+            .scalar()
+            or 0
+        )
+        slot_full = active_slot_orders >= int(selected_slot.max_orders)
+        slot_load_label = f"{active_slot_orders}/{int(selected_slot.max_orders)} active orders"
+
+    now_local = datetime.now()
+    current_time = now_local.time()
+    service_start = time(10, 0)
+    service_end = time(21, 0)
+    fallback_date_allowed = order_date == today
+    fallback_service_open = service_start <= current_time < service_end
+    fallback_slot_elapsed = bool(selected_slot_end and order_date == today and selected_slot_end <= current_time)
+
+    if gate_date_allowed is None:
+        gate_date_allowed = fallback_date_allowed
+    if gate_service_open_now is None:
+        gate_service_open_now = fallback_service_open
+    if gate_slot_elapsed is None:
+        gate_slot_elapsed = fallback_slot_elapsed
+    if gate_can_order_now is None:
+        gate_can_order_now = bool(gate_date_allowed and gate_service_open_now and not gate_slot_elapsed)
+    if not order_gate_reason:
+        if demo_enabled:
+            order_gate_reason = "demo_bypass"
+        elif not gate_date_allowed:
+            order_gate_reason = "date_mismatch"
+        elif not gate_service_open_now:
+            order_gate_reason = "service_closed"
+        elif gate_slot_elapsed:
+            order_gate_reason = "slot_elapsed"
+        else:
+            order_gate_reason = "open"
+    if not order_gate_message:
+        if order_gate_reason == "date_mismatch":
+            order_gate_message = f"Orders are allowed only for today ({today.isoformat()})."
+        elif order_gate_reason == "service_closed":
+            order_gate_message = "Food Hall is closed now. Ordering is open from 10:00 AM - 9:00 PM."
+        elif order_gate_reason == "slot_elapsed":
+            order_gate_message = "Selected slot has already ended. Choose an upcoming slot."
+
+    if demo_enabled:
+        evidence.append(_evidence("Demo mode", "Food Hall demo bypass is active", "warning"))
+        if selected_slot_label:
+            evidence.append(_evidence("Break slot", selected_slot_label, "pass"))
+        if cart_signal_present:
+            evidence.append(
+                _evidence(
+                    "Cart",
+                    f"{int(cart_item_count or 0)} item(s)",
+                    "pass" if has_cart_items else "warning",
+                )
+            )
+        return {
+            "blocked": False,
+            "title": "Food Hall Demo Mode",
+            "explanation": [
+                "Food Hall demo bypass is active, so close-time and checkout restrictions are temporarily bypassed.",
+                "Live ordering blockers will appear again after demo mode is turned off.",
+            ],
+            "evidence": evidence,
+            "next_steps": [
+                "Turn off Demo Bypass when you want the real Food Hall checks back.",
+            ],
+            "entities": {
+                "food": {
+                    "ordering_blocked": False,
+                    "demo_enabled": True,
+                    "order_date": order_date.isoformat(),
+                    "selected_slot_id": (int(selected_slot.id) if selected_slot else selected_slot_id),
+                }
+            },
+            "action": _action("food_order_blocker_check", "completed", "Demo bypass active"),
+        }
+
+    evidence.append(
+        _evidence(
+            "Ordering window",
+            "Open now" if gate_service_open_now and gate_date_allowed else (order_gate_message or "Closed"),
+            "pass" if gate_service_open_now and gate_date_allowed else "fail",
+        )
+    )
+    evidence.append(
+        _evidence(
+            "Active shops",
+            str(active_shop_count),
+            "pass" if active_shop_count else "fail",
+        )
+    )
+
+    if slot_signal_present or selected_slot is not None:
+        slot_value = selected_slot_label or "Selected slot unavailable"
+        slot_status = "pass"
+        if not has_selected_slot:
+            slot_value = "Not selected"
+            slot_status = "fail"
+        elif selected_slot is None and selected_slot_id:
+            slot_value = f"Slot #{selected_slot_id} unavailable"
+            slot_status = "fail"
+        elif gate_slot_elapsed:
+            slot_value = selected_slot_label or "Selected slot ended"
+            slot_status = "fail"
+        evidence.append(_evidence("Break slot", slot_value, slot_status))
+        if slot_load_label:
+            evidence.append(
+                _evidence(
+                    "Slot capacity",
+                    slot_load_label,
+                    "warning" if slot_full else "pass",
+                )
+            )
+    if cart_signal_present:
+        cart_label = f"{int(cart_item_count or 0)} item(s)"
+        if cart_shop_name:
+            cart_label = f"{cart_label} from {cart_shop_name}"
+        evidence.append(_evidence("Cart", cart_label, "pass" if has_cart_items else "fail"))
+    if checkout_signal_present:
+        evidence.append(
+            _evidence(
+                "Checkout review",
+                "Open" if review_open else "Not opened",
+                "pass" if review_open else "warning",
+            )
+        )
+        evidence.append(
+            _evidence(
+                "Delivery block",
+                delivery_point or "Not selected",
+                "pass" if delivery_point_selected else "warning",
+            )
+        )
+    if location_signal_present:
+        if location_checking:
+            location_value = "Verification in progress"
+            location_status = "warning"
+        elif location_verified and location_allowed and location_fresh:
+            location_value = location_message or "Campus location verified"
+            location_status = "pass"
+        else:
+            location_value = location_message or "Location not verified"
+            location_status = "fail"
+        evidence.append(_evidence("Campus location", location_value, location_status))
+    if latest_active_order is not None:
+        evidence.append(
+            _evidence(
+                "Active order scope",
+                f"{len(active_orders_today)} active order(s) today"
+                + (f" with {latest_active_order.shop_name}" if latest_active_order.shop_name else ""),
+                "warning",
+            )
+        )
+
+    if active_shop_count <= 0:
+        _append_unique(explanation, "No Food Hall shops are active right now, so new orders cannot start.")
+        _append_unique(next_steps, "Activate at least one food shop before retrying checkout.")
+    if not gate_date_allowed:
+        _append_unique(explanation, order_gate_message)
+        _append_unique(next_steps, f"Reset the pickup date to today ({today.isoformat()}) and retry.")
+    if not gate_service_open_now:
+        _append_unique(explanation, order_gate_message)
+        _append_unique(next_steps, "Retry during Food Hall ordering hours: 10:00 AM - 9:00 PM.")
+    if slot_signal_present and not has_selected_slot:
+        _append_unique(explanation, "Select a break slot before checkout.")
+        _append_unique(next_steps, "Choose a current or upcoming break slot in Food Hall.")
+    if selected_slot_id and selected_slot is None:
+        _append_unique(explanation, "Selected break slot is no longer available. Refresh Food Hall and choose another slot.")
+        _append_unique(next_steps, "Refresh Food Hall and select an available break slot again.")
+    if selected_slot is not None and selected_slot.start_time < service_start or selected_slot is not None and selected_slot.end_time > service_end:
+        _append_unique(explanation, "Selected slot is not open for pickup.")
+        _append_unique(next_steps, "Choose a slot that falls inside Food Hall pickup hours.")
+    if gate_slot_elapsed:
+        _append_unique(explanation, order_gate_message or "Selected slot has already ended. Choose an upcoming slot.")
+        _append_unique(next_steps, "Choose an upcoming slot before retrying checkout.")
+    if slot_full:
+        _append_unique(explanation, "Selected slot is full right now. Choose another slot to avoid congestion.")
+        _append_unique(next_steps, "Pick another slot with available capacity.")
+    if cart_signal_present and not has_cart_items:
+        _append_unique(explanation, "Your cart is empty. Add items from one shop before checkout.")
+        _append_unique(next_steps, "Open a shop, add items, then review the cart again.")
+    if cart_signal_present and has_cart_items and checkout_signal_present and not review_open:
+        _append_unique(explanation, "Open cart and click Review Cart before payment.")
+        _append_unique(next_steps, "Open the cart and move to the review step.")
+    if cart_signal_present and has_cart_items and checkout_signal_present and review_open and not delivery_point_selected:
+        _append_unique(explanation, "Select a delivery block before payment.")
+        _append_unique(next_steps, "Choose your delivery block in the checkout review step.")
+    if single_shop_conflict:
+        other_shops_label = ", ".join(latest_active_shop_names) or "another shop"
+        _append_unique(
+            explanation,
+            f"You already have an active order from {other_shops_label}. Food Hall accepts active orders from one shop at a time.",
+        )
+        _append_unique(next_steps, "Finish, clear, or complete the current shop order before switching shops.")
+    if location_signal_present and cart_signal_present and has_cart_items:
+        if location_checking:
+            _append_unique(explanation, "Campus location verification is still in progress.")
+            _append_unique(next_steps, "Wait for location verification to finish, then retry checkout.")
+        elif not location_verified:
+            _append_unique(
+                explanation,
+                location_message or "Enable location access and retry inside LPU campus.",
+            )
+            _append_unique(next_steps, "Enable location access and verify your position inside LPU campus.")
+        elif location_allowed is False:
+            _append_unique(
+                explanation,
+                location_message or "Delivery is allowed only inside LPU campus.",
+            )
+            _append_unique(next_steps, "Move inside the allowed campus zone, then refresh location verification.")
+        elif location_fresh is False:
+            _append_unique(
+                explanation,
+                location_message or "Campus GPS lock expired. Refresh location verification before payment.",
+            )
+            _append_unique(next_steps, "Refresh your GPS lock before paying.")
+
+    blocked = bool(explanation)
+    if not blocked:
+        readiness_line = "Food Hall ordering is available in the current session."
+        if latest_order is not None and latest_order.status:
+            readiness_line += f" Latest order status: {latest_order.status.value}."
+        explanation = [
+            readiness_line,
+            "Continue with Review Cart and payment to place the order.",
+        ]
+        if not next_steps:
+            next_steps = ["Complete payment from the review step to place the order."]
+
+    entities = {
+        "food": {
+            "ordering_blocked": blocked,
+            "demo_enabled": False,
+            "order_date": order_date.isoformat(),
+            "selected_slot_id": (int(selected_slot.id) if selected_slot else selected_slot_id),
+            "selected_slot_label": selected_slot_label or None,
+            "cart_item_count": int(cart_item_count or 0),
+            "delivery_point_selected": delivery_point_selected,
+            "location_verified": bool(location_verified),
+            "location_allowed": bool(location_allowed),
+            "location_fresh": bool(location_fresh),
+            "active_shops": active_shop_count,
+            "active_orders_today": len(active_orders_today),
+            "single_shop_conflict": single_shop_conflict,
+            "slot_full": slot_full,
+            "order_gate_reason": order_gate_reason or None,
+            "client_context_used": bool(food_context),
+            "latest_status": latest_order.status.value if latest_order is not None else None,
+        }
+    }
+    return {
+        "blocked": blocked,
+        "title": "Food Ordering Blocked" if blocked else "Food Ordering Ready",
+        "explanation": explanation,
+        "evidence": evidence,
+        "next_steps": next_steps,
+        "entities": entities,
+        "action": _action(
+            "food_order_blocker_check",
+            "blocked" if blocked else "completed",
+            explanation[0] if explanation else "Food ordering check completed",
+        ),
+    }
 
 
 def _extract_first_int(regex: re.Pattern[str], text: str) -> int | None:
@@ -178,18 +1017,92 @@ def _resolve_intent(query_text: str) -> schemas.CopilotIntent:
     normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower())
     if not normalized:
         return schemas.CopilotIntent.UNSUPPORTED
+
+    def _looks_like_attendance_blocker_query() -> bool:
+        if "attendance" not in normalized:
+            return False
+        explicit_phrases = (
+            "attendance blocked",
+            "attendance isn't getting marked",
+            "attendance isnt getting marked",
+            "attendance is not getting marked",
+            "attendance not getting marked",
+            "attendance isn't marked",
+            "attendance isnt marked",
+            "attendance is not marked",
+            "attendance not marked",
+            "attendance not marking",
+            "attendance isn't marking",
+            "attendance isnt marking",
+            "attendance failed to mark",
+            "attendance not updating",
+            "attendance isn't updating",
+            "attendance isnt updating",
+            "attendance not showing",
+            "attendance isn't showing",
+            "attendance isnt showing",
+            "attendance not reflecting",
+            "attendance issue",
+            "attendance problem",
+            "attendance error",
+        )
+        if any(phrase in normalized for phrase in explicit_phrases):
+            return True
+
+        blocker_markers = (
+            "can't",
+            "cannot",
+            "unable",
+            "won't",
+            "wont",
+            "isn't",
+            "isnt",
+            "not",
+            "blocked",
+            "issue",
+            "problem",
+            "error",
+            "failed",
+            "failing",
+            "stuck",
+            "why",
+        )
+        attendance_flow_markers = (
+            "mark",
+            "marked",
+            "marking",
+            "capture",
+            "captured",
+            "capturing",
+            "verify",
+            "verified",
+            "verification",
+            "record",
+            "recorded",
+            "recording",
+            "showing",
+            "updating",
+            "updated",
+            "reflecting",
+            "reflect",
+            "sync",
+            "synced",
+            "selfie",
+        )
+        return (
+            any(marker in normalized for marker in blocker_markers)
+            and any(marker in normalized for marker in attendance_flow_markers)
+        )
+
     if "remedial" in normalized and any(token in normalized for token in ("create", "plan", "schedule")):
         return schemas.CopilotIntent.CREATE_REMEDIAL_PLAN
     if "eligibility" in normalized or "lose eligibility" in normalized or "attendance shortage" in normalized:
         return schemas.CopilotIntent.ELIGIBILITY_RISK
     if "flagged" in normalized and any(token in normalized for token in ("student", "show", "why")):
         return schemas.CopilotIntent.STUDENT_FLAG_REASON
-    if (
-        "mark attendance" in normalized
-        or ("attendance" in normalized and any(token in normalized for token in ("can't", "cannot", "unable", "why")))
-    ):
+    if "mark attendance" in normalized or _looks_like_attendance_blocker_query():
         return schemas.CopilotIntent.ATTENDANCE_BLOCKER
-    return schemas.CopilotIntent.UNSUPPORTED
+    return schemas.CopilotIntent.MODULE_ASSIST
 
 
 def _evidence(label: str, value: str, status: str = "info") -> schemas.CopilotEvidenceItem:
@@ -236,6 +1149,108 @@ def _persist_audit(
     target_course_id: int | None = None,
     target_section: str | None = None,
 ) -> schemas.CopilotQueryResponse:
+    def _copilot_sql_only_audit() -> bool:
+        raw = (os.getenv("COPILOT_SQL_ONLY_AUDIT", "true") or "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    def _audit_failure_response(detail: str | None = None) -> schemas.CopilotQueryResponse:
+        # Keep primary answer available even if audited write is temporarily unavailable.
+        response.actions = list(response.actions)
+        response.actions.append(
+            _action(
+                "copilot_audit_log",
+                "failed",
+                detail or "Audit logging skipped due to datastore sync issue.",
+            )
+        )
+        response.audit_id = None
+        return response
+
+    def _audit_fk_actor_missing(exc: Exception) -> bool:
+        normalized = str(exc).lower()
+        return (
+            "foreign key" in normalized
+            and "actor_user_id" in normalized
+            and ("copilot_audit_logs" in normalized or "copilot_audit_logs_actor_user_id_fkey" in normalized)
+        )
+
+    def _resolve_actor_email() -> str:
+        normalized = str(current_user.email or "").strip().lower()
+        if normalized:
+            return normalized
+        return f"copilot-user-{int(current_user.id)}@local.invalid"
+
+    def _ensure_actor_sql_shadow() -> None:
+        actor_id = int(current_user.id)
+        actor = db.get(models.AuthUser, actor_id)
+        actor_email = _resolve_actor_email()
+        if actor is None:
+            email_conflict = (
+                db.query(models.AuthUser.id)
+                .filter(
+                    func.lower(models.AuthUser.email) == actor_email,
+                    models.AuthUser.id != actor_id,
+                )
+                .first()
+            )
+            if email_conflict:
+                actor_email = f"copilot-user-{actor_id}@local.invalid"
+
+            db.add(
+                models.AuthUser(
+                    id=actor_id,
+                    email=actor_email,
+                    # Placeholder only for FK integrity; real auth is Mongo-backed.
+                    password_hash="copilot-audit-placeholder",
+                    role=current_user.role,
+                    student_id=None,
+                    faculty_id=None,
+                    is_active=bool(current_user.is_active),
+                    last_login_at=current_user.last_login_at,
+                )
+            )
+            db.flush()
+            sync_auth_user_pk_sequence(db)
+            return
+
+        changed = False
+        if actor.role != current_user.role:
+            actor.role = current_user.role
+            changed = True
+        if actor_email and actor.email != actor_email:
+            email_conflict = (
+                db.query(models.AuthUser.id)
+                .filter(
+                    func.lower(models.AuthUser.email) == actor_email,
+                    models.AuthUser.id != actor.id,
+                )
+                .first()
+            )
+            if not email_conflict:
+                actor.email = actor_email
+                changed = True
+        if actor.is_active != bool(current_user.is_active):
+            actor.is_active = bool(current_user.is_active)
+            changed = True
+        if current_user.last_login_at and (
+            actor.last_login_at is None or current_user.last_login_at > actor.last_login_at
+        ):
+            actor.last_login_at = current_user.last_login_at
+            changed = True
+        if changed:
+            db.flush()
+
+    try:
+        _ensure_actor_sql_shadow()
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "copilot_actor_shadow_sync_failed actor_user_id=%s role=%s",
+            current_user.id,
+            current_user.role.value,
+        )
+        return _audit_failure_response("Audit skipped because actor sync failed.")
+
     row = models.CopilotAuditLog(
         actor_user_id=int(current_user.id),
         actor_role=current_user.role.value,
@@ -260,50 +1275,97 @@ def _persist_audit(
         ),
         created_at=datetime.utcnow(),
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+    for attempt in range(2):
+        try:
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            break
+        except IntegrityError as exc:
+            db.rollback()
+            if attempt == 0 and _audit_fk_actor_missing(exc):
+                try:
+                    _ensure_actor_sql_shadow()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "copilot_actor_shadow_resync_failed actor_user_id=%s role=%s",
+                        current_user.id,
+                        current_user.role.value,
+                    )
+                    return _audit_failure_response("Audit skipped because actor sync failed.")
+                continue
+            logger.exception(
+                "copilot_audit_integrity_error actor_user_id=%s role=%s",
+                current_user.id,
+                current_user.role.value,
+            )
+            return _audit_failure_response("Audit logging failed due to database integrity rules.")
+        except SQLAlchemyError:
+            db.rollback()
+            logger.exception(
+                "copilot_audit_sql_error actor_user_id=%s role=%s",
+                current_user.id,
+                current_user.role.value,
+            )
+            return _audit_failure_response("Audit logging is temporarily unavailable.")
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception(
+                "copilot_audit_unexpected_error actor_user_id=%s role=%s",
+                current_user.id,
+                current_user.role.value,
+            )
+            return _audit_failure_response("Audit logging is temporarily unavailable.")
 
-    mirror_document(
-        "admin_audit_logs",
-        {
-            "action": "campus_copilot_query",
-            "audit_id": int(row.id),
-            "intent": response.intent.value,
-            "outcome": response.outcome.value,
-            "query_text": row.query_text,
-            "scope": row.scope,
-            "target_student_id": row.target_student_id,
-            "target_course_id": row.target_course_id,
-            "target_section": row.target_section,
-            "created_at": row.created_at,
-            "source": "copilot.query",
-            "actor_user_id": current_user.id,
-            "actor_role": current_user.role.value,
-        },
-        required=False,
-    )
-    mirror_event(
-        "copilot.query.processed",
-        {
-            "audit_id": int(row.id),
-            "intent": response.intent.value,
-            "outcome": response.outcome.value,
-            "scope": row.scope,
-            "target_student_id": row.target_student_id,
-            "target_course_id": row.target_course_id,
-            "target_section": row.target_section,
-        },
-        actor={
-            "user_id": int(current_user.id),
-            "role": current_user.role.value,
-            "student_id": current_user.student_id,
-            "faculty_id": current_user.faculty_id,
-        },
-        source="copilot.query",
-        required=False,
-    )
     response.audit_id = int(row.id)
+    if _copilot_sql_only_audit():
+        return response
+    try:
+        mirror_document(
+            "admin_audit_logs",
+            {
+                "action": "campus_copilot_query",
+                "audit_id": int(row.id),
+                "intent": response.intent.value,
+                "outcome": response.outcome.value,
+                "query_text": row.query_text,
+                "scope": row.scope,
+                "target_student_id": row.target_student_id,
+                "target_course_id": row.target_course_id,
+                "target_section": row.target_section,
+                "created_at": row.created_at,
+                "source": "copilot.query",
+                "actor_user_id": current_user.id,
+                "actor_role": current_user.role.value,
+            },
+            required=False,
+        )
+        mirror_event(
+            "copilot.query.processed",
+            {
+                "audit_id": int(row.id),
+                "intent": response.intent.value,
+                "outcome": response.outcome.value,
+                "scope": row.scope,
+                "target_student_id": row.target_student_id,
+                "target_course_id": row.target_course_id,
+                "target_section": row.target_section,
+            },
+            actor={
+                "user_id": int(current_user.id),
+                "role": current_user.role.value,
+                "student_id": current_user.student_id,
+                "faculty_id": current_user.faculty_id,
+            },
+            source="copilot.query",
+            required=False,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "copilot_audit_mirror_failed audit_id=%s actor_user_id=%s",
+            getattr(row, "id", None),
+            current_user.id,
+        )
     return response
 
 
@@ -1302,6 +2364,691 @@ def _remedial_plan_response(
     )
 
 
+def _module_assist_response(
+    payload: schemas.CopilotQueryRequest,
+    *,
+    db: Session,
+    current_user: CurrentUser,
+) -> tuple[schemas.CopilotQueryResponse, dict[str, Any]]:
+    accessible_modules = _accessible_modules_for_role(current_user.role)
+    if not accessible_modules:
+        return _unsupported_response(current_user), {"scope": f"role:{current_user.role.value}"}
+
+    mentioned_modules = _mentioned_modules_from_query(payload.query_text)
+    requested_modules = [module for module in mentioned_modules if module in accessible_modules]
+    denied_modules = [module for module in mentioned_modules if module not in accessible_modules]
+    active_module = _normalize_module_key(payload.active_module)
+
+    if mentioned_modules and not requested_modules:
+        accessible_labels = ", ".join(_copilot_module_label(module) for module in accessible_modules)
+        denied_labels = ", ".join(_copilot_module_label(module) for module in denied_modules)
+        response = schemas.CopilotQueryResponse(
+            intent=schemas.CopilotIntent.MODULE_ASSIST,
+            outcome=schemas.CopilotOutcome.DENIED,
+            title="Module Access Restricted",
+            explanation=[
+                f"Your role cannot access the requested module scope: {denied_labels}.",
+                f"You can run Campus Copilot in these modules: {accessible_labels}.",
+            ],
+            next_steps=[
+                "Switch to an accessible module and ask the same question again.",
+                "If your role should include that module, request access policy update.",
+            ],
+            entities={
+                "requested_modules": mentioned_modules,
+                "denied_modules": denied_modules,
+                "accessible_modules": accessible_modules,
+            },
+        )
+        return response, {"scope": f"role:{current_user.role.value}|module_access:denied"}
+
+    broad_scope_requested = _is_broad_module_summary_query(payload.query_text)
+    if requested_modules:
+        modules_to_answer = requested_modules
+    elif broad_scope_requested or len(accessible_modules) == 1:
+        modules_to_answer = list(accessible_modules)
+    elif active_module and active_module in accessible_modules:
+        modules_to_answer = [active_module]
+    else:
+        modules_to_answer = [accessible_modules[0]]
+    module_labels = [_copilot_module_label(module) for module in modules_to_answer]
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    active_food_statuses = {
+        models.FoodOrderStatus.PLACED.value,
+        models.FoodOrderStatus.VERIFIED.value,
+        models.FoodOrderStatus.PREPARING.value,
+        models.FoodOrderStatus.OUT_FOR_DELIVERY.value,
+        models.FoodOrderStatus.READY.value,
+    }
+
+    explanation: list[str] = []
+    evidence: list[schemas.CopilotEvidenceItem] = []
+    actions = [_action("module_scoped_answer", "completed", f"Answered {len(modules_to_answer)} module scope(s)")]
+    next_steps: list[str] = []
+    entities: dict[str, Any] = {
+        "requested_modules": modules_to_answer,
+        "mentioned_modules": mentioned_modules,
+        "accessible_modules": accessible_modules,
+        "active_module": active_module,
+        "scope_mode": "broad" if broad_scope_requested else "focused",
+    }
+    client_context = _context_dict(payload.client_context)
+    ui_context = _context_dict(client_context.get("ui"))
+    if ui_context:
+        entities["ui_context"] = ui_context
+    if client_context:
+        entities["client_context_modules"] = sorted(
+            key for key, value in client_context.items() if isinstance(value, dict) and value
+        )
+    if active_module:
+        active_module_context = _context_dict(client_context.get(active_module))
+        if active_module_context:
+            entities["active_module_context"] = active_module_context
+    response_title = "Campus Copilot Module Assist"
+    response_outcome = schemas.CopilotOutcome.COMPLETED
+    skip_llm_rewrite = False
+
+    if denied_modules:
+        explanation.append(
+            "Some requested modules were skipped due to role access: "
+            + ", ".join(_copilot_module_label(module) for module in denied_modules)
+            + "."
+        )
+        entities["denied_modules"] = denied_modules
+
+    for module_key in modules_to_answer:
+        if module_key == "attendance":
+            if current_user.role == models.UserRole.STUDENT:
+                if not current_user.student_id:
+                    explanation.append("Attendance: student linkage is missing on your account.")
+                    evidence.append(_evidence("Attendance scope", "Student link missing", "fail"))
+                else:
+                    aggregate = get_student_attendance_aggregate(db=db, current_user=current_user)
+                    at_risk = [
+                        row.course_code
+                        for row in aggregate.courses
+                        if row.delivered_classes >= 4 and row.attendance_percent < 75.0
+                    ]
+                    watchlist = [
+                        row.course_code
+                        for row in aggregate.courses
+                        if row.delivered_classes > 0 and 75.0 <= row.attendance_percent < 80.0
+                    ]
+                    explanation.append(
+                        f"Attendance: aggregate is {aggregate.aggregate_percent:.2f}% "
+                        f"({aggregate.attended_total}/{aggregate.delivered_total}) across {len(aggregate.courses)} course(s)."
+                    )
+                    if at_risk:
+                        explanation.append("Attendance risk (<75%): " + ", ".join(at_risk[:6]) + ("." if len(at_risk) <= 6 else ", ..."))
+                    elif watchlist:
+                        explanation.append("Attendance watchlist (75-79.99%): " + ", ".join(watchlist[:6]) + ("." if len(watchlist) <= 6 else ", ..."))
+                    else:
+                        explanation.append("Attendance status: no enrolled course is currently below 75%.")
+                    evidence.append(
+                        _evidence(
+                            "Attendance aggregate",
+                            f"{aggregate.aggregate_percent:.2f}% ({aggregate.attended_total}/{aggregate.delivered_total})",
+                            "warning" if at_risk else "pass",
+                        )
+                    )
+                    evidence.append(
+                        _evidence(
+                            "Courses at risk",
+                            str(len(at_risk)),
+                            "warning" if at_risk else "pass",
+                        )
+                    )
+                    entities["attendance"] = {
+                        "aggregate_percent": float(aggregate.aggregate_percent),
+                        "at_risk_courses": at_risk,
+                        "watchlist_courses": watchlist,
+                    }
+            elif current_user.role == models.UserRole.FACULTY:
+                if not current_user.faculty_id:
+                    explanation.append("Attendance: faculty linkage is missing on your account.")
+                    evidence.append(_evidence("Attendance scope", "Faculty link missing", "fail"))
+                else:
+                    faculty_id = int(current_user.faculty_id)
+                    taught_courses = int(
+                        db.query(func.count(models.Course.id))
+                        .filter(models.Course.faculty_id == faculty_id)
+                        .scalar()
+                        or 0
+                    )
+                    today_classes = int(
+                        db.query(func.count(models.ClassSchedule.id))
+                        .filter(
+                            models.ClassSchedule.faculty_id == faculty_id,
+                            models.ClassSchedule.weekday == int(today.weekday()),
+                            models.ClassSchedule.is_active.is_(True),
+                        )
+                        .scalar()
+                        or 0
+                    )
+                    pending_rectifications = int(
+                        db.query(func.count(models.AttendanceRectificationRequest.id))
+                        .filter(
+                            models.AttendanceRectificationRequest.faculty_id == faculty_id,
+                            models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING,
+                        )
+                        .scalar()
+                        or 0
+                    )
+                    explanation.append(
+                        f"Attendance: you are mapped to {taught_courses} course(s), with {today_classes} active class slot(s) today "
+                        f"and {pending_rectifications} pending rectification request(s)."
+                    )
+                    evidence.append(_evidence("Courses assigned", str(taught_courses)))
+                    evidence.append(_evidence("Today's class slots", str(today_classes)))
+                    evidence.append(
+                        _evidence(
+                            "Pending rectifications",
+                            str(pending_rectifications),
+                            "warning" if pending_rectifications else "pass",
+                        )
+                    )
+                    entities["attendance"] = {
+                        "courses_assigned": taught_courses,
+                        "today_class_slots": today_classes,
+                        "pending_rectifications": pending_rectifications,
+                    }
+            else:
+                total_students = int(db.query(func.count(models.Student.id)).scalar() or 0)
+                today_classes = int(
+                    db.query(func.count(models.ClassSchedule.id))
+                    .filter(
+                        models.ClassSchedule.weekday == int(today.weekday()),
+                        models.ClassSchedule.is_active.is_(True),
+                    )
+                    .scalar()
+                    or 0
+                )
+                pending_rectifications = int(
+                    db.query(func.count(models.AttendanceRectificationRequest.id))
+                    .filter(models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING)
+                    .scalar()
+                    or 0
+                )
+                pending_corrections = int(
+                    db.query(func.count(models.RMSAttendanceCorrectionRequest.id))
+                    .filter(
+                        models.RMSAttendanceCorrectionRequest.status
+                        == models.RMSAttendanceCorrectionStatus.PENDING_ADMIN_APPROVAL
+                    )
+                    .scalar()
+                    or 0
+                )
+                explanation.append(
+                    "Attendance: campus view shows "
+                    f"{today_classes} active class slot(s) today, {pending_rectifications} pending rectification request(s), "
+                    f"{pending_corrections} pending correction approval request(s), and {total_students} student profile(s)."
+                )
+                evidence.append(_evidence("Total students", str(total_students)))
+                evidence.append(_evidence("Today's class slots", str(today_classes)))
+                evidence.append(
+                    _evidence(
+                        "Pending correction approvals",
+                        str(pending_corrections),
+                        "warning" if pending_corrections else "pass",
+                    )
+                )
+                entities["attendance"] = {
+                    "total_students": total_students,
+                    "today_class_slots": today_classes,
+                    "pending_rectifications": pending_rectifications,
+                    "pending_correction_approvals": pending_corrections,
+                }
+
+        if module_key == "food":
+            if current_user.role == models.UserRole.STUDENT and current_user.student_id:
+                if len(modules_to_answer) == 1 and _looks_like_food_order_blocker_query(
+                    payload.query_text,
+                    active_module=active_module,
+                ):
+                    assessment = _student_food_order_blocker_assessment(
+                        payload,
+                        db=db,
+                        current_user=current_user,
+                        active_food_statuses=active_food_statuses,
+                        today=today,
+                    )
+                    explanation.extend(assessment["explanation"])
+                    evidence.extend(assessment["evidence"])
+                    next_steps = list(assessment["next_steps"])
+                    entities.update(assessment["entities"])
+                    actions.append(assessment["action"])
+                    response_title = str(assessment["title"] or response_title)
+                    response_outcome = (
+                        schemas.CopilotOutcome.BLOCKED
+                        if assessment["blocked"]
+                        else schemas.CopilotOutcome.COMPLETED
+                    )
+                    skip_llm_rewrite = True
+                    continue
+                student_id = int(current_user.student_id)
+                status_rows = (
+                    db.query(models.FoodOrder.status, func.count(models.FoodOrder.id))
+                    .filter(
+                        models.FoodOrder.student_id == student_id,
+                        models.FoodOrder.order_date >= (today - timedelta(days=7)),
+                    )
+                    .group_by(models.FoodOrder.status)
+                    .all()
+                )
+                status_map = {
+                    str(status.value if isinstance(status, models.FoodOrderStatus) else status): int(count or 0)
+                    for status, count in status_rows
+                }
+                active_count = sum(count for key, count in status_map.items() if key in active_food_statuses)
+                delivered_count = int(status_map.get(models.FoodOrderStatus.DELIVERED.value, 0))
+                collected_count = int(status_map.get(models.FoodOrderStatus.COLLECTED.value, 0))
+                latest_order = (
+                    db.query(models.FoodOrder)
+                    .filter(models.FoodOrder.student_id == student_id)
+                    .order_by(models.FoodOrder.created_at.desc(), models.FoodOrder.id.desc())
+                    .first()
+                )
+                explanation.append(
+                    "Food Hall: "
+                    f"{active_count} active order(s), {delivered_count + collected_count} fulfilled order(s) in the last 7 days."
+                )
+                if latest_order is not None:
+                    explanation.append(
+                        f"Latest order status is {latest_order.status.value} for {latest_order.order_date.isoformat()}."
+                    )
+                evidence.append(_evidence("Food active orders (7d)", str(active_count), "warning" if active_count else "pass"))
+                entities["food"] = {
+                    "active_orders_7d": active_count,
+                    "fulfilled_orders_7d": delivered_count + collected_count,
+                    "latest_status": latest_order.status.value if latest_order is not None else None,
+                }
+            else:
+                owner_shop_ids: list[int] = []
+                if current_user.role == models.UserRole.OWNER:
+                    owner_shop_ids = [
+                        int(row.id)
+                        for row in db.query(models.FoodShop.id)
+                        .filter(models.FoodShop.owner_user_id == int(current_user.id))
+                        .all()
+                    ]
+                    if not owner_shop_ids:
+                        explanation.append("Food Hall: no food shops are linked to your owner account yet.")
+                        evidence.append(_evidence("Owned food shops", "0", "warning"))
+                        entities["food"] = {"owned_shop_count": 0}
+                        continue
+                order_query = db.query(models.FoodOrder).filter(models.FoodOrder.order_date == today)
+                if owner_shop_ids:
+                    order_query = order_query.filter(models.FoodOrder.shop_id.in_(owner_shop_ids))
+                today_orders = int(order_query.count())
+                active_orders = int(
+                    order_query
+                    .filter(models.FoodOrder.status.in_([models.FoodOrderStatus(value) for value in active_food_statuses]))
+                    .count()
+                )
+                fulfilled_orders = int(
+                    order_query
+                    .filter(
+                        models.FoodOrder.status.in_(
+                            [models.FoodOrderStatus.DELIVERED, models.FoodOrderStatus.COLLECTED]
+                        )
+                    )
+                    .count()
+                )
+                if current_user.role == models.UserRole.OWNER:
+                    explanation.append(
+                        f"Food Hall: your shop scope has {today_orders} order(s) today, with "
+                        f"{active_orders} active and {fulfilled_orders} fulfilled."
+                    )
+                    evidence.append(_evidence("Owned food shops", str(len(owner_shop_ids))))
+                else:
+                    explanation.append(
+                        f"Food Hall: campus flow has {today_orders} order(s) today, "
+                        f"{active_orders} active and {fulfilled_orders} fulfilled."
+                    )
+                evidence.append(_evidence("Today's food orders", str(today_orders)))
+                evidence.append(_evidence("Active food orders", str(active_orders), "warning" if active_orders else "pass"))
+                entities["food"] = {
+                    "today_orders": today_orders,
+                    "active_orders": active_orders,
+                    "fulfilled_orders": fulfilled_orders,
+                    "owner_shop_count": len(owner_shop_ids) if owner_shop_ids else None,
+                }
+
+        if module_key == "saarthi" and current_user.role == models.UserRole.STUDENT:
+            if not current_user.student_id:
+                explanation.append("Saarthi: student linkage is missing on your account.")
+                evidence.append(_evidence("Saarthi scope", "Student link missing", "fail"))
+            else:
+                student_id = int(current_user.student_id)
+                session = (
+                    db.query(models.SaarthiSession)
+                    .filter(
+                        models.SaarthiSession.student_id == student_id,
+                        models.SaarthiSession.week_start_date == week_start,
+                    )
+                    .first()
+                )
+                if session is None:
+                    explanation.append("Saarthi: no session record exists yet for this week.")
+                    evidence.append(_evidence("Saarthi weekly session", "Not started", "warning"))
+                    entities["saarthi"] = {"week_started": False}
+                else:
+                    message_count = int(
+                        db.query(func.count(models.SaarthiMessage.id))
+                        .filter(models.SaarthiMessage.session_id == int(session.id))
+                        .scalar()
+                        or 0
+                    )
+                    credited = bool(session.attendance_marked_at)
+                    explanation.append(
+                        "Saarthi: "
+                        f"{message_count} message(s) this week; attendance credit is "
+                        f"{'secured' if credited else 'pending Sunday check-in'}."
+                    )
+                    evidence.append(_evidence("Saarthi weekly messages", str(message_count)))
+                    evidence.append(
+                        _evidence(
+                            "Saarthi attendance credit",
+                            "Credited" if credited else "Pending",
+                            "pass" if credited else "warning",
+                        )
+                    )
+                    entities["saarthi"] = {
+                        "week_started": True,
+                        "message_count": message_count,
+                        "attendance_credited": credited,
+                        "mandatory_date": session.mandatory_date.isoformat(),
+                    }
+
+        if module_key == "remedial":
+            if current_user.role == models.UserRole.STUDENT:
+                if not current_user.student_id:
+                    explanation.append("Remedial: student linkage is missing on your account.")
+                    evidence.append(_evidence("Remedial scope", "Student link missing", "fail"))
+                else:
+                    student = db.get(models.Student, int(current_user.student_id))
+                    course_ids = [
+                        int(row.course_id)
+                        for row in db.query(models.Enrollment.course_id)
+                        .filter(models.Enrollment.student_id == int(current_user.student_id))
+                        .all()
+                    ]
+                    if not course_ids:
+                        explanation.append("Remedial: no enrolled courses were found for remedial scheduling scope.")
+                        evidence.append(_evidence("Remedial enrolled courses", "0", "warning"))
+                        entities["remedial"] = {"upcoming_classes": 0}
+                    else:
+                        base_query = (
+                            db.query(models.MakeUpClass)
+                            .filter(
+                                models.MakeUpClass.course_id.in_(course_ids),
+                                models.MakeUpClass.class_date >= today,
+                                models.MakeUpClass.is_active.is_(True),
+                            )
+                        )
+                        student_section = _student_section_token(student)
+                        if student_section:
+                            base_query = base_query.filter(
+                                models.MakeUpClass.sections_json.like(f'%"{student_section}"%')
+                            )
+                        upcoming_count = int(base_query.count())
+                        next_class = (
+                            base_query.order_by(models.MakeUpClass.class_date.asc(), models.MakeUpClass.start_time.asc()).first()
+                        )
+                        explanation.append(f"Remedial: {upcoming_count} upcoming active remedial class(es) in your current scope.")
+                        if next_class is not None:
+                            explanation.append(
+                                f"Next remedial class is on {next_class.class_date.isoformat()} at {next_class.start_time.strftime('%H:%M')}."
+                            )
+                        evidence.append(
+                            _evidence(
+                                "Upcoming remedial classes",
+                                str(upcoming_count),
+                                "warning" if upcoming_count else "pass",
+                            )
+                        )
+                        entities["remedial"] = {
+                            "upcoming_classes": upcoming_count,
+                            "next_class_id": int(next_class.id) if next_class is not None else None,
+                        }
+            elif current_user.role == models.UserRole.FACULTY:
+                if not current_user.faculty_id:
+                    explanation.append("Remedial: faculty linkage is missing on your account.")
+                    evidence.append(_evidence("Remedial scope", "Faculty link missing", "fail"))
+                else:
+                    faculty_id = int(current_user.faculty_id)
+                    base_query = (
+                        db.query(models.MakeUpClass)
+                        .filter(
+                            models.MakeUpClass.faculty_id == faculty_id,
+                            models.MakeUpClass.class_date >= today,
+                            models.MakeUpClass.is_active.is_(True),
+                        )
+                    )
+                    upcoming_count = int(base_query.count())
+                    next_class = base_query.order_by(models.MakeUpClass.class_date.asc(), models.MakeUpClass.start_time.asc()).first()
+                    explanation.append(f"Remedial: you have {upcoming_count} upcoming active remedial class(es).")
+                    if next_class is not None:
+                        explanation.append(
+                            f"Next remedial class is on {next_class.class_date.isoformat()} at {next_class.start_time.strftime('%H:%M')}."
+                        )
+                    evidence.append(_evidence("Upcoming remedial classes", str(upcoming_count)))
+                    entities["remedial"] = {
+                        "upcoming_classes": upcoming_count,
+                        "next_class_id": int(next_class.id) if next_class is not None else None,
+                    }
+
+        if module_key == "rms":
+            if current_user.role == models.UserRole.FACULTY:
+                if not current_user.faculty_id:
+                    explanation.append("RMS: faculty linkage is missing on your account.")
+                    evidence.append(_evidence("RMS scope", "Faculty link missing", "fail"))
+                else:
+                    faculty_id = int(current_user.faculty_id)
+                    faculty = db.get(models.Faculty, faculty_id)
+                    section_scope = sorted(remedial_faculty_allowed_sections(faculty))
+                    case_query = db.query(models.RMSCase).filter(models.RMSCase.status != models.RMSCaseStatus.CLOSED)
+                    if section_scope:
+                        case_query = case_query.filter(models.RMSCase.section.in_(section_scope))
+                    else:
+                        case_query = case_query.filter(models.RMSCase.faculty_id == faculty_id)
+                    open_cases = int(case_query.count())
+                    escalated_cases = int(case_query.filter(models.RMSCase.is_escalated.is_(True)).count())
+                    pending_corrections = int(
+                        db.query(func.count(models.RMSAttendanceCorrectionRequest.id))
+                        .filter(
+                            models.RMSAttendanceCorrectionRequest.faculty_id == faculty_id,
+                            models.RMSAttendanceCorrectionRequest.status
+                            == models.RMSAttendanceCorrectionStatus.PENDING_ADMIN_APPROVAL,
+                        )
+                        .scalar()
+                        or 0
+                    )
+                    explanation.append(
+                        f"RMS: {open_cases} open case(s), {escalated_cases} escalated, and "
+                        f"{pending_corrections} pending attendance correction request(s) in your scope."
+                    )
+                    evidence.append(_evidence("Open RMS cases", str(open_cases), "warning" if open_cases else "pass"))
+                    evidence.append(
+                        _evidence(
+                            "Escalated RMS cases",
+                            str(escalated_cases),
+                            "fail" if escalated_cases else "pass",
+                        )
+                    )
+                    entities["rms"] = {
+                        "open_cases": open_cases,
+                        "escalated_cases": escalated_cases,
+                        "pending_corrections": pending_corrections,
+                        "section_scope": section_scope,
+                    }
+            else:
+                open_cases = int(
+                    db.query(func.count(models.RMSCase.id))
+                    .filter(models.RMSCase.status != models.RMSCaseStatus.CLOSED)
+                    .scalar()
+                    or 0
+                )
+                escalated_cases = int(
+                    db.query(func.count(models.RMSCase.id))
+                    .filter(
+                        models.RMSCase.status != models.RMSCaseStatus.CLOSED,
+                        models.RMSCase.is_escalated.is_(True),
+                    )
+                    .scalar()
+                    or 0
+                )
+                pending_corrections = int(
+                    db.query(func.count(models.RMSAttendanceCorrectionRequest.id))
+                    .filter(
+                        models.RMSAttendanceCorrectionRequest.status
+                        == models.RMSAttendanceCorrectionStatus.PENDING_ADMIN_APPROVAL
+                    )
+                    .scalar()
+                    or 0
+                )
+                explanation.append(
+                    f"RMS: campus queue has {open_cases} open case(s), {escalated_cases} escalated, and "
+                    f"{pending_corrections} pending attendance correction approval request(s)."
+                )
+                evidence.append(_evidence("Open RMS cases", str(open_cases), "warning" if open_cases else "pass"))
+                evidence.append(
+                    _evidence(
+                        "Escalated RMS cases",
+                        str(escalated_cases),
+                        "fail" if escalated_cases else "pass",
+                    )
+                )
+                entities["rms"] = {
+                    "open_cases": open_cases,
+                    "escalated_cases": escalated_cases,
+                    "pending_correction_approvals": pending_corrections,
+                }
+
+        if module_key == "administrative":
+            copilot_runs_today = int(
+                db.query(func.count(models.CopilotAuditLog.id))
+                .filter(models.CopilotAuditLog.created_at >= datetime.combine(today, time.min))
+                .scalar()
+                or 0
+            )
+            pending_corrections = int(
+                db.query(func.count(models.RMSAttendanceCorrectionRequest.id))
+                .filter(
+                    models.RMSAttendanceCorrectionRequest.status
+                    == models.RMSAttendanceCorrectionStatus.PENDING_ADMIN_APPROVAL
+                )
+                .scalar()
+                or 0
+            )
+            pending_identity_reviews = int(
+                db.query(func.count(models.IdentityVerificationCase.id))
+                .filter(
+                    models.IdentityVerificationCase.status.in_(
+                        [
+                            models.IdentityVerificationStatus.PENDING,
+                            models.IdentityVerificationStatus.IN_REVIEW,
+                        ]
+                    )
+                )
+                .scalar()
+                or 0
+            )
+            flagged_identity_cases = int(
+                db.query(func.count(models.IdentityVerificationCase.id))
+                .filter(models.IdentityVerificationCase.status == models.IdentityVerificationStatus.FLAGGED)
+                .scalar()
+                or 0
+            )
+            explanation.append(
+                f"Administrative: {copilot_runs_today} copilot audit run(s) today, "
+                f"{pending_corrections} pending correction approval(s), "
+                f"{pending_identity_reviews} pending identity review(s), and "
+                f"{flagged_identity_cases} flagged identity case(s)."
+            )
+            evidence.append(_evidence("Copilot runs today", str(copilot_runs_today)))
+            evidence.append(
+                _evidence(
+                    "Pending identity reviews",
+                    str(pending_identity_reviews),
+                    "warning" if pending_identity_reviews else "pass",
+                )
+            )
+            entities["administrative"] = {
+                "copilot_runs_today": copilot_runs_today,
+                "pending_correction_approvals": pending_corrections,
+                "pending_identity_reviews": pending_identity_reviews,
+                "flagged_identity_cases": flagged_identity_cases,
+            }
+
+    llm_structured = None
+    if not skip_llm_rewrite:
+        try:
+            llm_structured = generate_structured_copilot_answer(
+                query_text=payload.query_text,
+                role=current_user.role.value,
+                module_labels=module_labels,
+                denied_labels=[_copilot_module_label(module) for module in denied_modules],
+                explanation=explanation,
+                evidence=[
+                    {
+                        "label": str(item.label),
+                        "value": str(item.value),
+                        "status": str(item.status),
+                    }
+                    for item in evidence
+                ],
+                next_steps=next_steps,
+                entities=entities,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "copilot_llm_rewrite_failed user_id=%s role=%s modules=%s",
+                current_user.id,
+                current_user.role.value,
+                ",".join(modules_to_answer),
+            )
+            llm_structured = None
+
+    title = response_title
+    if isinstance(llm_structured, dict):
+        llm_title = str(llm_structured.get("title") or "").strip()
+        llm_explanation = llm_structured.get("explanation")
+        llm_next_steps = llm_structured.get("next_steps")
+        if llm_title:
+            title = llm_title
+        if isinstance(llm_explanation, list) and llm_explanation:
+            explanation = [str(item) for item in llm_explanation if str(item or "").strip()]
+        if isinstance(llm_next_steps, list) and llm_next_steps:
+            next_steps = [str(item) for item in llm_next_steps if str(item or "").strip()]
+    if not next_steps:
+        if broad_scope_requested:
+            next_steps = ["Ask a module-specific follow-up with course code, section, or student id for precise actions."]
+        elif len(modules_to_answer) == 1:
+            next_steps = _focused_module_assist_next_steps(
+                modules_to_answer[0],
+                role=current_user.role,
+            )
+        else:
+            next_steps = [
+                "Stay inside the relevant module and retry the exact in-app step tied to your question.",
+                "If you switch modules, ask again from that module so Campus Copilot can use the active screen context.",
+            ]
+
+    response = schemas.CopilotQueryResponse(
+        intent=schemas.CopilotIntent.MODULE_ASSIST,
+        outcome=response_outcome,
+        title=title,
+        explanation=explanation,
+        evidence=evidence,
+        actions=actions,
+        next_steps=next_steps,
+        entities=entities,
+    )
+    return response, {"scope": f"role:{current_user.role.value}|modules:{','.join(modules_to_answer)}"}
+
+
 @router.post("/query", response_model=schemas.CopilotQueryResponse)
 def copilot_query(
     payload: schemas.CopilotQueryRequest,
@@ -1315,25 +3062,54 @@ def copilot_query(
         )
     ),
 ):
-    intent = _resolve_intent(payload.query_text)
-    if intent == schemas.CopilotIntent.UNSUPPORTED:
-        response = _unsupported_response(current_user)
+    if _looks_like_sensitive_data_request(payload.query_text):
+        response = _sensitive_request_denied_response(current_user)
         return _persist_audit(
             db,
             current_user=current_user,
             payload=payload,
             response=response,
-            scope=f"role:{current_user.role.value}",
+            scope=f"role:{current_user.role.value}|security:sensitive_request",
         )
-
+    intent = _resolve_intent(payload.query_text)
     handler_map = {
         schemas.CopilotIntent.ATTENDANCE_BLOCKER: _attendance_blocker_response,
         schemas.CopilotIntent.ELIGIBILITY_RISK: _eligibility_risk_response,
         schemas.CopilotIntent.CREATE_REMEDIAL_PLAN: _remedial_plan_response,
         schemas.CopilotIntent.STUDENT_FLAG_REASON: _flag_reason_response,
+        schemas.CopilotIntent.MODULE_ASSIST: _module_assist_response,
+        schemas.CopilotIntent.UNSUPPORTED: lambda payload, db, current_user: (
+            _unsupported_response(current_user),
+            {"scope": f"role:{current_user.role.value}"},
+        ),
     }
     handler = handler_map[intent]
-    response, audit_meta = handler(payload, db=db, current_user=current_user)
+    try:
+        response, audit_meta = handler(payload, db=db, current_user=current_user)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "copilot_handler_failed user_id=%s role=%s intent=%s",
+            current_user.id,
+            current_user.role.value,
+            intent.value,
+        )
+        response = schemas.CopilotQueryResponse(
+            intent=intent,
+            outcome=schemas.CopilotOutcome.FAILED,
+            title="Campus Copilot Temporary Failure",
+            explanation=[
+                "Campus Copilot hit an internal processing error while preparing this response.",
+                "Your request was not dropped; retry in a few seconds.",
+            ],
+            actions=[_action("copilot_query", "failed", "Internal handler exception")],
+            next_steps=[
+                "Retry the same question.",
+                "If this repeats, ask admin to verify SQL auth-user sync for audit logging.",
+            ],
+        )
+        audit_meta = {"scope": f"role:{current_user.role.value}|handler_error"}
     return _persist_audit(
         db,
         current_user=current_user,

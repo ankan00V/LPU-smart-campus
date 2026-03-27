@@ -3,14 +3,27 @@ import logging
 import os
 import threading
 import time
+import math
+import sys
 from urllib.parse import SplitResult
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Callable
+from pathlib import Path
+
+try:  # pragma: no cover - optional dependency in some runtime shells
+    from dotenv import dotenv_values, load_dotenv
+except Exception:  # noqa: BLE001
+    def load_dotenv(*_args, **_kwargs):
+        return False
+
+    def dotenv_values(*_args, **_kwargs):
+        return {}
 
 from .runtime_infra import (
     is_remote_service_host,
+    install_socket_dns_fallback,
     managed_services_required,
     normalize_host,
     split_url,
@@ -31,6 +44,12 @@ except Exception:  # noqa: BLE001
 _redis_client: Redis | None = None
 _redis_error: str | None = None
 logger = logging.getLogger(__name__)
+_local_rate_limit_lock = threading.Lock()
+_local_rate_limit_counters: dict[str, tuple[int, float]] = {}
+_LOCAL_RATE_LIMIT_MAX_TRACKED = 50_000
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ORIGINAL_ENV = dict(os.environ)
+_ENV_LOADED = False
 
 
 @dataclass(slots=True)
@@ -42,12 +61,69 @@ class RateLimitDecision:
     retry_after_seconds: int
 
 
+def _running_under_pytest() -> bool:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return True
+    if "pytest" in sys.modules:
+        return True
+    return any("pytest" in str(arg).lower() for arg in sys.argv)
+
+
+def _load_environment_files() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    if _running_under_pytest():
+        return
+    load_dotenv(_PROJECT_ROOT / ".env")
+    local_values = dotenv_values(_PROJECT_ROOT / ".env.local")
+    for key, value in local_values.items():
+        if value is None:
+            continue
+        if key in _ORIGINAL_ENV:
+            continue
+        os.environ[key] = str(value)
+    _ENV_LOADED = True
+
+
+def _local_rate_limit_hit(redis_key: str, *, limit: int, window_seconds: int, now: float) -> RateLimitDecision:
+    expires_at_default = now + window_seconds
+    with _local_rate_limit_lock:
+        # Opportunistic cleanup to avoid unbounded growth if Redis is unavailable.
+        if len(_local_rate_limit_counters) > _LOCAL_RATE_LIMIT_MAX_TRACKED:
+            stale = [key for key, (_, expiry) in _local_rate_limit_counters.items() if expiry <= now]
+            for key in stale[:10_000]:
+                _local_rate_limit_counters.pop(key, None)
+
+        used, expires_at = _local_rate_limit_counters.get(redis_key, (0, expires_at_default))
+        if expires_at <= now:
+            used = 0
+            expires_at = expires_at_default
+        used += 1
+        _local_rate_limit_counters[redis_key] = (used, expires_at)
+
+    ttl = max(1, int(math.ceil(expires_at - now)))
+    return RateLimitDecision(
+        allowed=used <= limit,
+        limit=limit,
+        used=used,
+        remaining=max(0, limit - used),
+        retry_after_seconds=ttl,
+    )
+
+
 def _redis_url() -> str:
+    _load_environment_files()
     return (os.getenv("REDIS_URL") or "").strip()
 
 
 def _redis_required() -> bool:
     raw = (os.getenv("REDIS_REQUIRED", "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _rate_limit_allow_local_fallback() -> bool:
+    raw = (os.getenv("API_RATE_LIMIT_ALLOW_LOCAL_FALLBACK", "false") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -88,6 +164,48 @@ def _socket_timeout_seconds() -> float:
     return max(0.2, min(10.0, value))
 
 
+def _socket_keepalive_enabled() -> bool:
+    raw = (os.getenv("REDIS_SOCKET_KEEPALIVE", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _retry_on_timeout_enabled() -> bool:
+    raw = (os.getenv("REDIS_RETRY_ON_TIMEOUT", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _should_retry_redis_error(exc: Exception) -> bool:
+    message = str(exc or "").lower()
+    if "connection closed by server" in message:
+        return True
+    if "connection reset" in message:
+        return True
+    if "connection aborted" in message:
+        return True
+    if "connection refused" in message:
+        return True
+    if "connection error" in message:
+        return True
+    return False
+
+
+def _retry_redis_call(operation: Callable[[Redis], Any]) -> Any:
+    client = get_redis(required=False)
+    if client is None:
+        raise RedisError(_redis_error or "Redis is unavailable")
+    try:
+        return operation(client)
+    except RedisError as exc:
+        if not _should_retry_redis_error(exc):
+            raise
+        close_redis()
+        init_redis(force=True)
+        client = get_redis(required=False)
+        if client is None:
+            raise
+        return operation(client)
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -122,6 +240,7 @@ def init_redis(force: bool = False) -> bool:
         return False
 
     try:
+        install_socket_dns_fallback()
         client_kwargs: dict[str, Any] = {}
         if scheme == "rediss":
             ssl_ca_file = (os.getenv("REDIS_SSL_CA_FILE") or "").strip()
@@ -150,6 +269,8 @@ def init_redis(force: bool = False) -> bool:
             socket_timeout=_socket_timeout_seconds(),
             socket_connect_timeout=_socket_timeout_seconds(),
             health_check_interval=30,
+            socket_keepalive=_socket_keepalive_enabled(),
+            retry_on_timeout=_retry_on_timeout_enabled(),
             **client_kwargs,
         )
         client.ping()
@@ -206,7 +327,7 @@ def cache_get_json(key: str) -> Any | None:
             raise RuntimeError(_redis_error or "Redis is unavailable")
         return None
     try:
-        raw = client.get(key)
+        raw = _retry_redis_call(lambda active_client: active_client.get(key))
     except RedisError as exc:
         if _redis_required():
             raise RuntimeError(str(exc) or "Redis cache read failed") from exc
@@ -227,7 +348,13 @@ def cache_set_json(key: str, payload: Any, ttl_seconds: int = 30) -> bool:
         return False
     ttl = max(1, int(ttl_seconds))
     try:
-        client.set(key, json.dumps(payload, default=_json_default), ex=ttl)
+        _retry_redis_call(
+            lambda active_client: active_client.set(
+                key,
+                json.dumps(payload, default=_json_default),
+                ex=ttl,
+            )
+        )
         return True
     except RedisError as exc:
         if _redis_required():
@@ -242,7 +369,7 @@ def cache_delete(key: str) -> bool:
             raise RuntimeError(_redis_error or "Redis is unavailable")
         return False
     try:
-        client.delete(key)
+        _retry_redis_call(lambda active_client: active_client.delete(key))
         return True
     except RedisError as exc:
         if _redis_required():
@@ -256,20 +383,30 @@ def rate_limit_hit(key: str, *, limit: int, window_seconds: int) -> RateLimitDec
     now = time.time()
 
     client = get_redis(required=True if _redis_required() else False)
-    if client is None:
-        raise RuntimeError(_redis_error or "Redis rate limiter is unavailable")
-
     bucket = int(now // safe_window)
     redis_key = f"rl:{key}:{bucket}"
+    if client is None:
+        if not _redis_required() and _rate_limit_allow_local_fallback():
+            return _local_rate_limit_hit(
+                redis_key,
+                limit=safe_limit,
+                window_seconds=safe_window,
+                now=now,
+            )
+        raise RuntimeError(_redis_error or "Redis rate limiter is unavailable")
+
     try:
-        pipe = client.pipeline()
-        pipe.incr(redis_key, 1)
-        pipe.ttl(redis_key)
-        used_raw, ttl_raw = pipe.execute()
+        def _op(active_client: Redis):
+            pipe = active_client.pipeline()
+            pipe.incr(redis_key, 1)
+            pipe.ttl(redis_key)
+            return pipe.execute()
+
+        used_raw, ttl_raw = _retry_redis_call(_op)
         used = int(used_raw or 0)
         ttl = int(ttl_raw or -1)
         if used == 1 or ttl < 0:
-            client.expire(redis_key, safe_window)
+            _retry_redis_call(lambda active_client: active_client.expire(redis_key, safe_window))
             ttl = safe_window
         allowed = used <= safe_limit
         remaining = max(0, safe_limit - used)
@@ -292,7 +429,12 @@ def publish_json(channel: str, payload: dict[str, Any]) -> bool:
             raise RuntimeError(_redis_error or "Redis publish channel is unavailable")
         return False
     try:
-        client.publish(channel, json.dumps(payload, default=_json_default))
+        _retry_redis_call(
+            lambda active_client: active_client.publish(
+                channel,
+                json.dumps(payload, default=_json_default),
+            )
+        )
         return True
     except RedisError as exc:
         if _redis_required():
@@ -332,7 +474,15 @@ def start_pubsub_listener(
                 pubsub = active_client.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(channel)
                 reconnect_delay = 0.4
+                last_ping = time.monotonic()
                 while not stop_event.is_set():
+                    now = time.monotonic()
+                    if now - last_ping >= 20.0:
+                        try:
+                            pubsub.ping()
+                        except Exception as exc:  # noqa: BLE001
+                            raise exc
+                        last_ping = now
                     raw = pubsub.get_message(timeout=1.0)
                     if not raw:
                         continue
@@ -359,6 +509,9 @@ def start_pubsub_listener(
                         channel,
                         exc,
                     )
+                if _should_retry_redis_error(exc):
+                    close_redis()
+                    init_redis(force=True)
                 stop_event.wait(reconnect_delay)
                 reconnect_delay = min(5.0, reconnect_delay * 1.8)
             finally:

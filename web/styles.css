@@ -1532,7 +1532,8 @@ body.ums-theme #executive-section {
 }
 
 #executive-section .admin-ops-grid {
-    grid-template-columns: minmax(250px, 0.88fr) minmax(320px, 1.12fr);
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-auto-flow: dense;
     gap: 0.74rem;
 }
 
@@ -1862,62 +1863,261 @@ body.ums-theme #executive-section .donut-core {
     letter-spacing: 0.01em;
 }
 
-.saarthi-chip-grid {
-    margin-top: 0.68rem;
+.saarthi-header-section,
+.saarthi-conversation-section,
+.saarthi-input-section {
+    border-radius: 20px;
+    border: 1px solid rgba(189, 210, 231, 0.82);
+    background: linear-gradient(164deg, rgba(255, 255, 255, 0.9), rgba(244, 249, 255, 0.94));
+    box-shadow: 0 12px 26px rgba(77, 104, 136, 0.1);
+    padding: clamp(0.8rem, 1.8vw, 1.15rem);
+}
+
+#saarthi-section {
+    width: 100%;
+}
+
+#student-saarthi-card {
+    font-family: "Inter", "Manrope", "Segoe UI", Arial, sans-serif;
+    width: 100%;
+    max-width: none;
+    margin-inline: 0;
     display: grid;
-    gap: 0.5rem;
+    gap: 0.95rem;
+    border-radius: 22px;
+    border: 1px solid rgba(179, 203, 227, 0.8);
+    background:
+        radial-gradient(circle at 7% 10%, rgba(198, 229, 255, 0.35), transparent 42%),
+        radial-gradient(circle at 88% 12%, rgba(224, 208, 255, 0.32), transparent 44%),
+        linear-gradient(158deg, #fdfdff, #f2f8ff 52%, #eef6ff);
+    box-shadow: 0 22px 50px rgba(74, 104, 136, 0.16);
+    animation: saarthi-card-float 10.5s ease-in-out infinite;
+}
+
+#student-saarthi-card .helper-text {
+    line-height: 1.48;
+    color: #61758b;
+}
+
+.saarthi-header-section {
+    display: grid;
+    gap: 0.8rem;
+}
+
+.saarthi-affirmation-band {
+    margin: 0;
+    border-radius: 14px;
+    border: 1px solid rgba(201, 217, 239, 0.96);
+    background: linear-gradient(110deg, #f8f2ff, #eef5ff 44%, #edf9ff);
+    overflow: hidden;
+    padding: 0.5rem 0;
+}
+
+.saarthi-affirmation-track {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    width: max-content;
+    padding: 0 0.72rem;
+    animation: saarthi-affirmation-scroll 30s linear infinite;
+    will-change: transform;
+}
+
+.saarthi-affirmation-pill {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    border-radius: 999px;
+    border: 1px solid rgba(207, 221, 240, 0.94);
+    background: linear-gradient(145deg, #ffffff, #f3f7fd);
+    color: #4d637e;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    padding: 0.32rem 0.66rem;
+    box-shadow: 0 8px 16px rgba(81, 106, 138, 0.1);
+}
+
+.saarthi-welcome-card {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.8rem;
+    border-radius: 16px;
+    border: 1px solid rgba(195, 214, 234, 0.9);
+    background: linear-gradient(150deg, rgba(252, 255, 255, 0.96), rgba(245, 251, 255, 0.95));
+    padding: 0.8rem 0.88rem;
+    box-shadow: 0 10px 18px rgba(80, 107, 138, 0.1);
+}
+
+.saarthi-welcome-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    position: relative;
+    background: radial-gradient(circle at 40% 35%, #e5f6ff, #d8ebff 56%, #c4deff 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 8px 16px rgba(92, 119, 155, 0.2);
+    overflow: hidden;
+}
+
+.saarthi-welcome-orb,
+.saarthi-welcome-ring,
+.saarthi-welcome-spark {
+    position: absolute;
+    display: block;
+}
+
+.saarthi-welcome-orb {
+    inset: 14px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #ffffff, #dff0ff 72%);
+    animation: saarthi-orb-breathe 3.6s ease-in-out infinite;
+}
+
+.saarthi-welcome-ring {
+    inset: 8px;
+    border-radius: 50%;
+    border: 1px solid rgba(170, 203, 234, 0.8);
+    animation: saarthi-orb-breathe 4.2s ease-in-out infinite reverse;
+}
+
+.saarthi-welcome-spark {
+    width: 10px;
+    height: 10px;
+    top: 9px;
+    right: 10px;
+    border-radius: 3px;
+    background: linear-gradient(145deg, #b8f1e6, #8fd4f1);
+    transform: rotate(45deg);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.66);
+    animation: saarthi-spark-float 2.8s ease-in-out infinite;
+}
+
+.saarthi-welcome-copy h3 {
+    margin: 0;
+    font-size: clamp(1.08rem, 2vw, 1.32rem);
+    line-height: 1.2;
+    color: #2f4054;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+}
+
+.saarthi-welcome-copy p {
+    margin: 0.28rem 0 0;
+    color: #5d7288;
+    font-size: 0.92rem;
+    line-height: 1.58;
+}
+
+.saarthi-status-line {
+    margin: 0;
+    font-size: 0.84rem;
+}
+
+.saarthi-chip-grid {
+    margin-top: 0.1rem;
+    display: grid;
+    gap: 0.58rem;
     grid-template-columns: repeat(2, minmax(180px, 1fr));
 }
 
 .saarthi-chip {
-    border-radius: 12px;
-    border: 1px solid rgba(166, 212, 245, 0.34);
-    background: linear-gradient(158deg, rgba(28, 80, 118, 0.46), rgba(19, 57, 89, 0.5));
-    padding: 0.58rem 0.66rem;
+    border-radius: 14px;
+    border: 1px solid rgba(198, 215, 236, 0.92);
+    background: linear-gradient(164deg, #ffffff, #f2f8ff);
+    padding: 0.62rem 0.72rem;
     display: grid;
-    gap: 0.18rem;
+    gap: 0.2rem;
+    box-shadow: 0 8px 16px rgba(84, 107, 137, 0.1);
 }
 
 .saarthi-chip span {
-    font-size: 0.78rem;
-    color: #b7d6ec;
+    font-size: 0.73rem;
+    color: #5a6f85;
     font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
 }
 
 .saarthi-chip strong {
-    font-size: 0.98rem;
-    color: #f2fbff;
+    font-size: 1rem;
+    color: #2f4054;
     letter-spacing: 0.01em;
 }
 
+.saarthi-conversation-section {
+    display: grid;
+    gap: 0.62rem;
+}
+
 .saarthi-history {
-    margin-top: 0.72rem;
-    border-radius: 14px;
-    border: 1px solid rgba(167, 214, 246, 0.34);
-    background: linear-gradient(165deg, rgba(19, 58, 89, 0.62), rgba(14, 42, 67, 0.78));
-    padding: 0.7rem;
-    min-height: 210px;
-    max-height: min(38vh, 360px);
+    margin-top: 0;
+    border-radius: 18px;
+    border: 1px solid rgba(202, 217, 237, 0.94);
+    background: linear-gradient(175deg, #fffefc, #f7f5ff 66%, #f2f8ff);
+    padding: 0.95rem;
+    min-height: min(38vh, 340px);
+    max-height: min(56vh, 520px);
     overflow: auto;
     display: grid;
-    gap: 0.56rem;
+    gap: 0.72rem;
+    align-content: start;
+}
+
+.saarthi-history.is-empty {
+    min-height: clamp(160px, 22vh, 236px);
+    max-height: clamp(180px, 24vh, 256px);
+    align-content: center;
+}
+
+.saarthi-history::-webkit-scrollbar {
+    width: 10px;
+}
+
+.saarthi-history::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    background: rgba(151, 172, 201, 0.52);
 }
 
 .saarthi-message {
-    max-width: min(92%, 460px);
-    border-radius: 14px;
-    border: 1px solid rgba(159, 209, 243, 0.32);
-    background: rgba(23, 70, 107, 0.78);
-    box-shadow: 0 10px 20px rgba(7, 20, 33, 0.22);
-    padding: 0.58rem 0.68rem;
+    max-width: min(88%, 560px);
+    position: relative;
+    border-radius: 18px;
+    border: 1px solid rgba(203, 216, 234, 0.92);
+    background: linear-gradient(160deg, #ffffff, #f6f9ff);
+    box-shadow: 0 10px 18px rgba(84, 110, 139, 0.1);
+    padding: 0.68rem 0.76rem;
     display: grid;
-    gap: 0.22rem;
+    gap: 0.28rem;
+    animation: saarthi-message-enter 220ms var(--motion-ease);
+    transform-style: preserve-3d;
+}
+
+.saarthi-message::after {
+    content: "";
+    position: absolute;
+    left: 10%;
+    right: 10%;
+    bottom: -10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(58, 90, 126, 0.14);
+    filter: blur(8px);
+    pointer-events: none;
+    opacity: 0.45;
+}
+
+.saarthi-message.theirs {
+    border-color: rgba(214, 204, 238, 0.96);
+    background: linear-gradient(160deg, #fefcff, #f6f1ff);
 }
 
 .saarthi-message.mine {
     margin-left: auto;
-    border-color: rgba(181, 228, 255, 0.54);
-    background: linear-gradient(155deg, rgba(37, 110, 171, 0.86), rgba(25, 74, 120, 0.92));
+    border-color: rgba(186, 212, 242, 0.96);
+    background: linear-gradient(160deg, #f4faff, #e9f4ff);
 }
 
 .saarthi-message-header {
@@ -1925,74 +2125,308 @@ body.ums-theme #executive-section .donut-core {
     align-items: center;
     justify-content: space-between;
     gap: 0.45rem;
-    font-size: 0.69rem;
-    color: #9fc4de;
+    font-size: 0.72rem;
+    color: #8492a0;
 }
 
-.saarthi-message-header strong {
-    color: #f4fbff;
-    font-size: 0.75rem;
+.saarthi-message-sender {
+    color: #6d5a96;
+    font-size: 0.69rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.saarthi-message.mine .saarthi-message-sender {
+    color: #3f6fa3;
 }
 
 .saarthi-message-text {
     margin: 0;
-    font-size: 0.84rem;
-    line-height: 1.46;
-    color: #ecf8ff;
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #33465a;
     white-space: pre-wrap;
     word-break: break-word;
 }
 
+.saarthi-typing {
+    width: max-content;
+    max-width: 100%;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.44rem;
+    border-radius: 999px;
+    border: 1px solid rgba(207, 219, 236, 0.96);
+    background: linear-gradient(150deg, #ffffff, #f5f8ff);
+    color: #5e738a;
+    padding: 0.42rem 0.66rem;
+    box-shadow: 0 8px 14px rgba(84, 110, 141, 0.12);
+}
+
+.saarthi-typing-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+.saarthi-typing-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+}
+
+.saarthi-typing-dots i {
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #8fa5bf;
+    animation: saarthi-typing-dot 1.12s ease-in-out infinite;
+}
+
+.saarthi-typing-dots i:nth-child(2) {
+    animation-delay: 0.16s;
+}
+
+.saarthi-typing-dots i:nth-child(3) {
+    animation-delay: 0.32s;
+}
+
 .saarthi-empty {
-    padding: 1rem 0.75rem;
+    padding: 1.26rem 0.9rem;
+    max-width: min(760px, 100%);
+    margin-inline: auto;
     text-align: center;
-    font-size: 0.82rem;
-    line-height: 1.45;
-    color: #b8d7ed;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: #667b91;
+    border-radius: 14px;
+    border: 1px dashed rgba(190, 209, 231, 0.88);
+    background: rgba(245, 249, 255, 0.88);
+}
+
+.saarthi-soft-note {
+    margin: 0;
+    text-align: center;
+    font-size: 0.84rem;
+    color: #62778e;
+}
+
+.saarthi-input-section {
+    display: grid;
+    gap: 0.72rem;
 }
 
 .saarthi-compose-field {
-    margin-top: 0.72rem;
+    margin-top: 0;
+    gap: 0.48rem;
 }
 
 .saarthi-compose-field > span {
-    font-size: 0.76rem;
-    color: #d3e9f8;
+    font-size: 0.82rem;
+    color: #4f6379;
     font-weight: 700;
 }
 
 .saarthi-compose-field textarea {
     width: 100%;
-    min-height: 92px;
+    min-height: 90px;
     resize: vertical;
     font: inherit;
-    font-size: 0.86rem;
-    line-height: 1.45;
-    color: #edf9ff;
-    background: rgba(13, 40, 63, 0.86);
-    border: 1px solid rgba(133, 194, 233, 0.36);
-    border-radius: 12px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: #2f4357;
+    background: #ffffff;
+    border: 1px solid rgba(198, 215, 235, 0.96);
+    border-radius: 16px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+    padding: 0.82rem 0.9rem;
+}
+
+.saarthi-compose-field textarea:focus {
+    outline: 2px solid rgba(120, 171, 231, 0.46);
+    outline-offset: 1px;
+    border-color: rgba(157, 190, 228, 0.95);
 }
 
 .saarthi-compose-field textarea::placeholder {
-    color: rgba(185, 213, 232, 0.7);
+    color: rgba(133, 155, 178, 0.9);
 }
 
 .saarthi-actions {
-    margin-top: 0.62rem;
+    margin-top: 0.08rem;
+    display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.7rem;
+    gap: 0.74rem;
 }
 
 .saarthi-actions .helper-text {
     margin: 0;
     flex: 1 1 280px;
+    color: #6d8298;
+    font-size: 0.78rem;
 }
 
-.saarthi-actions .btn {
-    min-width: 168px;
+.saarthi-new-chat-btn {
+    min-height: 42px;
+    padding: 0 1rem;
+    border-radius: 999px;
+    border: 1px solid rgba(153, 184, 214, 0.9);
+    background: linear-gradient(150deg, rgba(255, 255, 255, 0.95), rgba(236, 245, 255, 0.95));
+    color: #3f5f80;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
+}
+
+.saarthi-new-chat-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(118, 162, 205, 0.95);
+    box-shadow: 0 8px 16px rgba(76, 114, 153, 0.18);
+}
+
+.saarthi-new-chat-btn:active {
+    transform: translateY(0);
+}
+
+.saarthi-new-chat-btn:focus-visible {
+    outline: 2px solid rgba(105, 160, 228, 0.74);
+    outline-offset: 2px;
+}
+
+.saarthi-new-chat-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+    box-shadow: none;
+    transform: none;
+}
+
+.saarthi-new-chat-btn.is-loading {
+    animation: saarthi-send-pulse 1.25s ease-in-out infinite;
+}
+
+.saarthi-send-btn {
+    width: 52px;
+    height: 52px;
+    min-width: 52px;
+    border: 1px solid rgba(145, 183, 225, 0.96);
+    background: linear-gradient(145deg, #8db7ff, #7ad7d8);
+    color: #ffffff;
+    border-radius: 50%;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 12px 22px rgba(80, 123, 172, 0.28);
+    transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), filter var(--motion-fast) var(--motion-ease);
+    position: relative;
+}
+
+.saarthi-send-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 0 0 4px rgba(146, 190, 239, 0.2), 0 14px 24px rgba(80, 123, 172, 0.32);
+    filter: saturate(1.05);
+}
+
+.saarthi-send-btn:active {
+    transform: translateY(0);
+}
+
+.saarthi-send-btn:focus-visible {
+    outline: 2px solid rgba(105, 160, 228, 0.78);
+    outline-offset: 2px;
+}
+
+.saarthi-send-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.56;
+    transform: none;
+    box-shadow: none;
+}
+
+.saarthi-send-btn.is-sending {
+    animation: saarthi-send-pulse 1.25s ease-in-out infinite;
+}
+
+.saarthi-send-icon {
+    width: 21px;
+    height: 21px;
+    display: block;
+}
+
+.saarthi-send-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+@keyframes saarthi-affirmation-scroll {
+    0% {
+        transform: translateX(0);
+    }
+    100% {
+        transform: translateX(-50%);
+    }
+}
+
+@keyframes saarthi-message-enter {
+    0% {
+        transform: translateY(5px);
+        opacity: 0;
+    }
+    100% {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+@keyframes saarthi-typing-dot {
+    0%,
+    80%,
+    100% {
+        opacity: 0.4;
+        transform: translateY(0);
+    }
+    40% {
+        opacity: 1;
+        transform: translateY(-1px);
+    }
+}
+
+@keyframes saarthi-send-pulse {
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(115, 177, 233, 0.26), 0 12px 22px rgba(80, 123, 172, 0.28);
+    }
+    50% {
+        box-shadow: 0 0 0 8px rgba(115, 177, 233, 0), 0 14px 24px rgba(80, 123, 172, 0.34);
+    }
+}
+
+@keyframes saarthi-orb-breathe {
+    0%,
+    100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+}
+
+@keyframes saarthi-spark-float {
+    0%,
+    100% {
+        transform: rotate(45deg) translateY(0);
+    }
+    50% {
+        transform: rotate(45deg) translateY(-2px);
+    }
 }
 
 .course-aggregate-item {
@@ -2947,6 +3381,20 @@ body.ums-theme #executive-section .donut-core {
     margin-top: 0.25rem;
 }
 
+.auth-photo-preview {
+    width: 120px;
+    height: 120px;
+    border-radius: 16px;
+    object-fit: cover;
+    border: 1px solid rgba(142, 194, 231, 0.4);
+    box-shadow: 0 12px 26px rgba(10, 26, 42, 0.35);
+}
+
+.field-hint {
+    font-size: 0.72rem;
+    color: #9fb8ce;
+}
+
 .auth-section-head {
     display: flex;
     align-items: flex-start;
@@ -3854,6 +4302,30 @@ body.ums-theme .ui-state[data-ui-state="success"] {
     flex-wrap: wrap;
 }
 
+.direct-email-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.6rem;
+    align-items: end;
+}
+
+.direct-email-card textarea {
+    width: 100%;
+    min-height: 110px;
+    resize: vertical;
+    border-radius: 12px;
+    border: 1px solid rgba(177, 219, 255, 0.44);
+    padding: 0.7rem 0.72rem;
+    color: #ddf2ff;
+    font: inherit;
+    background: rgba(22, 52, 76, 0.72);
+}
+
+.direct-email-card textarea:focus {
+    outline: 2px solid rgba(81, 180, 255, 0.55);
+    outline-offset: 1px;
+}
+
 .food-order-controls {
     display: grid;
     grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr) auto;
@@ -3903,6 +4375,11 @@ body.ums-theme .ui-state[data-ui-state="success"] {
 
 .food-order-actions .btn {
     min-height: 50px;
+}
+
+.food-demo-helper,
+.food-demo-status {
+    margin-top: 0.45rem;
 }
 
 #food-order-date {
@@ -7394,6 +7871,7 @@ body.ums-theme .remedial-card-head p {
     font-size: 0.78rem;
 }
 
+.food-demo-btn[data-active="true"],
 .remedial-demo-btn[data-active="true"],
 .student-attendance-demo-btn[data-active="true"] {
     border-color: rgba(106, 224, 170, 0.72);
@@ -7406,6 +7884,7 @@ body.ums-theme .remedial-demo-controls small {
     color: #50708b;
 }
 
+body.ums-theme .food-demo-btn[data-active="true"],
 body.ums-theme .remedial-demo-btn[data-active="true"],
 body.ums-theme .student-attendance-demo-btn[data-active="true"] {
     border-color: #89d2b0;
@@ -8499,6 +8978,773 @@ body.ums-theme {
     letter-spacing: 0.01em;
 }
 
+/* Saarthi immersive refresh */
+#student-saarthi-card {
+    --saarthi-accent-cyan: #12d7ff;
+    --saarthi-accent-blue: #3f6dff;
+    --saarthi-accent-amber: #ffb36a;
+    --saarthi-accent-mint: #6cf4c4;
+    --saarthi-ink: #113252;
+    --saarthi-soft-ink: #365776;
+    font-family: var(--font-ui);
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    transform-style: preserve-3d;
+    border: 1px solid rgba(128, 176, 224, 0.56);
+    background:
+        radial-gradient(120% 100% at 0% 0%, rgba(18, 215, 255, 0.22), transparent 48%),
+        radial-gradient(120% 95% at 100% 0%, rgba(255, 179, 106, 0.2), transparent 48%),
+        linear-gradient(155deg, rgba(250, 254, 255, 0.96), rgba(237, 247, 255, 0.95) 48%, rgba(231, 241, 255, 0.98));
+    box-shadow:
+        0 28px 56px rgba(28, 62, 100, 0.2),
+        0 10px 22px rgba(36, 94, 151, 0.16),
+        inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+#student-saarthi-card::before,
+#student-saarthi-card::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+}
+
+#student-saarthi-card::before {
+    inset: -42%;
+    background: conic-gradient(
+        from 90deg,
+        rgba(18, 215, 255, 0.18),
+        rgba(63, 109, 255, 0.14),
+        rgba(255, 179, 106, 0.18),
+        rgba(108, 244, 196, 0.14),
+        rgba(18, 215, 255, 0.18)
+    );
+    filter: blur(48px);
+    opacity: 0.72;
+    animation: saarthi-aurora-spin 22s linear infinite;
+}
+
+#student-saarthi-card::after {
+    inset: 0;
+    background:
+        radial-gradient(80% 60% at 50% 0%, rgba(255, 255, 255, 0.48), transparent 70%),
+        radial-gradient(40% 55% at 80% 78%, rgba(63, 109, 255, 0.16), transparent 72%);
+    mix-blend-mode: screen;
+    opacity: 0.62;
+    animation: saarthi-ambient-float 9s ease-in-out infinite;
+}
+
+#student-saarthi-card > * {
+    position: relative;
+    z-index: 1;
+}
+
+#student-saarthi-card .saarthi-header-section,
+#student-saarthi-card .saarthi-conversation-section,
+#student-saarthi-card .saarthi-input-section {
+    border-color: rgba(141, 186, 228, 0.68);
+    background: linear-gradient(168deg, rgba(255, 255, 255, 0.82), rgba(239, 247, 255, 0.86));
+    backdrop-filter: blur(14px) saturate(130%);
+    -webkit-backdrop-filter: blur(14px) saturate(130%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.66),
+        0 16px 28px rgba(26, 72, 120, 0.12);
+    transition: transform 0.36s var(--motion-ease), box-shadow 0.36s var(--motion-ease), border-color 0.3s var(--motion-ease);
+}
+
+#student-saarthi-card .saarthi-header-section:hover,
+#student-saarthi-card .saarthi-conversation-section:hover,
+#student-saarthi-card .saarthi-input-section:hover {
+    transform: translateY(-2px) translateZ(8px);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.72),
+        0 20px 32px rgba(30, 82, 136, 0.16);
+}
+
+#student-saarthi-card .saarthi-affirmation-band {
+    position: relative;
+    border-color: rgba(133, 190, 230, 0.7);
+    background: linear-gradient(118deg, rgba(18, 215, 255, 0.18), rgba(255, 255, 255, 0.92) 36%, rgba(255, 179, 106, 0.22));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.64);
+}
+
+#student-saarthi-card .saarthi-affirmation-band::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 0%, rgba(255, 255, 255, 0.64) 46%, transparent 72%);
+    transform: translateX(-120%);
+    animation: saarthi-band-sweep 5.6s ease-in-out infinite;
+    pointer-events: none;
+}
+
+#student-saarthi-card .saarthi-affirmation-pill {
+    border-color: rgba(141, 191, 230, 0.68);
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.95), rgba(241, 248, 255, 0.94));
+    color: #2a4d6e;
+    box-shadow: 0 10px 18px rgba(31, 79, 129, 0.12);
+    animation: saarthi-pill-float 7.2s ease-in-out infinite;
+}
+
+#student-saarthi-card .saarthi-affirmation-pill:nth-child(3n) {
+    animation-delay: 1.1s;
+}
+
+#student-saarthi-card .saarthi-affirmation-pill:nth-child(4n) {
+    animation-delay: 2.1s;
+}
+
+#student-saarthi-card .saarthi-welcome-card {
+    border-color: rgba(129, 187, 229, 0.7);
+    background:
+        radial-gradient(80% 96% at 10% 4%, rgba(18, 215, 255, 0.2), transparent 56%),
+        radial-gradient(90% 96% at 96% 20%, rgba(255, 179, 106, 0.2), transparent 58%),
+        linear-gradient(152deg, rgba(255, 255, 255, 0.92), rgba(241, 248, 255, 0.9));
+    box-shadow: 0 16px 30px rgba(28, 78, 126, 0.15);
+}
+
+#student-saarthi-card .saarthi-welcome-icon {
+    --saarthi-tilt-x: 0deg;
+    --saarthi-tilt-y: 0deg;
+    --saarthi-aura-x: 50%;
+    --saarthi-aura-y: 50%;
+    --saarthi-aura-alpha: 0.62;
+    --saarthi-aura-scale: 1;
+    width: 66px;
+    height: 66px;
+    background: radial-gradient(
+        circle at var(--saarthi-aura-x) var(--saarthi-aura-y),
+        #f5fdff 0%,
+        #b8e6ff 52%,
+        #7ab4ff 100%
+    );
+    box-shadow:
+        inset 0 2px 2px rgba(255, 255, 255, 0.76),
+        0 18px 30px rgba(31, 91, 150, 0.26);
+    transform-style: preserve-3d;
+    transform:
+        perspective(760px)
+        rotateX(var(--saarthi-tilt-x))
+        rotateY(var(--saarthi-tilt-y))
+        translateZ(14px)
+        scale(var(--saarthi-aura-scale));
+    transition:
+        transform 180ms var(--motion-ease),
+        box-shadow 180ms var(--motion-ease),
+        filter 180ms var(--motion-ease);
+    will-change: transform;
+}
+
+#student-saarthi-card .saarthi-welcome-icon::before,
+#student-saarthi-card .saarthi-welcome-icon::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+#student-saarthi-card .saarthi-welcome-icon::before {
+    inset: -22px;
+    background:
+        radial-gradient(
+            circle at var(--saarthi-aura-x) var(--saarthi-aura-y),
+            rgba(146, 232, 255, 0.58) 0%,
+            rgba(63, 109, 255, 0.22) 44%,
+            rgba(18, 215, 255, 0.06) 72%,
+            transparent 84%
+        );
+    opacity: var(--saarthi-aura-alpha);
+    filter: blur(2px) saturate(130%);
+    transform: translateZ(-2px);
+    animation: saarthi-avatar-aura-pulse 4.6s ease-in-out infinite;
+}
+
+#student-saarthi-card .saarthi-welcome-icon::after {
+    inset: -14px;
+    border: 1px solid rgba(104, 180, 235, 0.48);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25) inset;
+    opacity: 0.72;
+    transform: translateZ(-1px);
+    animation:
+        saarthi-halo-spin 9s linear infinite,
+        saarthi-avatar-halo-breathe 3.8s ease-in-out infinite;
+}
+
+#student-saarthi-card .saarthi-welcome-icon .saarthi-welcome-orb {
+    transform: translateZ(16px);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.92),
+        0 0 20px rgba(141, 218, 255, 0.42);
+}
+
+#student-saarthi-card .saarthi-welcome-icon .saarthi-welcome-ring {
+    transform: translateZ(10px);
+    border-color: rgba(140, 211, 246, 0.84);
+}
+
+#student-saarthi-card .saarthi-welcome-icon .saarthi-welcome-spark {
+    transform: translateZ(20px) rotate(45deg);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.66), 0 0 14px rgba(138, 223, 255, 0.6);
+}
+
+#student-saarthi-card .saarthi-welcome-icon.is-interacting {
+    box-shadow:
+        inset 0 2px 2px rgba(255, 255, 255, 0.8),
+        0 20px 34px rgba(28, 88, 145, 0.36);
+    filter: saturate(1.06);
+}
+
+#student-saarthi-card .saarthi-welcome-icon.is-interacting::before {
+    animation-duration: 2.4s;
+}
+
+#student-saarthi-card .saarthi-welcome-icon.is-pressed {
+    transform:
+        perspective(760px)
+        rotateX(var(--saarthi-tilt-x))
+        rotateY(var(--saarthi-tilt-y))
+        translateZ(14px)
+        scale(0.96);
+}
+
+#student-saarthi-card .saarthi-welcome-copy h3 {
+    color: var(--saarthi-ink);
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.54);
+}
+
+#student-saarthi-card .saarthi-welcome-copy p,
+#student-saarthi-card .saarthi-status-line,
+#student-saarthi-card .saarthi-soft-note,
+#student-saarthi-card .saarthi-actions .helper-text {
+    color: var(--saarthi-soft-ink);
+}
+
+#student-saarthi-card .saarthi-chip {
+    border-color: rgba(133, 185, 227, 0.7);
+    background: linear-gradient(165deg, rgba(255, 255, 255, 0.92), rgba(238, 247, 255, 0.9));
+    box-shadow: 0 12px 20px rgba(35, 89, 144, 0.12);
+}
+
+#student-saarthi-card .saarthi-chip span {
+    color: #345674;
+}
+
+#student-saarthi-card .saarthi-chip strong {
+    color: #113a61;
+}
+
+#student-saarthi-card .saarthi-history {
+    position: relative;
+    border-color: rgba(131, 183, 225, 0.7);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 250, 255, 0.9)),
+        radial-gradient(120% 100% at 0% 100%, rgba(18, 215, 255, 0.08), transparent 58%);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.62),
+        0 16px 28px rgba(29, 78, 126, 0.12);
+}
+
+#student-saarthi-card .saarthi-history::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        linear-gradient(rgba(30, 113, 178, 0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(30, 113, 178, 0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+    opacity: 0.34;
+    mix-blend-mode: soft-light;
+}
+
+#student-saarthi-card .saarthi-message {
+    border-color: rgba(132, 185, 227, 0.66);
+    background: linear-gradient(158deg, rgba(255, 255, 255, 0.94), rgba(244, 250, 255, 0.92));
+    box-shadow: 0 12px 22px rgba(31, 84, 136, 0.14);
+    transition: transform 0.26s var(--motion-ease), box-shadow 0.26s var(--motion-ease), border-color 0.2s var(--motion-ease);
+}
+
+#student-saarthi-card .saarthi-message:hover {
+    transform: translateY(-2px) translateZ(4px);
+    box-shadow: 0 18px 28px rgba(29, 80, 128, 0.18);
+}
+
+#student-saarthi-card .saarthi-message.theirs {
+    border-color: rgba(99, 189, 226, 0.66);
+    background: linear-gradient(158deg, rgba(240, 252, 255, 0.92), rgba(233, 246, 255, 0.9));
+}
+
+#student-saarthi-card .saarthi-message.mine {
+    border-color: rgba(98, 147, 236, 0.72);
+    background: linear-gradient(162deg, rgba(236, 247, 255, 0.94), rgba(228, 239, 255, 0.92));
+}
+
+#student-saarthi-card .saarthi-message-header {
+    color: #6282a0;
+}
+
+#student-saarthi-card .saarthi-message-sender {
+    color: #2f6898;
+}
+
+#student-saarthi-card .saarthi-message.mine .saarthi-message-sender {
+    color: #2650ad;
+}
+
+#student-saarthi-card .saarthi-message-text {
+    color: #1a3d60;
+}
+
+#student-saarthi-card .saarthi-typing {
+    border-color: rgba(132, 185, 227, 0.66);
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(239, 247, 255, 0.92));
+    box-shadow: 0 10px 18px rgba(32, 85, 137, 0.12);
+    color: #3c5f7f;
+}
+
+#student-saarthi-card .saarthi-empty {
+    border-color: rgba(126, 181, 224, 0.62);
+    background: linear-gradient(160deg, rgba(245, 252, 255, 0.9), rgba(240, 248, 255, 0.9));
+    color: #3d607f;
+}
+
+#student-saarthi-card .saarthi-compose-field > span {
+    color: #234b6f;
+}
+
+#student-saarthi-card .saarthi-compose-field textarea {
+    border-color: rgba(122, 179, 224, 0.68);
+    background: linear-gradient(178deg, rgba(255, 255, 255, 0.95), rgba(241, 248, 255, 0.95));
+    color: #16395a;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.72),
+        0 8px 18px rgba(32, 86, 138, 0.08);
+}
+
+#student-saarthi-card .saarthi-compose-field textarea:focus {
+    border-color: rgba(63, 131, 210, 0.9);
+    outline: none;
+    box-shadow:
+        0 0 0 4px rgba(63, 131, 210, 0.16),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+#student-saarthi-card .saarthi-compose-field textarea::placeholder {
+    color: rgba(71, 110, 146, 0.74);
+}
+
+#student-saarthi-card .saarthi-new-chat-btn {
+    border-color: rgba(117, 176, 222, 0.78);
+    background: linear-gradient(155deg, rgba(255, 255, 255, 0.95), rgba(231, 244, 255, 0.92));
+    color: #255478;
+    box-shadow: 0 10px 18px rgba(28, 83, 137, 0.12);
+}
+
+#student-saarthi-card .saarthi-new-chat-btn:hover {
+    box-shadow: 0 14px 22px rgba(30, 86, 140, 0.18);
+}
+
+#student-saarthi-card .saarthi-send-btn {
+    background: conic-gradient(
+        from 220deg at 40% 32%,
+        var(--saarthi-accent-cyan),
+        var(--saarthi-accent-blue),
+        var(--saarthi-accent-mint),
+        var(--saarthi-accent-amber),
+        var(--saarthi-accent-cyan)
+    );
+    border-color: rgba(101, 171, 230, 0.86);
+    box-shadow:
+        0 18px 30px rgba(27, 89, 147, 0.32),
+        inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    overflow: hidden;
+}
+
+#student-saarthi-card .saarthi-send-btn::after {
+    content: "";
+    position: absolute;
+    inset: -15%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.46) 0%, rgba(255, 255, 255, 0) 68%);
+    opacity: 0;
+    transform: scale(0.8);
+    transition: opacity 0.25s var(--motion-ease), transform 0.25s var(--motion-ease);
+    pointer-events: none;
+}
+
+#student-saarthi-card .saarthi-send-btn:hover::after,
+#student-saarthi-card .saarthi-send-btn:focus-visible::after {
+    opacity: 1;
+    transform: scale(1);
+}
+
+#student-saarthi-card .saarthi-send-icon {
+    filter: drop-shadow(0 2px 4px rgba(7, 32, 54, 0.4));
+}
+
+body:not(.ums-theme) #student-saarthi-card {
+    border-color: rgba(118, 184, 235, 0.56);
+    background:
+        radial-gradient(120% 100% at 0% 0%, rgba(18, 215, 255, 0.2), transparent 48%),
+        radial-gradient(120% 95% at 100% 0%, rgba(255, 179, 106, 0.18), transparent 48%),
+        linear-gradient(154deg, rgba(14, 42, 68, 0.9), rgba(17, 52, 81, 0.9) 48%, rgba(13, 39, 63, 0.94));
+    box-shadow:
+        0 30px 58px rgba(4, 17, 31, 0.46),
+        0 10px 20px rgba(24, 93, 150, 0.2);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
+    border-color: rgba(125, 184, 229, 0.5);
+    background: linear-gradient(165deg, rgba(11, 39, 63, 0.78), rgba(17, 50, 79, 0.76));
+    box-shadow:
+        inset 0 1px 0 rgba(206, 236, 255, 0.12),
+        0 14px 24px rgba(4, 17, 30, 0.36);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy h3,
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip strong,
+body:not(.ums-theme) #student-saarthi-card .saarthi-message-text {
+    color: #def3ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy p,
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line,
+body:not(.ums-theme) #student-saarthi-card .saarthi-soft-note,
+body:not(.ums-theme) #student-saarthi-card .saarthi-message-header,
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip span,
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field > span,
+body:not(.ums-theme) #student-saarthi-card .saarthi-actions .helper-text {
+    color: #b8daee;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea {
+    border-color: rgba(124, 180, 226, 0.54);
+    background: linear-gradient(176deg, rgba(6, 29, 50, 0.82), rgba(11, 39, 64, 0.82));
+    color: #e0f4ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea::placeholder {
+    color: rgba(163, 199, 224, 0.82);
+}
+
+/* Saarthi dark-mode contrast polish */
+body:not(.ums-theme) #student-saarthi-card {
+    --saarthi-ink: #ebf7ff;
+    --saarthi-soft-ink: #c1dff4;
+    border-color: rgba(109, 181, 237, 0.62);
+    background:
+        radial-gradient(120% 95% at 0% 0%, rgba(18, 215, 255, 0.26), transparent 48%),
+        radial-gradient(110% 92% at 100% 0%, rgba(255, 179, 106, 0.24), transparent 48%),
+        radial-gradient(82% 90% at 82% 84%, rgba(88, 125, 255, 0.2), transparent 56%),
+        linear-gradient(156deg, rgba(10, 33, 54, 0.96), rgba(11, 41, 66, 0.97) 50%, rgba(8, 30, 52, 0.98));
+    box-shadow:
+        0 34px 64px rgba(2, 12, 23, 0.56),
+        0 14px 28px rgba(17, 88, 148, 0.24);
+}
+
+body:not(.ums-theme) #student-saarthi-card::before {
+    opacity: 0.8;
+    filter: blur(52px);
+}
+
+body:not(.ums-theme) #student-saarthi-card::after {
+    opacity: 0.5;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
+    border-color: rgba(115, 183, 235, 0.56);
+    background: linear-gradient(165deg, rgba(9, 39, 63, 0.9), rgba(14, 47, 75, 0.88));
+    box-shadow:
+        inset 0 1px 0 rgba(210, 238, 255, 0.11),
+        0 16px 28px rgba(2, 12, 23, 0.42);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-affirmation-band {
+    border-color: rgba(123, 187, 237, 0.62);
+    background: linear-gradient(110deg, rgba(20, 93, 145, 0.56), rgba(15, 56, 89, 0.78) 42%, rgba(78, 59, 122, 0.64));
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-affirmation-pill {
+    border-color: rgba(125, 190, 241, 0.48);
+    background: linear-gradient(160deg, rgba(9, 48, 76, 0.9), rgba(13, 59, 92, 0.86));
+    color: #dff2ff;
+    box-shadow: 0 10px 18px rgba(3, 15, 29, 0.34);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-card {
+    border-color: rgba(121, 189, 239, 0.58);
+    background:
+        radial-gradient(90% 96% at 8% 8%, rgba(18, 215, 255, 0.2), transparent 56%),
+        radial-gradient(90% 96% at 96% 18%, rgba(255, 179, 106, 0.16), transparent 58%),
+        linear-gradient(155deg, rgba(9, 42, 68, 0.92), rgba(13, 56, 88, 0.9));
+    box-shadow:
+        inset 0 1px 0 rgba(223, 244, 255, 0.08),
+        0 14px 24px rgba(2, 12, 24, 0.4);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-icon {
+    box-shadow:
+        inset 0 2px 2px rgba(255, 255, 255, 0.72),
+        0 18px 30px rgba(22, 122, 199, 0.34);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy h3 {
+    color: #ecf8ff;
+    text-shadow: 0 2px 8px rgba(0, 10, 19, 0.44);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy p,
+body:not(.ums-theme) #student-saarthi-card .saarthi-soft-note,
+body:not(.ums-theme) #student-saarthi-card .saarthi-actions .helper-text,
+body:not(.ums-theme) #student-saarthi-card .saarthi-message-header,
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip span,
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field > span {
+    color: #b8daef;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="neutral"] {
+    color: #c9e7ff !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="loading"] {
+    color: #8fd9ff !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="empty"] {
+    color: #b8d7ed !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="error"] {
+    color: #ffb6aa !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="success"] {
+    color: #9af0c7 !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip {
+    border-color: rgba(118, 184, 233, 0.58);
+    background: linear-gradient(160deg, rgba(8, 39, 63, 0.92), rgba(12, 51, 80, 0.88));
+    box-shadow: 0 10px 18px rgba(2, 12, 23, 0.34);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip strong {
+    color: #e6f4ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-history {
+    border-color: rgba(118, 183, 233, 0.56);
+    background:
+        linear-gradient(176deg, rgba(8, 37, 59, 0.92), rgba(10, 45, 72, 0.9) 58%, rgba(8, 33, 56, 0.94)),
+        radial-gradient(120% 100% at 0% 100%, rgba(18, 215, 255, 0.12), transparent 56%);
+    box-shadow:
+        inset 0 1px 0 rgba(219, 243, 255, 0.08),
+        0 16px 26px rgba(2, 12, 23, 0.36);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-history::before {
+    opacity: 0.24;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message {
+    border-color: rgba(103, 175, 227, 0.58);
+    background: linear-gradient(158deg, rgba(8, 43, 69, 0.95), rgba(11, 56, 87, 0.9));
+    box-shadow: 0 14px 22px rgba(2, 12, 24, 0.34);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message:hover {
+    box-shadow: 0 20px 28px rgba(1, 10, 20, 0.44);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message.theirs {
+    border-color: rgba(96, 194, 230, 0.62);
+    background: linear-gradient(158deg, rgba(10, 50, 77, 0.95), rgba(13, 63, 96, 0.9));
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message.mine {
+    border-color: rgba(121, 163, 243, 0.64);
+    background: linear-gradient(160deg, rgba(20, 55, 89, 0.94), rgba(31, 67, 105, 0.9));
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message-sender {
+    color: #dff3ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message.mine .saarthi-message-sender {
+    color: #b9d1ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-message-text {
+    color: #ecf8ff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-typing {
+    border-color: rgba(105, 178, 229, 0.56);
+    background: linear-gradient(160deg, rgba(9, 43, 68, 0.92), rgba(13, 58, 88, 0.9));
+    box-shadow: 0 12px 20px rgba(2, 12, 24, 0.34);
+    color: #d9efff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-empty {
+    border-color: rgba(108, 181, 231, 0.58);
+    background: linear-gradient(160deg, rgba(7, 42, 67, 0.9), rgba(11, 55, 87, 0.88));
+    color: #d2eaff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea {
+    border-color: rgba(118, 182, 232, 0.62);
+    background: linear-gradient(176deg, rgba(4, 30, 49, 0.94), rgba(8, 39, 63, 0.94));
+    color: #e6f6ff;
+    box-shadow:
+        inset 0 1px 0 rgba(225, 246, 255, 0.08),
+        0 8px 18px rgba(2, 12, 24, 0.36);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea:focus {
+    border-color: rgba(99, 176, 238, 0.88);
+    box-shadow:
+        0 0 0 4px rgba(54, 138, 205, 0.2),
+        inset 0 1px 0 rgba(233, 249, 255, 0.12);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea::placeholder {
+    color: rgba(170, 205, 229, 0.86);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-new-chat-btn {
+    border-color: rgba(108, 181, 233, 0.66);
+    background: linear-gradient(155deg, rgba(9, 47, 76, 0.94), rgba(13, 61, 95, 0.9));
+    color: #dff3ff;
+    box-shadow: 0 12px 20px rgba(2, 12, 24, 0.34);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-new-chat-btn:hover {
+    border-color: rgba(125, 195, 243, 0.84);
+    box-shadow: 0 16px 24px rgba(2, 12, 24, 0.42);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
+    border-color: rgba(127, 200, 246, 0.84);
+    box-shadow:
+        0 20px 32px rgba(4, 17, 32, 0.48),
+        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+@keyframes saarthi-aurora-spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes saarthi-ambient-float {
+    0%,
+    100% {
+        transform: translateY(0) scale(1);
+    }
+    50% {
+        transform: translateY(-6px) scale(1.03);
+    }
+}
+
+@keyframes saarthi-band-sweep {
+    0%,
+    12% {
+        transform: translateX(-120%);
+    }
+    36%,
+    100% {
+        transform: translateX(130%);
+    }
+}
+
+@keyframes saarthi-halo-spin {
+    0% {
+        transform: rotate(0deg) scale(1);
+    }
+    50% {
+        transform: rotate(180deg) scale(1.04);
+    }
+    100% {
+        transform: rotate(360deg) scale(1);
+    }
+}
+
+@keyframes saarthi-avatar-aura-pulse {
+    0%,
+    100% {
+        opacity: var(--saarthi-aura-alpha);
+        transform: translateZ(-2px) scale(0.98);
+    }
+    50% {
+        opacity: calc(var(--saarthi-aura-alpha) + 0.16);
+        transform: translateZ(-2px) scale(1.08);
+    }
+}
+
+@keyframes saarthi-avatar-halo-breathe {
+    0%,
+    100% {
+        opacity: 0.64;
+    }
+    50% {
+        opacity: 0.95;
+    }
+}
+
+@keyframes saarthi-card-float {
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+    50% {
+        transform: translateY(-3px);
+    }
+}
+
+@keyframes saarthi-pill-float {
+    0%,
+    100% {
+        transform: translateY(0) translateZ(0);
+    }
+    50% {
+        transform: translateY(-2px) translateZ(6px);
+    }
+}
+
+@media (max-width: 900px) {
+    #student-saarthi-card::before {
+        filter: blur(36px);
+        opacity: 0.56;
+    }
+
+    #student-saarthi-card .saarthi-welcome-icon {
+        width: 58px;
+        height: 58px;
+    }
+}
+
+@media (max-width: 700px) {
+    #student-saarthi-card .saarthi-header-section:hover,
+    #student-saarthi-card .saarthi-conversation-section:hover,
+    #student-saarthi-card .saarthi-input-section:hover,
+    #student-saarthi-card .saarthi-message:hover {
+        transform: none;
+    }
+}
+
+@media (max-width: 540px) {
+    #student-saarthi-card .saarthi-chip-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 900px) {
     .rms-thread-head {
         flex-direction: column;
@@ -9152,44 +10398,102 @@ body.ums-theme .nav-glyph {
     bottom: 0.8rem;
     isolation: isolate;
     display: grid;
-    gap: 0.42rem;
+    gap: 0.5rem;
     padding-top: 0.36rem;
-    border-top: 1px solid rgba(167, 218, 255, 0.34);
+    border-top: 1px solid rgba(160, 215, 250, 0.32);
+    --copilot-accent: #3292f2;
+    --copilot-accent-strong: #2f6ecb;
+    --copilot-accent-soft: rgba(65, 152, 236, 0.2);
+    --copilot-glow: rgba(43, 122, 204, 0.34);
+    --assist-panel-bg: linear-gradient(165deg, rgba(14, 32, 50, 0.98), rgba(10, 26, 42, 0.97));
+    --assist-panel-border: rgba(128, 177, 214, 0.44);
+    --assist-panel-shadow: 0 20px 34px rgba(5, 15, 24, 0.5);
+    --assist-surface: rgba(18, 43, 64, 0.56);
+    --assist-surface-alt: rgba(12, 35, 54, 0.62);
+    --assist-border: rgba(127, 181, 220, 0.3);
+    --assist-text: #e9f6ff;
+    --assist-text-soft: #bdd6e9;
+    --assist-text-muted: #91b0c8;
+    --assist-heading: #f0f8ff;
+    --assist-label: #d5e9f7;
+    --assist-field-bg: rgba(6, 26, 43, 0.7);
+    --assist-field-border: rgba(126, 177, 214, 0.42);
+    --assist-field-text: #f0f9ff;
+    --assist-placeholder: rgba(172, 204, 227, 0.86);
+    --assist-button-bg: rgba(9, 43, 70, 0.44);
+    --assist-button-border: rgba(135, 189, 226, 0.5);
+    --assist-button-text: #d5ecfb;
+}
+
+.verlyn-sidebar-widget[data-module="attendance"] {
+    --copilot-accent: #3292f2;
+    --copilot-accent-strong: #2f6ecb;
+    --copilot-accent-soft: rgba(65, 152, 236, 0.2);
+}
+
+.verlyn-sidebar-widget[data-module="saarthi"] {
+    --copilot-accent: #33b6a4;
+    --copilot-accent-strong: #1f8f80;
+    --copilot-accent-soft: rgba(51, 182, 164, 0.22);
+}
+
+.verlyn-sidebar-widget[data-module="food"] {
+    --copilot-accent: #d88a2b;
+    --copilot-accent-strong: #b66a14;
+    --copilot-accent-soft: rgba(216, 138, 43, 0.2);
+}
+
+.verlyn-sidebar-widget[data-module="rms"] {
+    --copilot-accent: #39aa8e;
+    --copilot-accent-strong: #268b73;
+    --copilot-accent-soft: rgba(57, 170, 142, 0.2);
+}
+
+.verlyn-sidebar-widget[data-module="remedial"] {
+    --copilot-accent: #9d62d8;
+    --copilot-accent-strong: #7a42b5;
+    --copilot-accent-soft: rgba(157, 98, 216, 0.2);
+}
+
+.verlyn-sidebar-widget[data-module="administrative"] {
+    --copilot-accent: #6476db;
+    --copilot-accent-strong: #4c5db7;
+    --copilot-accent-soft: rgba(100, 118, 219, 0.2);
 }
 
 .verlyn-toggle-btn {
     width: 100%;
-    border: 1px solid rgba(161, 218, 255, 0.42);
+    border: 1px solid color-mix(in srgb, var(--copilot-accent) 44%, #ffffff);
     border-radius: 12px;
-    background: linear-gradient(138deg, rgba(34, 107, 172, 0.9), rgba(22, 83, 137, 0.92));
+    background: linear-gradient(138deg, color-mix(in srgb, var(--copilot-accent) 72%, #12355a), color-mix(in srgb, var(--copilot-accent-strong) 76%, #0a2540));
     color: #e8f5ff;
     display: grid;
     grid-template-columns: auto 1fr;
     align-items: center;
-    gap: 0.46rem;
-    padding: 0.54rem 0.56rem;
+    gap: 0.54rem;
+    padding: 0.58rem 0.62rem;
     cursor: pointer;
     text-align: left;
     transition: transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease);
-    box-shadow: 0 8px 16px rgba(6, 22, 38, 0.26);
+    box-shadow: 0 10px 18px var(--copilot-glow);
 }
 
 .verlyn-toggle-btn:hover {
     transform: translateY(-1px);
-    border-color: rgba(186, 231, 255, 0.56);
-    box-shadow: 0 10px 20px rgba(6, 22, 38, 0.3);
+    border-color: color-mix(in srgb, var(--copilot-accent) 58%, #ffffff);
+    box-shadow: 0 12px 22px var(--copilot-glow);
 }
 
 .verlyn-toggle-btn.is-active {
-    border-color: rgba(197, 236, 255, 0.72);
-    box-shadow: 0 12px 22px rgba(6, 22, 38, 0.34);
+    border-color: color-mix(in srgb, var(--copilot-accent) 68%, #ffffff);
+    box-shadow: 0 14px 24px var(--copilot-glow);
 }
 
 .verlyn-toggle-avatar {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     border-radius: 50%;
-    border: 1px solid rgba(220, 244, 255, 0.76);
+    border: 1px solid color-mix(in srgb, var(--copilot-accent) 62%, #ffffff);
     background: rgba(6, 38, 64, 0.34);
     display: grid;
     place-items: center;
@@ -9205,13 +10509,13 @@ body.ums-theme .nav-glyph {
 }
 
 .verlyn-toggle-copy strong {
-    font-size: 0.86rem;
+    font-size: 0.85rem;
     font-weight: 800;
 }
 
 .verlyn-toggle-copy small {
-    font-size: 0.69rem;
-    color: rgba(227, 244, 255, 0.92);
+    font-size: 0.67rem;
+    color: rgba(234, 246, 255, 0.94);
     font-weight: 600;
 }
 
@@ -9219,9 +10523,9 @@ body.ums-theme .nav-glyph {
     position: absolute;
     left: calc(100% + 0.55rem);
     bottom: 0;
-    width: min(360px, calc(100vw - var(--ums-sidebar-width) - 1.7rem));
+    width: min(392px, calc(100vw - var(--ums-sidebar-width) - 1.7rem));
     border: 1px solid var(--assist-panel-border);
-    border-radius: 16px;
+    border-radius: 18px;
     background: var(--assist-panel-bg);
     box-shadow: var(--assist-panel-shadow);
     transform-origin: left bottom;
@@ -9233,6 +10537,15 @@ body.ums-theme .nav-glyph {
     z-index: 18;
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
+}
+
+.verlyn-panel::before {
+    content: '';
+    position: sticky;
+    top: 0;
+    display: block;
+    height: 2px;
+    background: linear-gradient(90deg, var(--copilot-accent), color-mix(in srgb, var(--copilot-accent) 46%, #ffffff));
 }
 
 .verlyn-sidebar-widget.is-open .verlyn-panel {
@@ -9252,85 +10565,154 @@ body.ums-theme .nav-glyph {
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 0.68rem 0.78rem;
-    border-bottom: 1px solid rgba(171, 222, 252, 0.56);
-    background: linear-gradient(138deg, rgba(46, 134, 225, 0.98), rgba(32, 185, 222, 0.95));
+    padding: 0.68rem 0.82rem 0.64rem;
+    border-bottom: 1px solid var(--assist-border);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 44%, transparent);
 }
 
 .verlyn-head-copy {
     display: grid;
-    gap: 0.03rem;
+    gap: 0.04rem;
 }
 
 .verlyn-head-copy strong {
-    color: #f6fcff;
+    color: var(--assist-heading);
     font-size: 0.9rem;
     font-weight: 800;
 }
 
 .verlyn-head-copy small {
-    color: rgba(238, 249, 255, 0.93);
-    font-size: 0.7rem;
+    color: var(--assist-text-muted);
+    font-size: 0.67rem;
 }
 
 .verlyn-minimize-btn {
-    min-height: 32px;
-    padding-inline: 0.64rem;
+    min-height: 30px;
+    padding-inline: 0.58rem;
     font-size: 0.72rem;
     border-color: var(--assist-button-border);
     background: var(--assist-button-bg);
     color: var(--assist-button-text);
 }
 
-.verlyn-status {
-    margin: 0.54rem 0.78rem 0;
-    font-size: 0.74rem;
-    line-height: 1.35;
-    padding: 0.46rem 0.54rem;
-    border-radius: 10px;
+.verlyn-meta-row {
+    margin: 0.52rem 0.82rem 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+}
+
+.verlyn-meta-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    border-radius: 999px;
     border: 1px solid var(--assist-border);
-    background: var(--assist-surface-alt);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 48%, var(--assist-surface));
+    color: var(--assist-text-soft);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 0.13rem 0.56rem;
+}
+
+.verlyn-status {
+    margin: 0.44rem 0.82rem 0;
+    width: fit-content;
+    max-width: calc(100% - 1.64rem);
+    font-size: 0.69rem;
+    line-height: 1.2;
+    padding: 0.3rem 0.56rem;
+    border-radius: 999px;
+    border: 1px solid var(--assist-border);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 30%, var(--assist-surface-alt));
     color: var(--assist-text-soft);
 }
 
-.verlyn-module-context,
-.verlyn-compose-note {
-    margin: 0.48rem 0.78rem 0;
-    font-size: 0.72rem;
-    line-height: 1.35;
-    color: var(--assist-text-muted);
-}
-
 .verlyn-quick-actions {
-    margin: 0.48rem 0.78rem 0;
+    margin: 0.5rem 0.82rem 0;
     display: grid;
-    gap: 0.5rem;
+    gap: 0.44rem;
 }
 
 .verlyn-action-card {
     display: grid;
-    gap: 0.54rem;
-    padding: 0.64rem;
+    gap: 0.5rem;
+    padding: 0.58rem 0.62rem;
     border-radius: 12px;
     border: 1px solid var(--assist-border);
-    background: var(--assist-surface);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 24%, var(--assist-surface));
+}
+
+.verlyn-action-card-compact {
+    gap: 0.42rem;
 }
 
 .verlyn-action-head {
     display: grid;
-    gap: 0.08rem;
+    gap: 0.04rem;
 }
 
 .verlyn-action-head strong {
     color: var(--assist-heading);
-    font-size: 0.8rem;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     font-weight: 800;
 }
 
-.verlyn-action-head small {
+.verlyn-action-card-inline .verlyn-action-inline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+}
+
+.verlyn-action-inline input {
+    flex: 1 1 100%;
+    min-height: 36px;
+    border-radius: 10px;
+    font-size: 0.76rem;
+    color: var(--assist-field-text);
+    background: var(--assist-field-bg);
+    border: 1px solid var(--assist-field-border);
+    padding-inline: 0.56rem;
+}
+
+.verlyn-action-inline input::placeholder {
+    color: var(--assist-placeholder);
+}
+
+.verlyn-action-disclosure > summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--assist-heading);
+    font-size: 0.74rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.verlyn-action-disclosure > summary::-webkit-details-marker {
+    display: none;
+}
+
+.verlyn-action-disclosure > summary::after {
+    content: '+';
     color: var(--assist-text-muted);
-    font-size: 0.69rem;
-    line-height: 1.35;
+}
+
+.verlyn-action-disclosure[open] > summary::after {
+    content: '-';
+}
+
+.verlyn-action-form {
+    display: grid;
+    gap: 0.46rem;
+    margin-top: 0.22rem;
 }
 
 .verlyn-chip-row {
@@ -9340,31 +10722,35 @@ body.ums-theme .nav-glyph {
 }
 
 .verlyn-chip-btn {
-    min-height: 32px;
+    min-height: 30px;
     border-radius: 999px;
-    padding: 0.36rem 0.7rem;
-    font-size: 0.73rem;
-    background: rgba(27, 85, 125, 0.42);
+    padding: 0.32rem 0.62rem;
+    font-size: 0.71rem;
+    border-color: var(--assist-field-border);
+    color: var(--assist-text-soft);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 46%, var(--assist-surface-alt));
 }
 
 .verlyn-field-grid {
     display: grid;
-    gap: 0.48rem;
+    gap: 0.42rem;
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .verlyn-quick-field > span {
-    font-size: 0.68rem;
+    font-size: 0.64rem;
     font-weight: 700;
     color: var(--assist-label);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
 }
 
 .verlyn-quick-field input,
 .verlyn-quick-field select {
     width: 100%;
-    min-height: 36px;
+    min-height: 34px;
     border-radius: 10px;
-    font-size: 0.78rem;
+    font-size: 0.76rem;
     color: var(--assist-field-text);
     background: var(--assist-field-bg);
     border: 1px solid var(--assist-field-border);
@@ -9377,32 +10763,32 @@ body.ums-theme .nav-glyph {
 .verlyn-inline-check {
     display: flex;
     align-items: center;
-    gap: 0.44rem;
-    font-size: 0.72rem;
+    gap: 0.4rem;
+    font-size: 0.69rem;
     color: var(--assist-text-soft);
 }
 
 .verlyn-inline-check input {
-    accent-color: #5bc2ff;
+    accent-color: var(--copilot-accent);
 }
 
 .verlyn-empty-note {
-    padding: 0.68rem 0.72rem;
+    padding: 0.62rem 0.68rem;
     border-radius: 12px;
     border: 1px dashed var(--assist-border);
     background: var(--assist-surface-alt);
     color: var(--assist-text-soft);
-    font-size: 0.76rem;
-    line-height: 1.42;
+    font-size: 0.73rem;
+    line-height: 1.38;
 }
 
 .verlyn-output {
-    margin: 0.48rem 0.78rem 0;
+    margin: 0.54rem 0.82rem 0;
     border: 1px solid var(--assist-border);
-    border-radius: 12px;
-    background: var(--assist-surface);
-    padding: 0.62rem;
-    min-height: 108px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--copilot-accent-soft) 22%, var(--assist-surface));
+    padding: 0.66rem 0.68rem;
+    min-height: 146px;
     max-height: min(30vh, 260px);
     overflow: auto;
     font-size: 0.79rem;
@@ -9412,20 +10798,22 @@ body.ums-theme .nav-glyph {
 }
 
 .verlyn-compose-field {
-    margin: 0.54rem 0.78rem 0;
+    margin: 0.52rem 0.82rem 0;
 }
 
 .verlyn-compose-field > span {
-    font-size: 0.72rem;
+    font-size: 0.67rem;
     font-weight: 700;
     color: var(--assist-label);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
 }
 
 .verlyn-compose-field input {
     width: 100%;
-    min-height: 40px;
-    border-radius: 10px;
-    font-size: 0.82rem;
+    min-height: 42px;
+    border-radius: 11px;
+    font-size: 0.8rem;
     color: var(--assist-field-text);
     background: var(--assist-field-bg);
     border: 1px solid var(--assist-field-border);
@@ -9439,15 +10827,18 @@ body.ums-theme .nav-glyph {
 .support-desk-controls .field select:focus,
 .support-desk-compose-field textarea:focus,
 .saarthi-compose-field textarea:focus,
+.verlyn-action-inline input:focus,
+.verlyn-quick-field input:focus,
+.verlyn-quick-field select:focus,
 .verlyn-compose-field input:focus {
-    outline: 2px solid rgba(84, 182, 248, 0.78);
+    outline: 2px solid color-mix(in srgb, var(--copilot-accent) 72%, #ffffff);
     outline-offset: 1px;
-    border-color: rgba(122, 203, 246, 0.72);
+    border-color: color-mix(in srgb, var(--copilot-accent) 64%, #ffffff);
 }
 
 .verlyn-actions {
-    margin: 0.54rem 0.78rem 0.76rem;
-    justify-content: flex-end;
+    margin: 0.52rem 0.82rem 0.82rem;
+    justify-content: stretch;
 }
 
 .admin-copilot-audit-wrap {
@@ -9576,42 +10967,43 @@ body.ums-theme .nav-glyph {
 }
 
 .verlyn-actions .btn {
-    min-height: 38px;
-    border-radius: 10px;
-    font-size: 0.81rem;
+    width: 100%;
+    min-height: 39px;
+    border-radius: 11px;
+    font-size: 0.8rem;
     font-weight: 700;
 }
 
 body.ums-theme .verlyn-sidebar-widget {
-    --assist-panel-bg: linear-gradient(160deg, rgba(248, 252, 255, 0.99), rgba(235, 244, 252, 0.98));
-    --assist-panel-border: rgba(137, 194, 233, 0.62);
+    --assist-panel-bg: linear-gradient(160deg, rgba(250, 253, 255, 0.99), rgba(236, 244, 252, 0.98));
+    --assist-panel-border: rgba(147, 198, 234, 0.64);
     --assist-panel-shadow: 0 22px 38px rgba(33, 70, 102, 0.16);
-    --assist-surface: linear-gradient(160deg, rgba(232, 244, 254, 0.92), rgba(222, 237, 249, 0.86));
-    --assist-surface-alt: rgba(233, 245, 254, 0.84);
-    --assist-surface-strong: rgba(255, 255, 255, 0.96);
-    --assist-surface-mine: linear-gradient(160deg, rgba(219, 240, 255, 0.97), rgba(203, 231, 252, 0.96));
-    --assist-border: rgba(156, 205, 240, 0.58);
-    --assist-border-strong: rgba(134, 191, 233, 0.62);
+    --assist-surface: linear-gradient(160deg, rgba(235, 245, 254, 0.95), rgba(225, 238, 250, 0.9));
+    --assist-surface-alt: rgba(237, 246, 253, 0.9);
+    --assist-border: rgba(158, 202, 234, 0.62);
     --assist-text: #1d3850;
-    --assist-text-soft: #4f6982;
-    --assist-text-muted: #6c859a;
+    --assist-text-soft: #35566f;
+    --assist-text-muted: #607d95;
     --assist-heading: #163754;
     --assist-label: #305979;
     --assist-field-bg: #ffffff;
-    --assist-field-border: #c7d8e8;
+    --assist-field-border: #bfd2e4;
     --assist-field-text: #27435a;
     --assist-placeholder: rgba(103, 123, 140, 0.78);
-    --assist-button-bg: rgba(239, 248, 255, 0.68);
-    --assist-button-border: rgba(182, 216, 239, 0.7);
+    --assist-button-bg: rgba(239, 248, 255, 0.78);
+    --assist-button-border: rgba(176, 211, 235, 0.75);
     --assist-button-text: #1e5178;
-    --assist-message-shadow: 0 8px 18px rgba(32, 68, 101, 0.12);
-    border-top-color: rgba(255, 255, 255, 0.48);
+    border-top-color: rgba(255, 255, 255, 0.54);
 }
 
-body.ums-theme .verlyn-toggle-btn {
-    border-color: rgba(226, 245, 255, 0.58);
-    background: linear-gradient(138deg, rgba(44, 118, 198, 0.9), rgba(34, 163, 206, 0.9));
-    color: #f5fcff;
+body.ums-theme .verlyn-action-inline input {
+    background: #ffffff;
+}
+
+@media (max-width: 1180px) {
+    .verlyn-field-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 .ums-top-nav {
@@ -9683,6 +11075,119 @@ body.ums-theme .verlyn-toggle-btn {
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 16px rgba(5, 26, 46, 0.34);
 }
 
+#top-nav-attendance,
+#top-nav-saarthi {
+    position: relative;
+    overflow: hidden;
+    color: #f3fbff;
+    text-shadow: 0 1px 0 rgba(6, 18, 32, 0.35);
+}
+
+#top-nav-attendance {
+    border-color: rgba(128, 204, 255, 0.8);
+    background: linear-gradient(135deg, rgba(32, 128, 255, 0.55), rgba(66, 205, 255, 0.45));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 18px rgba(8, 48, 85, 0.35);
+}
+
+#top-nav-attendance::before {
+    content: "";
+    position: absolute;
+    inset: -40% -10%;
+    background:
+        radial-gradient(circle at 20% 30%, rgba(160, 220, 255, 0.45), transparent 62%),
+        radial-gradient(circle at 80% 70%, rgba(80, 180, 255, 0.4), transparent 58%);
+    opacity: 0.5;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
+}
+
+#top-nav-attendance > *,
+#top-nav-saarthi > * {
+    position: relative;
+    z-index: 1;
+}
+
+#top-nav-attendance .module-glyph {
+    border-color: rgba(205, 242, 255, 0.9);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(138, 220, 255, 0.32));
+    color: #0c4f7a;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 4px 12px rgba(0, 120, 170, 0.35);
+}
+
+#top-nav-attendance:hover {
+    border-color: rgba(170, 235, 255, 0.95);
+    background: linear-gradient(135deg, rgba(26, 142, 255, 0.65), rgba(66, 220, 255, 0.52));
+    transform: translateY(-1px);
+}
+
+#top-nav-attendance:hover::before {
+    opacity: 0.72;
+    transform: translateY(-2px) scale(1.02);
+}
+
+#top-nav-attendance.active {
+    background: linear-gradient(135deg, rgba(18, 130, 255, 0.85), rgba(40, 214, 255, 0.7));
+    border-color: rgba(175, 235, 255, 1);
+    color: #ffffff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 10px 20px rgba(5, 40, 70, 0.38);
+}
+
+#top-nav-saarthi {
+    border-color: rgba(120, 230, 255, 0.85);
+    background: linear-gradient(135deg, rgba(0, 176, 255, 0.45), rgba(0, 255, 214, 0.32));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24), 0 8px 18px rgba(14, 80, 120, 0.35);
+}
+
+#top-nav-saarthi::before {
+    content: "";
+    position: absolute;
+    inset: -40% -10%;
+    background:
+        radial-gradient(circle at 18% 30%, rgba(160, 255, 245, 0.52), transparent 60%),
+        radial-gradient(circle at 80% 70%, rgba(60, 200, 255, 0.48), transparent 55%);
+    opacity: 0.65;
+    pointer-events: none;
+    transition: opacity var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease);
+    animation: saarthi-tab-glow 6.5s ease-in-out infinite;
+}
+
+#top-nav-saarthi .module-glyph {
+    border-color: rgba(210, 255, 255, 0.92);
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(132, 255, 234, 0.32));
+    color: #0c566f;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 4px 12px rgba(0, 130, 170, 0.35);
+}
+
+#top-nav-saarthi:hover {
+    border-color: rgba(170, 235, 255, 0.98);
+    background: linear-gradient(135deg, rgba(0, 196, 255, 0.55), rgba(82, 255, 230, 0.42));
+    transform: translateY(-1px);
+}
+
+#top-nav-saarthi:hover::before {
+    opacity: 0.85;
+    transform: translateY(-2px) scale(1.02);
+}
+
+#top-nav-saarthi.active {
+    background: linear-gradient(135deg, rgba(0, 186, 255, 0.7), rgba(60, 255, 228, 0.52));
+    border-color: rgba(180, 245, 255, 1);
+    color: #ffffff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 10px 20px rgba(5, 40, 70, 0.38);
+}
+
+@keyframes saarthi-tab-glow {
+    0%,
+    100% {
+        opacity: 0.45;
+        transform: translateY(0) scale(1);
+    }
+    50% {
+        opacity: 0.85;
+        transform: translateY(-2px) scale(1.03);
+    }
+}
+
 .ums-module-btn:focus-visible {
     outline: 2px solid rgba(153, 223, 255, 0.95);
     outline-offset: 1px;
@@ -9715,6 +11220,10 @@ body.ums-theme .verlyn-toggle-btn {
     --module-accent: #2b9b8a;
 }
 
+.module-panel[data-module="saarthi"] {
+    --module-accent: #25c5ff;
+}
+
 .module-panel[data-module="remedial"] {
     --module-accent: #a25bc9;
 }
@@ -9733,6 +11242,39 @@ body.ums-theme .verlyn-toggle-btn {
     width: 4px;
     background: linear-gradient(180deg, color-mix(in srgb, var(--module-accent) 88%, #ffffff), var(--module-accent));
     opacity: 0.92;
+}
+
+.admin-submodule-picker {
+    display: none;
+    align-items: end;
+    justify-content: flex-end;
+    margin: 0 0 1rem;
+}
+
+.admin-submodule-picker .field {
+    width: min(320px, 100%);
+}
+
+.role-admin .admin-submodule-picker {
+    display: flex;
+}
+
+.role-admin .admin-submodule-panel {
+    display: none;
+}
+
+.role-admin .admin-submodule-panel.is-active {
+    display: block;
+}
+
+@media (max-width: 720px) {
+    .admin-submodule-picker {
+        justify-content: stretch;
+    }
+
+    .admin-submodule-picker .field {
+        width: 100%;
+    }
 }
 
 body:not(.ums-theme) #main-dashboard-header.topbar {
@@ -10052,10 +11594,77 @@ body.ums-theme .ums-module-btn:hover {
 }
 
 body.ums-theme .ums-module-btn.active {
-    background: linear-gradient(135deg, #2e80ee, #4aa8ff);
-    border-color: #2f86ef;
+    background: linear-gradient(135deg, #1f6eff, #3fc8ff);
+    border-color: #1f7eff;
     color: #f4fbff;
-    box-shadow: 0 10px 20px rgba(23, 75, 128, 0.24), 0 0 0 1px rgba(157, 213, 255, 0.4);
+    text-shadow: 0 1px 0 rgba(7, 18, 32, 0.28);
+    box-shadow: 0 12px 22px rgba(17, 72, 122, 0.26), 0 0 0 1px rgba(157, 213, 255, 0.4);
+}
+
+body.ums-theme #top-nav-attendance {
+    background: linear-gradient(135deg, #2c7aff, #35d0ff);
+    border-color: #2a90ff;
+    color: #ffffff;
+    text-shadow: 0 1px 0 rgba(6, 18, 32, 0.3);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75), 0 12px 22px rgba(20, 84, 128, 0.24);
+}
+
+body.ums-theme #top-nav-attendance::before {
+    opacity: 0.72;
+    background:
+        radial-gradient(circle at 18% 28%, rgba(160, 225, 255, 0.55), transparent 62%),
+        radial-gradient(circle at 78% 72%, rgba(80, 190, 255, 0.45), transparent 58%);
+}
+
+body.ums-theme #top-nav-attendance .module-glyph {
+    border-color: rgba(214, 242, 255, 0.95);
+    background: rgba(255, 255, 255, 0.86);
+    color: #0f5a9a;
+}
+
+body.ums-theme #top-nav-attendance:hover {
+    background: linear-gradient(135deg, #1f72ff, #26dcff);
+    border-color: #2097ff;
+}
+
+body.ums-theme #top-nav-attendance.active {
+    background: linear-gradient(135deg, #0f5dff, #0cc7ff);
+    border-color: #1b85ff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 14px 24px rgba(14, 72, 118, 0.28), 0 0 0 2px rgba(78, 196, 255, 0.32);
+}
+
+body.ums-theme #top-nav-saarthi {
+    background: linear-gradient(135deg, #00b4ff, #2ff5c9);
+    border-color: #4ad2ff;
+    color: #ffffff;
+    text-shadow: 0 1px 0 rgba(6, 18, 32, 0.3);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 12px 22px rgba(18, 100, 150, 0.26);
+}
+
+body.ums-theme #top-nav-saarthi::before {
+    opacity: 0.78;
+    background:
+        radial-gradient(circle at 18% 28%, rgba(170, 255, 245, 0.6), transparent 62%),
+        radial-gradient(circle at 80% 72%, rgba(70, 190, 255, 0.55), transparent 58%);
+}
+
+body.ums-theme #top-nav-saarthi .module-glyph {
+    border-color: rgba(208, 252, 255, 0.95);
+    background: rgba(255, 255, 255, 0.86);
+    color: #0b5f7a;
+}
+
+body.ums-theme #top-nav-saarthi:hover {
+    background: linear-gradient(135deg, #00c2ff, #52ffd5);
+    border-color: #3fe0ff;
+    color: #ffffff;
+}
+
+body.ums-theme #top-nav-saarthi.active {
+    background: linear-gradient(135deg, #0096ff, #00e3b6);
+    border-color: #2ed1ff;
+    color: #ffffff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 14px 24px rgba(14, 88, 132, 0.3), 0 0 0 2px rgba(72, 210, 255, 0.34);
 }
 
 body.ums-theme .module-glyph {
@@ -10488,63 +12097,124 @@ body.ums-theme .aggregate-chip strong {
     color: #173d63;
 }
 
+body.ums-theme #student-saarthi-card {
+    border-color: #56b6ea;
+    background:
+        radial-gradient(circle at 6% 8%, rgba(0, 200, 255, 0.55), transparent 44%),
+        radial-gradient(circle at 92% 10%, rgba(255, 140, 80, 0.38), transparent 46%),
+        radial-gradient(circle at 82% 86%, rgba(0, 255, 210, 0.32), transparent 48%),
+        linear-gradient(154deg, #ffffff, #def4ff 50%, #e8e0ff);
+    box-shadow: 0 32px 60px rgba(22, 72, 118, 0.26);
+}
+
+body.ums-theme #student-saarthi-card .saarthi-header-section,
+body.ums-theme #student-saarthi-card .saarthi-conversation-section,
+body.ums-theme #student-saarthi-card .saarthi-input-section {
+    border-color: #8fcbee;
+    background: linear-gradient(164deg, rgba(255, 255, 255, 0.98), rgba(216, 247, 255, 0.98) 56%, rgba(245, 232, 255, 0.96));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.76),
+        0 18px 34px rgba(34, 92, 140, 0.2);
+}
+
+body.ums-theme #student-saarthi-card .saarthi-status-line,
+body.ums-theme #student-saarthi-card .saarthi-soft-note,
+body.ums-theme #student-saarthi-card .saarthi-actions .helper-text {
+    color: #496782;
+}
+
 body.ums-theme #student-saarthi-card .saarthi-chip {
-    border-color: #cddceb;
-    background: linear-gradient(160deg, #f3f8fe, #ebf4fc);
+    border-color: #93cff0;
+    background: linear-gradient(160deg, #ffffff, #dff3ff 60%, #efe4ff);
 }
 
 body.ums-theme #student-saarthi-card .saarthi-chip span {
-    color: #4e6479;
+    color: #476886;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-chip strong {
-    color: #173d63;
+    color: #1f4568;
+}
+
+body.ums-theme #student-saarthi-card .saarthi-affirmation-band {
+    border-color: #8fd4ef;
+    background: linear-gradient(110deg, #ffe4f4, #dff7ff 44%, #efffed);
+}
+
+body.ums-theme #student-saarthi-card .saarthi-affirmation-pill {
+    border-color: #91d2ef;
+    background: linear-gradient(150deg, #ffffff, #e1f2ff);
+    color: #215a84;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-history {
-    border-color: #d2dfea;
-    background: linear-gradient(164deg, #ffffff, #f3f8fd);
+    border-color: #94cde8;
+    background: linear-gradient(176deg, #fffdfc, #e9f3ff 56%, #e2f9ff);
 }
 
 body.ums-theme #student-saarthi-card .saarthi-message {
-    border-color: #d5e0ea;
-    background: #ffffff;
-    box-shadow: 0 10px 18px rgba(28, 58, 86, 0.1);
+    border-color: #a6d2ec;
+    background: linear-gradient(160deg, #ffffff, #e7f4ff);
+    box-shadow: 0 12px 20px rgba(52, 98, 138, 0.16);
+}
+
+body.ums-theme #student-saarthi-card .saarthi-message.theirs {
+    border-color: #9fd5f1;
+    background: linear-gradient(160deg, #f4feff, #d7f0ff);
 }
 
 body.ums-theme #student-saarthi-card .saarthi-message.mine {
-    border-color: #9dc7e6;
-    background: linear-gradient(158deg, #edf6ff, #dfeefe);
+    border-color: #8fbaf5;
+    background: linear-gradient(160deg, #eaf6ff, #d6e6ff);
 }
 
 body.ums-theme #student-saarthi-card .saarthi-message-header {
-    color: #6f8195;
+    color: #677f95;
 }
 
-body.ums-theme #student-saarthi-card .saarthi-message-header strong {
-    color: #27313c;
+body.ums-theme #student-saarthi-card .saarthi-message-sender {
+    color: #5168ab;
+}
+
+body.ums-theme #student-saarthi-card .saarthi-message.mine .saarthi-message-sender {
+    color: #2f649c;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-message-text {
-    color: #314252;
+    color: #274d71;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-empty {
-    color: #617487;
+    color: #4e6b86;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-compose-field > span {
-    color: #445a71;
+    color: #4f647b;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-compose-field textarea {
-    color: #243443;
+    color: #1f4568;
     background: #ffffff;
-    border-color: #cfddea;
+    border-color: #bdd6ea;
 }
 
 body.ums-theme #student-saarthi-card .saarthi-compose-field textarea::placeholder {
-    color: #8ca0b1;
+    color: #8098b0;
+}
+
+body.ums-theme #student-saarthi-card .saarthi-send-btn {
+    border-color: #39b7ee;
+    background: linear-gradient(145deg, #00bbff, #32ffd0);
+    box-shadow:
+        0 20px 32px rgba(30, 100, 160, 0.36),
+        0 0 0 1px rgba(255, 255, 255, 0.28) inset;
+    filter: saturate(1.18);
+}
+
+body.ums-theme #student-saarthi-card .saarthi-new-chat-btn {
+    border-color: #7dc5ea;
+    background: linear-gradient(145deg, #ffffff, #d7f0ff);
+    color: #155c87;
 }
 
 body.ums-theme .course-aggregate-item {
@@ -10941,12 +12611,28 @@ body:not(.ums-theme) #student-ledger-card .aggregate-chip strong {
     text-shadow: 0 1px 0 rgba(7, 20, 32, 0.42);
 }
 
-body:not(.ums-theme) #student-saarthi-card .saarthi-chip {
-    box-shadow: 0 8px 16px rgba(6, 21, 35, 0.18);
+body:not(.ums-theme) #student-saarthi-card {
+    border-color: rgba(109, 196, 248, 0.96);
+    background:
+        radial-gradient(circle at 8% 8%, rgba(62, 220, 255, 0.42), transparent 46%),
+        radial-gradient(circle at 92% 10%, rgba(123, 132, 255, 0.35), transparent 44%),
+        radial-gradient(circle at 82% 86%, rgba(255, 165, 93, 0.28), transparent 48%),
+        linear-gradient(155deg, #fbfdff, #e4f3ff 58%, #dcedff);
+    box-shadow: 0 24px 44px rgba(28, 78, 126, 0.2);
 }
 
-body:not(.ums-theme) #student-saarthi-card .saarthi-history {
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 18px rgba(7, 20, 33, 0.18);
+body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
+    border-color: rgba(139, 200, 237, 0.96);
+    background: linear-gradient(164deg, rgba(255, 255, 255, 0.96), rgba(226, 244, 255, 0.98));
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-chip,
+body:not(.ums-theme) #student-saarthi-card .saarthi-history,
+body:not(.ums-theme) #student-saarthi-card .saarthi-message,
+body:not(.ums-theme) #student-saarthi-card .saarthi-typing {
+    box-shadow: 0 14px 24px rgba(37, 94, 147, 0.2);
 }
 
 body:not(.ums-theme) #student-ledger-card .course-aggregate-item {
@@ -11518,6 +13204,11 @@ body.ums-theme .calendar-class.slot-open-window {
         grid-template-columns: 1fr;
     }
 
+    .saarthi-welcome-card {
+        grid-template-columns: 1fr;
+        justify-items: start;
+    }
+
     .submissions-table {
         min-width: 690px;
     }
@@ -11655,13 +13346,16 @@ body.ums-theme .calendar-class.slot-open-window {
 
     .saarthi-actions {
         display: grid;
-        grid-template-columns: 1fr;
-        align-items: stretch;
+        grid-template-columns: 1fr auto auto;
+        align-items: center;
     }
 
-    .saarthi-actions .btn {
-        width: 100%;
-        min-width: 0;
+    .saarthi-actions .helper-text {
+        grid-column: 1 / -1;
+    }
+
+    .saarthi-send-btn {
+        justify-self: end;
     }
 
     .food-order-actions {
@@ -12470,7 +14164,23 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     .food-order-card.tone-verified::before,
     .food-order-card.tone-failed::before,
     #food-orders-panel.is-sync-pulse,
-    .food-order-card-details {
+    .food-order-card-details,
+    .saarthi-affirmation-track,
+    .saarthi-affirmation-pill,
+    .saarthi-message,
+    .saarthi-typing-dots i,
+    .saarthi-send-btn.is-sending,
+    .saarthi-new-chat-btn.is-loading,
+    #student-saarthi-card .saarthi-welcome-icon,
+    .saarthi-welcome-orb,
+    .saarthi-welcome-ring,
+    .saarthi-welcome-spark,
+    #student-saarthi-card::before,
+    #student-saarthi-card::after,
+    #student-saarthi-card .saarthi-affirmation-band::after,
+    #student-saarthi-card .saarthi-welcome-icon::before,
+    #student-saarthi-card .saarthi-welcome-icon::after,
+    #student-saarthi-card {
         transition: none;
         animation: none;
     }
