@@ -595,7 +595,6 @@ def _student_food_order_blocker_assessment(
     selected_slot_id = _context_int(slot_context.get("slot_id"))
     selected_slot = db.get(models.BreakSlot, selected_slot_id) if selected_slot_id else None
     selected_slot_label = _context_str(slot_context.get("label")) or (selected_slot.label if selected_slot else "")
-    selected_slot_start = _context_time(slot_context.get("start_time")) or (selected_slot.start_time if selected_slot else None)
     selected_slot_end = _context_time(slot_context.get("end_time")) or (selected_slot.end_time if selected_slot else None)
     slot_signal_present = bool(slot_context) and ("selected" in slot_context or "slot_id" in slot_context)
     selected_flag = _context_bool(slot_context.get("selected"))
