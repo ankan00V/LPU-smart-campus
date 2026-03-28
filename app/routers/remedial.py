@@ -1,3 +1,4 @@
+from __future__ import annotations
 def _remedial_now() -> datetime:
     # Remedial schedules are expressed in campus local time, not the host OS timezone.
     # CI/tests can force UTC to keep time-window logic deterministic.
