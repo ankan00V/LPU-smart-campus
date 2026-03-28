@@ -41,6 +41,11 @@ def _utcnow_naive() -> datetime:
 
 
 def _remedial_now() -> datetime:
+    # Allow test/CI environments to pin "now" to UTC so seeded UTC timestamps
+    # align with the application clock (avoids Asia/Kolkata vs UTC drift).
+    use_utc = os.getenv("REMEDIAL_USE_UTC_NOW", "").strip().lower()
+    if use_utc in ("1", "true", "on", "yes"):
+        return _utcnow_naive()
     # Remedial schedules are expressed in campus local time, not the host OS timezone.
     zone_name = (os.getenv("APP_TIMEZONE", REMEDIAL_TIMEZONE_DEFAULT) or "").strip() or REMEDIAL_TIMEZONE_DEFAULT
     try:

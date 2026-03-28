@@ -37,6 +37,8 @@ jobs:
         run: PYTHONPATH=. python -m ruff check app tests scripts
 
       - name: Test Suite
+        env:
+          REMEDIAL_USE_UTC_NOW: "true"
         run: PYTHONPATH=. python -m pytest -q
 
   ux-gate:
