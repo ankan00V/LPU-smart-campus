@@ -14,6 +14,8 @@ jobs:
     name: Quality Gate (Migrations + Lint + Tests)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      REMEDIAL_USE_UTC_NOW: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
