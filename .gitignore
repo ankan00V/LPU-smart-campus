@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.codex_tmp/
+.media_objects/
 
 .venv/
 venv/
