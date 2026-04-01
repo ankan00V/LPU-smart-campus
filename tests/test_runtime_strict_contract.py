@@ -6,7 +6,7 @@ from unittest import mock
 os.environ["APP_RUNTIME_STRICT"] = "false"
 os.environ["SQLALCHEMY_DATABASE_URL"] = "sqlite:///:memory:"
 
-from app import otp_delivery, redis_client, workers
+from app import mongo, otp_delivery, redis_client, workers
 from app.main import _assert_strict_runtime_contract, _otp_verify_connection_on_startup, startup_event
 
 
@@ -154,6 +154,20 @@ class RuntimeStrictContractTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 _assert_strict_runtime_contract()
+
+    def test_mongita_fallback_disabled_in_runtime_strict_mode(self):
+        os.environ["APP_RUNTIME_STRICT"] = "true"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "false"
+        os.environ["MONGO_MONGITA_FALLBACK"] = "true"
+
+        self.assertFalse(mongo._mongita_fallback_enabled())
+
+    def test_mongita_fallback_disabled_for_managed_services(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        os.environ["MONGO_MONGITA_FALLBACK"] = "true"
+
+        self.assertFalse(mongo._mongita_fallback_enabled())
 
 
 class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):

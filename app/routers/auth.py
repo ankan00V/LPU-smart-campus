@@ -89,6 +89,8 @@ def _otp_delivery_timeout_seconds() -> int:
 def _mongo_db_or_503():
     def _acquire_writable_db():
         db = get_mongo_db(required=True)
+        if db.__class__.__module__.startswith("mongita"):
+            return db
         hello = db.client.admin.command("hello")
         if not bool(hello.get("isWritablePrimary", False)):
             raise RuntimeError("MongoDB writable primary is unavailable")
@@ -180,7 +182,7 @@ def _ensure_auth_user_id(db, user_doc: dict, sql_db: Session | None = None) -> i
         },
         {"$set": {"id": assigned_id}},
     )
-    refreshed = db["auth_users"].find_one({"email": email}, {"id": 1})
+    refreshed = db["auth_users"].find_one({"email": email})
     if not refreshed or refreshed.get("id") is None:
         raise HTTPException(
             status_code=503,
@@ -285,7 +287,16 @@ def _upsert_mongo_by_id(db, collection: str, doc_id: int, payload: dict) -> None
         aad = f"{collection}:{int(doc_id)}:{field_name}"
         body[f"{field_name}_encrypted"] = encrypt_pii(clean, aad=aad)
         body[field_name] = None
-    db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+    if db.__class__.__module__.startswith("mongita"):
+        existing = db[collection].find_one({"id": doc_id})
+        if existing:
+            replacement = dict(existing)
+            replacement.update(body)
+            db[collection].replace_one({"id": doc_id}, replacement)
+        else:
+            db[collection].insert_one(body)
+    else:
+        db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
     bump_mongo_counter(db, collection, int(doc_id))
 
 
@@ -397,10 +408,11 @@ def _issue_backup_codes() -> tuple[list[str], list[str]]:
     return plain_codes, [hash_backup_code(code) for code in plain_codes]
 
 
-def _verify_and_consume_mfa_code(db, user_doc: dict, mfa_code: str | None) -> bool:
+def _verify_mfa_code(user_doc: dict, mfa_code: str | None) -> dict[str, Any] | None:
     raw_code = str(mfa_code or "").strip()
     if not raw_code:
-        return False
+        return None
+
     secret = str(user_doc.get("mfa_totp_secret") or "").strip()
     totp_candidate = _normalize_otp_candidate(raw_code)
     if secret:
@@ -411,28 +423,73 @@ def _verify_and_consume_mfa_code(db, user_doc: dict, mfa_code: str | None) -> bo
             allowed_drift_steps=_mfa_totp_login_drift_steps(),
         )
         if matched_delta is not None:
-            previous_delta = _mfa_totp_sanitized_skew(user_doc.get("mfa_totp_skew_steps"))
-            if matched_delta != previous_delta:
-                db["auth_users"].update_one(
-                    {"id": int(user_doc["id"])},
-                    {"$set": {"mfa_totp_skew_steps": int(matched_delta)}},
-                )
-                user_doc["mfa_totp_skew_steps"] = int(matched_delta)
-            return True
+            return {
+                "kind": "totp",
+                "matched_delta": int(matched_delta),
+            }
 
     backup_hashes = [str(item) for item in (user_doc.get("mfa_backup_code_hashes") or []) if str(item)]
     backup_candidate = _normalize_backup_code_candidate(raw_code)
-    for idx, stored_hash in enumerate(backup_hashes):
-        if not verify_backup_code(backup_candidate, stored_hash):
-            continue
-        backup_hashes.pop(idx)
-        db["auth_users"].update_one(
-            {"id": int(user_doc["id"])},
-            {"$set": {"mfa_backup_code_hashes": backup_hashes, "mfa_last_verified_at": datetime.utcnow()}},
-        )
-        user_doc["mfa_backup_code_hashes"] = backup_hashes
+    for stored_hash in backup_hashes:
+        if verify_backup_code(backup_candidate, stored_hash):
+            return {
+                "kind": "backup",
+                "backup_hash": stored_hash,
+            }
+
+    return None
+
+
+def _commit_mfa_verification(
+    db,
+    user_doc: dict,
+    verification: dict[str, Any],
+    *,
+    verified_at: datetime | None = None,
+) -> bool:
+    now = verified_at or datetime.utcnow()
+    verification_kind = str(verification.get("kind") or "").strip().lower()
+    user_id = int(user_doc["id"])
+
+    if verification_kind == "totp":
+        matched_delta = _mfa_totp_sanitized_skew(verification.get("matched_delta"))
+        previous_delta = _mfa_totp_sanitized_skew(user_doc.get("mfa_totp_skew_steps"))
+        update_fields: dict[str, Any] = {"mfa_last_verified_at": now}
+        if matched_delta != previous_delta:
+            update_fields["mfa_totp_skew_steps"] = int(matched_delta)
+        db["auth_users"].update_one({"id": user_id}, {"$set": update_fields})
+        if matched_delta != previous_delta:
+            user_doc["mfa_totp_skew_steps"] = int(matched_delta)
         return True
+
+    if verification_kind == "backup":
+        backup_hash = str(verification.get("backup_hash") or "").strip()
+        if not backup_hash:
+            return False
+        consume_result = db["auth_users"].update_one(
+            {"id": user_id, "mfa_backup_code_hashes": {"$in": [backup_hash]}},
+            {
+                "$pull": {"mfa_backup_code_hashes": backup_hash},
+                "$set": {"mfa_last_verified_at": now},
+            },
+        )
+        if int(getattr(consume_result, "matched_count", 0)) != 1:
+            return False
+        user_doc["mfa_backup_code_hashes"] = [
+            str(item)
+            for item in (user_doc.get("mfa_backup_code_hashes") or [])
+            if str(item) and str(item) != backup_hash
+        ]
+        return True
+
     return False
+
+
+def _verify_and_consume_mfa_code(db, user_doc: dict, mfa_code: str | None) -> bool:
+    verification = _verify_mfa_code(user_doc, mfa_code)
+    if verification is None:
+        return False
+    return _commit_mfa_verification(db, user_doc, verification)
 
 
 def _normalize_registration_number(value: str) -> str:
@@ -1245,14 +1302,14 @@ def verify_login_otp(
 
         mfa_required = _privileged_mfa_required() and _is_privileged_role(role)
         mfa_enabled = bool(user.get("mfa_enabled", False))
-        mfa_authenticated = False
+        pending_mfa_verification: dict[str, Any] | None = None
         if mfa_required and mfa_enabled:
-            if not _verify_and_consume_mfa_code(db, user, payload.mfa_code):
+            pending_mfa_verification = _verify_mfa_code(user, payload.mfa_code)
+            if pending_mfa_verification is None:
                 raise HTTPException(
                     status_code=401,
                     detail="MFA code is required and must be a valid TOTP or backup code.",
                 )
-            mfa_authenticated = True
 
         consume_result = db["auth_otps"].update_one(
             {"id": otp_row["id"], "used_at": None},
@@ -1260,6 +1317,15 @@ def verify_login_otp(
         )
         if int(getattr(consume_result, "matched_count", 0)) != 1:
             raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
+
+        mfa_authenticated = False
+        if pending_mfa_verification is not None:
+            if not _commit_mfa_verification(db, user, pending_mfa_verification, verified_at=now):
+                raise HTTPException(
+                    status_code=401,
+                    detail="MFA backup code was already used. Request a new OTP and try a fresh MFA code.",
+                )
+            mfa_authenticated = True
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
         if mfa_authenticated:
@@ -1933,13 +1999,65 @@ def mfa_activate(
         if role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
             raise HTTPException(status_code=403, detail="MFA activation is reserved for privileged roles.")
 
-        setup_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
-        setup_expires_at = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
-        if not setup_secret or not setup_expires_at or _to_utc_naive(setup_expires_at) < datetime.utcnow():
-            raise HTTPException(status_code=400, detail="MFA setup has expired. Start enrollment again.")
         totp_code = _normalize_otp_candidate(payload.totp_code)
         if len(totp_code) != 6:
             raise HTTPException(status_code=400, detail="Enter a valid 6-digit authenticator TOTP code.")
+
+        setup_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
+        setup_expires_at = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
+        existing_secret = str(user_doc.get("mfa_totp_secret") or "").strip()
+        if bool(user_doc.get("mfa_enabled", False)) and existing_secret and not setup_secret:
+            matched_delta = _match_user_totp(
+                existing_secret,
+                totp_code,
+                user_doc,
+                allowed_drift_steps=_mfa_totp_login_drift_steps(),
+            )
+            if matched_delta is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Invalid TOTP code. Ensure Microsoft Authenticator account type is time-based "
+                        "and your device time is set to automatic. If this persists, wait for a fresh code "
+                        "and try again."
+                    ),
+                )
+
+            now = datetime.utcnow()
+            db["auth_users"].update_one(
+                {"id": int(current_user.id)},
+                {"$set": {"mfa_last_verified_at": now, "mfa_totp_skew_steps": int(matched_delta)}},
+            )
+            if current_user.session_id:
+                try:
+                    session_update = db["auth_sessions"].update_one(
+                        {"sid": str(current_user.session_id), "user_id": int(current_user.id)},
+                        {"$set": {"mfa_verified": True, "mfa_verified_at": now, "last_seen_at": now}},
+                    )
+                    if int(getattr(session_update, "matched_count", 0)) != 1:
+                        logger.warning(
+                            "MFA already active but current session was not found for MFA marker refresh user_id=%s sid=%s",
+                            int(current_user.id),
+                            str(current_user.session_id),
+                        )
+                        return schemas.MessageResponse(
+                            message="MFA is already active. Sign out and log in again with OTP + TOTP for protected routes."
+                        )
+                except PyMongoError:
+                    logger.warning(
+                        "MFA already active but session MFA marker refresh failed user_id=%s sid=%s",
+                        int(current_user.id),
+                        str(current_user.session_id),
+                    )
+                    return schemas.MessageResponse(
+                        message="MFA is already active. Sign out and log in again with OTP + TOTP for protected routes."
+                    )
+            return schemas.MessageResponse(
+                message="MFA is already active. Continue using OTP + TOTP for protected routes."
+            )
+
+        if not setup_secret or not setup_expires_at or _to_utc_naive(setup_expires_at) < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="MFA setup has expired. Start enrollment again.")
         matched_delta = _match_user_totp(
             setup_secret,
             totp_code,
@@ -1974,11 +2092,27 @@ def mfa_activate(
                 }
             },
         )
+        session_marker_updated = True
         if current_user.session_id:
-            db["auth_sessions"].update_one(
-                {"sid": str(current_user.session_id), "user_id": int(current_user.id)},
-                {"$set": {"mfa_verified": True, "mfa_verified_at": now, "last_seen_at": now}},
-            )
+            try:
+                session_update = db["auth_sessions"].update_one(
+                    {"sid": str(current_user.session_id), "user_id": int(current_user.id)},
+                    {"$set": {"mfa_verified": True, "mfa_verified_at": now, "last_seen_at": now}},
+                )
+                if int(getattr(session_update, "matched_count", 0)) != 1:
+                    session_marker_updated = False
+                    logger.warning(
+                        "MFA enabled but current session was not found for MFA marker write user_id=%s sid=%s",
+                        int(current_user.id),
+                        str(current_user.session_id),
+                    )
+            except PyMongoError:
+                session_marker_updated = False
+                logger.warning(
+                    "MFA enabled but current session MFA marker write failed user_id=%s sid=%s",
+                    int(current_user.id),
+                    str(current_user.session_id),
+                )
 
         mirror_event(
             "auth.mfa_enabled",
@@ -1986,7 +2120,11 @@ def mfa_activate(
             actor={"user_id": int(current_user.id), "email": user_doc.get("email"), "role": user_doc.get("role")},
         )
         return schemas.MessageResponse(
-            message="MFA has been activated. Use a fresh login with OTP + TOTP for protected routes."
+            message=(
+                "MFA has been activated. Use a fresh login with OTP + TOTP for protected routes."
+                if session_marker_updated
+                else "MFA has been activated. Sign out and log in again with OTP + TOTP for protected routes."
+            )
         )
     except HTTPException:
         raise

@@ -270,6 +270,11 @@ const state = {
     copilotAuditLoadedAtMs: 0,
     copilotAuditBusy: false,
     copilotAuditQueued: false,
+    profileRectification: {
+      role: 'student',
+      record: null,
+      pendingPhotoDataUrl: '',
+    },
   },
   remedial: {
     eligibleCourses: [],
@@ -337,6 +342,7 @@ const state = {
     sectionLockMinutesRemaining: 0,
     sectionChangeRequiresFacultyApproval: false,
     profileLoaded: false,
+    profileNotices: [],
     enrollmentLoaded: false,
     hasEnrollmentVideo: false,
     enrollmentCanUpdateNow: true,
@@ -393,6 +399,7 @@ const state = {
     sectionLockedUntil: null,
     sectionLockMinutesRemaining: 0,
     profileLoaded: false,
+    profileNotices: [],
     pendingProfilePhotoDataUrl: '',
     profileSetupRequired: false,
   },
@@ -579,6 +586,8 @@ const els = {
   navDashboardBtn: document.getElementById('nav-dashboard-btn'),
   navCoursesBtn: document.getElementById('nav-courses-btn'),
   navAttendanceBtn: document.getElementById('nav-attendance-btn'),
+  navMessagesBtn: document.getElementById('nav-messages-btn'),
+  navMessagesUnreadBadge: document.getElementById('nav-messages-unread-badge'),
   topNavAttendanceBtn: document.getElementById('top-nav-attendance'),
   topNavSaarthiBtn: document.getElementById('top-nav-saarthi'),
   topNavFoodBtn: document.getElementById('top-nav-food'),
@@ -601,6 +610,7 @@ const els = {
   saarthiSection: document.getElementById('saarthi-section'),
   facultySection: document.getElementById('faculty-section'),
   adminAttendanceActionsCard: document.getElementById('admin-attendance-actions-card'),
+  adminProfileRectificationCard: document.getElementById('admin-profile-rectification-card'),
   adminRecoveryIncludeResolved: document.getElementById('admin-recovery-include-resolved'),
   adminRecoveryRefreshBtn: document.getElementById('admin-recovery-refresh-btn'),
   adminRecoveryRecomputeAllBtn: document.getElementById('admin-recovery-recompute-all-btn'),
@@ -663,9 +673,13 @@ const els = {
   chotuMinimizeBtn: document.getElementById('chotu-minimize-btn'),
   supportDeskWidget: document.getElementById('support-desk-widget'),
   supportDeskToggleBtn: document.getElementById('support-desk-toggle-btn'),
+  supportDeskToggleTitle: document.getElementById('support-desk-toggle-title'),
+  supportDeskToggleMeta: document.getElementById('support-desk-toggle-meta'),
   supportDeskUnreadBadge: document.getElementById('support-desk-unread-badge'),
   supportDeskPanel: document.getElementById('support-desk-panel'),
   supportDeskMinimizeBtn: document.getElementById('support-desk-minimize-btn'),
+  supportDeskHeadTitle: document.getElementById('support-desk-head-title'),
+  supportDeskHeadMeta: document.getElementById('support-desk-head-meta'),
   supportDeskStatus: document.getElementById('support-desk-status'),
   supportDeskRecipientLabel: document.getElementById('support-desk-recipient-label'),
   supportDeskRecipientSelect: document.getElementById('support-desk-recipient-select'),
@@ -762,6 +776,27 @@ const els = {
   directEmailMessage: document.getElementById('direct-email-message'),
   directEmailSendBtn: document.getElementById('direct-email-send-btn'),
   directEmailStatus: document.getElementById('direct-email-status'),
+  adminProfileRectificationRole: document.getElementById('admin-profile-rectification-role'),
+  adminProfileRectificationQueryLabel: document.getElementById('admin-profile-rectification-query-label'),
+  adminProfileRectificationQuery: document.getElementById('admin-profile-rectification-query'),
+  adminProfileRectificationSearchBtn: document.getElementById('admin-profile-rectification-search-btn'),
+  adminProfileRectificationStatus: document.getElementById('admin-profile-rectification-status'),
+  adminProfileRectificationForm: document.getElementById('admin-profile-rectification-form'),
+  adminProfileRectificationSummary: document.getElementById('admin-profile-rectification-summary'),
+  adminProfileRectificationEmail: document.getElementById('admin-profile-rectification-email'),
+  adminProfileRectificationName: document.getElementById('admin-profile-rectification-name'),
+  adminProfileRectificationIdLabel: document.getElementById('admin-profile-rectification-id-label'),
+  adminProfileRectificationIdValue: document.getElementById('admin-profile-rectification-id-value'),
+  adminProfileRectificationSection: document.getElementById('admin-profile-rectification-section'),
+  adminProfileRectificationDepartment: document.getElementById('admin-profile-rectification-department'),
+  adminProfileRectificationSemesterWrap: document.getElementById('admin-profile-rectification-semester-wrap'),
+  adminProfileRectificationSemester: document.getElementById('admin-profile-rectification-semester'),
+  adminProfileRectificationParentEmailWrap: document.getElementById('admin-profile-rectification-parent-email-wrap'),
+  adminProfileRectificationParentEmail: document.getElementById('admin-profile-rectification-parent-email'),
+  adminProfileRectificationPhotoInput: document.getElementById('admin-profile-rectification-photo-input'),
+  adminProfileRectificationPhotoPreview: document.getElementById('admin-profile-rectification-photo-preview'),
+  adminProfileRectificationNote: document.getElementById('admin-profile-rectification-note'),
+  adminProfileRectificationSaveBtn: document.getElementById('admin-profile-rectification-save-btn'),
   remedialCodeInput: document.getElementById('remedial-code-input'),
   remedialValidateBtn: document.getElementById('remedial-validate-btn'),
   remedialCodeDetails: document.getElementById('remedial-code-details'),
@@ -793,6 +828,7 @@ const els = {
   saveProfilePhotoBtn: document.getElementById('save-profile-photo-btn'),
   profilePhotoPreview: document.getElementById('profile-photo-preview'),
   profileStatus: document.getElementById('profile-status'),
+  profileNotices: document.getElementById('profile-notices'),
   profileModal: document.getElementById('profile-modal'),
   profileModalTitle: document.getElementById('profile-modal-title'),
   profileModalSubtitle: document.getElementById('profile-modal-subtitle'),
@@ -2229,7 +2265,7 @@ function getVerlynRoleLabel() {
 
 function getVerlynModuleLabel(moduleKey = getSanitizedModuleKey(state.ui.activeModule)) {
   const normalized = getSanitizedModuleKey(moduleKey);
-  return MODULE_LABELS[normalized] || asTitleCase(normalized);
+  return getModuleDisplayLabel(normalized);
 }
 
 function getVerlynAccessibleModuleLabels() {
@@ -2239,7 +2275,7 @@ function getVerlynAccessibleModuleLabels() {
   }
   return Object.keys(MODULE_LABELS)
     .filter((moduleKey) => isModuleAccessible(moduleKey, role))
-    .map((moduleKey) => MODULE_LABELS[moduleKey] || asTitleCase(moduleKey));
+    .map((moduleKey) => getModuleDisplayLabel(moduleKey, role));
 }
 
 function syncVerlynVisualContext() {
@@ -3190,6 +3226,46 @@ function setSupportDeskStatus(message, isError = false, state = 'neutral') {
   });
 }
 
+function syncSupportDeskCopy() {
+  const role = authState.user?.role;
+  const isFaculty = role === 'faculty';
+  if (els.supportDeskToggleTitle) {
+    els.supportDeskToggleTitle.textContent = isFaculty ? 'Messages' : 'Message Desk';
+  }
+  if (els.supportDeskToggleMeta) {
+    els.supportDeskToggleMeta.textContent = isFaculty ? 'Received Queries' : 'Realtime Queries';
+  }
+  if (els.supportDeskHeadTitle) {
+    els.supportDeskHeadTitle.textContent = isFaculty ? 'Faculty Messages' : 'Realtime Query Desk';
+  }
+  if (els.supportDeskHeadMeta) {
+    els.supportDeskHeadMeta.textContent = isFaculty
+      ? 'Received student queries and live replies'
+      : 'Attendance, academics, discrepancy, and other issues';
+  }
+}
+
+function renderFacultyMessagesSidebarBadge() {
+  if (!els.navMessagesBtn || !els.navMessagesUnreadBadge) {
+    return;
+  }
+  const isFaculty = authState.user?.role === 'faculty';
+  setHidden(els.navMessagesBtn, !isFaculty);
+  els.navMessagesBtn.classList.toggle('active', isFaculty && Boolean(state.ui.supportDeskOpen));
+  els.navMessagesBtn.setAttribute('aria-expanded', state.ui.supportDeskOpen ? 'true' : 'false');
+  if (!isFaculty) {
+    els.navMessagesUnreadBadge.classList.add('hidden');
+    return;
+  }
+  const unread = Math.max(0, Number(state.supportDesk.unreadTotal || 0));
+  if (unread > 0) {
+    els.navMessagesUnreadBadge.textContent = unread > 99 ? '99+' : String(unread);
+    els.navMessagesUnreadBadge.classList.remove('hidden');
+  } else {
+    els.navMessagesUnreadBadge.classList.add('hidden');
+  }
+}
+
 function setSupportDeskOpen(open) {
   if (!els.supportDeskWidget || !els.supportDeskPanel || !els.supportDeskToggleBtn) {
     return;
@@ -3200,6 +3276,7 @@ function setSupportDeskOpen(open) {
   els.supportDeskWidget.classList.toggle('is-open', shouldOpen);
   els.supportDeskToggleBtn.classList.toggle('is-active', shouldOpen);
   els.supportDeskToggleBtn.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+  renderFacultyMessagesSidebarBadge();
   if (shouldOpen) {
     window.clearTimeout(setSupportDeskOpen._closeTimer);
     return;
@@ -3219,6 +3296,7 @@ function updateSupportDeskVisibility() {
   if (!els.supportDeskWidget) {
     return;
   }
+  syncSupportDeskCopy();
   const role = authState.user?.role;
   const visible = Boolean(
     (role === 'student' || role === 'faculty')
@@ -3227,6 +3305,7 @@ function updateSupportDeskVisibility() {
   setHidden(els.supportDeskWidget, !visible);
   if (!visible) {
     setSupportDeskOpen(false);
+    renderFacultyMessagesSidebarBadge();
     return;
   }
   if (!state.supportDesk.contacts.length && !state.supportDesk.threads.length) {
@@ -3317,7 +3396,9 @@ function renderSupportDeskMessages() {
   }
   const rows = Array.isArray(state.supportDesk.messages) ? state.supportDesk.messages : [];
   if (!rows.length) {
-    els.supportDeskMessages.innerHTML = '<div class="support-desk-empty">No messages yet. Start with a query below.</div>';
+    els.supportDeskMessages.innerHTML = authState.user?.role === 'faculty'
+      ? '<div class="support-desk-empty">No received messages yet. New student queries will appear here.</div>'
+      : '<div class="support-desk-empty">No messages yet. Start with a query below.</div>';
     return;
   }
   const role = String(authState.user?.role || '').trim().toLowerCase();
@@ -3339,6 +3420,7 @@ function renderSupportDeskMessages() {
 }
 
 function renderSupportDeskWidget() {
+  syncSupportDeskCopy();
   const unread = Math.max(0, Number(state.supportDesk.unreadTotal || 0));
   if (els.supportDeskUnreadBadge) {
     if (unread > 0) {
@@ -3384,10 +3466,13 @@ function renderSupportDeskWidget() {
       els.supportDeskThreadMeta.textContent =
         `${selectedContact.name} • ${selectedCategory} • Start a new conversation`;
     } else {
-      els.supportDeskThreadMeta.textContent = 'Choose a recipient to start realtime messaging.';
+      els.supportDeskThreadMeta.textContent = authState.user?.role === 'faculty'
+        ? 'Choose a student to review or reply to received messages.'
+        : 'Choose a recipient to start realtime messaging.';
     }
   }
   renderSupportDeskMessages();
+  renderFacultyMessagesSidebarBadge();
 }
 
 async function refreshSupportDeskThread({ silent = false } = {}) {
@@ -3969,6 +4054,30 @@ const ROUTE_SPLIT_IMPORTERS = {
   administrative: () => import(`/web/routes/administrative-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
 };
 
+function getModuleDisplayLabel(moduleKey, role = authState.user?.role) {
+  const normalized = normalizeModuleKey(moduleKey);
+  if (normalized === 'attendance' && role === 'admin') {
+    return 'Control Hub';
+  }
+  return MODULE_LABELS[normalized] || asTitleCase(normalized);
+}
+
+function syncAttendanceModuleLabels(role = authState.user?.role) {
+  const nextLabel = getModuleDisplayLabel('attendance', role);
+  const sidebarLabel = els.navAttendanceBtn?.querySelector('.nav-label');
+  const topLabel = els.topNavAttendanceBtn?.querySelector('.module-label');
+  const heroCta = document.querySelector('.hero-primary-cta');
+  if (sidebarLabel) {
+    sidebarLabel.textContent = nextLabel;
+  }
+  if (topLabel) {
+    topLabel.textContent = nextLabel;
+  }
+  if (heroCta) {
+    heroCta.textContent = role === 'admin' ? 'Open Control Hub' : 'Open Attendance Hub';
+  }
+}
+
 function isRealtimeBusConnected() {
   return Boolean(realtimeBusController && typeof realtimeBusController.isConnected === 'function' && realtimeBusController.isConnected());
 }
@@ -3983,6 +4092,7 @@ async function refreshStudentAttendanceRealtime() {
   await Promise.allSettled([
     refreshStudentTimetableSurface({ forceNetwork: true }),
     loadStudentAttendanceInsights(),
+    loadStudentProfilePhoto(),
     loadSaarthiStatus({ silent: true }),
   ]);
 }
@@ -3992,6 +4102,7 @@ async function refreshFacultyAttendanceRealtime() {
     return;
   }
   await refreshAttendanceData();
+  await loadFacultyProfile();
   if (authState.user.role === 'faculty' || authState.user.role === 'admin') {
     if (state.faculty.selectedScheduleId) {
       await refreshFacultyDashboard();
@@ -4019,7 +4130,47 @@ async function refreshRemedialModuleRealtime() {
 }
 
 async function refreshRmsRealtime() {
-  await refreshRmsModule();
+  if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
+    return;
+  }
+  const refreshTasks = [refreshRmsModule({ silent: true })];
+  const attendanceInputRegistration = normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '');
+  const attendanceContextRegistration = normalizedRegistrationInput(
+    state.rms.attendanceContext?.student?.registration_number || '',
+  );
+  const searchInputRegistration = normalizedRegistrationInput(els.rmsSearchRegistration?.value || '');
+  const selectedStudentRegistration = normalizedRegistrationInput(
+    state.rms.selectedStudent?.registration_number || '',
+  );
+
+  if (
+    state.rms.attendanceContext
+    && attendanceContextRegistration
+    && (!attendanceInputRegistration || attendanceInputRegistration === attendanceContextRegistration)
+  ) {
+    if (els.rmsAttendanceRegistration) {
+      els.rmsAttendanceRegistration.value = attendanceContextRegistration;
+    }
+    if (els.rmsAttendanceDate) {
+      els.rmsAttendanceDate.value = String(
+        els.rmsAttendanceDate.value
+          || state.rms.attendanceContext?.attendance_date
+          || todayISO(),
+      ).trim() || todayISO();
+    }
+    refreshTasks.push(searchRmsAttendanceStudentContext({ silent: true }));
+  } else if (
+    state.rms.selectedStudent
+    && selectedStudentRegistration
+    && (!searchInputRegistration || searchInputRegistration === selectedStudentRegistration)
+  ) {
+    if (els.rmsSearchRegistration) {
+      els.rmsSearchRegistration.value = selectedStudentRegistration;
+    }
+    refreshTasks.push(searchRmsStudentByRegistration({ silent: true }));
+  }
+
+  await Promise.allSettled(refreshTasks);
 }
 
 async function refreshFoodRealtime() {
@@ -4354,6 +4505,7 @@ function syncAdminSubmodulePanels(scope) {
   const active = resolveAdminSubmodule(scope, panels);
   panels.forEach((panel) => {
     const isActive = panel.dataset.adminSubmodule === active;
+    setHidden(panel, !isActive);
     panel.classList.toggle('is-active', isActive);
     panel.setAttribute('aria-hidden', isActive ? 'false' : 'true');
   });
@@ -4405,6 +4557,7 @@ function applyRoleUI() {
   state.ui.activeModule = activeModule;
 
   syncRoleClass(role);
+  syncAttendanceModuleLabels(role);
 
   setHidden(els.accountSection, true);
   setHidden(els.executiveSection, !isAdmin || activeModule !== 'administrative');
@@ -4414,6 +4567,7 @@ function applyRoleUI() {
   setHidden(els.saarthiSection, !isStudent || activeModule !== 'saarthi');
   setHidden(els.facultySection, !isFacultyOrAdmin || activeModule !== 'attendance');
   setHidden(els.adminAttendanceActionsCard, !isAdmin || activeModule !== 'attendance');
+  setHidden(els.adminProfileRectificationCard, !isAdmin || activeModule !== 'attendance');
   setHidden(els.foodSection, !authState.user || activeModule !== 'food');
   setHidden(els.remedialSection, !authState.user || activeModule !== 'remedial');
   setHidden(els.remedialFacultyPanel, !isFaculty);
@@ -4488,6 +4642,7 @@ function applyRoleUI() {
   renderVerlynQuickActions();
   updateChotuVisibility();
   updateSupportDeskVisibility();
+  renderFacultyMessagesSidebarBadge();
   syncSupportDeskLiveTicker();
   if (isAdmin && activeModule === 'administrative') {
     void refreshCopilotAuditTimeline({ silent: true });
@@ -4567,6 +4722,26 @@ function navigateSidebar(navKey) {
   setSidebarActive(navKey);
   target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
   flashSection(target);
+}
+
+async function openFacultyMessagesPopup() {
+  if (!authState.user || authState.user.role !== 'faculty') {
+    return;
+  }
+  if (requiresRoleProfileSetup()) {
+    openProfileModal({ required: true });
+    return;
+  }
+  setActiveModule('attendance', { updateHash: true });
+  setSidebarActive('attendance');
+  try {
+    await refreshSupportDeskContext({ silent: true, refreshThread: true });
+    setSupportDeskOpen(true);
+    setSupportDeskStatus('Received student messages loaded.', false, 'success');
+  } catch (error) {
+    setSupportDeskOpen(true);
+    setSupportDeskStatus(error?.message || 'Unable to load faculty messages right now.', true, 'error');
+  }
 }
 
 function renderAlternateEmailStatus() {
@@ -4668,6 +4843,22 @@ function showEnrollmentLockPopup() {
     'Enrollment Video Locked',
     `Enrollment video locked until ${lockedUntil}. Remaining: ${remaining} day(s).`,
     { tone: 'cooldown', loading: false, closable: true }
+  );
+}
+
+function showAdminProfileRectificationSuccessPopup(role, updatedRecord, changedFields = []) {
+  const normalizedRole = String(role || '').trim().toLowerCase() === 'faculty' ? 'faculty' : 'student';
+  const identifier = normalizedRole === 'faculty'
+    ? String(updatedRecord?.faculty_identifier || updatedRecord?.email || '').trim()
+    : String(updatedRecord?.registration_number || updatedRecord?.email || '').trim();
+  const changedLabel = Array.isArray(changedFields) && changedFields.length
+    ? ` Updated fields: ${changedFields.join(', ')}.`
+    : '';
+  const detail = identifier ? ` ${normalizedRole === 'faculty' ? 'Faculty ID' : 'Registration'}: ${identifier}.` : '';
+  showOtpPopup(
+    'Rectification Successful',
+    `Admin profile rectification completed for the ${normalizedRole}.${detail}${changedLabel}`,
+    { tone: 'success', loading: false, closable: true }
   );
 }
 
@@ -4847,6 +5038,11 @@ function openProfileModal({ required = false } = {}) {
   }
   setProfileTab('details');
   renderProfileSecurity();
+  if (role === 'student') {
+    void loadStudentProfilePhoto();
+  } else if (role === 'faculty') {
+    void loadFacultyProfile();
+  }
 }
 
 function closeProfileModal() {
@@ -5088,6 +5284,7 @@ function renderProfileSecurity() {
     setProfileTab('details');
     renderEnrollmentSummary();
     renderProfileStatusByRole();
+    renderProfileNotices();
     closeAccountDropdown();
     return;
   }
@@ -5217,6 +5414,7 @@ function renderProfileSecurity() {
   renderAlternateEmailStatus();
   renderEnrollmentSummary();
   renderProfileStatusByRole();
+  renderProfileNotices();
 
   if (requiresStudentProfileSetup()) {
     if (state.student.profileSetupRequired) {
@@ -5391,6 +5589,11 @@ function resetFacultyProfileState() {
   state.facultyProfile.profileLoaded = false;
   state.facultyProfile.pendingProfilePhotoDataUrl = '';
   state.facultyProfile.profileSetupRequired = false;
+}
+
+function stopPresentationTour(_options = {}) {
+  // The guided presentation tour is optional. Keep session teardown safe
+  // when that bundle is absent or disabled in the current build.
 }
 
 function setSession(token, user) {
@@ -11947,7 +12150,12 @@ async function searchRmsStudentByRegistration({ silent = false } = {}) {
   if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
     throw new Error('Only admin or faculty can use RMS student search.');
   }
-  const registrationNumber = normalizedRegistrationInput(els.rmsSearchRegistration?.value || '');
+  const registrationNumber = normalizedRegistrationInput(
+    els.rmsSearchRegistration?.value
+      || state.rms.selectedStudent?.registration_number
+      || state.rms.attendanceContext?.student?.registration_number
+      || '',
+  );
   if (!registrationNumber) {
     throw new Error('Enter student registration number.');
   }
@@ -11987,8 +12195,17 @@ async function searchRmsAttendanceStudentContext({ silent = false } = {}) {
   if (!authState.user || (authState.user.role !== 'admin' && authState.user.role !== 'faculty')) {
     throw new Error('Only admin or faculty can use RMS attendance controls.');
   }
-  const registrationNumber = normalizedRegistrationInput(els.rmsAttendanceRegistration?.value || '');
-  const attendanceDate = String(els.rmsAttendanceDate?.value || '').trim() || todayISO();
+  const registrationNumber = normalizedRegistrationInput(
+    els.rmsAttendanceRegistration?.value
+      || state.rms.attendanceContext?.student?.registration_number
+      || state.rms.selectedStudent?.registration_number
+      || '',
+  );
+  const attendanceDate = String(
+    els.rmsAttendanceDate?.value
+      || state.rms.attendanceContext?.attendance_date
+      || '',
+  ).trim() || todayISO();
   if (!registrationNumber) {
     throw new Error('Enter student registration number before searching subjects.');
   }
@@ -12073,7 +12290,11 @@ async function applyRmsStudentApprovalUpdate() {
     false,
   );
   log(`RMS update applied for student ${studentId}.`);
-  await refreshRmsModule({ silent: true });
+  const refreshTasks = [refreshRmsModule({ silent: true })];
+  if (state.rms.attendanceContext && Number(state.rms.attendanceContext?.student?.student_id || 0) === studentId) {
+    refreshTasks.push(searchRmsAttendanceStudentContext({ silent: true }));
+  }
+  await Promise.allSettled(refreshTasks);
 }
 
 async function applyRmsAttendanceStatusUpdate() {
@@ -12143,11 +12364,17 @@ async function applyRmsAttendanceStatusUpdate() {
   });
   state.rms.attendanceUpdate = saved && typeof saved === 'object' ? saved : null;
   renderRmsAttendanceResult();
-  try {
-    await searchRmsAttendanceStudentContext({ silent: true });
+  const [contextRefresh, dashboardRefresh] = await Promise.allSettled([
+    searchRmsAttendanceStudentContext({ silent: true }),
+    refreshRmsModule({ silent: true }),
+  ]);
+  if (contextRefresh.status === 'fulfilled') {
     syncRmsAttendanceCurrentStatus();
-  } catch (error) {
-    log(error?.message || 'Attendance context refresh failed after status update.');
+  } else {
+    log(contextRefresh.reason?.message || 'Attendance context refresh failed after status update.');
+  }
+  if (dashboardRefresh.status === 'rejected') {
+    log(dashboardRefresh.reason?.message || 'RMS dashboard refresh failed after status update.');
   }
   const messageBits = [String(saved?.message || 'RMS attendance status updated successfully.')];
   if (saved?.message_sent) {
@@ -12326,6 +12553,369 @@ function setAdminCopilotAuditStatus(message, isError = false, state = 'neutral')
   setUiStateMessage(els.adminCopilotAuditStatus, message, {
     state: isError ? 'error' : state,
   });
+}
+
+function setAdminProfileRectificationStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminProfileRectificationStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminProfileRectificationStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function getAdminProfileRectificationRole() {
+  const raw = String(els.adminProfileRectificationRole?.value || state.admin.profileRectification.role || 'student')
+    .trim()
+    .toLowerCase();
+  return raw === 'faculty' ? 'faculty' : 'student';
+}
+
+function normalizeAdminProfileRectificationQuery(value, role = getAdminProfileRectificationRole()) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  if (raw.includes('@')) {
+    return raw.toLowerCase();
+  }
+  return normalizedRegistrationInput(raw);
+}
+
+function renderAdminProfileRectificationPhotoPreview(photoUrl) {
+  if (!els.adminProfileRectificationPhotoPreview) {
+    return;
+  }
+  const resolved = String(photoUrl || '').trim();
+  if (!resolved) {
+    els.adminProfileRectificationPhotoPreview.removeAttribute('src');
+    els.adminProfileRectificationPhotoPreview.classList.add('hidden');
+    return;
+  }
+  els.adminProfileRectificationPhotoPreview.src = resolved;
+  els.adminProfileRectificationPhotoPreview.classList.remove('hidden');
+}
+
+function clearAdminProfileRectificationSelection({ keepStatus = false } = {}) {
+  state.admin.profileRectification.record = null;
+  state.admin.profileRectification.pendingPhotoDataUrl = '';
+  if (els.adminProfileRectificationForm) {
+    setHidden(els.adminProfileRectificationForm, true);
+  }
+  if (els.adminProfileRectificationSummary) {
+    els.adminProfileRectificationSummary.innerHTML = '';
+  }
+  if (els.adminProfileRectificationEmail) {
+    els.adminProfileRectificationEmail.value = '';
+  }
+  if (els.adminProfileRectificationName) {
+    els.adminProfileRectificationName.value = '';
+  }
+  if (els.adminProfileRectificationIdValue) {
+    els.adminProfileRectificationIdValue.value = '';
+  }
+  if (els.adminProfileRectificationSection) {
+    els.adminProfileRectificationSection.value = '';
+  }
+  if (els.adminProfileRectificationDepartment) {
+    els.adminProfileRectificationDepartment.value = '';
+  }
+  if (els.adminProfileRectificationSemester) {
+    els.adminProfileRectificationSemester.value = '';
+  }
+  if (els.adminProfileRectificationParentEmail) {
+    els.adminProfileRectificationParentEmail.value = '';
+  }
+  if (els.adminProfileRectificationPhotoInput) {
+    els.adminProfileRectificationPhotoInput.value = '';
+  }
+  if (els.adminProfileRectificationNote) {
+    els.adminProfileRectificationNote.value = '';
+  }
+  renderAdminProfileRectificationPhotoPreview('');
+  if (!keepStatus) {
+    const role = getAdminProfileRectificationRole();
+    const baseMessage = role === 'faculty'
+      ? 'Search by faculty ID or email to rectify a faculty profile.'
+      : 'Search by student registration number or email to rectify a student profile.';
+    setAdminProfileRectificationStatus(baseMessage, false, 'neutral');
+  }
+}
+
+function syncAdminProfileRectificationRoleUi({ clearSelection = false } = {}) {
+  const role = getAdminProfileRectificationRole();
+  state.admin.profileRectification.role = role;
+  if (els.adminProfileRectificationRole && els.adminProfileRectificationRole.value !== role) {
+    els.adminProfileRectificationRole.value = role;
+  }
+  if (els.adminProfileRectificationQueryLabel) {
+    els.adminProfileRectificationQueryLabel.textContent = role === 'faculty'
+      ? 'Faculty ID or Email'
+      : 'Registration No. or Email';
+  }
+  if (els.adminProfileRectificationQuery) {
+    els.adminProfileRectificationQuery.placeholder = role === 'faculty'
+      ? 'e.g. FAC112 or faculty@gmail.com'
+      : 'e.g. 22BCS101 or student@gmail.com';
+  }
+  if (els.adminProfileRectificationIdLabel) {
+    els.adminProfileRectificationIdLabel.textContent = role === 'faculty' ? 'Faculty ID' : 'Registration Number';
+  }
+  if (els.adminProfileRectificationSemesterWrap) {
+    setHidden(els.adminProfileRectificationSemesterWrap, role !== 'student');
+  }
+  if (els.adminProfileRectificationParentEmailWrap) {
+    setHidden(els.adminProfileRectificationParentEmailWrap, role !== 'student');
+  }
+  const activeRecord = state.admin.profileRectification.record;
+  const activeRole = activeRecord && Object.prototype.hasOwnProperty.call(activeRecord, 'faculty_id')
+    ? 'faculty'
+    : activeRecord && Object.prototype.hasOwnProperty.call(activeRecord, 'student_id')
+      ? 'student'
+      : '';
+  if (clearSelection || (activeRole && activeRole !== role)) {
+    clearAdminProfileRectificationSelection({ keepStatus: true });
+  }
+  if (!state.admin.profileRectification.record) {
+    const baseMessage = role === 'faculty'
+      ? 'Search by faculty ID or email to rectify a faculty profile.'
+      : 'Search by student registration number or email to rectify a student profile.';
+    setAdminProfileRectificationStatus(baseMessage, false, 'neutral');
+  }
+}
+
+function renderAdminProfileRectificationSummary(record, role) {
+  if (!els.adminProfileRectificationSummary) {
+    return;
+  }
+  if (!record) {
+    els.adminProfileRectificationSummary.innerHTML = '';
+    return;
+  }
+  const identifier = role === 'faculty'
+    ? String(record.faculty_identifier || '--')
+    : String(record.registration_number || '--');
+  const summaryItems = [
+    `${role === 'faculty' ? 'Faculty' : 'Student'} #${Number(role === 'faculty' ? record.faculty_id : record.student_id) || 0}`,
+    identifier,
+    String(record.section || 'No section'),
+    String(record.department || 'No department'),
+    record.has_profile_photo ? 'Photo on file' : 'No photo on file',
+  ];
+  const updatedAt = record.profile_photo_updated_at
+    ? `Photo updated ${new Date(record.profile_photo_updated_at).toLocaleString()}`
+    : 'Changes save directly to the live profile and database.';
+  els.adminProfileRectificationSummary.innerHTML = `
+    <div class="admin-rectification-summary-strip">
+      ${summaryItems.map((item) => `<span>${escapeHtml(String(item))}</span>`).join('')}
+    </div>
+    <p class="helper-text">${escapeHtml(updatedAt)}</p>
+  `;
+}
+
+function renderAdminProfileRectificationRecord(record, role = getAdminProfileRectificationRole()) {
+  if (!record) {
+    clearAdminProfileRectificationSelection({ keepStatus: true });
+    return;
+  }
+  state.admin.profileRectification.role = role;
+  state.admin.profileRectification.record = record;
+  state.admin.profileRectification.pendingPhotoDataUrl = '';
+  if (els.adminProfileRectificationForm) {
+    setHidden(els.adminProfileRectificationForm, false);
+  }
+  if (els.adminProfileRectificationEmail) {
+    els.adminProfileRectificationEmail.value = String(record.email || '');
+  }
+  if (els.adminProfileRectificationName) {
+    els.adminProfileRectificationName.value = normalizeProfileName(record.name || '');
+  }
+  if (els.adminProfileRectificationIdValue) {
+    els.adminProfileRectificationIdValue.value = role === 'faculty'
+      ? String(record.faculty_identifier || '')
+      : String(record.registration_number || '');
+  }
+  if (els.adminProfileRectificationSection) {
+    els.adminProfileRectificationSection.value = String(record.section || '');
+  }
+  if (els.adminProfileRectificationDepartment) {
+    els.adminProfileRectificationDepartment.value = String(record.department || '');
+  }
+  if (els.adminProfileRectificationSemester) {
+    els.adminProfileRectificationSemester.value = role === 'student' && Number.isFinite(Number(record.semester))
+      ? String(Number(record.semester))
+      : '';
+  }
+  if (els.adminProfileRectificationParentEmail) {
+    els.adminProfileRectificationParentEmail.value = role === 'student'
+      ? String(record.parent_email || '')
+      : '';
+  }
+  if (els.adminProfileRectificationPhotoInput) {
+    els.adminProfileRectificationPhotoInput.value = '';
+  }
+  if (els.adminProfileRectificationNote) {
+    els.adminProfileRectificationNote.value = '';
+  }
+  renderAdminProfileRectificationSummary(record, role);
+  renderAdminProfileRectificationPhotoPreview(record.profile_photo_url || '');
+}
+
+async function searchAdminProfileForRectification() {
+  if (authState.user?.role !== 'admin') {
+    throw new Error('Only admin can rectify profile records.');
+  }
+  const role = getAdminProfileRectificationRole();
+  const query = normalizeAdminProfileRectificationQuery(els.adminProfileRectificationQuery?.value || '', role);
+  if (!query) {
+    throw new Error(role === 'faculty' ? 'Enter faculty ID or email.' : 'Enter registration number or email.');
+  }
+  if (els.adminProfileRectificationQuery) {
+    els.adminProfileRectificationQuery.value = query;
+  }
+  clearAdminProfileRectificationSelection({ keepStatus: true });
+  setAdminProfileRectificationStatus('Searching profile record...', false, 'loading');
+  const endpoint = role === 'faculty'
+    ? `/admin/profile-rectification/faculty/search?query=${encodeURIComponent(query)}`
+    : `/admin/profile-rectification/students/search?query=${encodeURIComponent(query)}`;
+  const payload = await api(endpoint);
+  renderAdminProfileRectificationRecord(payload, role);
+  const resolvedIdentity = role === 'faculty'
+    ? String(payload?.faculty_identifier || payload?.email || query)
+    : String(payload?.registration_number || payload?.email || query);
+  setAdminProfileRectificationStatus(`Profile loaded for ${resolvedIdentity}.`, false, 'success');
+}
+
+function buildAdminProfileRectificationPayload() {
+  const role = getAdminProfileRectificationRole();
+  const record = state.admin.profileRectification.record;
+  if (!record) {
+    throw new Error('Search and select a profile before rectifying it.');
+  }
+
+  const payload = {};
+  const note = String(els.adminProfileRectificationNote?.value || '').trim().replace(/\s+/g, ' ');
+  const nextName = normalizeProfileName(els.adminProfileRectificationName?.value || '');
+  const nextIdentifier = normalizeAdminProfileRectificationQuery(els.adminProfileRectificationIdValue?.value || '', role);
+  const nextSection = normalizedRegistrationInput(els.adminProfileRectificationSection?.value || '');
+  const nextDepartment = String(els.adminProfileRectificationDepartment?.value || '').trim().replace(/\s+/g, ' ').toUpperCase();
+  const nextPhoto = String(state.admin.profileRectification.pendingPhotoDataUrl || '').trim();
+
+  if (nextName && nextName !== normalizeProfileName(record.name || '')) {
+    payload.name = nextName;
+  }
+  if (role === 'faculty') {
+    if (nextIdentifier && nextIdentifier !== String(record.faculty_identifier || '').trim().toUpperCase()) {
+      payload.faculty_identifier = nextIdentifier;
+    }
+  } else if (nextIdentifier && nextIdentifier !== String(record.registration_number || '').trim().toUpperCase()) {
+    payload.registration_number = nextIdentifier;
+  }
+  if (nextSection && nextSection !== String(record.section || '').trim().toUpperCase()) {
+    payload.section = nextSection;
+  }
+  if (nextDepartment && nextDepartment !== String(record.department || '').trim().toUpperCase()) {
+    payload.department = nextDepartment;
+  }
+  if (role === 'student') {
+    const semesterRaw = String(els.adminProfileRectificationSemester?.value || '').trim();
+    const nextSemester = semesterRaw ? Number(semesterRaw) : null;
+    if (Number.isFinite(nextSemester) && nextSemester > 0 && nextSemester !== Number(record.semester || 0)) {
+      payload.semester = nextSemester;
+    }
+    const nextParentEmail = String(els.adminProfileRectificationParentEmail?.value || '').trim().toLowerCase();
+    const currentParentEmail = String(record.parent_email || '').trim().toLowerCase();
+    if (nextParentEmail !== currentParentEmail) {
+      payload.parent_email = nextParentEmail || null;
+    }
+  }
+  if (nextPhoto) {
+    payload.photo_data_url = nextPhoto;
+  }
+  if (!Object.keys(payload).length) {
+    throw new Error('No profile changes to apply.');
+  }
+  if (note) {
+    payload.note = note;
+  }
+  return { role, record, payload };
+}
+
+async function refreshAdminProfileRectificationDependents(role, updatedRecord) {
+  if (authState.user?.role !== 'admin' || !updatedRecord) {
+    return;
+  }
+  const refreshTasks = [refreshAttendanceData()];
+  if (state.ui.activeModule === 'attendance') {
+    refreshTasks.push(refreshAdminLive({
+      workDate: els.workDate?.value || todayISO(),
+      mode: 'enrollment',
+    }));
+  }
+  if (role === 'student') {
+    const studentId = Number(updatedRecord.student_id || 0);
+    const registrationNumber = normalizedRegistrationInput(updatedRecord.registration_number || '');
+    if (
+      studentId > 0
+      && state.rms.selectedStudent
+      && Number(state.rms.selectedStudent.student_id || 0) === studentId
+      && registrationNumber
+    ) {
+      if (els.rmsSearchRegistration) {
+        els.rmsSearchRegistration.value = registrationNumber;
+      }
+      refreshTasks.push(searchRmsStudentByRegistration({ silent: true }));
+    }
+    if (
+      studentId > 0
+      && state.rms.attendanceContext
+      && Number(state.rms.attendanceContext?.student?.student_id || 0) === studentId
+      && registrationNumber
+    ) {
+      if (els.rmsAttendanceRegistration) {
+        els.rmsAttendanceRegistration.value = registrationNumber;
+      }
+      refreshTasks.push(searchRmsAttendanceStudentContext({ silent: true }));
+    }
+  }
+  await Promise.allSettled(refreshTasks);
+}
+
+async function saveAdminProfileRectification() {
+  if (authState.user?.role !== 'admin') {
+    throw new Error('Only admin can rectify profile records.');
+  }
+  const { role, record, payload } = buildAdminProfileRectificationPayload();
+  const entityId = Number(role === 'faculty' ? record.faculty_id : record.student_id || 0);
+  if (!entityId) {
+    throw new Error('Selected profile record is invalid.');
+  }
+  setAdminProfileRectificationStatus('Applying rectification and updating the live profile...', false, 'loading');
+  const endpoint = role === 'faculty'
+    ? `/admin/profile-rectification/faculty/${entityId}`
+    : `/admin/profile-rectification/students/${entityId}`;
+  const result = await api(endpoint, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+    timeoutMs: 60000,
+  });
+  const updatedRecord = role === 'faculty' ? result?.faculty : result?.student;
+  const changedFields = Array.isArray(result?.changed_fields) ? result.changed_fields : [];
+  if (updatedRecord) {
+    renderAdminProfileRectificationRecord(updatedRecord, role);
+  }
+  await refreshAdminProfileRectificationDependents(role, updatedRecord);
+  const message = String(result?.notice_message || result?.message || 'Profile rectification saved.');
+  setAdminProfileRectificationStatus(message, false, 'success');
+  if (updatedRecord && changedFields.length) {
+    showAdminProfileRectificationSuccessPopup(role, updatedRecord, changedFields);
+  }
+  const nextQuery = role === 'faculty'
+    ? String(updatedRecord?.faculty_identifier || updatedRecord?.email || '')
+    : String(updatedRecord?.registration_number || updatedRecord?.email || '');
+  if (els.adminProfileRectificationQuery && nextQuery) {
+    els.adminProfileRectificationQuery.value = nextQuery;
+  }
 }
 
 function identityCaseStatusBadgeClass(statusValue) {
@@ -15390,6 +15980,72 @@ async function fileToDataUrl(file) {
   });
 }
 
+async function loadProfileNotices() {
+  const role = authState.user?.role;
+  if (role !== 'student' && role !== 'faculty') {
+    if (role === 'student') {
+      state.student.profileNotices = [];
+    }
+    if (role === 'faculty') {
+      state.facultyProfile.profileNotices = [];
+    }
+    renderProfileNotices();
+    return;
+  }
+  try {
+    const rows = await api('/attendance/profile/notices?limit=5');
+    if (role === 'student') {
+      state.student.profileNotices = Array.isArray(rows) ? rows : [];
+    } else if (role === 'faculty') {
+      state.facultyProfile.profileNotices = Array.isArray(rows) ? rows : [];
+    }
+  } catch (_error) {
+    if (role === 'student') {
+      state.student.profileNotices = [];
+    } else if (role === 'faculty') {
+      state.facultyProfile.profileNotices = [];
+    }
+  }
+  renderProfileNotices();
+}
+
+function renderProfileNotices() {
+  if (!els.profileNotices) {
+    return;
+  }
+  const role = authState.user?.role;
+  const notices = role === 'faculty'
+    ? (Array.isArray(state.facultyProfile.profileNotices) ? state.facultyProfile.profileNotices : [])
+    : (Array.isArray(state.student.profileNotices) ? state.student.profileNotices : []);
+
+  if (role !== 'student' && role !== 'faculty') {
+    els.profileNotices.classList.add('hidden');
+    els.profileNotices.innerHTML = '';
+    return;
+  }
+  if (!notices.length) {
+    els.profileNotices.classList.add('hidden');
+    els.profileNotices.innerHTML = '';
+    return;
+  }
+
+  els.profileNotices.classList.remove('hidden');
+  els.profileNotices.innerHTML = notices.slice(0, 3).map((notice) => {
+    const createdAt = notice?.created_at ? new Date(notice.created_at).toLocaleString() : '--';
+    const actorLabel = String(notice?.actor_label || 'Admin').trim();
+    const changedFields = Array.isArray(notice?.changed_fields) ? notice.changed_fields : [];
+    const footer = changedFields.length
+      ? `${actorLabel} | ${changedFields.join(', ')} | ${createdAt}`
+      : `${actorLabel} | ${createdAt}`;
+    return `
+      <article class="profile-notice-card">
+        <p>${escapeHtml(String(notice?.message || 'Your profile was updated by admin.'))}</p>
+        <small>${escapeHtml(footer)}</small>
+      </article>
+    `;
+  }).join('');
+}
+
 async function loadCoursesMap() {
   const courses = await api('/core/courses');
   state.coursesById = {};
@@ -15432,6 +16088,7 @@ async function loadStudentProfilePhoto() {
 
   renderStudentProfilePreview(state.student.profilePhotoDataUrl);
   renderProfileStatusByRole();
+  await loadProfileNotices();
   renderEnrollmentSummary();
   renderProfileSecurity();
   maybePromptProfileSetup();
@@ -15486,6 +16143,7 @@ async function loadFacultyProfile() {
 
   renderFacultyProfilePreview(state.facultyProfile.profilePhotoDataUrl);
   renderProfileStatusByRole();
+  await loadProfileNotices();
   renderProfileSecurity();
   maybePromptFacultyProfileSetup();
 }
@@ -19529,6 +20187,7 @@ async function refreshAll() {
 
 function bindEvents() {
   bindAdminSubmodulePickers();
+  syncAdminProfileRectificationRoleUi({ clearSelection: false });
 
   document.getElementById('refresh-btn').addEventListener('click', async () => {
     try {
@@ -19588,6 +20247,15 @@ function bindEvents() {
       log(error.message);
     }
   });
+
+  if (els.authMfaCode) {
+    els.authMfaCode.addEventListener('input', () => {
+      els.authMfaCode.value = String(els.authMfaCode.value || '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9-\s]/g, '')
+        .slice(0, 20);
+    });
+  }
 
   document.getElementById('register-btn').addEventListener('click', async () => {
     try {
@@ -19898,6 +20566,11 @@ function bindEvents() {
   for (const button of navButtons) {
     button.addEventListener('click', () => {
       navigateSidebar(button.dataset.nav || 'dashboard');
+    });
+  }
+  if (els.navMessagesBtn) {
+    els.navMessagesBtn.addEventListener('click', async () => {
+      await openFacultyMessagesPopup();
     });
   }
 
@@ -21666,6 +22339,105 @@ function bindEvents() {
     });
   }
 
+  if (els.adminProfileRectificationRole) {
+    els.adminProfileRectificationRole.addEventListener('change', () => {
+      syncAdminProfileRectificationRoleUi({ clearSelection: true });
+    });
+  }
+
+  if (els.adminProfileRectificationQuery) {
+    els.adminProfileRectificationQuery.addEventListener('blur', () => {
+      els.adminProfileRectificationQuery.value = normalizeAdminProfileRectificationQuery(
+        els.adminProfileRectificationQuery.value || '',
+        getAdminProfileRectificationRole(),
+      );
+    });
+    els.adminProfileRectificationQuery.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await searchAdminProfileForRectification();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to search profile.');
+        setAdminProfileRectificationStatus(message, true, 'error');
+        log(message);
+      }
+    });
+  }
+
+  if (els.adminProfileRectificationName) {
+    els.adminProfileRectificationName.addEventListener('blur', () => {
+      els.adminProfileRectificationName.value = normalizeProfileName(els.adminProfileRectificationName.value || '');
+    });
+  }
+
+  if (els.adminProfileRectificationIdValue) {
+    els.adminProfileRectificationIdValue.addEventListener('blur', () => {
+      els.adminProfileRectificationIdValue.value = normalizeAdminProfileRectificationQuery(
+        els.adminProfileRectificationIdValue.value || '',
+        getAdminProfileRectificationRole(),
+      );
+    });
+  }
+
+  if (els.adminProfileRectificationSection) {
+    els.adminProfileRectificationSection.addEventListener('blur', () => {
+      els.adminProfileRectificationSection.value = normalizedRegistrationInput(
+        els.adminProfileRectificationSection.value || '',
+      );
+    });
+  }
+
+  if (els.adminProfileRectificationDepartment) {
+    els.adminProfileRectificationDepartment.addEventListener('blur', () => {
+      els.adminProfileRectificationDepartment.value = String(els.adminProfileRectificationDepartment.value || '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+    });
+  }
+
+  if (els.adminProfileRectificationParentEmail) {
+    els.adminProfileRectificationParentEmail.addEventListener('blur', () => {
+      els.adminProfileRectificationParentEmail.value = String(els.adminProfileRectificationParentEmail.value || '')
+        .trim()
+        .toLowerCase();
+    });
+  }
+
+  if (els.adminProfileRectificationNote) {
+    els.adminProfileRectificationNote.addEventListener('blur', () => {
+      els.adminProfileRectificationNote.value = String(els.adminProfileRectificationNote.value || '')
+        .trim()
+        .replace(/\s+/g, ' ');
+    });
+  }
+
+  if (els.adminProfileRectificationPhotoInput) {
+    els.adminProfileRectificationPhotoInput.addEventListener('change', async () => {
+      const file = els.adminProfileRectificationPhotoInput.files?.[0];
+      if (!file) {
+        state.admin.profileRectification.pendingPhotoDataUrl = '';
+        renderAdminProfileRectificationPhotoPreview(String(state.admin.profileRectification.record?.profile_photo_url || ''));
+        return;
+      }
+      try {
+        const dataUrl = await fileToDataUrl(file);
+        state.admin.profileRectification.pendingPhotoDataUrl = dataUrl;
+        renderAdminProfileRectificationPhotoPreview(dataUrl);
+        setAdminProfileRectificationStatus('New profile photo selected. Save to apply the rectification.', false, 'neutral');
+      } catch (error) {
+        state.admin.profileRectification.pendingPhotoDataUrl = '';
+        renderAdminProfileRectificationPhotoPreview(String(state.admin.profileRectification.record?.profile_photo_url || ''));
+        const message = String(error?.message || 'Failed to read selected image.');
+        setAdminProfileRectificationStatus(message, true, 'error');
+        log(message);
+      }
+    });
+  }
+
   if (els.adminRecoveryIncludeResolved) {
     els.adminRecoveryIncludeResolved.addEventListener('change', async () => {
       try {
@@ -21763,6 +22535,18 @@ function bindEvents() {
     });
   }
 
+  if (els.adminProfileRectificationSearchBtn) {
+    els.adminProfileRectificationSearchBtn.addEventListener('click', async () => {
+      try {
+        await searchAdminProfileForRectification();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to search profile.');
+        setAdminProfileRectificationStatus(message, true, 'error');
+        log(message);
+      }
+    });
+  }
+
   if (els.adminGlobalSearchBtn) {
     els.adminGlobalSearchBtn.addEventListener('click', async () => {
       try {
@@ -21783,6 +22567,24 @@ function bindEvents() {
         const message = String(error?.message || 'Failed to save student grade.');
         setAdminGradeStatus(message, true);
         log(message);
+      }
+    });
+  }
+
+  if (els.adminProfileRectificationSaveBtn) {
+    els.adminProfileRectificationSaveBtn.addEventListener('click', async () => {
+      const originalText = els.adminProfileRectificationSaveBtn.textContent || 'Apply Rectification';
+      els.adminProfileRectificationSaveBtn.disabled = true;
+      els.adminProfileRectificationSaveBtn.textContent = 'Saving...';
+      try {
+        await saveAdminProfileRectification();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to save profile rectification.');
+        setAdminProfileRectificationStatus(message, true, 'error');
+        log(message);
+      } finally {
+        els.adminProfileRectificationSaveBtn.disabled = false;
+        els.adminProfileRectificationSaveBtn.textContent = originalText;
       }
     });
   }

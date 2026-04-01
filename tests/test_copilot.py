@@ -8,8 +8,28 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
 from app.auth_utils import CurrentUser
-from app.copilot_ai import _copilot_gemini_api_keys, _copilot_openrouter_api_keys, generate_structured_copilot_answer
+from app.copilot_ai import (
+    _copilot_gemini_api_keys,
+    _copilot_openrouter_api_keys,
+    _try_gemini_json,
+    _try_openrouter_json,
+    generate_structured_copilot_answer,
+)
 from app.routers.copilot import _looks_like_sensitive_data_request, copilot_query, list_copilot_audit
+
+
+class _FakeHTTPResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class CampusCopilotTests(unittest.TestCase):
@@ -1008,6 +1028,130 @@ class CampusCopilotKeyPoolTests(unittest.TestCase):
             ["Open the attendance card and retry the action."],
         )
         _try_gemini_json.assert_called_once()
+
+    @patch("app.copilot_ai._copilot_llm_enabled", return_value=True)
+    @patch("app.copilot_ai._copilot_llm_provider", return_value="gemini")
+    @patch(
+        "app.copilot_ai._try_gemini_json",
+        return_value={
+            "title": "Attendance Fix",
+            "explanation": "1. Profile photo is missing.\n2. Enrollment video is missing.",
+            "next_steps": "Open Attendance and complete the pending profile checks.",
+        },
+    )
+    def test_structured_answer_coerces_string_fields_into_lists(
+        self,
+        _try_gemini_json,
+        _provider,
+        _enabled,
+    ):
+        result = generate_structured_copilot_answer(
+            query_text="Why is attendance blocked?",
+            role="student",
+            module_labels=["Attendance"],
+            denied_labels=[],
+            explanation=["Attendance profile checks failed."],
+            evidence=[],
+            next_steps=["Upload profile photo."],
+            entities={"attendance": {"blocked": True}},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(
+            result["explanation"],
+            ["Profile photo is missing.", "Enrollment video is missing."],
+        )
+        self.assertEqual(
+            result["next_steps"],
+            ["Open Attendance and complete the pending profile checks."],
+        )
+
+    @patch("app.copilot_ai._copilot_gemini_api_keys", return_value=["g-key"])
+    @patch("app.copilot_ai.urllib_request.urlopen")
+    def test_try_gemini_json_requests_provider_enforced_json_mode(self, urlopen_mock, _api_keys):
+        captured = {}
+
+        def _fake_urlopen(request, timeout):
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return _FakeHTTPResponse(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": json.dumps(
+                                            {
+                                                "title": "Attendance Fix",
+                                                "explanation": ["Profile photo missing."],
+                                                "next_steps": ["Upload the missing proof."],
+                                            }
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        urlopen_mock.side_effect = _fake_urlopen
+
+        result = _try_gemini_json(
+            system_prompt="system",
+            user_prompt="user",
+            deadline=10**9,
+        )
+
+        self.assertEqual(result["title"], "Attendance Fix")
+        generation_config = captured["body"]["generationConfig"]
+        self.assertEqual(generation_config["response_mime_type"], "application/json")
+        self.assertEqual(generation_config["response_schema"]["type"], "OBJECT")
+        self.assertIn("title", generation_config["response_schema"]["required"])
+        self.assertGreaterEqual(captured["timeout"], 1.0)
+
+    @patch("app.copilot_ai._copilot_openrouter_api_keys", return_value=["or-key"])
+    @patch("app.copilot_ai.urllib_request.urlopen")
+    def test_try_openrouter_json_requests_json_schema_and_healing_plugin(self, urlopen_mock, _api_keys):
+        captured = {}
+
+        def _fake_urlopen(request, timeout):
+            captured["timeout"] = timeout
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return _FakeHTTPResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "title": "Attendance Fix",
+                                        "explanation": ["Profile photo missing."],
+                                        "next_steps": ["Upload the missing proof."],
+                                    }
+                                )
+                            }
+                        }
+                    ]
+                }
+            )
+
+        urlopen_mock.side_effect = _fake_urlopen
+
+        result = _try_openrouter_json(
+            system_prompt="system",
+            user_prompt="user",
+            deadline=10**9,
+        )
+
+        self.assertEqual(result["title"], "Attendance Fix")
+        response_format = captured["body"]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        self.assertEqual(response_format["json_schema"]["name"], "campus_copilot_response")
+        self.assertTrue(response_format["json_schema"]["strict"])
+        self.assertEqual(captured["body"]["plugins"], [{"id": "response-healing"}])
+        self.assertGreaterEqual(captured["timeout"], 1.0)
 
 
 if __name__ == "__main__":

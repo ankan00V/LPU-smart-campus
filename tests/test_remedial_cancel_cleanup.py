@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta, time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -184,6 +184,36 @@ class RemedialCancelCleanupTests(unittest.TestCase):
             .filter(models.RemedialMessage.makeup_class_id == 51)
             .count(),
             0,
+        )
+
+    def test_cancel_event_keeps_targeted_students_in_scope_after_message_cleanup(self):
+        mongo_collection = Mock()
+
+        with patch("app.routers.remedial._sync_makeup_class_to_mongo", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
+            return_value=False,
+        ) as mirror_event_patch, patch(
+            "app.routers.remedial.get_mongo_db",
+            return_value={"remedial_messages": mongo_collection},
+        ):
+            cancel_makeup_class(class_id=51, db=self.db, current_user=self._faculty_user())
+
+        scopes = mirror_event_patch.call_args.kwargs["scopes"]
+        self.assertEqual(
+            scopes,
+            {
+                "role:admin",
+                "faculty:21",
+                "student:31",
+            },
+        )
+        mongo_collection.delete_many.assert_called_once_with(
+            {
+                "$or": [
+                    {"class_id": 51},
+                    {"makeup_class_id": 51},
+                ]
+            }
         )
 
 

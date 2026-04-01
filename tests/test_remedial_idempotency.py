@@ -429,6 +429,90 @@ class RemedialIdempotencyTests(unittest.TestCase):
             1,
         )
 
+    def test_mark_attendance_survives_recovery_followup_failure(self):
+        self.db.query(models.RemedialAttendance).delete()
+        now_dt = datetime.now().replace(second=0, microsecond=0)
+        self.db.add(
+            models.AttendanceRecoveryPlan(
+                id=601,
+                student_id=10,
+                course_id=1,
+                faculty_id=1,
+                risk_level=models.AttendanceRecoveryRiskLevel.WATCH,
+                status=models.AttendanceRecoveryPlanStatus.ACTIVE,
+                attendance_percent=62.5,
+                present_count=5,
+                absent_count=3,
+                delivered_count=8,
+                consecutive_absences=2,
+                missed_remedials=1,
+                recommended_makeup_class_id=11,
+                parent_alert_allowed=False,
+                recovery_due_at=now_dt + timedelta(days=1),
+                summary="Student should attend the next remedial session.",
+                last_absent_on=now_dt.date(),
+                last_evaluated_at=now_dt,
+                created_at=now_dt,
+                updated_at=now_dt,
+            )
+        )
+        self.db.flush()
+        self.db.add(
+            models.AttendanceRecoveryAction(
+                id=701,
+                plan_id=601,
+                action_type=models.AttendanceRecoveryActionType.REMEDIAL_SLOT,
+                status=models.AttendanceRecoveryActionStatus.PENDING,
+                title="Attend suggested remedial",
+                description="Attend the scheduled remedial to recover attendance.",
+                recipient_role="student",
+                recipient_email="student.one@example.com",
+                target_makeup_class_id=11,
+                scheduled_for=now_dt + timedelta(hours=1),
+                metadata_json="{}",
+                created_at=now_dt,
+                updated_at=now_dt,
+            )
+        )
+        self.db.commit()
+
+        payload = schemas.RemedialAttendanceMark(
+            remedial_code="LIVE500A",
+            student_id=10,
+            selfie_photo_data_url="data:image/jpeg;base64,SELFIEA",
+            selfie_frames_data_urls=[
+                "data:image/jpeg;base64,SELFIEA",
+                "data:image/jpeg;base64,SELFIEB",
+                "data:image/jpeg;base64,SELFIEC",
+                "data:image/jpeg;base64,SELFIED",
+                "data:image/jpeg;base64,SELFIEE",
+                "data:image/jpeg;base64,SELFIEF",
+            ],
+        )
+
+        with patch("app.routers.remedial._verify_remedial_face_payload", return_value=("frame", 0.99, "opencv", "verified")), patch(
+            "app.routers.remedial.evaluate_attendance_recovery",
+            side_effect=RuntimeError("recovery refresh failed"),
+        ), patch("app.routers.remedial.mirror_document", return_value=None), patch(
+            "app.routers.remedial.mirror_event",
+            return_value=None,
+        ):
+            out = mark_remedial_attendance(payload=payload, db=self.db, current_user=self._student_user())
+
+        self.assertEqual(out["message"], "Remedial attendance marked")
+        self.assertEqual(
+            self.db.query(models.RemedialAttendance)
+            .filter(
+                models.RemedialAttendance.makeup_class_id == 11,
+                models.RemedialAttendance.student_id == 10,
+            )
+            .count(),
+            1,
+        )
+        action_row = self.db.get(models.AttendanceRecoveryAction, 701)
+        self.assertEqual(action_row.status, models.AttendanceRecoveryActionStatus.PENDING)
+        self.assertIsNone(action_row.completed_at)
+
 
 if __name__ == "__main__":
     unittest.main()

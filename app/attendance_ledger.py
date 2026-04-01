@@ -4,6 +4,7 @@ import secrets
 from datetime import date, datetime, timezone
 
 from sqlalchemy import and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models
@@ -118,7 +119,7 @@ def recompute_attendance_record(
     now_dt = _utcnow_naive()
 
     if existing is None:
-        existing = models.AttendanceRecord(
+        created = models.AttendanceRecord(
             student_id=int(student_id),
             course_id=int(course_id),
             marked_by_faculty_id=marked_by_faculty_id,
@@ -129,9 +130,26 @@ def recompute_attendance_record(
             updated_at=now_dt,
             computed_from_event_id=int(latest_event.id),
         )
-        db.add(existing)
-        db.flush()
-        return existing
+        savepoint = db.begin_nested()
+        db.add(created)
+        try:
+            db.flush()
+        except IntegrityError:
+            savepoint.rollback()
+            existing = (
+                db.query(models.AttendanceRecord)
+                .filter(
+                    models.AttendanceRecord.student_id == int(student_id),
+                    models.AttendanceRecord.course_id == int(course_id),
+                    models.AttendanceRecord.attendance_date == attendance_date,
+                )
+                .first()
+            )
+            if existing is None:
+                raise
+        else:
+            savepoint.commit()
+            return created
 
     existing.status = latest_event.status
     existing.source = str(latest_event.source or existing.source or "attendance-ledger")

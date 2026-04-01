@@ -51,6 +51,19 @@ def _serialize_message(row: models.SaarthiMessage) -> schemas.SaarthiMessageOut:
     )
 
 
+def _require_linked_student(
+    db: Session,
+    *,
+    current_user: models.AuthUser,
+) -> models.Student:
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+    student = db.get(models.Student, int(current_user.student_id))
+    if student is None:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+    return student
+
+
 def _status_message(
     *,
     today: date,
@@ -150,23 +163,30 @@ def get_saarthi_status(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    if not current_user.student_id:
-        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+    student = _require_linked_student(db, current_user=current_user)
 
     now_dt = _saarthi_now()
-    materialize_saarthi_attendance(
-        db,
-        student_id=int(current_user.student_id),
-        academic_start=_academic_start_date(),
-        today=now_dt.date(),
-    )
-    db.commit()
-    return _build_status_out(
-        db,
-        student_id=int(current_user.student_id),
-        current_dt=now_dt,
-        current_session=None,
-    )
+    try:
+        materialize_saarthi_attendance(
+            db,
+            student_id=int(student.id),
+            academic_start=_academic_start_date(),
+            today=now_dt.date(),
+        )
+        response = _build_status_out(
+            db,
+            student_id=int(student.id),
+            current_dt=now_dt,
+            current_session=None,
+        )
+        db.commit()
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Saarthi status could not be loaded.") from exc
 
 
 @router.post("/chat", response_model=schemas.SaarthiChatResponse)
@@ -175,12 +195,7 @@ def send_saarthi_message(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    if not current_user.student_id:
-        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
-
-    student = db.get(models.Student, int(current_user.student_id))
-    if student is None:
-        raise HTTPException(status_code=404, detail="Student profile not found")
+    student = _require_linked_student(db, current_user=current_user)
 
     now_dt = _saarthi_now()
     try:
@@ -197,19 +212,29 @@ def send_saarthi_message(
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    db.commit()
-    session = out["session"] if isinstance(out, dict) else None
-    return schemas.SaarthiChatResponse(
-        reply=str(out.get("reply") or ""),
-        attendance_awarded_now=bool(out.get("attendance_awarded_now")),
-        session=_build_status_out(
-            db,
-            student_id=int(current_user.student_id),
-            current_dt=now_dt,
-            current_session=session if isinstance(session, models.SaarthiSession) else None,
-        ),
-    )
+    except HTTPException:
+        db.rollback()
+        raise
+    try:
+        session = out["session"] if isinstance(out, dict) else None
+        response = schemas.SaarthiChatResponse(
+            reply=str(out.get("reply") or ""),
+            attendance_awarded_now=bool(out.get("attendance_awarded_now")),
+            session=_build_status_out(
+                db,
+                student_id=int(student.id),
+                current_dt=now_dt,
+                current_session=session if isinstance(session, models.SaarthiSession) else None,
+            ),
+        )
+        db.commit()
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Saarthi message could not be processed.") from exc
 
 
 @router.post("/new-chat", response_model=schemas.SaarthiStatusOut)
@@ -217,33 +242,39 @@ def reset_saarthi_chat(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    if not current_user.student_id:
-        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+    student = _require_linked_student(db, current_user=current_user)
 
     now_dt = _saarthi_now()
-    materialize_saarthi_attendance(
-        db,
-        student_id=int(current_user.student_id),
-        academic_start=_academic_start_date(),
-        today=now_dt.date(),
-    )
-    _, session = get_or_create_saarthi_session(
-        db,
-        student_id=int(current_user.student_id),
-        current_dt=now_dt,
-    )
-    (
-        db.query(models.SaarthiMessage)
-        .filter(models.SaarthiMessage.session_id == int(session.id))
-        .delete(synchronize_session=False)
-    )
-    session.last_message_at = None
-    session.updated_at = now_dt
-    db.commit()
-
-    return _build_status_out(
-        db,
-        student_id=int(current_user.student_id),
-        current_dt=now_dt,
-        current_session=session,
-    )
+    try:
+        materialize_saarthi_attendance(
+            db,
+            student_id=int(student.id),
+            academic_start=_academic_start_date(),
+            today=now_dt.date(),
+        )
+        _, session = get_or_create_saarthi_session(
+            db,
+            student_id=int(student.id),
+            current_dt=now_dt,
+        )
+        (
+            db.query(models.SaarthiMessage)
+            .filter(models.SaarthiMessage.session_id == int(session.id))
+            .delete(synchronize_session=False)
+        )
+        session.last_message_at = None
+        session.updated_at = now_dt
+        response = _build_status_out(
+            db,
+            student_id=int(student.id),
+            current_dt=now_dt,
+            current_session=session,
+        )
+        db.commit()
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Saarthi chat could not be reset.") from exc

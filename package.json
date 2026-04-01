@@ -6,7 +6,7 @@
     "ux:serve": "python3 scripts/serve_static.py",
     "ux:playwright": "playwright test",
     "ux:lighthouse": "lhci autorun --config=.lighthouserc.json",
-    "ux:gates": "start-server-and-test \"npm run ux:serve\" http://127.0.0.1:8001/web/ \"npm run ux:playwright && npm run ux:lighthouse\""
+    "ux:gates": "node scripts/run_ux_gates.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.2",

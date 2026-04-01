@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timedelta
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -120,6 +121,20 @@ class RemedialMessagesVisibilityTests(unittest.TestCase):
 
     def test_completed_classes_are_hidden_from_student_remedial_messages(self):
         rows = get_student_remedial_messages(limit=50, db=self.db, current_user=self._student_user())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].class_id, 101)
+        self.assertEqual(rows[0].remedial_code, "NEW101BB")
+
+    def test_sql_feed_fallback_is_used_when_mongo_returns_empty(self):
+        with patch("app.routers.remedial.get_mongo_db", return_value=object()), patch(
+            "app.routers.remedial._get_student_remedial_messages_from_mongo",
+            return_value=[],
+        ), patch("app.routers.remedial._mongo_read_preferred", return_value=True), patch(
+            "app.routers.remedial._mongo_read_required",
+            return_value=True,
+        ):
+            rows = get_student_remedial_messages(limit=50, db=self.db, current_user=self._student_user())
+
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].class_id, 101)
         self.assertEqual(rows[0].remedial_code, "NEW101BB")

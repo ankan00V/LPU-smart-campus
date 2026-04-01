@@ -131,7 +131,7 @@ def _upsert_static_asset(asset_key: str, *, payload: bytes, digest: str, source:
     config = STATIC_ASSETS[asset_key]
     try:
         current = _run_mongo_asset_operation(
-            lambda mongo_db: mongo_db[ASSET_COLLECTION].find_one({"key": asset_key}, {"sha256": 1})
+            lambda mongo_db: mongo_db[ASSET_COLLECTION].find_one({"key": asset_key})
         )
     except (PyMongoError, RuntimeError) as exc:
         LOGGER.warning("static_asset_seed_lookup_failed asset_key=%s err=%s", asset_key, exc)
@@ -143,10 +143,10 @@ def _upsert_static_asset(asset_key: str, *, payload: bytes, digest: str, source:
 
     try:
         _run_mongo_asset_operation(
-            lambda mongo_db: mongo_db[ASSET_COLLECTION].update_one(
-                {"key": asset_key},
-                {
-                    "$set": {
+            lambda mongo_db: (
+                mongo_db[ASSET_COLLECTION].replace_one(
+                    {"key": asset_key},
+                    {
                         "key": asset_key,
                         "filename": config["filename"],
                         "content_type": config["content_type"],
@@ -154,10 +154,24 @@ def _upsert_static_asset(asset_key: str, *, payload: bytes, digest: str, source:
                         "sha256": digest,
                         "data": payload,
                         "updated_at": datetime.now(timezone.utc),
+                        "created_at": (current or {}).get("created_at") or datetime.now(timezone.utc),
+                        "source": source,
+                    },
+                )
+                if current
+                else mongo_db[ASSET_COLLECTION].insert_one(
+                    {
+                        "key": asset_key,
+                        "filename": config["filename"],
+                        "content_type": config["content_type"],
+                        "size": len(payload),
+                        "sha256": digest,
+                        "data": payload,
+                        "updated_at": datetime.now(timezone.utc),
+                        "created_at": datetime.now(timezone.utc),
                         "source": source,
                     }
-                },
-                upsert=True,
+                )
             )
         )
     except (PyMongoError, RuntimeError) as exc:

@@ -79,6 +79,10 @@ PROFILE_MEDIA_RETENTION_DAYS = max(30, int(os.getenv("PROFILE_MEDIA_RETENTION_DA
 ATTENDANCE_MEDIA_RETENTION_DAYS = max(7, int(os.getenv("ATTENDANCE_MEDIA_RETENTION_DAYS", "120")))
 ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
+PROFILE_NOTICE_ACTIONS = {
+    "admin_student_profile_rectification",
+    "admin_faculty_profile_rectification",
+}
 
 
 def _academic_start_date() -> date:
@@ -569,6 +573,29 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
     )
 
 
+def _current_profile_notice_subject(current_user: models.AuthUser) -> tuple[str, int] | None:
+    if current_user.role == models.UserRole.STUDENT and current_user.student_id:
+        return "student", int(current_user.student_id)
+    if current_user.role == models.UserRole.FACULTY and current_user.faculty_id:
+        return "faculty", int(current_user.faculty_id)
+    return None
+
+
+def _profile_notice_out(doc: dict[str, object]) -> schemas.ProfileNoticeOut:
+    message = str(doc.get("notice_message") or doc.get("message") or "").strip()
+    created_at = doc.get("created_at") or datetime.utcnow()
+    actor_label = str(doc.get("actor_label") or "").strip() or None
+    changed_fields = doc.get("changed_fields")
+    if not isinstance(changed_fields, list):
+        changed_fields = []
+    return schemas.ProfileNoticeOut(
+        message=message,
+        created_at=created_at,
+        actor_label=actor_label,
+        changed_fields=[str(item) for item in changed_fields if str(item or "").strip()],
+    )
+
+
 def _student_photo_out(student: models.Student) -> schemas.StudentProfilePhotoOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
     has_photo = bool(student.profile_photo_object_key or student.profile_photo_data_url)
@@ -948,7 +975,16 @@ def _upsert_mongo_by_id(collection: str, doc_id: int, payload: dict) -> None:
         )
         return
     try:
-        mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
+        if mongo_db.__class__.__module__.startswith("mongita"):
+            existing = mongo_db[collection].find_one({"id": doc_id})
+            if existing:
+                replacement = dict(existing)
+                replacement.update(body)
+                mongo_db[collection].replace_one({"id": doc_id}, replacement)
+            else:
+                mongo_db[collection].insert_one(body)
+        else:
+            mongo_db[collection].update_one({"id": doc_id}, {"$set": body}, upsert=True)
     except DuplicateKeyError as exc:
         details = getattr(exc, "details", {}) or {}
         key_value = details.get("keyValue")
@@ -2561,6 +2597,37 @@ def get_student_profile(
         raise HTTPException(status_code=404, detail="Student not found")
 
     return _student_profile_out(student)
+
+
+@router.get("/profile/notices", response_model=list[schemas.ProfileNoticeOut])
+def list_profile_notices(
+    limit: int = Query(default=5, ge=1, le=20),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT, models.UserRole.FACULTY)),
+):
+    subject = _current_profile_notice_subject(current_user)
+    if subject is None:
+        return []
+    subject_role, subject_id = subject
+    try:
+        mongo_db = get_mongo_db(required=False)
+        if mongo_db is None:
+            return []
+        docs = (
+            mongo_db["admin_audit_logs"]
+            .find(
+                {
+                    "action": {"$in": sorted(PROFILE_NOTICE_ACTIONS)},
+                    "subject_role": subject_role,
+                    "subject_id": int(subject_id),
+                    "notice_message": {"$exists": True},
+                }
+            )
+            .sort("created_at", -1)
+            .limit(int(limit))
+        )
+        return [_profile_notice_out(dict(doc)) for doc in docs]
+    except Exception:
+        return []
 
 
 @router.put("/student/profile", response_model=schemas.StudentProfileOut)
@@ -4385,6 +4452,27 @@ def get_faculty_schedules(
     return query.order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc()).all()
 
 
+def _can_use_schedule_record_fallback(
+    db: Session,
+    *,
+    schedule: models.ClassSchedule,
+    class_date: date,
+) -> bool:
+    active_schedule_ids = [
+        int(row[0])
+        for row in (
+            db.query(models.ClassSchedule.id)
+            .filter(
+                models.ClassSchedule.course_id == int(schedule.course_id),
+                models.ClassSchedule.weekday == int(class_date.weekday()),
+                models.ClassSchedule.is_active.is_(True),
+            )
+            .all()
+        )
+    ]
+    return active_schedule_ids == [int(schedule.id)]
+
+
 @router.get("/faculty/dashboard", response_model=schemas.FacultyAttendanceDashboardOut)
 def get_faculty_dashboard(
     schedule_id: int,
@@ -4431,7 +4519,11 @@ def get_faculty_dashboard(
         for item in submissions
         if item.status == models.AttendanceSubmissionStatus.PENDING_REVIEW
     }
-    if enrolled_student_ids:
+    if enrolled_student_ids and _can_use_schedule_record_fallback(
+        db,
+        schedule=schedule,
+        class_date=class_date,
+    ):
         record_present_rows = (
             db.query(models.AttendanceRecord.student_id)
             .filter(
@@ -4787,6 +4879,18 @@ def faculty_batch_review(
             "reviewed_at": datetime.utcnow(),
         },
     )
+    affected_student_ids = sorted(
+        {
+            int(item.student_id)
+            for item in pending_submissions
+            if int(getattr(item, "student_id", 0) or 0) > 0
+        }
+    )
+    event_scopes = {"role:admin"}
+    resolved_faculty_id = int(reviewer_faculty_id or 0)
+    if resolved_faculty_id > 0:
+        event_scopes.add(f"faculty:{resolved_faculty_id}")
+    event_scopes.update(f"student:{student_id}" for student_id in affected_student_ids)
     publish_domain_event(
         "attendance.reviewed",
         payload={
@@ -4794,15 +4898,12 @@ def faculty_batch_review(
             "class_date": payload.class_date.isoformat(),
             "action": payload.action.value,
             "updated_submission_ids": [int(item.id) for item in pending_submissions],
+            "affected_student_ids": affected_student_ids,
             "approved": int(approved),
             "rejected": int(rejected),
-            "faculty_id": int(reviewer_faculty_id or 0),
+            "faculty_id": resolved_faculty_id,
         },
-        scopes={
-            f"faculty:{int(reviewer_faculty_id or 0)}",
-            "role:admin",
-            "role:student",
-        },
+        scopes=event_scopes,
         topics={"attendance"},
         actor={
             "user_id": int(current_user.id),

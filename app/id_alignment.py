@@ -99,7 +99,7 @@ def align_auth_user_id_with_sql(db, sql_db: Session | None, user_doc: dict) -> i
     if current_id == target_id and target_id > 0:
         return target_id
 
-    conflict = db["auth_users"].find_one({"id": target_id}, {"email": 1})
+    conflict = db["auth_users"].find_one({"id": target_id})
     if conflict and _normalize_email(str(conflict.get("email", ""))) != email:
         raise HTTPException(
             status_code=409,

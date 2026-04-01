@@ -6,10 +6,12 @@ from datetime import date, datetime, timedelta
 import json
 import os
 import re
+from types import SimpleNamespace
 from typing import Any, Iterable
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -17,11 +19,23 @@ from ..attendance_recovery import evaluate_attendance_recovery, get_admin_recove
 from ..attendance_ledger import append_event_and_recompute
 from ..auth_utils import require_roles
 from ..database import get_db
-from ..media_storage import signed_url_for_object
-from ..mongo import mirror_document, mongo_status
+from ..media_storage import mark_media_deleted, signed_url_for_object, store_data_url_object
+from ..mongo import get_mongo_db, mirror_document, mongo_status
 from ..redis_client import cache_get_json, cache_set_json
 from ..realtime_bus import publish_domain_event
 from ..workers import enqueue_notification, enqueue_recompute
+from .attendance import (
+    PROFILE_MEDIA_RETENTION_DAYS,
+    _normalize_faculty_identifier,
+    _normalize_person_name,
+    _normalize_registration_number,
+    _normalize_section_token,
+    _photo_fingerprint,
+    _public_media_reference,
+    _rebuild_profile_face_template,
+    _sync_faculty_to_mongo,
+    _sync_student_to_mongo,
+)
 
 router = APIRouter(prefix="/admin", tags=["Administrative Realtime"])
 
@@ -225,8 +239,6 @@ ADMIN_REFERENCE_PROFILE: dict = {
         "peak_late_night_occupancy": 4200,
     },
 }
-
-
 def _time_overlap(a_start, a_end, b_start, b_end) -> bool:
     return (a_start < b_end) and (b_start < a_end)
 
@@ -415,6 +427,27 @@ def _resolve_student_schedule_attendance_status(
     return None
 
 
+def _resolve_student_schedule_submission_status(
+    db: Session,
+    *,
+    student_id: int,
+    schedule_id: int,
+    attendance_date: date,
+) -> models.AttendanceStatus | None:
+    submission = (
+        db.query(models.AttendanceSubmission.status)
+        .filter(
+            models.AttendanceSubmission.student_id == int(student_id),
+            models.AttendanceSubmission.schedule_id == int(schedule_id),
+            models.AttendanceSubmission.class_date == attendance_date,
+        )
+        .first()
+    )
+    if submission is None:
+        return None
+    return _submission_status_to_attendance_status(getattr(submission, "status", None))
+
+
 def _derive_attendance_status_from_submissions(
     rows: list[models.AttendanceSubmission] | list[tuple[models.AttendanceSubmissionStatus]] | list[Any],
 ) -> models.AttendanceStatus | None:
@@ -431,6 +464,58 @@ def _derive_attendance_status_from_submissions(
     if any(item == models.AttendanceStatus.ABSENT for item in resolved):
         return models.AttendanceStatus.ABSENT
     return None
+
+
+def _get_or_create_attendance_submission(
+    db: Session,
+    *,
+    schedule_id: int,
+    course_id: int,
+    faculty_id: int,
+    student_id: int,
+    class_date: date,
+    submitted_at: datetime,
+) -> models.AttendanceSubmission:
+    def _lookup() -> models.AttendanceSubmission | None:
+        return (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.student_id == int(student_id),
+                models.AttendanceSubmission.course_id == int(course_id),
+                models.AttendanceSubmission.class_date == class_date,
+                models.AttendanceSubmission.schedule_id == int(schedule_id),
+            )
+            .order_by(models.AttendanceSubmission.id.asc())
+            .first()
+        )
+
+    existing = _lookup()
+    if existing is not None:
+        return existing
+
+    savepoint = db.begin_nested()
+    row = models.AttendanceSubmission(
+        schedule_id=int(schedule_id),
+        course_id=int(course_id),
+        faculty_id=int(faculty_id),
+        student_id=int(student_id),
+        class_date=class_date,
+        selfie_photo_data_url=None,
+        status=models.AttendanceSubmissionStatus.PENDING_REVIEW,
+        submitted_at=submitted_at,
+    )
+    db.add(row)
+    try:
+        db.flush()
+    except IntegrityError:
+        savepoint.rollback()
+        existing = _lookup()
+        if existing is None:
+            raise
+        return existing
+
+    savepoint.commit()
+    return row
 
 
 def _attendance_status_label(status_value: models.AttendanceStatus | None) -> str:
@@ -462,6 +547,176 @@ def _admin_faculty_search_out(faculty: models.Faculty) -> schemas.AdminFacultySe
         faculty_identifier=(str(faculty.faculty_identifier or "").strip().upper() or None),
         section=(re.sub(r"\s+", "", str(faculty.section or "").strip().upper()) or None),
         department=str(faculty.department or ""),
+    )
+
+
+def _admin_student_rectification_out(student: models.Student) -> schemas.AdminStudentRectificationOut:
+    return schemas.AdminStudentRectificationOut(
+        **_admin_student_search_out(student).model_dump(),
+        has_profile_photo=bool(student.profile_photo_object_key or student.profile_photo_data_url),
+        profile_photo_url=_public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
+        profile_photo_updated_at=student.profile_photo_updated_at,
+    )
+
+
+def _admin_faculty_rectification_out(faculty: models.Faculty) -> schemas.AdminFacultyRectificationOut:
+    return schemas.AdminFacultyRectificationOut(
+        **_admin_faculty_search_out(faculty).model_dump(),
+        has_profile_photo=bool(faculty.profile_photo_object_key or faculty.profile_photo_data_url),
+        profile_photo_url=_public_media_reference(faculty.profile_photo_object_key, faculty.profile_photo_data_url),
+        profile_photo_updated_at=faculty.profile_photo_updated_at,
+    )
+
+
+def _student_profile_snapshot(student: models.Student) -> Any:
+    return SimpleNamespace(
+        id=int(student.id),
+        name=student.name,
+        email=student.email,
+        registration_number=student.registration_number,
+        parent_email=student.parent_email,
+        section=student.section,
+        section_updated_at=student.section_updated_at,
+        profile_photo_data_url=student.profile_photo_data_url,
+        profile_photo_object_key=student.profile_photo_object_key,
+        profile_photo_updated_at=student.profile_photo_updated_at,
+        profile_photo_locked_until=student.profile_photo_locked_until,
+        profile_face_template_json=student.profile_face_template_json,
+        profile_face_template_updated_at=student.profile_face_template_updated_at,
+        enrollment_video_template_json=student.enrollment_video_template_json,
+        enrollment_video_updated_at=student.enrollment_video_updated_at,
+        enrollment_video_locked_until=student.enrollment_video_locked_until,
+        department=student.department,
+        semester=student.semester,
+        created_at=student.created_at,
+    )
+
+
+def _faculty_profile_snapshot(faculty: models.Faculty) -> Any:
+    return SimpleNamespace(
+        id=int(faculty.id),
+        name=faculty.name,
+        email=faculty.email,
+        faculty_identifier=faculty.faculty_identifier,
+        section=faculty.section,
+        section_updated_at=faculty.section_updated_at,
+        profile_photo_data_url=faculty.profile_photo_data_url,
+        profile_photo_object_key=faculty.profile_photo_object_key,
+        profile_photo_updated_at=faculty.profile_photo_updated_at,
+        profile_photo_locked_until=faculty.profile_photo_locked_until,
+        department=faculty.department,
+        created_at=faculty.created_at,
+    )
+
+
+def _profile_rectification_actor_label(current_user: models.AuthUser) -> str:
+    role_label = "Admin"
+    email = str(current_user.email or "").strip().lower()
+    if email:
+        return f"{role_label} ({email})"
+    return role_label
+
+
+def _profile_notice_message(*, changed_fields: list[str], actor_label: str) -> str:
+    labels = {
+        "name": "full name",
+        "registration_number": "registration number",
+        "faculty_identifier": "faculty ID",
+        "section": "section",
+        "department": "department",
+        "semester": "semester",
+        "parent_email": "parent email",
+        "photo": "profile photo",
+    }
+    changed = [labels.get(item, item.replace("_", " ")) for item in changed_fields]
+    summary = ", ".join(changed) if changed else "profile details"
+    return f"Your profile was updated by {actor_label}. Updated: {summary}."
+
+
+def _sync_mongo_auth_user_name(db: Session, *, student_id: int | None = None, faculty_id: int | None = None, name: str) -> None:
+    auth_user_query = db.query(models.AuthUser)
+    if student_id is not None:
+        auth_user_query = auth_user_query.filter(models.AuthUser.student_id == int(student_id))
+    elif faculty_id is not None:
+        auth_user_query = auth_user_query.filter(models.AuthUser.faculty_id == int(faculty_id))
+    else:
+        return
+    auth_user = auth_user_query.first()
+    if not auth_user:
+        return
+    mongo_db = get_mongo_db(required=False)
+    if mongo_db is None:
+        return
+    mongo_db["auth_users"].update_one(
+        {"id": int(auth_user.id)},
+        {"$set": {"name": str(name or "").strip()}},
+    )
+
+
+def _record_profile_rectification_audit(
+    *,
+    action: str,
+    subject_role: str,
+    subject_id: int,
+    subject_email: str,
+    changed_fields: list[str],
+    updated_values: dict[str, Any],
+    current_user: models.AuthUser,
+    notice_message: str,
+    created_at: datetime,
+) -> None:
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": action,
+            "subject_role": subject_role,
+            "subject_id": int(subject_id),
+            "subject_email": str(subject_email or "").strip().lower(),
+            "changed_fields": list(changed_fields),
+            "updated_values": dict(updated_values),
+            "notice_message": notice_message,
+            "actor_label": _profile_rectification_actor_label(current_user),
+            "actor": {
+                "user_id": int(current_user.id),
+                "faculty_id": int(current_user.faculty_id) if current_user.faculty_id else None,
+                "email": str(current_user.email or ""),
+                "role": current_user.role.value,
+            },
+            "created_at": created_at,
+            "source": "attendance-profile-rectification",
+        },
+        required=False,
+    )
+
+
+def _publish_profile_rectification_event(
+    *,
+    subject_role: str,
+    subject_id: int,
+    changed_fields: list[str],
+    notice_message: str,
+    current_user: models.AuthUser,
+    created_at: datetime,
+) -> None:
+    publish_domain_event(
+        "attendance.profile.rectified",
+        payload={
+            "subject_role": subject_role,
+            "subject_id": int(subject_id),
+            "changed_fields": list(changed_fields),
+            "notice_message": notice_message,
+            "updated_at": created_at.isoformat(),
+        },
+        scopes={
+            f"{subject_role}:{int(subject_id)}",
+            "role:admin",
+        },
+        topics={"attendance", "admin"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="admin",
     )
 
 
@@ -633,6 +888,50 @@ def _faculty_can_manage_student_rms(
         is not None
     )
     return teaches_student
+
+
+def _faculty_scopes_for_student_rms_update(
+    db: Session,
+    *,
+    student_id: int,
+    sections: set[str] | None = None,
+) -> set[str]:
+    faculty_ids: set[int] = set()
+    normalized_sections = {
+        re.sub(r"\s+", "", str(section or "").strip().upper())
+        for section in (sections or set())
+        if str(section or "").strip()
+    }
+    normalized_sections.discard("")
+
+    if normalized_sections:
+        faculty_rows = (
+            db.query(models.Faculty)
+            .filter(models.Faculty.section.is_not(None))
+            .all()
+        )
+        for faculty in faculty_rows:
+            if not _faculty_allowed_sections(faculty).intersection(normalized_sections):
+                continue
+            faculty_id = int(getattr(faculty, "id", 0) or 0)
+            if faculty_id > 0:
+                faculty_ids.add(faculty_id)
+
+    teaching_rows = (
+        db.query(models.Course.faculty_id)
+        .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+        .filter(
+            models.Enrollment.student_id == int(student_id),
+            models.Course.faculty_id.is_not(None),
+        )
+        .all()
+    )
+    for row in teaching_rows:
+        faculty_id = int(row[0] or 0)
+        if faculty_id > 0:
+            faculty_ids.add(faculty_id)
+
+    return {f"faculty:{faculty_id}" for faculty_id in sorted(faculty_ids)}
 
 
 def _rms_student_lookup_out(
@@ -2159,6 +2458,10 @@ def rms_update_student_profile(
 
     changed_fields: list[str] = []
     now_dt = datetime.utcnow()
+    affected_sections = {
+        re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    }
+    affected_sections.discard("")
 
     if payload.registration_number is not None:
         registration_number = _normalize_rms_registration_number(payload.registration_number)
@@ -2197,6 +2500,7 @@ def rms_update_student_profile(
             student.section = section
             student.section_updated_at = now_dt
             changed_fields.append("section")
+            affected_sections.add(section)
 
     if changed_fields:
         db.commit()
@@ -2261,6 +2565,19 @@ def rms_update_student_profile(
     message = "No profile changes were needed."
     if changed_fields:
         message = f"Student profile updated: {', '.join(changed_fields)}."
+        event_scopes = {
+            f"student:{int(student.id)}",
+            "role:admin",
+        }
+        event_scopes.update(
+            _faculty_scopes_for_student_rms_update(
+                db,
+                student_id=int(student.id),
+                sections=affected_sections,
+            )
+        )
+        if faculty_scope_id:
+            event_scopes.add(f"faculty:{int(faculty_scope_id)}")
         publish_domain_event(
             "rms.student.updated",
             payload={
@@ -2270,7 +2587,7 @@ def rms_update_student_profile(
                 "section": str(student.section or "").strip().upper() or None,
                 "updated_at": now_dt.isoformat(),
             },
-            scopes={f"student:{int(student.id)}", "role:admin", "role:faculty"},
+            scopes=event_scopes,
             topics={"rms", "attendance"},
             actor={
                 "user_id": int(current_user.id),
@@ -2401,8 +2718,6 @@ def rms_attendance_student_context(
             grouped_subjects[course_id] = subject_entry
 
         slot_status = submission_status_by_schedule_id.get(int(schedule.id))
-        if slot_status is None:
-            slot_status = record_status_by_course_id.get(course_id)
         subject_entry["slots"].append(
             schemas.RMSAttendanceSubjectSlotOut(
                 schedule_id=int(schedule.id),
@@ -2419,7 +2734,7 @@ def rms_attendance_student_context(
     for subject_entry in grouped_subjects.values():
         slot_models = list(subject_entry.get("slots") or [])
         slot_statuses = [item.current_status for item in slot_models if item.current_status is not None]
-        current_status: models.AttendanceStatus | None = None
+        current_status = record_status_by_course_id.get(int(subject_entry["course_id"]))
         if any(status == models.AttendanceStatus.PRESENT for status in slot_statuses):
             current_status = models.AttendanceStatus.PRESENT
         elif any(status == models.AttendanceStatus.ABSENT for status in slot_statuses):
@@ -2565,13 +2880,19 @@ def rms_update_attendance_status(
         acting_faculty_id = int(current_user.faculty_id or course.faculty_id)
         source = "rms-faculty-attendance-override"
 
-    previous_status = _resolve_student_schedule_attendance_status(
+    previous_status = _resolve_student_schedule_submission_status(
         db,
         student_id=int(student.id),
         schedule_id=int(target_schedule.id),
         attendance_date=payload.attendance_date,
-        fallback_course_id=int(course.id),
     )
+    if previous_status is None and payload.schedule_id is None:
+        previous_status = _resolve_student_course_attendance_status(
+            db,
+            student_id=int(student.id),
+            course_id=int(course.id),
+            attendance_date=payload.attendance_date,
+        )
 
     note = _normalize_rms_action_note(payload.note)
     slot_label = f"{target_schedule.start_time.strftime('%H:%M')}-{target_schedule.end_time.strftime('%H:%M')}"
@@ -2587,28 +2908,15 @@ def rms_update_attendance_status(
         if payload.status == models.AttendanceStatus.PRESENT
         else models.AttendanceSubmissionStatus.REJECTED
     )
-    target_submission = (
-        db.query(models.AttendanceSubmission)
-        .filter(
-            models.AttendanceSubmission.student_id == int(student.id),
-            models.AttendanceSubmission.course_id == int(course.id),
-            models.AttendanceSubmission.class_date == payload.attendance_date,
-            models.AttendanceSubmission.schedule_id == int(target_schedule.id),
-        )
-        .order_by(models.AttendanceSubmission.id.asc())
-        .first()
+    target_submission = _get_or_create_attendance_submission(
+        db,
+        schedule_id=int(target_schedule.id),
+        course_id=int(course.id),
+        faculty_id=int(target_schedule.faculty_id),
+        student_id=int(student.id),
+        class_date=payload.attendance_date,
+        submitted_at=now_dt,
     )
-    if target_submission is None:
-        target_submission = models.AttendanceSubmission(
-            schedule_id=int(target_schedule.id),
-            course_id=int(course.id),
-            faculty_id=int(target_schedule.faculty_id),
-            student_id=int(student.id),
-            class_date=payload.attendance_date,
-            selfie_photo_data_url=None,
-            submitted_at=now_dt,
-        )
-        db.add(target_submission)
 
     target_submission.status = submission_status
     target_submission.ai_match = payload.status == models.AttendanceStatus.PRESENT
@@ -2866,6 +3174,33 @@ def admin_search_student_by_registration(
     return _admin_student_search_out(student)
 
 
+@router.get("/profile-rectification/students/search", response_model=schemas.AdminStudentRectificationOut)
+def admin_search_student_for_rectification(
+    query: str = Query(..., min_length=3, max_length=160),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    normalized_query = str(query or "").strip()
+    lowered = normalized_query.lower()
+    student = None
+    if "@" in lowered:
+        student = (
+            db.query(models.Student)
+            .filter(func.lower(models.Student.email) == lowered)
+            .first()
+        )
+    if student is None:
+        normalized_registration = _normalize_rms_registration_number(normalized_query)
+        student = (
+            db.query(models.Student)
+            .filter(func.upper(models.Student.registration_number) == normalized_registration)
+            .first()
+        )
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found for this registration number or email.")
+    return _admin_student_rectification_out(student)
+
+
 @router.get("/search/faculty/by-identifier", response_model=schemas.AdminFacultySearchOut)
 def admin_search_faculty_by_identifier(
     faculty_identifier: str = Query(..., min_length=3, max_length=40),
@@ -2881,6 +3216,379 @@ def admin_search_faculty_by_identifier(
     if not faculty:
         raise HTTPException(status_code=404, detail="Faculty not found for this faculty identifier.")
     return _admin_faculty_search_out(faculty)
+
+
+@router.get("/profile-rectification/faculty/search", response_model=schemas.AdminFacultyRectificationOut)
+def admin_search_faculty_for_rectification(
+    query: str = Query(..., min_length=3, max_length=160),
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    normalized_query = str(query or "").strip()
+    lowered = normalized_query.lower()
+    faculty = None
+    if "@" in lowered:
+        faculty = (
+            db.query(models.Faculty)
+            .filter(func.lower(models.Faculty.email) == lowered)
+            .first()
+        )
+    if faculty is None:
+        normalized_identifier = _normalize_rms_faculty_identifier(normalized_query)
+        faculty = (
+            db.query(models.Faculty)
+            .filter(func.upper(models.Faculty.faculty_identifier) == normalized_identifier)
+            .first()
+        )
+    if not faculty:
+        raise HTTPException(status_code=404, detail="Faculty not found for this faculty ID or email.")
+    return _admin_faculty_rectification_out(faculty)
+
+
+@router.put("/profile-rectification/students/{student_id}", response_model=schemas.AdminStudentProfileRectificationResult)
+def admin_rectify_student_profile(
+    student_id: int,
+    payload: schemas.AdminStudentProfileRectificationRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    student = db.get(models.Student, int(student_id))
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+    if (
+        payload.name is None
+        and payload.registration_number is None
+        and payload.section is None
+        and payload.department is None
+        and payload.semester is None
+        and payload.parent_email is None
+        and payload.photo_data_url is None
+    ):
+        raise HTTPException(status_code=400, detail="Provide at least one student profile field to rectify.")
+
+    changed_fields: list[str] = []
+    now_dt = datetime.utcnow()
+    had_registration_number = bool((student.registration_number or "").strip())
+    had_enrollment_video = bool(student.enrollment_video_template_json)
+    photo_changed = False
+
+    if payload.name is not None:
+        incoming_name = _normalize_person_name(payload.name)
+        if incoming_name != re.sub(r"\s+", " ", str(student.name or "").strip()).upper():
+            student.name = incoming_name
+            changed_fields.append("name")
+
+    if payload.registration_number is not None:
+        registration_number = _normalize_registration_number(payload.registration_number)
+        existing_registration = str(student.registration_number or "").strip().upper()
+        if registration_number != existing_registration:
+            duplicate = (
+                db.query(models.Student)
+                .filter(
+                    models.Student.id != int(student.id),
+                    func.upper(models.Student.registration_number) == registration_number,
+                )
+                .first()
+            )
+            if duplicate:
+                raise HTTPException(status_code=409, detail="Registration number is already assigned to another student.")
+            student.registration_number = registration_number
+            changed_fields.append("registration_number")
+
+    if payload.section is not None:
+        section = _normalize_section_token(payload.section)
+        existing_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+        if section != existing_section:
+            student.section = section
+            student.section_updated_at = now_dt
+            changed_fields.append("section")
+
+    if payload.department is not None:
+        department = re.sub(r"\s+", " ", str(payload.department or "").strip()).upper()
+        if department != str(student.department or "").strip().upper():
+            student.department = department
+            changed_fields.append("department")
+
+    if payload.semester is not None and int(payload.semester) != int(student.semester or 0):
+        student.semester = int(payload.semester)
+        changed_fields.append("semester")
+
+    if payload.parent_email is not None:
+        parent_email = str(payload.parent_email or "").strip().lower() or None
+        existing_parent_email = str(student.parent_email or "").strip().lower() or None
+        if parent_email != existing_parent_email:
+            student.parent_email = parent_email
+            changed_fields.append("parent_email")
+
+    if payload.photo_data_url is not None:
+        incoming_photo = str(payload.photo_data_url or "").strip()
+        if not incoming_photo.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="photo_data_url must be an image data URL")
+        previous_key = str(student.profile_photo_object_key or "").strip() or None
+        media = store_data_url_object(
+            db,
+            owner_table="students",
+            owner_id=int(student.id),
+            media_kind="student-profile-photo",
+            data_url=incoming_photo,
+            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
+        )
+        student.profile_photo_object_key = media.object_key
+        student.profile_photo_data_url = None
+        student.profile_photo_updated_at = now_dt
+        student.profile_photo_locked_until = now_dt + timedelta(days=14)
+        if previous_key and previous_key != media.object_key:
+            mark_media_deleted(db, previous_key)
+        if "photo" not in changed_fields:
+            changed_fields.append("photo")
+        photo_changed = True
+
+    if photo_changed:
+        _rebuild_profile_face_template(db, student)
+
+    student_snapshot = _student_profile_snapshot(student)
+
+    if changed_fields:
+        db.commit()
+    else:
+        db.flush()
+
+    _sync_student_to_mongo(student_snapshot, source="admin-profile-rectification")
+    if "name" in changed_fields:
+        _sync_mongo_auth_user_name(db, student_id=int(student_snapshot.id), name=student_snapshot.name)
+
+    mirror_document(
+        "student_profile_faces",
+        {
+            "student_id": student_snapshot.id,
+            "name": student_snapshot.name,
+            "registration_number": student_snapshot.registration_number,
+            "profile_photo_object_key": student_snapshot.profile_photo_object_key,
+            "profile_photo_fingerprint": _photo_fingerprint(
+                student_snapshot.profile_photo_object_key or student_snapshot.profile_photo_data_url
+            ),
+            "profile_photo_size": len(student_snapshot.profile_photo_object_key or student_snapshot.profile_photo_data_url or ""),
+            "profile_photo_updated_at": student_snapshot.profile_photo_updated_at,
+            "profile_photo_locked_until": student_snapshot.profile_photo_locked_until,
+            "profile_face_template_fingerprint": _photo_fingerprint(student_snapshot.profile_face_template_json),
+            "profile_face_template_updated_at": student_snapshot.profile_face_template_updated_at,
+            "source": "admin-profile-rectification",
+            "updated_at": datetime.utcnow(),
+        },
+        upsert_filter={"student_id": student_snapshot.id},
+        required=False,
+    )
+
+    if changed_fields:
+        notice_message = _profile_notice_message(
+            changed_fields=changed_fields,
+            actor_label=_profile_rectification_actor_label(current_user),
+        )
+        _record_profile_rectification_audit(
+            action="admin_student_profile_rectification",
+            subject_role="student",
+            subject_id=int(student_snapshot.id),
+            subject_email=str(student_snapshot.email or ""),
+            changed_fields=changed_fields,
+            updated_values={
+                "name": student_snapshot.name,
+                "registration_number": student_snapshot.registration_number,
+                "section": student_snapshot.section,
+                "department": student_snapshot.department,
+                "semester": student_snapshot.semester,
+                "parent_email": student_snapshot.parent_email,
+                "profile_photo_updated_at": student_snapshot.profile_photo_updated_at.isoformat() if student_snapshot.profile_photo_updated_at else None,
+                "note": payload.note,
+            },
+            current_user=current_user,
+            notice_message=notice_message,
+            created_at=now_dt,
+        )
+        _publish_profile_rectification_event(
+            subject_role="student",
+            subject_id=int(student_snapshot.id),
+            changed_fields=changed_fields,
+            notice_message=notice_message,
+            current_user=current_user,
+            created_at=now_dt,
+        )
+        registration_completed_now = (not had_registration_number) and bool((student_snapshot.registration_number or "").strip())
+        if had_enrollment_video and (photo_changed or registration_completed_now):
+            from .attendance import _maybe_run_identity_screening_for_student
+            _maybe_run_identity_screening_for_student(
+                db,
+                student_snapshot,
+                trigger="admin_profile_rectification",
+            )
+        message = f"Student profile rectified: {', '.join(changed_fields)}."
+    else:
+        notice_message = None
+        message = "No student profile changes were needed."
+
+    return schemas.AdminStudentProfileRectificationResult(
+        student=_admin_student_rectification_out(student_snapshot),
+        changed_fields=changed_fields,
+        message=message,
+        notice_message=notice_message,
+    )
+
+
+@router.put("/profile-rectification/faculty/{faculty_id}", response_model=schemas.AdminFacultyProfileRectificationResult)
+def admin_rectify_faculty_profile(
+    faculty_id: int,
+    payload: schemas.AdminFacultyProfileRectificationRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    faculty = db.get(models.Faculty, int(faculty_id))
+    if not faculty:
+        raise HTTPException(status_code=404, detail="Faculty not found.")
+    if (
+        payload.name is None
+        and payload.faculty_identifier is None
+        and payload.section is None
+        and payload.department is None
+        and payload.photo_data_url is None
+    ):
+        raise HTTPException(status_code=400, detail="Provide at least one faculty profile field to rectify.")
+
+    changed_fields: list[str] = []
+    now_dt = datetime.utcnow()
+
+    if payload.name is not None:
+        incoming_name = _normalize_person_name(payload.name)
+        if incoming_name != re.sub(r"\s+", " ", str(faculty.name or "").strip()).upper():
+            faculty.name = incoming_name
+            changed_fields.append("name")
+
+    if payload.faculty_identifier is not None:
+        faculty_identifier = _normalize_faculty_identifier(payload.faculty_identifier)
+        existing_identifier = str(faculty.faculty_identifier or "").strip().upper()
+        if faculty_identifier != existing_identifier:
+            duplicate = (
+                db.query(models.Faculty)
+                .filter(
+                    models.Faculty.id != int(faculty.id),
+                    func.upper(models.Faculty.faculty_identifier) == faculty_identifier,
+                )
+                .first()
+            )
+            if duplicate:
+                raise HTTPException(status_code=409, detail="Faculty ID is already assigned to another faculty record.")
+            faculty.faculty_identifier = faculty_identifier
+            changed_fields.append("faculty_identifier")
+
+    if payload.section is not None:
+        section = _normalize_section_token(payload.section)
+        existing_section = re.sub(r"\s+", "", str(faculty.section or "").strip().upper())
+        if section != existing_section:
+            faculty.section = section
+            faculty.section_updated_at = now_dt
+            changed_fields.append("section")
+
+    if payload.department is not None:
+        department = re.sub(r"\s+", " ", str(payload.department or "").strip()).upper()
+        if department != str(faculty.department or "").strip().upper():
+            faculty.department = department
+            changed_fields.append("department")
+
+    if payload.photo_data_url is not None:
+        incoming_photo = str(payload.photo_data_url or "").strip()
+        if not incoming_photo.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="photo_data_url must be an image data URL")
+        previous_key = str(faculty.profile_photo_object_key or "").strip() or None
+        media = store_data_url_object(
+            db,
+            owner_table="faculty",
+            owner_id=int(faculty.id),
+            media_kind="faculty-profile-photo",
+            data_url=incoming_photo,
+            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
+        )
+        faculty.profile_photo_object_key = media.object_key
+        faculty.profile_photo_data_url = None
+        faculty.profile_photo_updated_at = now_dt
+        faculty.profile_photo_locked_until = now_dt + timedelta(days=14)
+        if previous_key and previous_key != media.object_key:
+            mark_media_deleted(db, previous_key)
+        if "photo" not in changed_fields:
+            changed_fields.append("photo")
+
+    faculty_snapshot = _faculty_profile_snapshot(faculty)
+
+    if changed_fields:
+        db.commit()
+    else:
+        db.flush()
+
+    _sync_faculty_to_mongo(faculty_snapshot, source="admin-profile-rectification")
+    if "name" in changed_fields:
+        _sync_mongo_auth_user_name(db, faculty_id=int(faculty_snapshot.id), name=faculty_snapshot.name)
+
+    mirror_document(
+        "faculty_profiles",
+        {
+            "faculty_id": faculty_snapshot.id,
+            "name": faculty_snapshot.name,
+            "faculty_identifier": faculty_snapshot.faculty_identifier,
+            "section": faculty_snapshot.section,
+            "section_updated_at": faculty_snapshot.section_updated_at,
+            "profile_photo_object_key": faculty_snapshot.profile_photo_object_key,
+            "profile_photo_fingerprint": _photo_fingerprint(
+                faculty_snapshot.profile_photo_object_key or faculty_snapshot.profile_photo_data_url
+            ),
+            "profile_photo_size": len(faculty_snapshot.profile_photo_object_key or faculty_snapshot.profile_photo_data_url or ""),
+            "profile_photo_updated_at": faculty_snapshot.profile_photo_updated_at,
+            "profile_photo_locked_until": faculty_snapshot.profile_photo_locked_until,
+            "source": "admin-profile-rectification",
+            "updated_at": datetime.utcnow(),
+        },
+        upsert_filter={"faculty_id": faculty_snapshot.id},
+        required=False,
+    )
+
+    if changed_fields:
+        notice_message = _profile_notice_message(
+            changed_fields=changed_fields,
+            actor_label=_profile_rectification_actor_label(current_user),
+        )
+        _record_profile_rectification_audit(
+            action="admin_faculty_profile_rectification",
+            subject_role="faculty",
+            subject_id=int(faculty_snapshot.id),
+            subject_email=str(faculty_snapshot.email or ""),
+            changed_fields=changed_fields,
+            updated_values={
+                "name": faculty_snapshot.name,
+                "faculty_identifier": faculty_snapshot.faculty_identifier,
+                "section": faculty_snapshot.section,
+                "department": faculty_snapshot.department,
+                "profile_photo_updated_at": faculty_snapshot.profile_photo_updated_at.isoformat() if faculty_snapshot.profile_photo_updated_at else None,
+                "note": payload.note,
+            },
+            current_user=current_user,
+            notice_message=notice_message,
+            created_at=now_dt,
+        )
+        _publish_profile_rectification_event(
+            subject_role="faculty",
+            subject_id=int(faculty_snapshot.id),
+            changed_fields=changed_fields,
+            notice_message=notice_message,
+            current_user=current_user,
+            created_at=now_dt,
+        )
+        message = f"Faculty profile rectified: {', '.join(changed_fields)}."
+    else:
+        notice_message = None
+        message = "No faculty profile changes were needed."
+
+    return schemas.AdminFacultyProfileRectificationResult(
+        faculty=_admin_faculty_rectification_out(faculty_snapshot),
+        changed_fields=changed_fields,
+        message=message,
+        notice_message=notice_message,
+    )
 
 
 @router.get("/search/everything", response_model=schemas.AdminGlobalSearchOut)

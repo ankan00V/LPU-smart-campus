@@ -55,6 +55,11 @@ def _realtime_backends_required() -> bool:
     return (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _realtime_transport_enabled() -> bool:
+    raw = (os.getenv("REALTIME_TRANSPORT_ENABLED", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _realtime_redis_channel() -> str:
     return (os.getenv("REALTIME_REDIS_CHANNEL") or "campus:events:stream").strip()
 
@@ -89,6 +94,8 @@ def _realtime_dedupe_max() -> int:
 
 
 def _publish_backend_event(event: dict[str, Any]) -> None:
+    if not _realtime_transport_enabled():
+        return
     errors: list[tuple[str, str]] = []
     successes = 0
     for backend in _realtime_backends():
@@ -157,6 +164,8 @@ def _start_backend_listeners(
     on_message,
     stop_event: threading.Event,
 ) -> list[threading.Thread]:
+    if not _realtime_transport_enabled():
+        return []
     threads: list[threading.Thread] = []
     for backend in _realtime_backends():
         if backend == "redis":

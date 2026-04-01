@@ -1,5 +1,6 @@
 import ipaddress
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -7,8 +8,14 @@ from dotenv import dotenv_values, load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 
-from .runtime_infra import is_remote_service_host, managed_services_required, resolve_service_hostaddr
+from .runtime_infra import (
+    is_remote_service_host,
+    managed_services_required,
+    resolve_service_hostaddr,
+    resolve_service_hostaddrs,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ORIGINAL_ENV = dict(os.environ)
@@ -190,7 +197,29 @@ def _database_hostaddr() -> str | None:
             return host
         return None
     except ValueError:
-        return resolve_service_hostaddr(host)
+        candidates = list(resolve_service_hostaddrs(host))
+        fallback_hostaddr = _resolve_hostaddr_with_nslookup(host)
+        safe_url = make_url(SQLALCHEMY_DATABASE_URL)
+        port = int(safe_url.port or 5432)
+        timeout_raw = (_env("DATABASE_HOSTADDR_PROBE_TIMEOUT_SECONDS", "1.5") or "1.5").strip()
+        try:
+            timeout_seconds = max(0.2, min(5.0, float(timeout_raw)))
+        except ValueError:
+            timeout_seconds = 1.5
+        for candidate in candidates:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout_seconds)
+            try:
+                sock.connect((candidate, port))
+                return candidate
+            except OSError:
+                continue
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        return fallback_hostaddr
 
 
 SQLALCHEMY_DATABASE_URL = _normalized_database_url()
@@ -256,7 +285,7 @@ def _engine_options() -> dict:
             # when psycopg automatic prepared statements are disabled.
             connect_args["prepare_threshold"] = None
 
-    return {
+    options = {
         "connect_args": connect_args,
         "pool_pre_ping": True,
         "pool_size": _env_int("DATABASE_POOL_SIZE", 10, minimum=1),
@@ -264,6 +293,13 @@ def _engine_options() -> dict:
         "pool_timeout": _env_int("DATABASE_POOL_TIMEOUT_SECONDS", 30, minimum=1),
         "pool_recycle": _env_int("DATABASE_POOL_RECYCLE_SECONDS", 1800, minimum=30),
     }
+    if _database_pooler_host():
+        options["poolclass"] = NullPool
+        options.pop("pool_size", None)
+        options.pop("max_overflow", None)
+        options.pop("pool_timeout", None)
+        options.pop("pool_recycle", None)
+    return options
 
 
 def database_status() -> dict:

@@ -7,7 +7,7 @@
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
     <link rel="stylesheet" href="/web/styles.css?v=20260317a">
-    <script src="/web/app.js?v=20260325a" defer></script>
+    <script src="/web/app.js?v=20260401c" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -102,7 +102,7 @@
                 </label>
                 <label id="auth-mfa-wrap" class="field hidden">
                     <span>Authenticator Code (admin/faculty after MFA setup)</span>
-                    <input id="auth-mfa-code" type="text" inputmode="numeric" placeholder="6-digit TOTP or backup code" maxlength="20">
+                    <input id="auth-mfa-code" type="text" inputmode="text" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="6-digit TOTP or backup code" maxlength="20">
                 </label>
                 <p id="auth-mfa-help" class="password-strength hidden">Enter authenticator app code (or backup code) for privileged accounts with MFA enabled.</p>
             </div>
@@ -328,6 +328,11 @@
         <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">
             <span class="nav-glyph" aria-hidden="true">AT</span>
             <span class="nav-label">Attendance</span>
+        </button>
+        <button id="nav-messages-btn" class="ums-side-item hidden" data-nav="messages" type="button" aria-haspopup="dialog" aria-controls="support-desk-panel" aria-expanded="false">
+            <span class="nav-glyph" aria-hidden="true">MS</span>
+            <span class="nav-label">Messages</span>
+            <span id="nav-messages-unread-badge" class="nav-unread-badge hidden" aria-live="polite">0</span>
         </button>
         <section id="verlyn-sidebar-widget" class="verlyn-sidebar-widget" aria-live="polite">
             <button id="verlyn-toggle-btn" class="verlyn-toggle-btn" type="button" aria-expanded="false" aria-controls="verlyn-panel">
@@ -1224,6 +1229,7 @@ Ask about any module available to your role.</div>
                     <select id="admin-attendance-submodule-select" data-admin-submodule-select="attendance">
                         <option value="attendance-ops">Class Operations</option>
                         <option value="attendance-admin">Admin Overrides & Outreach</option>
+                        <option value="attendance-rectification">Profile Rectification</option>
                         <option value="attendance-recovery">Recovery & Risk</option>
                         <option value="attendance-analysis">AI Classroom Analysis</option>
                     </select>
@@ -1404,6 +1410,75 @@ Ask about any module available to your role.</div>
                     <span id="direct-email-status" class="helper-text"></span>
                 </div>
                 <p class="helper-text">Provide Student ID, Registration No., or Email to target the student.</p>
+            </article>
+
+            <article id="admin-profile-rectification-card" class="ops-card glass tilt hidden admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-rectification">
+                <div class="panel-head">
+                    <h3>Profile Rectification Desk</h3>
+                    <small>Search student or faculty by registration/faculty ID or email, then update profile records live.</small>
+                </div>
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Person Type</span>
+                        <select id="admin-profile-rectification-role">
+                            <option value="student">Student</option>
+                            <option value="faculty">Faculty</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span id="admin-profile-rectification-query-label">Registration No. or Email</span>
+                        <input id="admin-profile-rectification-query" type="text" placeholder="e.g. 22BCS101 or student@gmail.com">
+                    </label>
+                    <button id="admin-profile-rectification-search-btn" class="btn btn-primary" type="button">Search Profile</button>
+                </div>
+                <p id="admin-profile-rectification-status" class="helper-text">Search by student registration number/email or faculty ID/email.</p>
+                <div id="admin-profile-rectification-form" class="admin-rectification-form hidden">
+                    <div id="admin-profile-rectification-summary" class="list-wrap admin-rectification-summary"></div>
+                    <div class="faculty-admin-grid">
+                        <label class="field">
+                            <span>Primary Email</span>
+                            <input id="admin-profile-rectification-email" type="email" disabled>
+                        </label>
+                        <label class="field">
+                            <span>Full Name</span>
+                            <input id="admin-profile-rectification-name" type="text" placeholder="Full name">
+                        </label>
+                        <label class="field">
+                            <span id="admin-profile-rectification-id-label">Registration Number</span>
+                            <input id="admin-profile-rectification-id-value" type="text" placeholder="Identifier">
+                        </label>
+                        <label class="field">
+                            <span>Section</span>
+                            <input id="admin-profile-rectification-section" type="text" placeholder="e.g. P132">
+                        </label>
+                        <label class="field">
+                            <span>Department</span>
+                            <input id="admin-profile-rectification-department" type="text" placeholder="e.g. CSE">
+                        </label>
+                        <label id="admin-profile-rectification-semester-wrap" class="field">
+                            <span>Semester</span>
+                            <input id="admin-profile-rectification-semester" type="number" min="1" max="12" placeholder="e.g. 4">
+                        </label>
+                        <label id="admin-profile-rectification-parent-email-wrap" class="field">
+                            <span>Parent Email</span>
+                            <input id="admin-profile-rectification-parent-email" type="email" placeholder="parent@example.com">
+                        </label>
+                        <label class="field">
+                            <span>Replace Profile Photo</span>
+                            <input id="admin-profile-rectification-photo-input" type="file" accept="image/*">
+                        </label>
+                    </div>
+                    <div class="photo-preview-wrap">
+                        <img id="admin-profile-rectification-photo-preview" class="photo-preview hidden" alt="Rectification profile preview">
+                    </div>
+                    <label class="field">
+                        <span>Admin Note (optional)</span>
+                        <textarea id="admin-profile-rectification-note" rows="3" maxlength="400" placeholder="Optional internal note for this rectification..."></textarea>
+                    </label>
+                    <div class="inline-controls">
+                        <button id="admin-profile-rectification-save-btn" class="btn btn-primary" type="button">Apply Rectification</button>
+                    </div>
+                </div>
             </article>
 
             <section class="faculty-stats-grid admin-submodule-panel" data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
@@ -1938,6 +2013,7 @@ Ask about any module available to your role.</div>
                     <img id="profile-photo-preview" class="photo-preview hidden" alt="Stored profile face">
                 </div>
                 <p id="profile-status" class="helper-text">No profile photo uploaded.</p>
+                <div id="profile-notices" class="profile-notices hidden"></div>
                 <p id="alternate-email-status" class="helper-text"></p>
             </section>
             <section id="profile-tab-enrollment" class="profile-tab-panel hidden" role="tabpanel">
@@ -2165,8 +2241,8 @@ Ask about any module available to your role.</div>
         <button id="support-desk-toggle-btn" class="support-desk-toggle-btn" type="button" aria-expanded="false" aria-controls="support-desk-panel">
             <span class="support-desk-avatar" aria-hidden="true">MSG</span>
             <span class="support-desk-toggle-copy">
-                <strong>Message Desk</strong>
-                <small>Realtime Queries</small>
+                <strong id="support-desk-toggle-title">Message Desk</strong>
+                <small id="support-desk-toggle-meta">Realtime Queries</small>
             </span>
             <span id="support-desk-unread-badge" class="support-desk-unread hidden" aria-live="polite">0</span>
         </button>
@@ -2175,8 +2251,8 @@ Ask about any module available to your role.</div>
                 <div class="support-desk-head-main">
                     <span class="support-desk-head-avatar" aria-hidden="true">MSG</span>
                     <div class="support-desk-head-copy">
-                        <strong>Realtime Query Desk</strong>
-                        <small>Attendance, academics, discrepancy, and other issues</small>
+                        <strong id="support-desk-head-title">Realtime Query Desk</strong>
+                        <small id="support-desk-head-meta">Attendance, academics, discrepancy, and other issues</small>
                     </div>
                 </div>
                 <button id="support-desk-minimize-btn" class="btn btn-ghost support-desk-minimize-btn" type="button">Minimize</button>

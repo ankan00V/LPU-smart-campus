@@ -231,6 +231,13 @@ class FacultyProfileOut(BaseModel):
     section_lock_minutes_remaining: int = 0
 
 
+class ProfileNoticeOut(BaseModel):
+    message: str
+    created_at: datetime
+    actor_label: Optional[str] = None
+    changed_fields: list[str] = Field(default_factory=list)
+
+
 class FacultyStudentSectionUpdateRequest(BaseModel):
     section: str = Field(min_length=1, max_length=80)
 
@@ -1430,6 +1437,86 @@ class AdminFacultySearchOut(BaseModel):
     faculty_identifier: Optional[str] = None
     section: Optional[str] = None
     department: str
+
+
+class AdminStudentRectificationOut(AdminStudentSearchOut):
+    has_profile_photo: bool = False
+    profile_photo_url: Optional[str] = None
+    profile_photo_updated_at: Optional[datetime] = None
+
+
+class AdminFacultyRectificationOut(AdminFacultySearchOut):
+    has_profile_photo: bool = False
+    profile_photo_url: Optional[str] = None
+    profile_photo_updated_at: Optional[datetime] = None
+
+
+class AdminStudentProfileRectificationRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    registration_number: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    section: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    department: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    semester: Optional[int] = Field(default=None, ge=1, le=12)
+    parent_email: Optional[str] = Field(default=None, max_length=120)
+    photo_data_url: Optional[str] = Field(default=None, min_length=20)
+    note: Optional[str] = Field(default=None, max_length=400)
+
+    @model_validator(mode="after")
+    def normalize_admin_student_profile_rectification(self):
+        if self.name is not None:
+            self.name = re.sub(r"\s+", " ", str(self.name or "").strip()).upper() or None
+        if self.registration_number is not None:
+            self.registration_number = re.sub(r"\s+", "", str(self.registration_number or "").strip().upper()) or None
+        if self.section is not None:
+            self.section = re.sub(r"\s+", "", str(self.section or "").strip().upper()) or None
+        if self.department is not None:
+            self.department = re.sub(r"\s+", " ", str(self.department or "").strip()).upper() or None
+        if self.parent_email is not None:
+            self.parent_email = str(self.parent_email or "").strip().lower() or None
+        if self.photo_data_url is not None:
+            self.photo_data_url = str(self.photo_data_url or "").strip() or None
+        if self.note is not None:
+            self.note = re.sub(r"\s+", " ", str(self.note or "").strip()) or None
+        return self
+
+
+class AdminFacultyProfileRectificationRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    faculty_identifier: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    section: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    department: Optional[str] = Field(default=None, min_length=2, max_length=100)
+    photo_data_url: Optional[str] = Field(default=None, min_length=20)
+    note: Optional[str] = Field(default=None, max_length=400)
+
+    @model_validator(mode="after")
+    def normalize_admin_faculty_profile_rectification(self):
+        if self.name is not None:
+            self.name = re.sub(r"\s+", " ", str(self.name or "").strip()).upper() or None
+        if self.faculty_identifier is not None:
+            self.faculty_identifier = re.sub(r"\s+", "", str(self.faculty_identifier or "").strip().upper()) or None
+        if self.section is not None:
+            self.section = re.sub(r"\s+", "", str(self.section or "").strip().upper()) or None
+        if self.department is not None:
+            self.department = re.sub(r"\s+", " ", str(self.department or "").strip()).upper() or None
+        if self.photo_data_url is not None:
+            self.photo_data_url = str(self.photo_data_url or "").strip() or None
+        if self.note is not None:
+            self.note = re.sub(r"\s+", " ", str(self.note or "").strip()) or None
+        return self
+
+
+class AdminStudentProfileRectificationResult(BaseModel):
+    student: AdminStudentRectificationOut
+    changed_fields: list[str] = Field(default_factory=list)
+    message: str
+    notice_message: Optional[str] = None
+
+
+class AdminFacultyProfileRectificationResult(BaseModel):
+    faculty: AdminFacultyRectificationOut
+    changed_fields: list[str] = Field(default_factory=list)
+    message: str
+    notice_message: Optional[str] = None
 
 
 class AdminCourseSearchOut(BaseModel):

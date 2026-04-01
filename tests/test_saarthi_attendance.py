@@ -16,7 +16,7 @@ from app.routers.attendance import (
     get_student_attendance_history,
     mark_attendance_bulk,
 )
-from app.routers.saarthi import get_saarthi_status, send_saarthi_message
+from app.routers.saarthi import get_saarthi_status, reset_saarthi_chat, send_saarthi_message
 from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
@@ -89,6 +89,18 @@ class SaarthiAttendanceTests(unittest.TestCase):
             password_hash="x",
             role=models.UserRole.ADMIN,
             student_id=None,
+            faculty_id=None,
+            is_active=True,
+        )
+
+    @staticmethod
+    def _missing_student_user() -> models.AuthUser:
+        return models.AuthUser(
+            id=9200,
+            email="missing.saarthi.student@example.com",
+            password_hash="x",
+            role=models.UserRole.STUDENT,
+            student_id=404,
             faculty_id=None,
             is_active=True,
         )
@@ -507,6 +519,26 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertTrue(reply.session.session_completed_for_week)
         self.assertEqual(reply.session.attendance_credit_minutes_for_week, SAARTHI_ATTENDANCE_MINUTES)
 
+    def test_status_requires_existing_student_profile(self):
+        with self.assertRaises(HTTPException) as ctx:
+            get_saarthi_status(
+                db=self.db,
+                current_user=self._missing_student_user(),
+            )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "Student profile not found")
+
+    def test_new_chat_requires_existing_student_profile(self):
+        with self.assertRaises(HTTPException) as ctx:
+            reset_saarthi_chat(
+                db=self.db,
+                current_user=self._missing_student_user(),
+            )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "Student profile not found")
+
     def test_status_reports_full_message_count_and_latest_window(self):
         current_dt = datetime(2026, 3, 9, 9, 0, 0)
         _, session = get_or_create_saarthi_session(
@@ -616,6 +648,69 @@ class SaarthiAttendanceTests(unittest.TestCase):
 
         self.assertTrue(reply.attendance_awarded_now)
         self.assertEqual(reply.session.current_week_message_count, 2)
+
+    def test_status_response_failure_rolls_back_materialized_attendance(self):
+        mocked_now = datetime(2026, 3, 9, 9, 0, 0)
+
+        with mock.patch("app.routers.saarthi._saarthi_now", return_value=mocked_now), mock.patch(
+            "app.routers.saarthi._build_status_out",
+            side_effect=RuntimeError("status serialization failed"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                get_saarthi_status(
+                    db=self.db,
+                    current_user=self._student_user(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
+        self.assertEqual(self.db.query(models.AttendanceEvent).count(), 0)
+        self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
+
+    def test_chat_response_failure_rolls_back_created_turn(self):
+        mocked_now = datetime(2026, 3, 8, 9, 0, 0)
+
+        with mock.patch("app.routers.saarthi._saarthi_now", return_value=mocked_now), mock.patch(
+            "app.routers.saarthi._build_status_out",
+            side_effect=RuntimeError("chat response serialization failed"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                send_saarthi_message(
+                    payload=schemas.SaarthiChatRequest(message="Need help right now."),
+                    db=self.db,
+                    current_user=self._student_user(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
+        self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
+        self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
+        self.assertEqual(self.db.query(models.AttendanceEvent).count(), 0)
+
+    def test_new_chat_response_failure_rolls_back_deleted_history(self):
+        mocked_now = datetime(2026, 3, 9, 9, 0, 0)
+        create_saarthi_turn(
+            self.db,
+            student=self.student,
+            message="I want to talk before resetting this chat.",
+            current_dt=datetime(2026, 3, 9, 8, 45, 0),
+            academic_start=date(2026, 3, 9),
+        )
+        self.db.commit()
+        self.assertEqual(self.db.query(models.SaarthiMessage).count(), 2)
+
+        with mock.patch("app.routers.saarthi._saarthi_now", return_value=mocked_now), mock.patch(
+            "app.routers.saarthi._build_status_out",
+            side_effect=RuntimeError("reset response serialization failed"),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                reset_saarthi_chat(
+                    db=self.db,
+                    current_user=self._student_user(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        self.assertEqual(self.db.query(models.SaarthiMessage).count(), 2)
 
     def test_openrouter_model_defaults_to_google_prefixed_gemini_model(self):
         with mock.patch.dict(

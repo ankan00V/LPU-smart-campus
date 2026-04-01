@@ -618,6 +618,15 @@ def send_faculty_message(
         logger.warning("Non-blocking faculty message mirror failure: %s", exc)
 
     if created_rows:
+        event_scopes = {
+            "role:admin",
+            f"faculty:{int(faculty_id)}",
+        }
+        event_scopes.update(
+            f"student:{int(row.student_id)}"
+            for row in created_rows
+            if int(getattr(row, "student_id", 0) or 0) > 0
+        )
         publish_domain_event(
             "messages.announcement.sent",
             payload={
@@ -626,7 +635,7 @@ def send_faculty_message(
                 "message_type": message_type,
                 "recipient_count": len(created_rows),
             },
-            scopes={f"faculty:{int(faculty_id)}", "role:student"},
+            scopes=event_scopes,
             topics={"messages"},
             actor={
                 "user_id": int(current_user.id),

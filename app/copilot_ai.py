@@ -308,6 +308,58 @@ def _copilot_temperature() -> float:
     return _float_env("COPILOT_LLM_TEMPERATURE", 0.2, minimum=0.0, maximum=1.0)
 
 
+def _copilot_gemini_response_schema() -> dict[str, Any]:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "title": {"type": "STRING"},
+            "explanation": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "next_steps": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+        },
+        "required": ["title", "explanation", "next_steps"],
+    }
+
+
+def _copilot_openrouter_response_schema() -> dict[str, Any]:
+    return {
+        "name": "campus_copilot_response",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short response title for the in-app copilot card.",
+                },
+                "explanation": {
+                    "type": "array",
+                    "description": "Concise in-app explanation points.",
+                    "items": {
+                        "type": "string",
+                        "description": "One concise explanation point.",
+                    },
+                },
+                "next_steps": {
+                    "type": "array",
+                    "description": "Concrete in-app next steps.",
+                    "items": {
+                        "type": "string",
+                        "description": "One concrete next step.",
+                    },
+                },
+            },
+            "required": ["title", "explanation", "next_steps"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def _extract_gemini_text(payload: dict[str, Any]) -> str:
     candidates = payload.get("candidates")
     if not isinstance(candidates, list):
@@ -414,18 +466,34 @@ def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
 
 
 def _normalize_lines(value: Any, *, minimum: int, maximum: int) -> list[str]:
-    if not isinstance(value, list):
-        return []
+    if isinstance(value, str):
+        raw_items: list[Any] = [value]
+    elif isinstance(value, tuple):
+        raw_items = list(value)
+    elif isinstance(value, list):
+        raw_items = value
+    elif value is None:
+        raw_items = []
+    else:
+        raw_items = [value]
+
     out: list[str] = []
-    for item in value:
-        text = " ".join(str(item or "").split()).strip()
-        if not text:
-            continue
-        if text.lower().startswith("as an ai"):
-            continue
-        if re.search(r"https?://", text, flags=re.IGNORECASE):
-            continue
-        out.append(text[:220])
+    for item in raw_items:
+        candidate_lines = [item]
+        if isinstance(item, str):
+            candidate_lines = [segment for segment in re.split(r"\n+", item) if segment.strip()]
+        for candidate in candidate_lines:
+            text = " ".join(str(candidate or "").split()).strip()
+            text = re.sub(r"^(?:[-*•]+|\d+[.)])\s*", "", text).strip()
+            if not text:
+                continue
+            if text.lower().startswith("as an ai"):
+                continue
+            if re.search(r"https?://", text, flags=re.IGNORECASE):
+                continue
+            out.append(text[:220])
+            if len(out) >= maximum:
+                break
         if len(out) >= maximum:
             break
     if len(out) < minimum:
@@ -546,6 +614,8 @@ def _try_gemini_json(
             "temperature": _copilot_temperature(),
             "topP": 0.9,
             "maxOutputTokens": 320,
+            "response_mime_type": "application/json",
+            "response_schema": _copilot_gemini_response_schema(),
         },
     }
     base_url = _copilot_gemini_base_url()
@@ -602,6 +672,11 @@ def _try_openrouter_json(
         "temperature": _copilot_temperature(),
         "top_p": 0.9,
         "max_tokens": 320,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": _copilot_openrouter_response_schema(),
+        },
+        "plugins": [{"id": "response-healing"}],
     }
     endpoint = f"{_copilot_openrouter_base_url()}/chat/completions"
     site_url = _copilot_openrouter_site_url()

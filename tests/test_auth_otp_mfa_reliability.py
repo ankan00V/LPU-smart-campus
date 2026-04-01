@@ -78,6 +78,11 @@ class _Collection:
             elif operator == "$inc":
                 for field_name, value in payload.items():
                     row[field_name] = int(row.get(field_name, 0)) + int(value)
+            elif operator == "$pull":
+                for field_name, value in payload.items():
+                    existing = row.get(field_name)
+                    if isinstance(existing, list):
+                        row[field_name] = [item for item in existing if item != value]
             elif operator == "$setOnInsert" and is_insert:
                 row.update(payload)
 
@@ -88,8 +93,13 @@ class _Collection:
                 return any(_Collection._match(row, branch) for branch in expected)
             value = row.get(key)
             if isinstance(expected, dict):
-                if "$in" in expected and value not in expected["$in"]:
-                    return False
+                if "$in" in expected:
+                    allowed = expected["$in"]
+                    if isinstance(value, list):
+                        if not any(item in allowed for item in value):
+                            return False
+                    elif value not in allowed:
+                        return False
                 if "$exists" in expected:
                     exists = key in row
                     if exists != bool(expected["$exists"]):
@@ -368,6 +378,58 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         stored_user = mongo["auth_users"].find_one({"id": 50})
         self.assertEqual(stored_user["mfa_backup_code_hashes"], [])
 
+    def test_verify_login_otp_preserves_backup_code_when_otp_consume_races(self):
+        mongo = _FakeMongo(auth_otps_collection=_ConsumeConflictCollection())
+        otp_hash, otp_salt = hash_otp("123456")
+        backup_hash = hash_backup_code("AB12CD34")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 14,
+                "email": "owner@gmail.com",
+                "password_hash": hash_password("Owner@123"),
+                "role": models.UserRole.OWNER.value,
+                "student_id": None,
+                "faculty_id": None,
+                "is_active": True,
+                "mfa_enabled": True,
+                "mfa_totp_secret": None,
+                "mfa_backup_code_hashes": [backup_hash],
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 31,
+                "user_id": 14,
+                "purpose": "login",
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=14),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.verify_login_otp(
+                    schemas.VerifyOTPRequest(email="owner@gmail.com", otp_code="123456", mfa_code="ab12 cd34"),
+                    response=Response(),
+                    request=_request("/auth/login/verify-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail, "OTP already used. Request a new OTP.")
+        stored_user = mongo["auth_users"].find_one({"id": 14})
+        self.assertEqual(stored_user["mfa_backup_code_hashes"], [backup_hash])
+
     def test_mfa_status_returns_503_when_datastore_read_fails(self):
         current_user = CurrentUser(
             id=99,
@@ -392,6 +454,100 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn("temporarily unavailable", str(ctx.exception.detail))
+
+    def test_mfa_activate_succeeds_when_session_marker_write_fails(self):
+        mongo = {
+            "auth_users": _Collection(),
+            "auth_sessions": _RaisingCollection(update_one_exc=PyMongoError("write failed")),
+        }
+        mongo["auth_users"].insert_one(
+            {
+                "id": 78,
+                "email": "owner@gmail.com",
+                "role": models.UserRole.OWNER.value,
+                "mfa_setup_secret": "SECRET",
+                "mfa_setup_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                "mfa_setup_backup_code_hashes": [hash_backup_code("AB12CD34")],
+                "mfa_enabled": False,
+                "mfa_totp_secret": None,
+                "mfa_backup_code_hashes": [],
+            }
+        )
+        current_user = CurrentUser(
+            id=78,
+            email="owner@gmail.com",
+            role=models.UserRole.OWNER,
+            student_id=None,
+            faculty_id=None,
+            alternate_email=None,
+            primary_login_verified=True,
+            is_active=True,
+            mfa_enabled=False,
+            mfa_authenticated=False,
+            session_id="sid-78",
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._match_user_totp", return_value=0),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.mfa_activate(
+                schemas.MFAActivateRequest(totp_code="123456"),
+                current_user=current_user,
+            )
+
+        self.assertIn("Sign out and log in again", result.message)
+        stored_user = mongo["auth_users"].find_one({"id": 78})
+        self.assertTrue(stored_user["mfa_enabled"])
+        self.assertEqual(stored_user["mfa_totp_secret"], "SECRET")
+
+    def test_mfa_activate_requires_fresh_login_when_session_marker_is_missing(self):
+        mongo = {
+            "auth_users": _Collection(),
+            "auth_sessions": _Collection(),
+        }
+        mongo["auth_users"].insert_one(
+            {
+                "id": 79,
+                "email": "owner@gmail.com",
+                "role": models.UserRole.OWNER.value,
+                "mfa_setup_secret": "SECRET",
+                "mfa_setup_expires_at": datetime.utcnow() + timedelta(minutes=5),
+                "mfa_setup_backup_code_hashes": [hash_backup_code("AB12CD34")],
+                "mfa_enabled": False,
+                "mfa_totp_secret": None,
+                "mfa_backup_code_hashes": [],
+            }
+        )
+        current_user = CurrentUser(
+            id=79,
+            email="owner@gmail.com",
+            role=models.UserRole.OWNER,
+            student_id=None,
+            faculty_id=None,
+            alternate_email=None,
+            primary_login_verified=True,
+            is_active=True,
+            mfa_enabled=False,
+            mfa_authenticated=False,
+            session_id="missing-sid",
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._match_user_totp", return_value=0),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.mfa_activate(
+                schemas.MFAActivateRequest(totp_code="123456"),
+                current_user=current_user,
+            )
+
+        self.assertIn("Sign out and log in again", result.message)
+        stored_user = mongo["auth_users"].find_one({"id": 79})
+        self.assertTrue(stored_user["mfa_enabled"])
+        self.assertEqual(stored_user["mfa_totp_secret"], "SECRET")
 
     def test_mfa_activate_returns_503_when_datastore_write_fails(self):
         mongo = {

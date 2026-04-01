@@ -380,7 +380,7 @@ def _session_active(session_doc: dict[str, Any]) -> bool:
 def _token_revoked(db, *, jti: str) -> bool:
     if not jti:
         return False
-    row = db["auth_token_revocations"].find_one({"jti": jti}, {"_id": 1})
+    row = db["auth_token_revocations"].find_one({"jti": jti})
     return row is not None
 
 

@@ -2,16 +2,24 @@ import logging
 import os
 import time as pytime
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode
 from urllib.parse import SplitResult
 
+from dotenv import dotenv_values, load_dotenv
 from pymongo import ASCENDING, MongoClient, ReturnDocument
 from pymongo.errors import PyMongoError
 
 from .enterprise_controls import apply_pii_encryption_policy
 from .realtime_bus import infer_topics, publish_domain_event
-from .runtime_infra import install_socket_dns_fallback, is_remote_service_host, normalize_host, split_url
+from .runtime_infra import (
+    install_socket_dns_fallback,
+    is_remote_service_host,
+    managed_services_required,
+    normalize_host,
+    split_url,
+)
 
 _mongo_client: MongoClient | None = None
 _mongo_db = None
@@ -19,11 +27,34 @@ _mongo_error: str | None = None
 _last_init_attempt: datetime | None = None
 _mongo_backend: str | None = None
 LOGGER = logging.getLogger(__name__)
+_ORIGINAL_ENV = dict(os.environ)
+_ENV_LOADED = False
 
 try:
     import dns.resolver as dns_resolver
 except Exception:  # noqa: BLE001
     dns_resolver = None
+
+
+def _load_environment_files() -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    project_root = Path(__file__).resolve().parent.parent
+    load_dotenv(project_root / ".env")
+    local_values = dotenv_values(project_root / ".env.local")
+    for key, value in local_values.items():
+        if value is None:
+            continue
+        if key in _ORIGINAL_ENV:
+            continue
+        os.environ[key] = str(value)
+    _ENV_LOADED = True
+
+
+_load_environment_files()
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -37,6 +68,9 @@ def _is_production_env() -> bool:
 
 
 def _mongita_fallback_enabled() -> bool:
+    # Strict or managed-service deployments must never downgrade to a local Mongo fallback.
+    if _strict_runtime_enabled() or managed_services_required():
+        return False
     default = not _is_production_env()
     return _bool_env("MONGO_MONGITA_FALLBACK", default=default)
 
@@ -516,11 +550,9 @@ def init_mongo(force: bool = False) -> bool:
     if fallback_uri and fallback_uri not in uri_candidates:
         uri_candidates.append(fallback_uri)
 
+    errors: list[str] = []
     if not uri_candidates:
-        _mongo_client = None
-        _mongo_db = None
-        _mongo_error = "MONGODB_URI is not configured"
-        return False
+        errors.append("MONGODB_URI is not configured")
 
     now = datetime.now(timezone.utc)
     if (
@@ -558,7 +590,6 @@ def init_mongo(force: bool = False) -> bool:
     if _bool_env("MONGO_TLS_ALLOW_INVALID_HOSTNAMES", default=False):
         mongo_kwargs["tlsAllowInvalidHostnames"] = True
 
-    errors: list[str] = []
     candidate_attempts = _int_env("MONGO_CANDIDATE_ATTEMPTS", 2, minimum=1)
     candidate_retry_delay_ms = _int_env("MONGO_CANDIDATE_RETRY_DELAY_MS", 750, minimum=0)
     for idx, candidate_uri in enumerate(uri_candidates):
@@ -739,7 +770,19 @@ def mirror_document(
 
     try:
         if upsert_filter:
-            db[collection_name].update_one(dict(upsert_filter), {"$set": doc}, upsert=True)
+            if _mongo_backend == "mongita":
+                selector = dict(upsert_filter)
+                existing = db[collection_name].find_one(selector)
+                if existing:
+                    replacement = dict(existing)
+                    replacement.update(doc)
+                    db[collection_name].replace_one(selector, replacement)
+                else:
+                    for key, value in selector.items():
+                        doc.setdefault(key, value)
+                    db[collection_name].insert_one(doc)
+            else:
+                db[collection_name].update_one(dict(upsert_filter), {"$set": doc}, upsert=True)
         else:
             db[collection_name].insert_one(doc)
         return True
@@ -793,9 +836,17 @@ def mirror_event(
     source: str = "api",
     actor: dict[str, Any] | None = None,
     required: bool | None = None,
+    scopes: set[str] | None = None,
+    topics: set[str] | None = None,
 ) -> bool:
     actor_payload = actor or {}
-    realtime_scopes: set[str] = {"role:admin"}
+    realtime_scopes = {
+        str(scope or "").strip().lower()
+        for scope in (scopes or {"role:admin"})
+        if str(scope or "").strip()
+    }
+    if not realtime_scopes:
+        realtime_scopes = {"role:admin"}
     actor_user_id = actor_payload.get("user_id")
     try:
         if actor_user_id is not None:
@@ -820,6 +871,6 @@ def mirror_event(
         actor=actor_payload,
         source=source,
         scopes=realtime_scopes,
-        topics=infer_topics(event_type),
+        topics=topics or infer_topics(event_type),
     )
     return mirrored

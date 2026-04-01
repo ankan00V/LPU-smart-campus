@@ -1,7 +1,9 @@
+import logging
 import os
 import smtplib
 import ssl
 import json
+import time as pytime
 from email.message import EmailMessage
 from pathlib import Path
 from urllib.error import HTTPError
@@ -14,6 +16,7 @@ from dotenv import dotenv_values, load_dotenv
 _ENV_LOADED = False
 _ORIGINAL_ENV = dict(os.environ)
 _OTP_DELIVERY_MODES = {"smtp", "graph"}
+logger = logging.getLogger(__name__)
 
 
 def _ensure_env_loaded() -> None:
@@ -92,6 +95,26 @@ def _from_email() -> str:
     return os.getenv("OTP_FROM_EMAIL", "").strip() or _smtp_username()
 
 
+def _smtp_verify_max_attempts() -> int:
+    _ensure_env_loaded()
+    raw = os.getenv("OTP_SMTP_VERIFY_MAX_ATTEMPTS", "3").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return max(1, min(10, value))
+
+
+def _smtp_verify_retry_delay_seconds() -> float:
+    _ensure_env_loaded()
+    raw = os.getenv("OTP_SMTP_VERIFY_RETRY_DELAY_SECONDS", "1.0").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 1.0
+    return max(0.0, min(30.0, value))
+
+
 def _subject_prefix() -> str:
     _ensure_env_loaded()
     return os.getenv("OTP_SUBJECT_PREFIX", "LPU Smart Campus").strip() or "LPU Smart Campus"
@@ -162,31 +185,67 @@ def _ensure_smtp_config() -> None:
         raise RuntimeError("OTP SMTP config is invalid. Enable either SSL or STARTTLS, not both.")
 
 
+def _is_transient_smtp_error(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, smtplib.SMTPServerDisconnected)):
+        return True
+    message = str(exc or "").lower()
+    return any(
+        token in message
+        for token in (
+            "timed out",
+            "temporarily unavailable",
+            "try again later",
+            "connection unexpectedly closed",
+            "connection reset",
+            "connection refused",
+            "network is unreachable",
+        )
+    )
+
+
 def _verify_smtp_connection() -> None:
     _ensure_smtp_config()
     host = _smtp_host()
     port = _smtp_port()
     username = _smtp_username()
     password = _smtp_password()
-    try:
-        if _smtp_use_ssl():
-            context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
-                server.login(username, password)
-                code, _ = server.noop()
-        else:
-            with smtplib.SMTP(host, port, timeout=15) as server:
-                server.ehlo()
-                if _smtp_starttls():
-                    context = ssl.create_default_context()
-                    server.starttls(context=context)
+    attempts = _smtp_verify_max_attempts()
+    retry_delay_seconds = _smtp_verify_retry_delay_seconds()
+
+    for attempt in range(1, attempts + 1):
+        try:
+            if _smtp_use_ssl():
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+                    server.login(username, password)
+                    code, _ = server.noop()
+            else:
+                with smtplib.SMTP(host, port, timeout=15) as server:
                     server.ehlo()
-                server.login(username, password)
-                code, _ = server.noop()
-        if int(code) != 250:
-            raise RuntimeError(f"SMTP server health probe returned unexpected status code {code}.")
-    except (OSError, smtplib.SMTPException, RuntimeError) as exc:
-        raise RuntimeError(f"OTP SMTP verification failed: {exc}") from exc
+                    if _smtp_starttls():
+                        context = ssl.create_default_context()
+                        server.starttls(context=context)
+                        server.ehlo()
+                    server.login(username, password)
+                    code, _ = server.noop()
+            if int(code) != 250:
+                raise RuntimeError(f"SMTP server health probe returned unexpected status code {code}.")
+            return
+        except RuntimeError:
+            raise
+        except (OSError, smtplib.SMTPException) as exc:
+            if attempt < attempts and _is_transient_smtp_error(exc):
+                logger.warning(
+                    "Transient OTP SMTP verification failure (%s/%s). Retrying in %.1fs. error=%s",
+                    attempt,
+                    attempts,
+                    retry_delay_seconds,
+                    exc,
+                )
+                if retry_delay_seconds > 0:
+                    pytime.sleep(retry_delay_seconds)
+                continue
+            raise RuntimeError(f"OTP SMTP verification failed: {exc}") from exc
 
 
 def _send_via_smtp(destination_email: str, otp_code: str) -> None:
@@ -206,14 +265,17 @@ def _send_via_smtp(destination_email: str, otp_code: str) -> None:
     if _smtp_use_ssl():
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            server.ehlo()
             server.login(username, password)
             server.send_message(message)
         return
 
     with smtplib.SMTP(host, port, timeout=15) as server:
+        server.ehlo()
         if _smtp_starttls():
             context = ssl.create_default_context()
             server.starttls(context=context)
+            server.ehlo()
         server.login(username, password)
         server.send_message(message)
 
@@ -235,14 +297,17 @@ def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> No
     if _smtp_use_ssl():
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            server.ehlo()
             server.login(username, password)
             server.send_message(message)
         return
 
     with smtplib.SMTP(host, port, timeout=15) as server:
+        server.ehlo()
         if _smtp_starttls():
             context = ssl.create_default_context()
             server.starttls(context=context)
+            server.ehlo()
         server.login(username, password)
         server.send_message(message)
 
