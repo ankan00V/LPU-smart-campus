@@ -39,6 +39,7 @@ Set these on the Railway service:
 - `WORKER_WAIT_FOR_OTP_RESULT=true`
 - `OTP_DELIVERY_DIRECT_SYNC=true`
 - `OTP_DELIVERY_MODE=smtp`
+- `SENDGRID_API_KEY` if you want the HTTPS fallback path for Railway
 
 ## Deploy Order
 
@@ -46,6 +47,7 @@ Set these on the Railway service:
 2. Add the variables above.
 3. Make sure Neon, Atlas, and Upstash are reachable from Railway.
 4. Deploy the service.
+5. If SMTP delivery still fails on Railway, set `SENDGRID_API_KEY` and keep `OTP_DELIVERY_MODE=smtp` so the app can fall back to SendGrid over HTTPS.
 5. Open the Railway URL and confirm `/` returns the health payload.
 6. Log in with OTP and verify one worker-backed action.
 

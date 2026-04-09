@@ -506,9 +506,9 @@ def _assert_strict_runtime_contract() -> None:
             "APP_RUNTIME_STRICT=true requires WORKER_WAIT_FOR_OTP_RESULT=true."
         )
     otp_mode = (os.getenv("OTP_DELIVERY_MODE", "smtp") or "").strip().lower() or "smtp"
-    if otp_mode not in {"smtp", "graph"}:
+    if otp_mode not in {"smtp", "graph", "sendgrid"}:
         raise RuntimeError(
-            "APP_RUNTIME_STRICT=true requires OTP_DELIVERY_MODE to be 'smtp' or 'graph'."
+            "APP_RUNTIME_STRICT=true requires OTP_DELIVERY_MODE to be 'smtp', 'graph', or 'sendgrid'."
         )
     required_worker_flags = [
         "WORKER_ENABLE_OTP",
@@ -1210,7 +1210,11 @@ async def startup_event() -> None:
         assert_otp_delivery_ready(verify_connection=_otp_verify_connection_on_startup())
     except RuntimeError as exc:
         message = str(exc).strip().lower()
-        if "otp smtp verification failed" in message or "otp graph verification failed" in message:
+        if (
+            "otp smtp verification failed" in message
+            or "otp graph verification failed" in message
+            or "sendgrid" in message
+        ):
             logger.warning("OTP delivery verification failed at startup; continuing with warning: %s", exc)
         else:
             raise

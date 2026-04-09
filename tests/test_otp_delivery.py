@@ -107,3 +107,50 @@ class OTPDeliveryTests(unittest.TestCase):
         )
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
         server.send_message.assert_called_once()
+
+    @mock.patch("app.otp_delivery.urlopen")
+    def test_send_login_otp_uses_sendgrid_mode(self, urlopen_mock):
+        os.environ["OTP_DELIVERY_MODE"] = "sendgrid"
+        os.environ["SENDGRID_API_KEY"] = "sg.test-key"
+        os.environ["SENDGRID_FROM_EMAIL"] = "campus@example.com"
+        os.environ["SENDGRID_FROM_NAME"] = "LPU Smart Campus"
+
+        response = mock.MagicMock()
+        response.status = 202
+        response.__enter__.return_value = response
+        urlopen_mock.return_value = response
+
+        payload = otp_delivery.send_login_otp("person@example.com", "123456")
+
+        self.assertEqual(payload, {"channel": "sendgrid-email"})
+        self.assertEqual(urlopen_mock.call_count, 1)
+
+    @mock.patch("app.otp_delivery.urlopen")
+    @mock.patch("app.otp_delivery.smtplib.SMTP")
+    def test_send_via_smtp_falls_back_to_sendgrid_when_available(
+        self,
+        smtp_cls,
+        urlopen_mock,
+    ):
+        os.environ["OTP_DELIVERY_MODE"] = "smtp"
+        os.environ["OTP_SMTP_HOST"] = "smtp.example.com"
+        os.environ["OTP_SMTP_PORT"] = "587"
+        os.environ["OTP_SMTP_USERNAME"] = "campus@example.com"
+        os.environ["OTP_SMTP_PASSWORD"] = "abcdefghijklmnop"
+        os.environ["OTP_SMTP_STARTTLS"] = "true"
+        os.environ["OTP_SMTP_USE_SSL"] = "false"
+        os.environ["OTP_FROM_EMAIL"] = "campus@example.com"
+        os.environ["SENDGRID_API_KEY"] = "sg.test-key"
+        os.environ["SENDGRID_FROM_EMAIL"] = "campus@example.com"
+        os.environ["SENDGRID_FROM_NAME"] = "LPU Smart Campus"
+
+        smtp_cls.side_effect = OSError(101, "Network is unreachable")
+        response = mock.MagicMock()
+        response.status = 202
+        response.__enter__.return_value = response
+        urlopen_mock.return_value = response
+
+        payload = otp_delivery.send_login_otp("person@example.com", "123456")
+
+        self.assertEqual(payload, {"channel": "sendgrid-email"})
+        self.assertEqual(urlopen_mock.call_count, 1)

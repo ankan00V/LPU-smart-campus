@@ -55,7 +55,7 @@ TASK_SEND_OTP = "smartcampus.tasks.send_login_otp"
 TASK_NOTIFY = "smartcampus.tasks.send_notification"
 TASK_FACE_REVERIFY = "smartcampus.tasks.face_reverify"
 TASK_RECOMPUTE = "smartcampus.tasks.recompute"
-_OTP_DELIVERY_CHANNELS = {"smtp-email", "graph-email"}
+_OTP_DELIVERY_CHANNELS = {"smtp-email", "graph-email", "sendgrid-email"}
 
 _executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="smartcampus-worker")
 _celery_app = None

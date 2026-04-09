@@ -15,7 +15,7 @@ from .runtime_infra import install_socket_dns_fallback
 
 _ENV_LOADED = False
 _ORIGINAL_ENV = dict(os.environ)
-_OTP_DELIVERY_MODES = {"smtp", "graph"}
+_OTP_DELIVERY_MODES = {"smtp", "graph", "sendgrid"}
 
 
 def _ensure_env_loaded() -> None:
@@ -42,7 +42,7 @@ def _delivery_mode() -> str:
 def otp_delivery_mode() -> str:
     mode = _delivery_mode()
     if mode not in _OTP_DELIVERY_MODES:
-        raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+        raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")
     return mode
 
 
@@ -99,6 +99,18 @@ def _subject_prefix() -> str:
     return os.getenv("OTP_SUBJECT_PREFIX", "LPU Smart Campus").strip() or "LPU Smart Campus"
 
 
+def _is_placeholder_value(value: str) -> bool:
+    return value.strip() in {
+        "",
+        "CHANGE_ME",
+        "YOUR_SENDER_GMAIL@gmail.com",
+        "YOUR_GMAIL_APP_PASSWORD",
+        "your_sender_gmail@gmail.com",
+        "your_gmail_app_password",
+        "your_mailbox_password_or_app_password",
+    }
+
+
 def _smtp_gmail_ssl_fallback_enabled() -> bool:
     host = _smtp_host()
     return (
@@ -150,30 +162,111 @@ def _normalize_subject_line(subject: str) -> str:
 def _ensure_smtp_config() -> None:
     install_socket_dns_fallback()
 
-    def is_placeholder(value: str) -> bool:
-        return value.strip() in {
-            "",
-            "CHANGE_ME",
-            "YOUR_SENDER_GMAIL@gmail.com",
-            "YOUR_GMAIL_APP_PASSWORD",
-            "your_sender_gmail@gmail.com",
-            "your_gmail_app_password",
-            "your_mailbox_password_or_app_password",
-        }
-
     missing: list[str] = []
-    if is_placeholder(_smtp_host()):
+    if _is_placeholder_value(_smtp_host()):
         missing.append("OTP_SMTP_HOST")
-    if is_placeholder(_smtp_username()):
+    if _is_placeholder_value(_smtp_username()):
         missing.append("OTP_SMTP_USERNAME")
-    if is_placeholder(_smtp_password()):
+    if _is_placeholder_value(_smtp_password()):
         missing.append("OTP_SMTP_PASSWORD")
-    if is_placeholder(_from_email()):
+    if _is_placeholder_value(_from_email()):
         missing.append("OTP_FROM_EMAIL")
     if missing:
         raise RuntimeError(f"OTP SMTP is not configured. Missing: {', '.join(missing)}")
     if _smtp_use_ssl() and _smtp_starttls():
         raise RuntimeError("OTP SMTP config is invalid. Enable either SSL or STARTTLS, not both.")
+
+
+def _sendgrid_api_key() -> str:
+    _ensure_env_loaded()
+    return os.getenv("SENDGRID_API_KEY", "").strip()
+
+
+def _sendgrid_from_email() -> str:
+    _ensure_env_loaded()
+    return os.getenv("SENDGRID_FROM_EMAIL", "").strip() or _from_email()
+
+
+def _sendgrid_from_name() -> str:
+    _ensure_env_loaded()
+    return os.getenv("SENDGRID_FROM_NAME", "LPU Smart Campus").strip() or "LPU Smart Campus"
+
+
+def _sendgrid_api_base_url() -> str:
+    _ensure_env_loaded()
+    raw = os.getenv("SENDGRID_API_BASE_URL", "https://api.sendgrid.com").strip()
+    return raw.rstrip("/") or "https://api.sendgrid.com"
+
+
+def _ensure_sendgrid_config() -> None:
+    missing: list[str] = []
+    if _is_placeholder_value(_sendgrid_api_key()):
+        missing.append("SENDGRID_API_KEY")
+    if _is_placeholder_value(_sendgrid_from_email()):
+        missing.append("SENDGRID_FROM_EMAIL")
+    if missing:
+        raise RuntimeError(f"SendGrid is not configured. Missing: {', '.join(missing)}")
+
+
+def _sendgrid_mail_request(destination_email: str, subject: str, body: str) -> Request:
+    payload = {
+        "personalizations": [
+            {
+                "to": [{"email": destination_email}],
+            }
+        ],
+        "from": {
+            "email": _sendgrid_from_email(),
+            "name": _sendgrid_from_name(),
+        },
+        "subject": subject,
+        "content": [
+            {
+                "type": "text/plain",
+                "value": body,
+            }
+        ],
+    }
+    request = Request(
+        f"{_sendgrid_api_base_url()}/v3/mail/send",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+    )
+    request.add_header("Content-Type", "application/json")
+    request.add_header("Authorization", f"Bearer {_sendgrid_api_key()}")
+    return request
+
+
+def _send_via_sendgrid(destination_email: str, otp_code: str) -> None:
+    _ensure_sendgrid_config()
+    request = _sendgrid_mail_request(destination_email, _otp_mail_subject(), _otp_mail_body(otp_code))
+    try:
+        with urlopen(request, timeout=20) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            if status and 200 <= status < 300:
+                return
+            raise RuntimeError(f"SendGrid mail send returned unexpected status code {status}.")
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        raise RuntimeError(f"SendGrid mail send failed: HTTP {exc.code} {raw}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"SendGrid mail send failed: {exc}") from exc
+
+
+def _send_custom_via_sendgrid(destination_email: str, subject: str, body: str) -> None:
+    _ensure_sendgrid_config()
+    request = _sendgrid_mail_request(destination_email, subject, body)
+    try:
+        with urlopen(request, timeout=20) as response:
+            status = int(getattr(response, "status", 0) or 0)
+            if status and 200 <= status < 300:
+                return
+            raise RuntimeError(f"SendGrid mail send returned unexpected status code {status}.")
+    except HTTPError as exc:
+        raw = exc.read().decode("utf-8")
+        raise RuntimeError(f"SendGrid mail send failed: HTTP {exc.code} {raw}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"SendGrid mail send failed: {exc}") from exc
 
 
 def _verify_smtp_connection() -> None:
@@ -437,17 +530,28 @@ def assert_otp_delivery_ready(*, verify_connection: bool = False) -> str:
         if verify_connection:
             _verify_graph_connection()
         return mode
-    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+    if mode == "sendgrid":
+        _ensure_sendgrid_config()
+        return mode
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")
 
 
 def send_login_otp(destination_email: str, otp_code: str) -> dict:
     mode = otp_delivery_mode()
 
     if mode == "smtp":
-        _send_via_smtp(destination_email, otp_code)
-        return {
-            "channel": "smtp-email",
-        }
+        try:
+            _send_via_smtp(destination_email, otp_code)
+            return {
+                "channel": "smtp-email",
+            }
+        except Exception as exc:  # noqa: BLE001
+            if _sendgrid_api_key():
+                _send_via_sendgrid(destination_email, otp_code)
+                return {
+                    "channel": "sendgrid-email",
+                }
+            raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
     if mode == "graph":
         _send_via_graph(destination_email, otp_code)
@@ -455,7 +559,13 @@ def send_login_otp(destination_email: str, otp_code: str) -> dict:
             "channel": "graph-email",
         }
 
-    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+    if mode == "sendgrid":
+        _send_via_sendgrid(destination_email, otp_code)
+        return {
+            "channel": "sendgrid-email",
+        }
+
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")
 
 
 def send_notification_email(destination_email: str, *, subject: str, body: str) -> dict:
@@ -466,11 +576,20 @@ def send_notification_email(destination_email: str, *, subject: str, body: str) 
         raise RuntimeError("Notification email body cannot be empty.")
 
     if mode == "smtp":
-        _send_custom_via_smtp(destination_email, subject_line, message_body)
-        return {
-            "channel": "smtp-email",
-            "subject": subject_line,
-        }
+        try:
+            _send_custom_via_smtp(destination_email, subject_line, message_body)
+            return {
+                "channel": "smtp-email",
+                "subject": subject_line,
+            }
+        except Exception as exc:  # noqa: BLE001
+            if _sendgrid_api_key():
+                _send_custom_via_sendgrid(destination_email, subject_line, message_body)
+                return {
+                    "channel": "sendgrid-email",
+                    "subject": subject_line,
+                }
+            raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
     if mode == "graph":
         _send_custom_via_graph(destination_email, subject_line, message_body)
@@ -479,4 +598,11 @@ def send_notification_email(destination_email: str, *, subject: str, body: str) 
             "subject": subject_line,
         }
 
-    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp' or 'graph'.")
+    if mode == "sendgrid":
+        _send_custom_via_sendgrid(destination_email, subject_line, message_body)
+        return {
+            "channel": "sendgrid-email",
+            "subject": subject_line,
+        }
+
+    raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")
