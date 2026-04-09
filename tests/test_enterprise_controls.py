@@ -145,6 +145,7 @@ class EnterpriseControlsTests(unittest.TestCase):
         keys = [
             "APP_ENV",
             "APP_DEPLOY_TARGET",
+            "RAILWAY_SERVICE_ID",
             "APP_AUTH_SECRET",
             "SCIM_BEARER_TOKEN",
             "APP_LOOKUP_HASH_SECRET",
@@ -170,6 +171,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             os.environ["APP_LOOKUP_HASH_SECRET"] = "prod-lookup-secret-railway"
             os.environ["APP_SECRETS_PROVIDER"] = "env"
             os.environ["APP_ALLOW_ENV_SECRETS_IN_PRODUCTION"] = "false"
+            os.environ["RAILWAY_SERVICE_ID"] = "svc-test-railway"
             os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
             os.environ["APP_COOKIE_SECURE"] = "true"
             os.environ["APP_RUNTIME_STRICT"] = "true"

@@ -54,7 +54,18 @@ def _deploy_target() -> str:
 def _production_env_secrets_allowed() -> bool:
     if _bool_env("APP_ALLOW_ENV_SECRETS_IN_PRODUCTION", default=False):
         return True
-    return _deploy_target() in {"railway", "render", "vercel", "fly", "railway-hobby"}
+    if _deploy_target() in {"railway", "render", "vercel", "fly", "railway-hobby"}:
+        return True
+    # Railway often exposes production as RAILWAY_ENVIRONMENT=production, so
+    # treat Railway-specific runtime markers as sufficient evidence that env
+    # secrets are platform-managed rather than ad hoc local values.
+    if (
+        _normalize_text(os.getenv("RAILWAY_SERVICE_ID"))
+        or _normalize_text(os.getenv("RAILWAY_PROJECT_ID"))
+        or _normalize_text(os.getenv("RAILWAY_PUBLIC_DOMAIN"))
+    ):
+        return True
+    return False
 
 
 def _coerce_utc_dt(value: str | datetime | None) -> datetime | None:
