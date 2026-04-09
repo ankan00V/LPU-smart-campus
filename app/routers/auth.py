@@ -59,8 +59,6 @@ from ..workers import dispatch_login_otp
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 logger = logging.getLogger(__name__)
 
-GMAIL_EMAIL_SUFFIX = "@gmail.com"
-ALTERNATE_EMAIL_SUFFIX = "@gmail.com"
 PASSWORD_POLICY_MESSAGE = (
     "Password must be at least 8 characters and include letters, numbers, and special characters."
 )
@@ -248,6 +246,26 @@ def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def _allowed_email_suffixes() -> list[str]:
+    raw = (os.getenv("AUTH_EMAIL_SUFFIXES") or "").strip()
+    if not raw:
+        return []
+    suffixes: list[str] = []
+    for token in raw.replace(";", ",").split(","):
+        suffix = token.strip().lower()
+        if suffix and suffix not in suffixes:
+            suffixes.append(suffix)
+    return suffixes
+
+
+def _email_suffix_allowed(email: str) -> bool:
+    suffixes = _allowed_email_suffixes()
+    if not suffixes:
+        return True
+    normalized = _normalize_email(email)
+    return any(normalized.endswith(suffix) for suffix in suffixes)
+
+
 def _validate_role_email(email: str, role: models.UserRole) -> None:
     if role in (
         models.UserRole.ADMIN,
@@ -255,8 +273,10 @@ def _validate_role_email(email: str, role: models.UserRole) -> None:
         models.UserRole.STUDENT,
         models.UserRole.OWNER,
     ):
-        if not email.endswith(GMAIL_EMAIL_SUFFIX):
-            raise HTTPException(status_code=400, detail=f"Email must end with {GMAIL_EMAIL_SUFFIX}")
+        if not _email_suffix_allowed(email):
+            suffixes = _allowed_email_suffixes()
+            suffix_text = ", ".join(suffixes) if suffixes else "the configured institute domain"
+            raise HTTPException(status_code=400, detail=f"Email must end with {suffix_text}")
         return
 
     raise HTTPException(status_code=400, detail="Only admin, faculty, student, and owner roles are allowed")
@@ -293,8 +313,10 @@ def _validate_alternate_email(email: str) -> str:
     value = email.strip().lower()
     if not value:
         raise HTTPException(status_code=400, detail="alternate_email cannot be empty")
-    if not value.endswith(ALTERNATE_EMAIL_SUFFIX):
-        raise HTTPException(status_code=400, detail=f"Alternate email must end with {ALTERNATE_EMAIL_SUFFIX}")
+    if not _email_suffix_allowed(value):
+        suffixes = _allowed_email_suffixes()
+        suffix_text = ", ".join(suffixes) if suffixes else "the configured institute domain"
+        raise HTTPException(status_code=400, detail=f"Alternate email must end with {suffix_text}")
     return value
 
 

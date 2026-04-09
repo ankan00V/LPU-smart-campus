@@ -29,7 +29,6 @@ from .id_alignment import (
     align_faculty_profile_id_with_sql,
     align_student_profile_id_with_sql,
 )
-from .media_storage import assert_media_storage_ready
 from .mongo import (
     close_mongo,
     get_mongo_db,
@@ -116,6 +115,8 @@ _health_cache_expires_at = 0.0
 _health_cache_refreshing = False
 _startup_sql_snapshot_sync_lock = threading.Lock()
 _startup_sql_snapshot_sync_thread: threading.Thread | None = None
+_startup_bootstrap_lock = threading.Lock()
+_startup_bootstrap_thread: threading.Thread | None = None
 
 
 def _strict_runtime_mode_enabled() -> bool:
@@ -386,6 +387,76 @@ def _start_background_sql_snapshot_sync() -> bool:
             daemon=True,
         )
         _startup_sql_snapshot_sync_thread = thread
+        thread.start()
+        return True
+
+
+def _background_startup_bootstrap(*, startup_snapshot_sync: bool, requires_mongo: bool, strict_startup: bool) -> None:
+    global _startup_bootstrap_thread
+
+    db = SessionLocal()
+    started_at = pytime.perf_counter()
+    try:
+        try:
+            dispatch_outbox_batch(db, limit=200)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning("Startup outbox dispatch skipped: %s", exc)
+
+        try:
+            bootstrap_food_hall_catalog(db)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning("Startup food bootstrap skipped: %s", exc)
+
+        try:
+            if startup_snapshot_sync:
+                backend = mongo_status().get("backend")
+                if backend == "mongita":
+                    sync_sql_snapshot_to_mongo(db)
+                    logger.info("Startup SQL->Mongo snapshot sync completed in background.")
+                else:
+                    started = _start_background_sql_snapshot_sync()
+                    if started:
+                        logger.info("Startup SQL->Mongo snapshot sync scheduled in background.")
+            else:
+                logger.info("Startup SQL->Mongo snapshot sync disabled by configuration.")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Startup SQL->Mongo sync skipped due to non-fatal error: %s", exc)
+
+        try:
+            seed_static_assets_to_mongo(required=requires_mongo and strict_startup)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Startup static asset seed skipped: %s", exc)
+
+        logger.info("Background startup bootstrap finished in %.2fs.", pytime.perf_counter() - started_at)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Background startup bootstrap failed: %s", exc)
+    finally:
+        db.close()
+        with _startup_bootstrap_lock:
+            _startup_bootstrap_thread = None
+
+
+def _start_background_startup_bootstrap(*, startup_snapshot_sync: bool, requires_mongo: bool, strict_startup: bool) -> bool:
+    global _startup_bootstrap_thread
+
+    with _startup_bootstrap_lock:
+        if _startup_bootstrap_thread is not None and _startup_bootstrap_thread.is_alive():
+            return False
+        thread = threading.Thread(
+            target=_background_startup_bootstrap,
+            kwargs={
+                "startup_snapshot_sync": startup_snapshot_sync,
+                "requires_mongo": requires_mongo,
+                "strict_startup": strict_startup,
+            },
+            name="smartcampus-startup-bootstrap",
+            daemon=True,
+        )
+        _startup_bootstrap_thread = thread
         thread.start()
         return True
 
@@ -1189,7 +1260,7 @@ async def startup_event() -> None:
     ok = False
     last_reason = ""
     for attempt in range(1, max_attempts + 1):
-        ok = init_mongo(force=True)
+        ok = init_mongo(force=True, ensure_indexes=False)
         if ok:
             break
         status = mongo_status()
@@ -1217,38 +1288,22 @@ async def startup_event() -> None:
             requires_mongo,
             strict_startup,
         )
+    startup_snapshot_sync = (os.getenv("MONGO_STARTUP_SQL_SNAPSHOT_SYNC", "true") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    started = _start_background_startup_bootstrap(
+        startup_snapshot_sync=startup_snapshot_sync,
+        requires_mongo=requires_mongo,
+        strict_startup=strict_startup,
+    )
+    if started:
+        logger.info("Startup bootstrap scheduled in background.")
     else:
-        seed_static_assets_to_mongo(required=requires_mongo and strict_startup)
-    assert_media_storage_ready()
-    db = SessionLocal()
-    try:
-        dispatch_outbox_batch(db, limit=200)
-        db.commit()
-        bootstrap_food_hall_catalog(db)
-        startup_snapshot_sync = (os.getenv("MONGO_STARTUP_SQL_SNAPSHOT_SYNC", "true") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        backend = mongo_status().get("backend")
-        if ok and (startup_snapshot_sync or backend == "mongita"):
-            if backend == "mongita":
-                sync_sql_snapshot_to_mongo(db)
-                logger.info("Startup SQL->Mongo snapshot sync completed.")
-            else:
-                started = _start_background_sql_snapshot_sync()
-                if started:
-                    logger.info("Startup SQL->Mongo snapshot sync scheduled in background.")
-                else:
-                    logger.info("Startup SQL->Mongo snapshot sync already running in background.")
-    except Exception as exc:
-        if requires_mongo and strict_startup:
-            raise RuntimeError(f"Startup SQL->Mongo sync failed: {exc}") from exc
-        logger.warning("Startup SQL->Mongo sync skipped due to non-fatal error: %s", exc)
-    finally:
-        db.close()
-    _store_health_payload(_build_health_payload())
+        logger.info("Startup bootstrap already running in background.")
+    _refresh_health_payload_async()
 
 
 @app.on_event("shutdown")

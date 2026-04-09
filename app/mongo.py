@@ -502,7 +502,7 @@ def mongo_persistence_required() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def init_mongo(force: bool = False) -> bool:
+def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
     global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend
 
     uri = _mongo_uri()
@@ -570,7 +570,8 @@ def init_mongo(force: bool = False) -> bool:
                 _mongo_client = client
                 _mongo_db = client[_mongo_db_name()]
                 _mongo_backend = "pymongo"
-                _ensure_indexes(_mongo_db)
+                if ensure_indexes:
+                    _ensure_indexes(_mongo_db)
                 _mongo_error = None
                 return True
             except PyMongoError as exc:
@@ -592,7 +593,8 @@ def init_mongo(force: bool = False) -> bool:
             _mongo_db = client[_mongo_db_name()]
             _mongo_backend = "mongita"
             try:
-                _ensure_indexes(_mongo_db)
+                if ensure_indexes:
+                    _ensure_indexes(_mongo_db)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Mongo index setup skipped for fallback backend: %s", exc)
             _mongo_error = None

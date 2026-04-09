@@ -169,7 +169,6 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
         os.environ["MONGO_STARTUP_RETRY_DELAY_SECONDS"] = "0.25"
         os.environ["MONGO_STARTUP_SQL_SNAPSHOT_SYNC"] = "true"
 
-        mock_db = mock.MagicMock()
         mock_realtime_hub = mock.MagicMock()
         mock_realtime_hub.start = mock.AsyncMock()
         mock_realtime_hub.stop = mock.AsyncMock()
@@ -192,17 +191,10 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
                     side_effect=[{"error": "temporary dns failure"}, {"backend": "mongodb"}],
                 )
             )
-            stack.enter_context(mock.patch("app.main.seed_static_assets_to_mongo"))
-            stack.enter_context(mock.patch("app.main.assert_media_storage_ready"))
-            stack.enter_context(mock.patch("app.main.dispatch_outbox_batch"))
-            stack.enter_context(mock.patch("app.main.bootstrap_food_hall_catalog"))
-            stack.enter_context(mock.patch("app.main.sync_sql_snapshot_to_mongo"))
-            background_sync = stack.enter_context(
-                mock.patch("app.main._start_background_sql_snapshot_sync", return_value=True)
+            background_bootstrap = stack.enter_context(
+                mock.patch("app.main._start_background_startup_bootstrap", return_value=True)
             )
-            stack.enter_context(mock.patch("app.main._build_health_payload", return_value={}))
-            stack.enter_context(mock.patch("app.main._store_health_payload"))
-            stack.enter_context(mock.patch("app.main.SessionLocal", return_value=mock_db))
+            stack.enter_context(mock.patch("app.main._refresh_health_payload_async"))
             blocking_sleep = stack.enter_context(mock.patch("app.main.pytime.sleep", autospec=True))
             async_sleep = stack.enter_context(mock.patch("app.main.asyncio.sleep", new_callable=mock.AsyncMock))
             await startup_event()
@@ -212,9 +204,11 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(init_mongo.call_count, 2)
         mock_realtime_hub.bind_loop.assert_called_once()
         mock_realtime_hub.start.assert_awaited_once()
-        background_sync.assert_called_once()
-        mock_db.commit.assert_called()
-        mock_db.close.assert_called_once()
+        background_bootstrap.assert_called_once_with(
+            startup_snapshot_sync=True,
+            requires_mongo=False,
+            strict_startup=True,
+        )
 
     def test_runtime_strict_contract_allows_disabled_otp_startup_verification_for_local_dev(self):
         os.environ["APP_RUNTIME_STRICT"] = "true"
