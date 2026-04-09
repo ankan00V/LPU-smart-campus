@@ -233,6 +233,19 @@ def _fallback_getaddrinfo(
             if ipv4_results:
                 other_results = [entry for entry in results if not (entry and entry[0] == socket.AF_INET)]
                 return ipv4_results + other_results
+            fallback_addrs = resolve_service_hostaddrs(str(host or ""))
+            if fallback_addrs:
+                resolved: list[tuple] = []
+                target_family = socket.AF_INET if family in {0, socket.AF_UNSPEC, socket.AF_INET} else family
+                for address in fallback_addrs:
+                    try:
+                        resolved.extend(
+                            original_getaddrinfo(address, port, target_family, type, proto, flags)
+                        )
+                    except socket.gaierror:
+                        continue
+                if resolved:
+                    return resolved
         return results
     except socket.gaierror:
         if family == socket.AF_INET6:

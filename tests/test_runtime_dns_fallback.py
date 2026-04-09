@@ -105,6 +105,47 @@ Address: 34.120.55.1
 
         self.assertEqual(result[0][0], socket.AF_INET)
 
+    def test_fallback_getaddrinfo_uses_dns_ipv4_fallback_when_only_ipv6_results_exist(self):
+        runtime_infra.os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        runtime_infra.os.environ["SERVICE_PREFER_IPV4"] = "true"
+
+        def _original_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            if host == "smtp.gmail.com":
+                return [
+                    (
+                        socket.AF_INET6,
+                        socket.SOCK_STREAM,
+                        6,
+                        "",
+                        (host, port, 0, 0),
+                    )
+                ]
+            if host == "74.125.200.109":
+                return [
+                    (
+                        socket.AF_INET,
+                        socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("74.125.200.109", port),
+                    )
+                ]
+            raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+        with patch.object(runtime_infra, "resolve_service_hostaddrs", return_value=["74.125.200.109"]):
+            result = runtime_infra._fallback_getaddrinfo(
+                _original_getaddrinfo,
+                "smtp.gmail.com",
+                587,
+                socket.AF_UNSPEC,
+                socket.SOCK_STREAM,
+                0,
+                0,
+            )
+
+        self.assertEqual(result[0][0], socket.AF_INET)
+        self.assertEqual(result[0][4][0], "74.125.200.109")
+
     def test_resolve_service_hostaddr_uses_static_map_file(self):
         runtime_infra.os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
         with tempfile.NamedTemporaryFile("w+", suffix=".json") as handle:
