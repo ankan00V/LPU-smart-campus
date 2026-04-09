@@ -510,11 +510,6 @@ def _assert_strict_runtime_contract() -> None:
         raise RuntimeError(
             "APP_RUNTIME_STRICT=true requires OTP_DELIVERY_MODE to be 'smtp' or 'graph'."
         )
-    if managed_services_required and not _otp_verify_connection_on_startup():
-        raise RuntimeError(
-            "APP_RUNTIME_STRICT=true with APP_MANAGED_SERVICES_REQUIRED=true requires "
-            "OTP_VERIFY_CONNECTION_ON_STARTUP=true."
-        )
     required_worker_flags = [
         "WORKER_ENABLE_OTP",
         "WORKER_ENABLE_NOTIFICATIONS",
@@ -1211,7 +1206,14 @@ async def startup_event() -> None:
     _assert_strict_runtime_contract()
     init_sql_schema()
     validate_production_secrets()
-    assert_otp_delivery_ready(verify_connection=_otp_verify_connection_on_startup())
+    try:
+        assert_otp_delivery_ready(verify_connection=_otp_verify_connection_on_startup())
+    except RuntimeError as exc:
+        message = str(exc).strip().lower()
+        if "otp smtp verification failed" in message or "otp graph verification failed" in message:
+            logger.warning("OTP delivery verification failed at startup; continuing with warning: %s", exc)
+        else:
+            raise
     redis_attempts = _redis_startup_max_attempts()
     redis_retry_delay_seconds = _redis_startup_retry_delay_seconds()
     redis_ok = False

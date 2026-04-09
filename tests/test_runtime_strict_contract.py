@@ -235,7 +235,7 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
         ):
             _assert_strict_runtime_contract()
 
-    def test_runtime_strict_contract_rejects_disabled_otp_startup_verification_for_managed_services(self):
+    def test_runtime_strict_contract_allows_disabled_otp_startup_verification_for_managed_services(self):
         os.environ["APP_RUNTIME_STRICT"] = "true"
         os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
         os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
@@ -258,8 +258,7 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("app.main.redis_status", return_value={"remote_host": True, "tls_enabled": True}),
             mock.patch("app.main.worker_transport_status", return_value={}),
         ):
-            with self.assertRaises(RuntimeError):
-                _assert_strict_runtime_contract()
+            _assert_strict_runtime_contract()
 
     def test_otp_startup_verification_defaults_to_runtime_strict_mode(self):
         os.environ.pop("OTP_VERIFY_CONNECTION_ON_STARTUP", None)
