@@ -99,6 +99,16 @@ def _subject_prefix() -> str:
     return os.getenv("OTP_SUBJECT_PREFIX", "LPU Smart Campus").strip() or "LPU Smart Campus"
 
 
+def _smtp_gmail_ssl_fallback_enabled() -> bool:
+    host = _smtp_host()
+    return (
+        (host.strip().lower() == "smtp.gmail.com")
+        and _smtp_port() == 587
+        and not _smtp_use_ssl()
+        and _smtp_starttls()
+    )
+
+
 def otp_expiry_minutes() -> int:
     _ensure_env_loaded()
     raw = os.getenv("OTP_EXPIRES_MINUTES", "10").strip()
@@ -172,24 +182,43 @@ def _verify_smtp_connection() -> None:
     port = _smtp_port()
     username = _smtp_username()
     password = _smtp_password()
-    try:
-        if _smtp_use_ssl():
+
+    def _probe(*, use_ssl: bool, use_starttls: bool, probe_port: int) -> int:
+        if use_ssl:
             context = ssl.create_default_context()
-            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+            with smtplib.SMTP_SSL(host, probe_port, context=context, timeout=15) as server:
                 server.login(username, password)
                 code, _ = server.noop()
-        else:
-            with smtplib.SMTP(host, port, timeout=15) as server:
+                return int(code)
+
+        with smtplib.SMTP(host, probe_port, timeout=15) as server:
+            server.ehlo()
+            if use_starttls:
+                context = ssl.create_default_context()
+                server.starttls(context=context)
                 server.ehlo()
-                if _smtp_starttls():
-                    context = ssl.create_default_context()
-                    server.starttls(context=context)
-                    server.ehlo()
-                server.login(username, password)
-                code, _ = server.noop()
-        if int(code) != 250:
+            server.login(username, password)
+            code, _ = server.noop()
+            return int(code)
+
+    try:
+        code = _probe(use_ssl=_smtp_use_ssl(), use_starttls=_smtp_starttls(), probe_port=port)
+        if code != 250:
             raise RuntimeError(f"SMTP server health probe returned unexpected status code {code}.")
+        return
     except (OSError, smtplib.SMTPException, RuntimeError) as exc:
+        if _smtp_gmail_ssl_fallback_enabled():
+            try:
+                code = _probe(use_ssl=True, use_starttls=False, probe_port=465)
+                if code == 250:
+                    return
+                raise RuntimeError(
+                    f"SMTP server health probe returned unexpected status code {code}."
+                )
+            except (OSError, smtplib.SMTPException, RuntimeError) as fallback_exc:
+                raise RuntimeError(
+                    f"OTP SMTP verification failed: {fallback_exc}"
+                ) from fallback_exc
         raise RuntimeError(f"OTP SMTP verification failed: {exc}") from exc
 
 
@@ -207,19 +236,28 @@ def _send_via_smtp(destination_email: str, otp_code: str) -> None:
     username = _smtp_username()
     password = _smtp_password()
 
-    if _smtp_use_ssl():
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+    def _deliver(*, use_ssl: bool, use_starttls: bool, deliver_port: int) -> None:
+        if use_ssl:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(host, deliver_port, context=context, timeout=15) as server:
+                server.login(username, password)
+                server.send_message(message)
+            return
+
+        with smtplib.SMTP(host, deliver_port, timeout=15) as server:
+            if use_starttls:
+                context = ssl.create_default_context()
+                server.starttls(context=context)
             server.login(username, password)
             server.send_message(message)
-        return
 
-    with smtplib.SMTP(host, port, timeout=15) as server:
-        if _smtp_starttls():
-            context = ssl.create_default_context()
-            server.starttls(context=context)
-        server.login(username, password)
-        server.send_message(message)
+    try:
+        _deliver(use_ssl=_smtp_use_ssl(), use_starttls=_smtp_starttls(), deliver_port=port)
+    except (OSError, smtplib.SMTPException) as exc:
+        if _smtp_gmail_ssl_fallback_enabled():
+            _deliver(use_ssl=True, use_starttls=False, deliver_port=465)
+            return
+        raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
 
 def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> None:
@@ -236,19 +274,28 @@ def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> No
     username = _smtp_username()
     password = _smtp_password()
 
-    if _smtp_use_ssl():
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+    def _deliver(*, use_ssl: bool, use_starttls: bool, deliver_port: int) -> None:
+        if use_ssl:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(host, deliver_port, context=context, timeout=15) as server:
+                server.login(username, password)
+                server.send_message(message)
+            return
+
+        with smtplib.SMTP(host, deliver_port, timeout=15) as server:
+            if use_starttls:
+                context = ssl.create_default_context()
+                server.starttls(context=context)
             server.login(username, password)
             server.send_message(message)
-        return
 
-    with smtplib.SMTP(host, port, timeout=15) as server:
-        if _smtp_starttls():
-            context = ssl.create_default_context()
-            server.starttls(context=context)
-        server.login(username, password)
-        server.send_message(message)
+    try:
+        _deliver(use_ssl=_smtp_use_ssl(), use_starttls=_smtp_starttls(), deliver_port=port)
+    except (OSError, smtplib.SMTPException) as exc:
+        if _smtp_gmail_ssl_fallback_enabled():
+            _deliver(use_ssl=True, use_starttls=False, deliver_port=465)
+            return
+        raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
 
 def _graph_tenant_id() -> str:
