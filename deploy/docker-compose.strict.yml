@@ -17,10 +17,12 @@ x-strict-env: &strict-env
 
   REDIS_URL: "redis://redis:6379/0"
   REDIS_REQUIRED: "true"
+  REDIS_SSL_REQUIRED: "false"
   REDIS_SOCKET_TIMEOUT_SECONDS: "1.5"
   REALTIME_REDIS_CHANNEL: "campus:events:stream"
 
   DATABASE_CONNECT_TIMEOUT_SECONDS: "10"
+  DATABASE_SSL_MODE: "disable"
   DATABASE_POOL_SIZE: "10"
   DATABASE_MAX_OVERFLOW: "20"
   DATABASE_POOL_TIMEOUT_SECONDS: "30"
@@ -34,10 +36,11 @@ x-strict-env: &strict-env
   WORKER_ENABLE_FACE_REVERIFY: "true"
   WORKER_ENABLE_RECOMPUTE: "true"
   WORKER_INLINE_FALLBACK_ENABLED: "false"
-  WORKER_WAIT_FOR_OTP_RESULT: "false"
+  WORKER_WAIT_FOR_OTP_RESULT: "true"
   WORKER_TASK_TIME_LIMIT_SECONDS: "60"
 
-  OTP_DELIVERY_MODE: "debug"
+  OTP_DELIVERY_MODE: "smtp"
+  OTP_VERIFY_CONNECTION_ON_STARTUP: "false"
   SQLALCHEMY_DATABASE_URL: "postgresql+psycopg://smartcampus:smartcampus@postgres:5432/lpu_smart"
 
 services:
@@ -88,6 +91,9 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - ../.env
+      - ../.env.local
     environment: *strict-env
     depends_on:
       postgres:
@@ -111,6 +117,9 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    env_file:
+      - ../.env
+      - ../.env.local
     environment: *strict-env
     depends_on:
       postgres:
