@@ -71,6 +71,40 @@ Address: 34.120.55.1
 
         self.assertEqual(result[0][4][0], "34.120.55.1")
 
+    def test_fallback_getaddrinfo_prefers_ipv4_results_when_available(self):
+        runtime_infra.os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        runtime_infra.os.environ["SERVICE_PREFER_IPV4"] = "true"
+
+        def _original_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            return [
+                (
+                    socket.AF_INET6,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    (host, port, 0, 0),
+                ),
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    ("34.120.55.1", port),
+                ),
+            ]
+
+        result = runtime_infra._fallback_getaddrinfo(
+            _original_getaddrinfo,
+            "smtp.gmail.com",
+            587,
+            socket.AF_UNSPEC,
+            socket.SOCK_STREAM,
+            0,
+            0,
+        )
+
+        self.assertEqual(result[0][0], socket.AF_INET)
+
     def test_resolve_service_hostaddr_uses_static_map_file(self):
         runtime_infra.os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
         with tempfile.NamedTemporaryFile("w+", suffix=".json") as handle:

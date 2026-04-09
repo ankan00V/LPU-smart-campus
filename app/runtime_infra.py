@@ -80,6 +80,13 @@ def _service_dns_fallback_enabled() -> bool:
     return managed_services_required()
 
 
+def _service_prefer_ipv4_enabled() -> bool:
+    raw = (os.getenv("SERVICE_PREFER_IPV4") or "").strip().lower()
+    if raw:
+        return raw in {"1", "true", "yes", "on"}
+    return managed_services_required()
+
+
 def _service_dns_nameservers() -> list[str]:
     raw = (os.getenv("SERVICE_DNS_NAMESERVERS") or os.getenv("MONGO_DNS_NAMESERVERS") or "1.1.1.1,8.8.8.8").strip()
     return [token.strip() for token in raw.split(",") if token.strip()]
@@ -218,8 +225,15 @@ def _fallback_getaddrinfo(
     proto=0,
     flags=0,
 ):
+    prefer_ipv4 = _service_prefer_ipv4_enabled()
     try:
-        return original_getaddrinfo(host, port, family, type, proto, flags)
+        results = original_getaddrinfo(host, port, family, type, proto, flags)
+        if prefer_ipv4 and family != socket.AF_INET6 and is_remote_service_host(host):
+            ipv4_results = [entry for entry in results if entry and entry[0] == socket.AF_INET]
+            if ipv4_results:
+                other_results = [entry for entry in results if not (entry and entry[0] == socket.AF_INET)]
+                return ipv4_results + other_results
+        return results
     except socket.gaierror:
         if family == socket.AF_INET6:
             raise

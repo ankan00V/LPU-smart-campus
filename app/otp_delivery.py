@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 
 from dotenv import dotenv_values, load_dotenv
 
+from .runtime_infra import install_socket_dns_fallback
+
 
 _ENV_LOADED = False
 _ORIGINAL_ENV = dict(os.environ)
@@ -136,6 +138,8 @@ def _normalize_subject_line(subject: str) -> str:
 
 
 def _ensure_smtp_config() -> None:
+    install_socket_dns_fallback()
+
     def is_placeholder(value: str) -> bool:
         return value.strip() in {
             "",

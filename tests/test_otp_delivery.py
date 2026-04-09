@@ -18,8 +18,9 @@ class OTPDeliveryTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             otp_delivery.assert_otp_delivery_ready()
 
+    @mock.patch("app.otp_delivery.install_socket_dns_fallback")
     @mock.patch("app.otp_delivery.smtplib.SMTP")
-    def test_assert_ready_verifies_smtp_login(self, smtp_cls):
+    def test_assert_ready_verifies_smtp_login(self, smtp_cls, install_fallback):
         os.environ["OTP_DELIVERY_MODE"] = "smtp"
         os.environ["OTP_SMTP_HOST"] = "smtp.gmail.com"
         os.environ["OTP_SMTP_PORT"] = "587"
@@ -35,6 +36,7 @@ class OTPDeliveryTests(unittest.TestCase):
         mode = otp_delivery.assert_otp_delivery_ready(verify_connection=True)
 
         self.assertEqual(mode, "smtp")
+        self.assertGreaterEqual(install_fallback.call_count, 1)
         smtp_cls.assert_called_once_with("smtp.gmail.com", 587, timeout=15)
         server.starttls.assert_called_once()
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
