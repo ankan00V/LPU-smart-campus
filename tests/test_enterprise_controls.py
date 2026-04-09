@@ -103,10 +103,12 @@ class EnterpriseControlsTests(unittest.TestCase):
     def test_validate_production_secrets_rejects_env_provider(self):
         keys = [
             "APP_ENV",
+            "APP_DEPLOY_TARGET",
             "APP_AUTH_SECRET",
             "SCIM_BEARER_TOKEN",
             "APP_LOOKUP_HASH_SECRET",
             "APP_SECRETS_PROVIDER",
+            "APP_ALLOW_ENV_SECRETS_IN_PRODUCTION",
             "APP_FIELD_ENCRYPTION_REQUIRED",
             "APP_COOKIE_SECURE",
             "MONGO_PERSISTENCE_REQUIRED",
@@ -121,6 +123,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             os.environ["SCIM_BEARER_TOKEN"] = "prod-scim-token"
             os.environ["APP_LOOKUP_HASH_SECRET"] = "prod-lookup-secret"
             os.environ["APP_SECRETS_PROVIDER"] = "env"
+            os.environ["APP_ALLOW_ENV_SECRETS_IN_PRODUCTION"] = "false"
             os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
             os.environ["APP_COOKIE_SECURE"] = "true"
             os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
@@ -131,6 +134,55 @@ class EnterpriseControlsTests(unittest.TestCase):
             os.environ["APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID"] = "k1"
             with self.assertRaises(RuntimeError):
                 validate_production_secrets()
+        finally:
+            for key, value in backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_validate_production_secrets_allows_env_provider_on_railway(self):
+        keys = [
+            "APP_ENV",
+            "APP_DEPLOY_TARGET",
+            "APP_AUTH_SECRET",
+            "SCIM_BEARER_TOKEN",
+            "APP_LOOKUP_HASH_SECRET",
+            "APP_SECRETS_PROVIDER",
+            "APP_ALLOW_ENV_SECRETS_IN_PRODUCTION",
+            "APP_FIELD_ENCRYPTION_REQUIRED",
+            "APP_COOKIE_SECURE",
+            "APP_RUNTIME_STRICT",
+            "REDIS_REQUIRED",
+            "WORKER_REQUIRED",
+            "WORKER_INLINE_FALLBACK_ENABLED",
+            "MONGO_PERSISTENCE_REQUIRED",
+            "MONGO_STARTUP_STRICT",
+            "APP_FIELD_ENCRYPTION_KEYS_JSON",
+            "APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID",
+        ]
+        backup = {key: os.environ.get(key) for key in keys}
+        try:
+            os.environ["APP_ENV"] = "production"
+            os.environ["APP_DEPLOY_TARGET"] = "railway"
+            os.environ["APP_AUTH_SECRET"] = "prod-auth-secret-railway"
+            os.environ["SCIM_BEARER_TOKEN"] = "prod-scim-token-railway"
+            os.environ["APP_LOOKUP_HASH_SECRET"] = "prod-lookup-secret-railway"
+            os.environ["APP_SECRETS_PROVIDER"] = "env"
+            os.environ["APP_ALLOW_ENV_SECRETS_IN_PRODUCTION"] = "false"
+            os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
+            os.environ["APP_COOKIE_SECURE"] = "true"
+            os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["REDIS_REQUIRED"] = "true"
+            os.environ["WORKER_REQUIRED"] = "true"
+            os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
+            os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
+            os.environ["MONGO_STARTUP_STRICT"] = "true"
+            os.environ["APP_FIELD_ENCRYPTION_KEYS_JSON"] = json.dumps(
+                {"k1": base64.urlsafe_b64encode(b"a" * 32).decode("utf-8")}
+            )
+            os.environ["APP_FIELD_ENCRYPTION_ACTIVE_KEY_ID"] = "k1"
+            validate_production_secrets()
         finally:
             for key, value in backup.items():
                 if value is None:

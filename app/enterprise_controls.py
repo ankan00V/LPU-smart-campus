@@ -41,6 +41,22 @@ def _is_production_env() -> bool:
     return env in {"prod", "production"}
 
 
+def _deploy_target() -> str:
+    raw = (
+        _normalize_text(os.getenv("APP_DEPLOY_TARGET"))
+        or _normalize_text(os.getenv("RAILWAY_ENVIRONMENT"))
+        or _normalize_text(os.getenv("RENDER_SERVICE_NAME"))
+        or _normalize_text(os.getenv("VERCEL_ENV"))
+    ).lower()
+    return raw
+
+
+def _production_env_secrets_allowed() -> bool:
+    if _bool_env("APP_ALLOW_ENV_SECRETS_IN_PRODUCTION", default=False):
+        return True
+    return _deploy_target() in {"railway", "render", "vercel", "fly", "railway-hobby"}
+
+
 def _coerce_utc_dt(value: str | datetime | None) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -160,8 +176,13 @@ def validate_production_secrets() -> None:
         raise RuntimeError("APP_LOOKUP_HASH_SECRET must not use development default in production.")
 
     provider = (_normalize_text(os.getenv("APP_SECRETS_PROVIDER")) or "env").lower()
-    if provider not in {"file", "aws_secrets_manager"}:
-        raise RuntimeError("Production requires APP_SECRETS_PROVIDER to be file or aws_secrets_manager.")
+    if provider not in {"env", "file", "aws_secrets_manager"}:
+        raise RuntimeError("Production requires APP_SECRETS_PROVIDER to be env, file, or aws_secrets_manager.")
+    if provider == "env" and not _production_env_secrets_allowed():
+        raise RuntimeError(
+            "Production requires APP_SECRETS_PROVIDER=file or aws_secrets_manager, "
+            "or APP_ALLOW_ENV_SECRETS_IN_PRODUCTION=true for supported PaaS hosts."
+        )
 
     if not _bool_env("APP_FIELD_ENCRYPTION_REQUIRED", default=True):
         raise RuntimeError("Production requires APP_FIELD_ENCRYPTION_REQUIRED=true.")
