@@ -16,3 +16,9 @@ node_modules/
 playwright-report/
 test-results/
 lhci_reports/
+
+.env.local
+.env.example
+.env.local.example
+.env.production.example
+deploy/railway.env
