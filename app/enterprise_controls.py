@@ -241,7 +241,7 @@ class FieldEncryptor:
         keyring: dict[str, bytes] = {}
         for key_id, key_value in keyring_raw.items():
             try:
-                decoded = base64.urlsafe_b64decode(str(key_value))
+                decoded = _b64url_decode(str(key_value))
             except Exception:
                 continue
             if len(decoded) != 32:
@@ -253,7 +253,7 @@ class FieldEncryptor:
             fallback_key = _normalize_text(fallback)
             if fallback_key:
                 try:
-                    decoded = base64.urlsafe_b64decode(fallback_key)
+                    decoded = _b64url_decode(fallback_key)
                     if len(decoded) == 32:
                         keyring["v1"] = decoded
                         active_key_id = active_key_id or "v1"
