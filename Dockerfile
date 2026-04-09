@@ -18,6 +18,6 @@ COPY deploy/supervisord.railway.conf /etc/supervisor/conf.d/supervisord.conf
 
 RUN mkdir -p /srv/app/runtime-data
 
-EXPOSE 8000
+EXPOSE 8080
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

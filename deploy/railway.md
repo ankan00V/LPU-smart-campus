@@ -52,5 +52,5 @@ Set these on the Railway service:
 ## Notes
 
 - Railway will build the provided `Dockerfile`.
-- The container listens on Railway's injected `PORT` automatically.
+- The container listens on port `8080` to match Railway public networking.
 - The worker stays inside the same container, so there is only one paid service.
