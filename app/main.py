@@ -1168,8 +1168,16 @@ if WEB_DIR.exists():
     app.mount("/web", StaticFiles(directory=WEB_DIR, html=True), name="web")
 
 
-@app.get("/")
+@app.get("/health", include_in_schema=False)
 def health_check():
+    return _health_payload()
+
+
+@app.get("/", include_in_schema=False)
+def ui_root():
+    index_file = WEB_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(index_file)
     return _health_payload()
 
 
