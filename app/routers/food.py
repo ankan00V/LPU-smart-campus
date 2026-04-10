@@ -358,11 +358,23 @@ def _strict_runtime_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _demo_features_enabled() -> bool:
+    override = (os.getenv("ALLOW_DEMO_FEATURES", "") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    app_env = (os.getenv("APP_ENV", "") or "").strip().lower()
+    if app_env == "production":
+        return False
+    return not _strict_runtime_enabled()
+
+
 def _mongo_read_required() -> bool:
     return _mongo_read_preferred() and _strict_runtime_enabled()
 
 
 def _food_demo_mode_enabled(x_food_demo_mode: str | None) -> bool:
+    if not _demo_features_enabled():
+        return False
     raw = str(x_food_demo_mode or "").strip().lower()
     return raw in {"1", "true", "yes", "on", "demo"}
 

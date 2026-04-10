@@ -37,6 +37,15 @@ REMEDIAL_FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6
 SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
 
 
+def _demo_features_enabled() -> bool:
+    override = (os.getenv("ALLOW_DEMO_FEATURES", "") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    app_env = (os.getenv("APP_ENV", "") or "").strip().lower()
+    strict_mode = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return app_env != "production" and not strict_mode
+
+
 def _utcnow_naive() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -931,6 +940,9 @@ def create_makeup_class(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
+    if bool(payload.demo_bypass_lead_time) and not _demo_features_enabled():
+        raise HTTPException(status_code=403, detail="Demo scheduling bypass is disabled in production.")
+
     if current_user.role == models.UserRole.FACULTY:
         if not current_user.faculty_id or current_user.faculty_id != payload.faculty_id:
             raise HTTPException(status_code=403, detail="Faculty can schedule only for their own ID.")

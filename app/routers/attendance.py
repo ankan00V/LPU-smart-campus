@@ -81,6 +81,15 @@ ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
 
 
+def _demo_features_enabled() -> bool:
+    override = (os.getenv("ALLOW_DEMO_FEATURES", "") or "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    app_env = (os.getenv("APP_ENV", "") or "").strip().lower()
+    strict_mode = (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return app_env != "production" and not strict_mode
+
+
 def _academic_start_date() -> date:
     raw = (os.getenv("ACADEMIC_START_DATE", ACADEMIC_START_DATE_DEFAULT) or "").strip()
     try:
@@ -4152,6 +4161,9 @@ def mark_realtime_attendance(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
+    if payload.demo_mode and not _demo_features_enabled():
+        raise HTTPException(status_code=403, detail="Demo attendance mode is disabled in production.")
+
     if payload.demo_mode:
         student = _resolve_student_face_context(
             db=db,

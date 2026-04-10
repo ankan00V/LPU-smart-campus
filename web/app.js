@@ -15,6 +15,18 @@ const FOOD_LOCATION_MAX_STALE_MS = 120000;
 const FOOD_DELIVERY_FEE_INR = 30;
 const FOOD_PLATFORM_FEE_INR = 5;
 const FOOD_DEMO_STORAGE_KEY = 'foodhall_demo_enabled';
+const CLIENT_DEMO_FEATURES_ENABLED = (() => {
+  try {
+    const host = String(window.location.hostname || '').toLowerCase();
+    return host === 'localhost'
+      || host === '127.0.0.1'
+      || host === '::1'
+      || host.endsWith('.test')
+      || host.endsWith('.loc');
+  } catch (_) {
+    return false;
+  }
+})();
 const FOOD_SERVICE_START_MINUTES = 10 * 60;
 const FOOD_SERVICE_END_MINUTES = 21 * 60;
 const FOOD_SERVICE_HOURS_LABEL = '10:00 AM - 9:00 PM';
@@ -8268,7 +8280,7 @@ async function persistFoodCartUiState() {
 }
 
 function isFoodDemoEnabled() {
-  return Boolean(state.food.demoEnabled && authState.user?.role === 'student');
+  return Boolean(CLIENT_DEMO_FEATURES_ENABLED && state.food.demoEnabled && authState.user?.role === 'student');
 }
 
 function foodDemoRequestHeaders(headers = {}) {
@@ -8301,8 +8313,9 @@ function renderFoodDemoToggle() {
 }
 
 function setFoodDemoEnabled(enabled, { persist = true } = {}) {
-  const changed = state.food.demoEnabled !== Boolean(enabled);
-  state.food.demoEnabled = Boolean(enabled);
+  const nextEnabled = Boolean(CLIENT_DEMO_FEATURES_ENABLED && enabled);
+  const changed = state.food.demoEnabled !== nextEnabled;
+  state.food.demoEnabled = nextEnabled;
   if (persist) {
     try {
       if (state.food.demoEnabled) {
@@ -8328,6 +8341,15 @@ function setFoodDemoEnabled(enabled, { persist = true } = {}) {
 }
 
 function restoreFoodDemoEnabled() {
+  if (!CLIENT_DEMO_FEATURES_ENABLED) {
+    state.food.demoEnabled = false;
+    try {
+      window.localStorage.removeItem(FOOD_DEMO_STORAGE_KEY);
+    } catch (_) {
+      // Ignore storage failures in restricted runtimes.
+    }
+    return;
+  }
   try {
     state.food.demoEnabled = window.localStorage.getItem(FOOD_DEMO_STORAGE_KEY) === 'true';
   } catch (_) {
@@ -14885,7 +14907,7 @@ function buildStudentAttendanceTimeline(source = getKpiSourceTimetable()) {
 }
 
 function isStudentAttendanceDemoEnabled() {
-  return Boolean(authState.user?.role === 'student' && state.student.demoAttendanceEnabled);
+  return Boolean(CLIENT_DEMO_FEATURES_ENABLED && authState.user?.role === 'student' && state.student.demoAttendanceEnabled);
 }
 
 function findStudentDemoAttendanceState(nowArg = new Date()) {
