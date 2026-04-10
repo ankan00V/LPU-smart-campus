@@ -14387,84 +14387,118 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 @media (max-width: 900px) {
     .dashboard,
     body.ums-theme .dashboard {
-        width: calc(100% - 0.8rem);
-        margin: 0.45rem auto calc(6.6rem + env(safe-area-inset-bottom));
+        width: calc(100% - 0.75rem);
+        margin: 0.38rem auto calc(6.7rem + env(safe-area-inset-bottom));
+        gap: 0.65rem;
     }
 
     #main-dashboard-header.topbar,
     .topbar,
     body.ums-theme #main-dashboard-header.topbar,
     body.ums-theme .topbar {
-        border-radius: 18px;
-        padding: 0.72rem;
-        gap: 0.68rem;
+        position: relative !important;
+        top: auto !important;
+        z-index: 3;
+        grid-template-columns: 1fr;
+        align-items: stretch;
+        border-radius: 16px;
+        padding: 0.68rem;
+        gap: 0.56rem;
+    }
+
+    .ums-top-left {
+        display: grid;
+        gap: 0.34rem;
+    }
+
+    .kicker {
+        font-size: 0.64rem;
+        letter-spacing: 0.11em;
     }
 
     h1,
     body.ums-theme h1 {
-        line-height: 1.1;
-        letter-spacing: -0.015em;
+        margin: 0;
+        font-size: clamp(1.34rem, 6.8vw, 1.82rem);
+        line-height: 1.08;
+        letter-spacing: -0.012em;
     }
 
     .subline,
     body.ums-theme .subline {
+        margin: 0;
         max-width: none;
+        font-size: 0.9rem;
+        line-height: 1.34;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
 
     .hero-summary {
-        grid-template-columns: 1fr;
-        gap: 0.5rem;
+        margin-top: 0.28rem;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0.42rem;
     }
 
     .hero-kpi {
-        width: 100%;
         min-height: 0;
-        padding: 0.52rem 0.64rem;
+        padding: 0.44rem 0.58rem;
+        border-radius: 10px;
+    }
+
+    .hero-kpi span {
+        font-size: 0.6rem;
+        letter-spacing: 0.09em;
+    }
+
+    .hero-kpi strong {
+        font-size: 0.98rem;
     }
 
     .hero-primary-cta {
         width: 100%;
-        min-height: 46px;
+        min-height: 42px;
+        padding-inline: 0.62rem;
         justify-content: center;
+        font-size: 0.92rem;
     }
 
     .live-datetime {
-        white-space: normal;
-        line-height: 1.35;
-    }
-
-    .ums-top-nav {
+        margin-top: 0.22rem;
         width: 100%;
-        justify-content: flex-start;
-        gap: 0.36rem;
-        padding: 0.08rem 0.04rem 0.18rem;
-        scroll-snap-type: x proximity;
+        border-radius: 14px;
+        white-space: normal;
+        line-height: 1.3;
+        font-size: 0.74rem;
+        padding: 0.26rem 0.52rem;
     }
 
-    .ums-module-btn,
-    body.ums-theme .ums-module-btn {
-        min-height: 42px;
-        padding: 0.38rem 0.6rem;
-        scroll-snap-align: start;
-    }
-
-    .module-glyph,
-    body.ums-theme .module-glyph {
-        width: 1.22rem;
-        height: 1.22rem;
-        flex-basis: 1.22rem;
+    .topbar-control-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.38rem;
     }
 
     .topbar-actions {
         width: 100%;
-        display: grid;
-        grid-template-columns: 1fr auto;
+        display: flex;
         align-items: center;
-        gap: 0.45rem;
+        justify-content: space-between;
+        gap: 0.44rem;
     }
 
     .theme-toggle-btn {
-        justify-self: start;
+        min-height: 34px;
+        padding: 0.34rem 0.58rem;
+        font-size: 0.68rem;
+    }
+
+    .account-trigger {
+        width: 34px;
+        height: 34px;
     }
 
     .support-desk-widget,
@@ -14476,49 +14510,69 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 @media (max-width: 700px) {
     .dashboard,
     body.ums-theme .dashboard {
-        margin-bottom: calc(6rem + env(safe-area-inset-bottom));
+        margin-bottom: calc(6.15rem + env(safe-area-inset-bottom));
+        gap: 0.6rem;
     }
 
-    .kicker {
-        letter-spacing: 0.12em;
+    #main-dashboard-header .ums-top-nav,
+    .ums-top-nav,
+    body.ums-theme .ums-top-nav {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 0.34rem;
+        overflow: visible;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
     }
 
-    h1,
-    body.ums-theme h1 {
-        font-size: clamp(1.52rem, 7.4vw, 1.88rem);
+    .ums-module-btn,
+    body.ums-theme .ums-module-btn {
+        width: 100%;
+        min-height: 38px;
+        padding: 0.3rem 0.34rem;
+        gap: 0.3rem;
+        justify-content: center;
+        border-radius: 999px;
+        font-size: 0.73rem;
+        box-shadow: none;
     }
 
-    .subline,
-    body.ums-theme .subline {
-        font-size: 0.9rem;
-        line-height: 1.45;
+    .module-glyph,
+    body.ums-theme .module-glyph {
+        width: 1.02rem;
+        height: 1.02rem;
+        flex-basis: 1.02rem;
+        font-size: 0.42rem;
     }
 
-    .hero-kpi strong {
-        font-size: 1.05rem;
-    }
-
-    .live-datetime {
-        font-size: 0.76rem;
-        padding: 0.28rem 0.58rem;
+    .module-label {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.71rem;
     }
 
     .ops-card,
     .viz-card,
-    .metric {
+    .metric,
+    .log-card {
         border-radius: 14px;
     }
 
     .panel-head {
-        gap: 0.42rem;
+        gap: 0.36rem;
     }
 
     .panel-head h3 {
-        font-size: 1.02rem;
+        font-size: 1rem;
     }
 
     .panel-head small {
-        font-size: 0.78rem;
+        font-size: 0.77rem;
+        line-height: 1.3;
     }
 
     .inline-controls,
@@ -14531,79 +14585,85 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         grid-template-columns: 1fr;
     }
 
-    .ums-module-btn,
-    body.ums-theme .ums-module-btn {
-        min-height: 40px;
-        font-size: 0.78rem;
-    }
-
-    .module-label {
-        font-size: 0.78rem;
-    }
-
     .ums-sidebar,
     body.ums-theme .ums-sidebar {
-        gap: 0.34rem;
-        padding: 0.34rem 0.4rem calc(0.48rem + env(safe-area-inset-bottom));
+        gap: 0.28rem;
+        padding: 0.3rem 0.34rem calc(0.46rem + env(safe-area-inset-bottom));
     }
 
     .ums-side-item {
-        min-height: 48px;
-        border-radius: 12px;
-        padding: 0.34rem 0.22rem;
+        min-height: 44px;
+        border-radius: 11px;
+        padding: 0.3rem 0.18rem;
     }
 
     .ums-side-item .nav-label {
-        font-size: 0.66rem;
+        font-size: 0.63rem;
     }
 
     .nav-glyph {
-        width: 1.26rem;
-        height: 1.26rem;
-        flex-basis: 1.26rem;
+        width: 1.16rem;
+        height: 1.16rem;
+        flex-basis: 1.16rem;
     }
 }
 
 @media (max-width: 520px) {
     .dashboard,
     body.ums-theme .dashboard {
-        width: calc(100% - 0.55rem);
-        margin-bottom: calc(5.85rem + env(safe-area-inset-bottom));
+        width: calc(100% - 0.52rem);
+        margin-bottom: calc(5.95rem + env(safe-area-inset-bottom));
     }
 
     #main-dashboard-header.topbar,
     .topbar,
     body.ums-theme #main-dashboard-header.topbar,
     body.ums-theme .topbar {
-        border-radius: 16px;
-        padding: 0.62rem;
-        gap: 0.56rem;
+        border-radius: 14px;
+        padding: 0.58rem;
+        gap: 0.48rem;
+    }
+
+    h1,
+    body.ums-theme h1 {
+        font-size: clamp(1.24rem, 7.2vw, 1.58rem);
+    }
+
+    .subline,
+    body.ums-theme .subline {
+        font-size: 0.83rem;
+        -webkit-line-clamp: 2;
     }
 
     .hero-primary-cta {
-        min-height: 44px;
-        font-size: 0.9rem;
+        min-height: 40px;
+        font-size: 0.86rem;
     }
 
-    .ums-top-nav {
-        gap: 0.3rem;
+    .live-datetime {
+        font-size: 0.7rem;
+        padding: 0.24rem 0.46rem;
     }
 
     .ums-module-btn,
     body.ums-theme .ums-module-btn {
-        min-height: 38px;
-        padding: 0.32rem 0.5rem;
+        min-height: 36px;
+        padding: 0.26rem 0.3rem;
+    }
+
+    .module-label {
+        font-size: 0.68rem;
     }
 
     .module-glyph,
     body.ums-theme .module-glyph {
-        width: 1.1rem;
-        height: 1.1rem;
-        flex-basis: 1.1rem;
-        font-size: 0.45rem;
+        width: 0.95rem;
+        height: 0.95rem;
+        flex-basis: 0.95rem;
+        font-size: 0.4rem;
     }
 
     .account-dropdown {
-        width: min(96vw, 320px);
+        width: min(96vw, 318px);
     }
 }
