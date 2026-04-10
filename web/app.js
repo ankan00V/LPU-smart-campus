@@ -2170,12 +2170,18 @@ function toggleChotuOpen() {
   setChotuOpen(!state.ui.chotuOpen);
 }
 
+function isCompactMobileViewport() {
+  return window.matchMedia('(max-width: 900px)').matches;
+}
+
 function updateChotuVisibility() {
   if (!els.chotuWidget) {
     return;
   }
   const visible = Boolean(
-    authState.user && getSanitizedModuleKey(state.ui.activeModule) === 'food'
+    authState.user
+    && !isCompactMobileViewport()
+    && getSanitizedModuleKey(state.ui.activeModule) === 'food'
   );
   setHidden(els.chotuWidget, !visible);
   if (!visible) {
@@ -3233,8 +3239,11 @@ function updateSupportDeskVisibility() {
   }
   const role = authState.user?.role;
   const visible = Boolean(
+    !isCompactMobileViewport()
+    && (
     (role === 'student' || role === 'faculty')
     && getSanitizedModuleKey(state.ui.activeModule) === 'attendance'
+    )
   );
   setHidden(els.supportDeskWidget, !visible);
   if (!visible) {
@@ -4271,7 +4280,11 @@ function updateModuleHash(moduleKey) {
 }
 
 function resolveSidebarModuleTarget() {
-  return 'attendance';
+  const currentModule = getSanitizedModuleKey(state.ui.activeModule);
+  if (isModuleAccessible(currentModule)) {
+    return currentModule;
+  }
+  return defaultModuleForRole();
 }
 
 function setActiveModule(moduleKey, { updateHash = true } = {}) {
@@ -4522,6 +4535,48 @@ function resolveSidebarTarget(navKey) {
   }
 
   const role = authState.user?.role;
+  const activeModule = getSanitizedModuleKey(state.ui.activeModule);
+
+  if (activeModule !== 'attendance') {
+    const moduleRouteMap = {
+      saarthi: {
+        courses: document.getElementById('student-saarthi-card'),
+        attendance: document.getElementById('student-saarthi-card'),
+        fallback: els.saarthiSection,
+      },
+      food: {
+        courses: document.getElementById('food-shop-grid'),
+        attendance: document.getElementById('food-orders-panel'),
+        fallback: els.foodSection,
+      },
+      administrative: {
+        courses: document.getElementById('admin-profile-card'),
+        attendance: document.getElementById('admin-attendance-card') || document.getElementById('absentee-card'),
+        fallback: els.executiveSection,
+      },
+      rms: {
+        courses: document.getElementById('rms-query-list'),
+        attendance: document.getElementById('rms-attendance-result') || document.getElementById('rms-attendance-registration'),
+        fallback: els.rmsSection,
+      },
+      remedial: {
+        courses: role === 'student'
+          ? document.getElementById('remedial-messages-list')
+          : document.getElementById('remedial-classes-list'),
+        attendance: role === 'student'
+          ? document.getElementById('remedial-code-input')
+          : document.getElementById('remedial-attendance-list') || document.getElementById('remedial-refresh-attendance-btn'),
+        fallback: role === 'student'
+          ? document.getElementById('remedial-student-panel')
+          : document.getElementById('remedial-faculty-panel') || els.remedialSection,
+      },
+    };
+    const moduleTargets = moduleRouteMap[activeModule];
+    if (moduleTargets) {
+      return moduleTargets[navKey] || moduleTargets.fallback || document.getElementById('dashboard-root');
+    }
+  }
+
   if (role === 'student') {
     if (navKey === 'courses') {
       return document.getElementById('student-courses-card') || els.studentSection;
@@ -4541,10 +4596,25 @@ function resolveSidebarTarget(navKey) {
   }
 
   if (navKey === 'courses') {
-    return els.executiveSection;
+    return document.getElementById('faculty-dashboard-card')
+      || document.getElementById('admin-profile-card')
+      || els.facultySection
+      || els.executiveSection
+      || els.rmsSection
+      || els.remedialSection
+      || els.foodSection;
   }
   if (navKey === 'attendance') {
-    return document.getElementById('absentee-card') || els.executiveSection;
+    return document.getElementById('faculty-attendance-card')
+      || document.getElementById('student-attendance-card')
+      || document.getElementById('admin-attendance-card')
+      || document.getElementById('rms-attendance-result')
+      || document.getElementById('remedial-code-input')
+      || document.getElementById('food-orders-panel')
+      || document.getElementById('absentee-card')
+      || els.executiveSection
+      || els.facultySection
+      || els.studentSection;
   }
   return document.getElementById('dashboard-root');
 }
@@ -20586,6 +20656,8 @@ function bindEvents() {
   }
   window.addEventListener('resize', () => {
     updateVerlynVisibility();
+    updateSupportDeskVisibility();
+    updateChotuVisibility();
   });
 
   if (els.supportDeskToggleBtn) {
