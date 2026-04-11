@@ -1828,9 +1828,6 @@ function applyDaylightTint(now = new Date()) {
 }
 
 function syncTopNavActiveButtonIntoView() {
-  if (window.matchMedia('(max-width: 700px)').matches) {
-    return;
-  }
   const activeButton = [
     els.topNavAttendanceBtn,
     els.topNavSaarthiBtn,

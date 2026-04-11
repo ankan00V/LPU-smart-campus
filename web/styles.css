@@ -14384,12 +14384,18 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 }
 
 /* Final mobile polish overrides (kept at file end to beat older breakpoint collisions). */
-@media (max-width: 900px) {
+@media (max-width: 768px) {
     .dashboard,
     body.ums-theme .dashboard {
-        width: calc(100% - 0.75rem);
-        margin: 0.38rem auto calc(6.7rem + env(safe-area-inset-bottom));
-        gap: 0.65rem;
+        width: calc(100% - 2rem);
+        margin: 0.72rem auto calc(7.35rem + env(safe-area-inset-bottom));
+        gap: 1.25rem;
+        padding-bottom: 0.5rem;
+    }
+
+    .role-section,
+    .module-panel {
+        gap: 1.25rem;
     }
 
     #main-dashboard-header.topbar,
@@ -14402,26 +14408,26 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         grid-template-columns: 1fr;
         align-items: stretch;
         border-radius: 16px;
-        padding: 0.68rem;
-        gap: 0.56rem;
+        padding: 1rem;
+        gap: 0.84rem;
     }
 
     .ums-top-left {
         display: grid;
-        gap: 0.34rem;
+        gap: 0.42rem;
     }
 
     .kicker {
-        font-size: 0.64rem;
+        font-size: 0.68rem;
         letter-spacing: 0.11em;
     }
 
     h1,
     body.ums-theme h1 {
         margin: 0;
-        font-size: clamp(1.34rem, 6.8vw, 1.82rem);
+        font-size: clamp(1.64rem, 7vw, 1.98rem);
         line-height: 1.08;
-        letter-spacing: -0.012em;
+        letter-spacing: -0.015em;
     }
 
     .subline,
@@ -14429,7 +14435,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         margin: 0;
         max-width: none;
         font-size: 0.9rem;
-        line-height: 1.34;
+        line-height: 1.4;
         display: -webkit-box;
         -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
@@ -14437,33 +14443,33 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     }
 
     .hero-summary {
-        margin-top: 0.28rem;
+        margin-top: 0.32rem;
         display: grid;
         grid-template-columns: minmax(0, 1fr);
-        gap: 0.42rem;
+        gap: 0.62rem;
     }
 
     .hero-kpi {
         min-height: 0;
-        padding: 0.44rem 0.58rem;
-        border-radius: 10px;
+        padding: 0.62rem 0.74rem;
+        border-radius: 12px;
     }
 
     .hero-kpi span {
-        font-size: 0.6rem;
+        font-size: 0.66rem;
         letter-spacing: 0.09em;
     }
 
     .hero-kpi strong {
-        font-size: 0.98rem;
+        font-size: 1.06rem;
     }
 
     .hero-primary-cta {
         width: 100%;
-        min-height: 42px;
-        padding-inline: 0.62rem;
+        min-height: 44px;
+        padding-inline: 0.9rem;
         justify-content: center;
-        font-size: 0.92rem;
+        font-size: 0.94rem;
     }
 
     .live-datetime {
@@ -14471,15 +14477,15 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         width: 100%;
         border-radius: 14px;
         white-space: normal;
-        line-height: 1.3;
-        font-size: 0.74rem;
-        padding: 0.26rem 0.52rem;
+        line-height: 1.33;
+        font-size: 0.78rem;
+        padding: 0.44rem 0.6rem;
     }
 
     .topbar-control-row {
         flex-direction: column;
         align-items: stretch;
-        gap: 0.38rem;
+        gap: 0.62rem;
     }
 
     .topbar-actions {
@@ -14487,56 +14493,47 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 0.44rem;
-    }
-
-    .theme-toggle-btn {
-        min-height: 34px;
-        padding: 0.34rem 0.58rem;
-        font-size: 0.68rem;
-    }
-
-    .account-trigger {
-        width: 34px;
-        height: 34px;
-    }
-
-    .support-desk-widget,
-    .chotu-widget {
-        display: none !important;
-    }
-}
-
-@media (max-width: 700px) {
-    .dashboard,
-    body.ums-theme .dashboard {
-        margin-bottom: calc(6.15rem + env(safe-area-inset-bottom));
-        gap: 0.6rem;
+        gap: 0.5rem;
     }
 
     #main-dashboard-header .ums-top-nav,
     .ums-top-nav,
     body.ums-theme .ums-top-nav {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.34rem;
-        overflow: visible;
-        padding: 0;
-        border: 0;
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.44rem;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+        scroll-padding-inline: 0.2rem;
+        padding: 0 0 0.12rem;
+        border: none;
         background: transparent;
         box-shadow: none;
     }
 
+    #main-dashboard-header .ums-top-nav::-webkit-scrollbar,
+    .ums-top-nav::-webkit-scrollbar {
+        display: none;
+    }
+
     .ums-module-btn,
     body.ums-theme .ums-module-btn {
-        width: 100%;
-        min-height: 38px;
-        padding: 0.3rem 0.34rem;
-        gap: 0.3rem;
+        width: auto;
+        min-width: max-content;
+        flex: 0 0 auto;
+        min-height: 44px;
+        padding: 0.38rem 0.74rem;
+        gap: 0.34rem;
         justify-content: center;
         border-radius: 999px;
-        font-size: 0.73rem;
+        font-size: 0.76rem;
         box-shadow: none;
+        scroll-snap-align: start;
     }
 
     .module-glyph,
@@ -14548,31 +14545,54 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     }
 
     .module-label {
-        max-width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 0.71rem;
+        font-size: 0.75rem;
+    }
+
+    .theme-toggle-btn {
+        min-height: 44px;
+        padding: 0.44rem 0.72rem;
+        font-size: 0.74rem;
+    }
+
+    .account-trigger {
+        width: 44px;
+        height: 44px;
     }
 
     .ops-card,
     .viz-card,
     .metric,
     .log-card {
-        border-radius: 14px;
+        padding: 1rem;
+        border-radius: 16px;
+        box-shadow: 0 8px 20px rgba(18, 50, 76, 0.16);
     }
 
     .panel-head {
-        gap: 0.36rem;
+        gap: 0.46rem;
     }
 
     .panel-head h3 {
-        font-size: 1rem;
+        font-size: 1.125rem;
+        line-height: 1.24;
     }
 
-    .panel-head small {
-        font-size: 0.77rem;
-        line-height: 1.3;
+    .panel-head small,
+    .helper-text {
+        font-size: 0.82rem;
+        line-height: 1.42;
+    }
+
+    .field > span {
+        font-size: 0.76rem;
+    }
+
+    .btn {
+        min-height: 44px;
+        padding: 0.62rem 0.88rem;
+        font-size: 0.88rem;
+        border-radius: 12px;
     }
 
     .inline-controls,
@@ -14581,38 +14601,254 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     .metric-grid,
     .viz-grid,
     .control-grid,
-    .analysis-grid {
+    .analysis-grid,
+    .food-order-controls,
+    .food-order-actions,
+    .food-cart-actions,
+    .remedial-form-actions,
+    .remedial-message-actions {
         grid-template-columns: 1fr;
+        gap: 0.72rem;
+    }
+
+    .food-order-actions .btn,
+    .food-cart-actions .btn,
+    #food-open-cart-btn,
+    #food-enable-location-btn,
+    #remedial-validate-btn,
+    #remedial-mark-btn {
+        width: 100%;
+    }
+
+    #food-section .viz-grid,
+    body.ums-theme #food-section .viz-grid {
+        grid-template-columns: 1fr !important;
+        gap: 1rem;
+    }
+
+    #food-section .food-demand-pie-layout,
+    body.ums-theme #food-section .food-demand-pie-layout {
+        grid-template-columns: 1fr;
+        gap: 0.76rem;
+    }
+
+    #food-section .food-demand-pie-wrap {
+        width: min(100%, 236px);
+    }
+
+    #food-section .food-demand-pie-legend {
+        max-height: none;
+        padding-right: 0;
+    }
+
+    #food-section .food-demand-legend-item {
+        padding: 0.5rem 0.58rem;
+        gap: 0.44rem;
+    }
+
+    #food-section .food-demand-slot-detail {
+        padding: 0.62rem 0.7rem;
+        gap: 0.2rem;
+    }
+
+    #food-section .food-payment-recovery-list .list-item,
+    #food-section .food-orders-list .list-item {
+        display: grid;
+        grid-template-columns: 1fr;
+        align-items: stretch;
+        gap: 0.5rem;
+    }
+
+    #food-section .food-shop-card {
+        padding: 0.76rem;
+        border-radius: 14px;
+    }
+
+    #food-section .food-shop-cover-wrap {
+        min-height: 132px;
+        max-height: 164px;
+    }
+
+    #food-section .food-shop-card h4 {
+        font-size: 1rem;
+        line-height: 1.24;
+    }
+
+    #food-section .food-shop-card small {
+        font-size: 0.8rem;
+        line-height: 1.42;
+    }
+
+    #food-section .food-shop-card-meta {
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    #food-section .shop-rating-live {
+        margin-left: auto;
+    }
+
+    #student-ledger-card .student-aggregate-panel {
+        grid-template-columns: 1fr;
+        gap: 0.56rem;
+    }
+
+    .aggregate-chip {
+        min-height: 72px;
+        padding: 0.7rem 0.75rem;
+        border-radius: 12px;
+    }
+
+    .aggregate-chip span {
+        font-size: 0.74rem;
+    }
+
+    .aggregate-chip strong {
+        font-size: 1.42rem;
+        line-height: 1.05;
+    }
+
+    .course-aggregate-item {
+        padding: 0.74rem;
+        border-radius: 12px;
+    }
+
+    .course-aggregate-item h4 {
+        font-size: 0.94rem;
+    }
+
+    .course-aggregate-item p {
+        font-size: 0.8rem;
+        line-height: 1.38;
+    }
+
+    #remedial-student-panel .inline-controls {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.66rem;
+    }
+
+    #remedial-student-panel .inline-controls .field {
+        gap: 0.34rem;
+    }
+
+    #remedial-student-panel .inline-controls input,
+    #remedial-student-panel .inline-controls .btn {
+        min-height: 44px;
+    }
+
+    .list-wrap:empty {
+        min-height: 112px;
+        border-radius: 12px;
+    }
+
+    .empty-state-row {
+        padding: 0.84rem;
+        gap: 0.44rem;
+    }
+
+    .empty-state-row strong {
+        font-size: 0.9rem;
+    }
+
+    .empty-state-row small {
+        font-size: 0.78rem;
+        line-height: 1.4;
+    }
+
+    .timetable-grid {
+        margin-top: 0.84rem;
+        max-height: min(60vh, 640px);
+        border-radius: 14px;
+    }
+
+    .weekly-calendar {
+        min-width: 680px;
+        --calendar-time-col: 58px;
+        --calendar-day-col-min: 88px;
+        --calendar-row-height: 78px;
+    }
+
+    .calendar-time-label {
+        font-size: 0.72rem;
+        padding: 0.46rem 0.34rem;
+    }
+
+    .calendar-class {
+        margin: 3px;
+        border-radius: 11px;
+        padding: 0.38rem 0.4rem;
+        gap: 0.18rem;
+    }
+
+    .calendar-time {
+        font-size: 0.76rem;
+    }
+
+    .calendar-course {
+        font-size: 0.7rem;
+        -webkit-line-clamp: 2;
+        line-height: 1.2;
+    }
+
+    .calendar-room {
+        font-size: 0.64rem;
+    }
+
+    .slot-status {
+        padding: 0.14rem 0.42rem;
+        font-size: 0.58rem;
+        letter-spacing: 0.01em;
     }
 
     .ums-sidebar,
     body.ums-theme .ums-sidebar {
-        gap: 0.28rem;
-        padding: 0.3rem 0.34rem calc(0.46rem + env(safe-area-inset-bottom));
+        left: 50%;
+        right: auto;
+        bottom: calc(0.4rem + env(safe-area-inset-bottom));
+        inset-top: auto;
+        inset-inline-start: 50%;
+        width: min(560px, calc(100% - 1rem));
+        transform: translateX(-50%);
+        border-top: 1px solid rgba(156, 211, 248, 0.5);
+        border-radius: 14px;
+        box-shadow: 0 10px 20px rgba(7, 25, 41, 0.3);
+        gap: 0.24rem;
+        padding: 0.3rem 0.34rem calc(0.38rem + env(safe-area-inset-bottom));
+        backdrop-filter: blur(8px) saturate(110%);
+        -webkit-backdrop-filter: blur(8px) saturate(110%);
     }
 
     .ums-side-item {
-        min-height: 44px;
-        border-radius: 11px;
-        padding: 0.3rem 0.18rem;
+        min-height: 46px;
+        border-radius: 10px;
+        padding: 0.24rem 0.12rem;
+        gap: 0.2rem;
     }
 
     .ums-side-item .nav-label {
-        font-size: 0.63rem;
+        font-size: 0.62rem;
+        letter-spacing: 0.01em;
     }
 
     .nav-glyph {
-        width: 1.16rem;
-        height: 1.16rem;
-        flex-basis: 1.16rem;
+        width: 1rem;
+        height: 1rem;
+        flex-basis: 1rem;
+        font-size: 0.4rem;
+    }
+
+    .support-desk-widget,
+    .chotu-widget {
+        display: none !important;
     }
 }
 
-@media (max-width: 520px) {
+@media (max-width: 560px) {
     .dashboard,
     body.ums-theme .dashboard {
-        width: calc(100% - 0.52rem);
-        margin-bottom: calc(5.95rem + env(safe-area-inset-bottom));
+        width: calc(100% - 1rem);
+        margin-bottom: calc(7.05rem + env(safe-area-inset-bottom));
     }
 
     #main-dashboard-header.topbar,
@@ -14620,47 +14856,76 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     body.ums-theme #main-dashboard-header.topbar,
     body.ums-theme .topbar {
         border-radius: 14px;
-        padding: 0.58rem;
-        gap: 0.48rem;
+        padding: 0.84rem;
+        gap: 0.72rem;
     }
 
     h1,
     body.ums-theme h1 {
-        font-size: clamp(1.24rem, 7.2vw, 1.58rem);
+        font-size: clamp(1.48rem, 7.3vw, 1.78rem);
     }
 
     .subline,
     body.ums-theme .subline {
-        font-size: 0.83rem;
-        -webkit-line-clamp: 2;
+        font-size: 0.85rem;
+        -webkit-line-clamp: 3;
     }
 
     .hero-primary-cta {
-        min-height: 40px;
-        font-size: 0.86rem;
+        font-size: 0.9rem;
     }
 
     .live-datetime {
-        font-size: 0.7rem;
-        padding: 0.24rem 0.46rem;
+        font-size: 0.74rem;
+        padding: 0.38rem 0.54rem;
     }
 
     .ums-module-btn,
     body.ums-theme .ums-module-btn {
-        min-height: 36px;
-        padding: 0.26rem 0.3rem;
+        min-height: 42px;
+        padding: 0.34rem 0.64rem;
     }
 
     .module-label {
-        font-size: 0.68rem;
+        font-size: 0.72rem;
     }
 
     .module-glyph,
     body.ums-theme .module-glyph {
-        width: 0.95rem;
-        height: 0.95rem;
-        flex-basis: 0.95rem;
-        font-size: 0.4rem;
+        width: 0.98rem;
+        height: 0.98rem;
+        flex-basis: 0.98rem;
+        font-size: 0.39rem;
+    }
+
+    .weekly-calendar {
+        min-width: 620px;
+        --calendar-time-col: 54px;
+        --calendar-day-col-min: 80px;
+        --calendar-row-height: 74px;
+    }
+
+    .ums-sidebar,
+    body.ums-theme .ums-sidebar {
+        width: calc(100% - 0.75rem);
+        border-radius: 12px;
+        padding: 0.28rem 0.3rem calc(0.36rem + env(safe-area-inset-bottom));
+        gap: 0.2rem;
+    }
+
+    .ums-side-item {
+        min-height: 44px;
+        padding: 0.2rem 0.1rem;
+    }
+
+    .ums-side-item .nav-label {
+        font-size: 0.6rem;
+    }
+
+    .nav-glyph {
+        width: 0.92rem;
+        height: 0.92rem;
+        flex-basis: 0.92rem;
     }
 
     .account-dropdown {
