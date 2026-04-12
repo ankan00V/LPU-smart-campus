@@ -11,7 +11,7 @@ import ssl
 from dotenv import dotenv_values, load_dotenv
 
 from .otp_delivery import send_login_otp
-from .redis_client import redis_quota_degraded
+from .redis_client import redis_quota_degraded, redis_status
 from .runtime_infra import (
     install_socket_dns_fallback,
     is_remote_service_host,
@@ -183,10 +183,19 @@ def _worker_auto_degrade_on_redis_quota_exceeded() -> bool:
     return _bool_env("WORKER_AUTO_DEGRADE_ON_REDIS_QUOTA_EXCEEDED", default=True)
 
 
+def _is_redis_quota_exceeded_error(message: str | None) -> bool:
+    return "max requests limit exceeded" in str(message or "").strip().lower()
+
+
 def _worker_degraded_due_redis_quota() -> bool:
     if not _worker_auto_degrade_on_redis_quota_exceeded():
         return False
-    return redis_quota_degraded()
+    if redis_quota_degraded():
+        return True
+    try:
+        return _is_redis_quota_exceeded_error(str(redis_status().get("error") or ""))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def worker_runtime_required() -> bool:
@@ -311,6 +320,11 @@ def assert_worker_ready() -> None:
         )
         return
     if not worker_ready():
+        if _worker_degraded_due_redis_quota():
+            logger.warning(
+                "Worker startup requirement temporarily bypassed because Redis monthly quota is exhausted."
+            )
+            return
         raise RuntimeError(
             "WORKER_REQUIRED=true but Celery broker/backend is not configured or unavailable."
         )
@@ -321,6 +335,11 @@ def assert_worker_ready() -> None:
     for attempt in range(1, attempts + 1):
         if worker_live(timeout_seconds=ping_timeout_seconds):
             return
+        if _worker_degraded_due_redis_quota():
+            logger.warning(
+                "Worker startup requirement temporarily bypassed because Redis monthly quota is exhausted."
+            )
+            return
         if attempt < attempts:
             logger.warning(
                 "Worker ping failed during startup (%s/%s). Retrying in %.1fs.",
@@ -330,6 +349,11 @@ def assert_worker_ready() -> None:
             )
             if retry_delay_seconds > 0:
                 pytime.sleep(retry_delay_seconds)
+    if _worker_degraded_due_redis_quota():
+        logger.warning(
+            "Worker startup requirement temporarily bypassed because Redis monthly quota is exhausted."
+        )
+        return
     raise RuntimeError(
         "WORKER_REQUIRED=true but no active Celery worker responded to ping "
         f"after {attempts} startup checks."

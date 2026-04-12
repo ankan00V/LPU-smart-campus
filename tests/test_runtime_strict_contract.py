@@ -106,6 +106,29 @@ class RuntimeStrictContractTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "after 2 startup checks"):
             workers.assert_worker_ready()
 
+    @mock.patch("app.workers.pytime.sleep", autospec=True)
+    @mock.patch("app.workers.worker_live", return_value=False)
+    @mock.patch("app.workers.worker_ready", return_value=True)
+    @mock.patch("app.workers.redis_quota_degraded", return_value=False)
+    @mock.patch(
+        "app.workers.redis_status",
+        return_value={"enabled": False, "error": "max requests limit exceeded. Limit: 500000, Usage: 500000"},
+    )
+    def test_assert_worker_ready_bypasses_when_redis_quota_error_visible_in_status(
+        self,
+        _redis_status,
+        _redis_quota_degraded,
+        _worker_ready,
+        _worker_live,
+        _sleep,
+    ):
+        os.environ["WORKER_REQUIRED"] = "true"
+        os.environ["WORKER_STARTUP_MAX_ATTEMPTS"] = "2"
+        os.environ["WORKER_STARTUP_RETRY_DELAY_SECONDS"] = "0"
+        os.environ["WORKER_STARTUP_PING_TIMEOUT_SECONDS"] = "0.2"
+
+        workers.assert_worker_ready()
+
     @mock.patch("app.workers.get_celery_app")
     def test_dispatch_login_otp_returns_confirmed_delivery_channel(self, get_celery_app):
         class DummyResult:
