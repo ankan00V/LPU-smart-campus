@@ -368,9 +368,13 @@ Ask about any module available to your role.</div>
     <main class="dashboard" id="dashboard-root">
         <header id="main-dashboard-header" class="topbar glass nav-anchor">
             <div class="ums-top-left">
-                <p class="kicker">UNIVERSITY MANAGEMENT SYSTEM</p>
-                <h1 id="dashboard-title">Campus Command Center</h1>
-                <p id="dashboard-subtitle" class="subline">Unified attendance, remedial, food, and operations workflows.</p>
+                <div class="topbar-copy">
+                    <p class="kicker">UNIVERSITY MANAGEMENT SYSTEM</p>
+                    <p class="mobile-dashboard-title">Dashboard</p>
+                    <h1 id="dashboard-title">Campus Command Center</h1>
+                    <p id="dashboard-subtitle" class="subline">Unified attendance, remedial, food, and operations workflows.</p>
+                    <time id="live-datetime" class="live-datetime" aria-live="off">Loading campus local time...</time>
+                </div>
                 <div class="hero-summary">
                     <div class="hero-kpi">
                         <span>Live Modules</span>
@@ -378,35 +382,49 @@ Ask about any module available to your role.</div>
                     </div>
                     <a class="btn btn-primary hero-primary-cta" href="#attendance">Open Attendance Hub</a>
                 </div>
-                <time id="live-datetime" class="live-datetime" aria-live="off">Loading campus local time...</time>
             </div>
             <div class="topbar-control-row">
-                <nav class="ums-top-nav" aria-label="Primary Modules">
-                    <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">
-                        <span class="module-glyph" aria-hidden="true">AT</span>
-                        <span class="module-label">Attendance</span>
-                    </button>
-                    <button id="top-nav-saarthi" class="ums-module-btn" data-module="saarthi" type="button">
-                        <span class="module-glyph" aria-hidden="true">SA</span>
-                        <span class="module-label">Saarthi</span>
-                    </button>
-                    <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">
-                        <span class="module-glyph" aria-hidden="true">FD</span>
-                        <span class="module-label">Food Hall</span>
-                    </button>
-                    <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">
-                        <span class="module-glyph" aria-hidden="true">AD</span>
-                        <span class="module-label">Administrative</span>
-                    </button>
-                    <button id="top-nav-rms" class="ums-module-btn" data-module="rms" type="button">
-                        <span class="module-glyph" aria-hidden="true">RM</span>
-                        <span class="module-label">RMS</span>
-                    </button>
-                    <button id="top-nav-remedial" class="ums-module-btn" data-module="remedial" type="button">
-                        <span class="module-glyph" aria-hidden="true">RD</span>
-                        <span class="module-label">Remedial</span>
-                    </button>
-                </nav>
+                <div class="topbar-quick-actions-shell">
+                    <div class="topbar-quick-actions-head">
+                        <span class="topbar-quick-actions-label">Quick Actions</span>
+                        <button
+                            id="topbar-quick-toggle-btn"
+                            class="topbar-quick-toggle"
+                            type="button"
+                            aria-controls="topbar-quick-actions"
+                            aria-expanded="true"
+                            aria-label="Collapse quick actions"
+                        >
+                            <span class="topbar-quick-toggle-icon" aria-hidden="true"></span>
+                        </button>
+                    </div>
+                    <nav id="topbar-quick-actions" class="ums-top-nav" aria-label="Primary Modules">
+                        <button id="top-nav-attendance" class="ums-module-btn active" data-module="attendance" type="button">
+                            <span class="module-glyph" aria-hidden="true">AT</span>
+                            <span class="module-label">Attendance</span>
+                        </button>
+                        <button id="top-nav-saarthi" class="ums-module-btn" data-module="saarthi" type="button">
+                            <span class="module-glyph" aria-hidden="true">SA</span>
+                            <span class="module-label">Saarthi</span>
+                        </button>
+                        <button id="top-nav-food" class="ums-module-btn" data-module="food" type="button">
+                            <span class="module-glyph" aria-hidden="true">FD</span>
+                            <span class="module-label">Food Hall</span>
+                        </button>
+                        <button id="top-nav-administrative" class="ums-module-btn" data-module="administrative" type="button">
+                            <span class="module-glyph" aria-hidden="true">AD</span>
+                            <span class="module-label">Administrative</span>
+                        </button>
+                        <button id="top-nav-rms" class="ums-module-btn" data-module="rms" type="button">
+                            <span class="module-glyph" aria-hidden="true">RM</span>
+                            <span class="module-label">RMS</span>
+                        </button>
+                        <button id="top-nav-remedial" class="ums-module-btn" data-module="remedial" type="button">
+                            <span class="module-glyph" aria-hidden="true">RD</span>
+                            <span class="module-label">Remedial</span>
+                        </button>
+                    </nav>
+                </div>
                 <div class="topbar-actions">
                     <button id="theme-toggle-btn" class="btn btn-ghost theme-toggle-btn" type="button" aria-label="Toggle light and dark mode">
                         Dark Mode

@@ -15,6 +15,8 @@ const FOOD_LOCATION_MAX_STALE_MS = 120000;
 const FOOD_DELIVERY_FEE_INR = 30;
 const FOOD_PLATFORM_FEE_INR = 5;
 const FOOD_DEMO_STORAGE_KEY = 'foodhall_demo_enabled';
+const MOBILE_TOPBAR_BREAKPOINT_QUERY = '(max-width: 768px)';
+const MOBILE_QUICK_ACTIONS_STORAGE_KEY = 'ums_mobile_quick_actions_collapsed';
 const CLIENT_DEMO_FEATURES_ENABLED = (() => {
   try {
     const host = String(window.location.hostname || '').toLowerCase();
@@ -39,6 +41,7 @@ const ROUTE_SPLIT_ASSET_VERSION = '20260308b';
 const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
 const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
 const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
+const MOBILE_TIMETABLE_MAX_WIDTH = 768;
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
 const LIVE_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -171,6 +174,7 @@ let remedialLiveTimer = null;
 let remedialLiveBusy = false;
 let supportDeskLiveTimer = null;
 let supportDeskLiveBusy = false;
+let studentLayoutResizeTimer = null;
 let realtimeBusController = null;
 let realtimeBusLoadingPromise = null;
 let routeModuleRuntime = null;
@@ -181,6 +185,8 @@ let sessionIdleTimer = null;
 let sessionMaxTimer = null;
 let sessionActivityBound = false;
 let lastSessionActivityPingMs = 0;
+let mobileTopbarLastScrollY = 0;
+let mobileTopbarScrollTicking = false;
 const runtimeUiStore = {
   profilePromptSeenByUser: new Set(),
   mfaGuideSeenByUser: new Set(),
@@ -418,6 +424,9 @@ const state = {
   ui: {
     theme: 'light',
     activeModule: 'attendance',
+    mobileQuickActionsCollapsed: false,
+    mobileQuickActionsAutoCollapsed: false,
+    studentTimetableMobileViewport: null,
     adminSubmodules: {
       attendance: 'attendance-ops',
       rms: 'rms-overview',
@@ -469,6 +478,7 @@ const els = {
   mongoSyncStatus: document.getElementById('mongo-sync-status'),
   aiOutput: document.getElementById('ai-output'),
   statusLog: document.getElementById('status-log'),
+  mainDashboardHeader: document.getElementById('main-dashboard-header'),
   metricBlocks: document.getElementById('metric-blocks'),
   metricClassrooms: document.getElementById('metric-classrooms'),
   metricCourses: document.getElementById('metric-courses'),
@@ -597,6 +607,8 @@ const els = {
   topNavAdministrativeBtn: document.getElementById('top-nav-administrative'),
   topNavRmsBtn: document.getElementById('top-nav-rms'),
   topNavRemedialBtn: document.getElementById('top-nav-remedial'),
+  topbarQuickActions: document.getElementById('topbar-quick-actions'),
+  topbarQuickToggleBtn: document.getElementById('topbar-quick-toggle-btn'),
   modulePanels: document.querySelectorAll('.module-panel[data-module]'),
   accountSection: document.getElementById('account-section'),
   profilePrimaryEmail: document.getElementById('profile-primary-email'),
@@ -1872,6 +1884,138 @@ function toggleTheme() {
   applyTheme(state.ui.theme === 'dark' ? 'light' : 'dark', {
     persist: true,
     userEmail: authState.user?.email || '',
+  });
+}
+
+function isMobileTopbarViewport() {
+  return window.matchMedia(MOBILE_TOPBAR_BREAKPOINT_QUERY).matches;
+}
+
+function readStoredMobileQuickActionsCollapsed() {
+  try {
+    return window.localStorage.getItem(MOBILE_QUICK_ACTIONS_STORAGE_KEY) === 'true';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function persistMobileQuickActionsCollapsed(collapsed) {
+  try {
+    if (collapsed) {
+      window.localStorage.setItem(MOBILE_QUICK_ACTIONS_STORAGE_KEY, 'true');
+    } else {
+      window.localStorage.removeItem(MOBILE_QUICK_ACTIONS_STORAGE_KEY);
+    }
+  } catch (_error) {
+    // Ignore storage access issues.
+  }
+}
+
+function getTopModuleButtons() {
+  return [
+    els.topNavAttendanceBtn,
+    els.topNavSaarthiBtn,
+    els.topNavFoodBtn,
+    els.topNavAdministrativeBtn,
+    els.topNavRmsBtn,
+    els.topNavRemedialBtn,
+  ].filter(Boolean);
+}
+
+function syncMobileQuickActionsState() {
+  const header = els.mainDashboardHeader;
+  const isMobile = isMobileTopbarViewport();
+  const collapsed = isMobile && (state.ui.mobileQuickActionsCollapsed || state.ui.mobileQuickActionsAutoCollapsed);
+
+  if (header) {
+    header.classList.toggle('mobile-quick-actions-collapsed', collapsed);
+    header.classList.toggle('mobile-topbar-scrolled', isMobile && window.scrollY > 8);
+  }
+
+  if (els.topbarQuickToggleBtn) {
+    els.topbarQuickToggleBtn.setAttribute('aria-expanded', String(!collapsed));
+    els.topbarQuickToggleBtn.setAttribute(
+      'aria-label',
+      collapsed ? 'Expand quick actions' : 'Collapse quick actions'
+    );
+  }
+
+  if (els.topbarQuickActions) {
+    els.topbarQuickActions.setAttribute('aria-hidden', String(collapsed));
+  }
+
+  for (const button of getTopModuleButtons()) {
+    button.tabIndex = isMobile && collapsed ? -1 : 0;
+  }
+}
+
+function setMobileQuickActionsCollapsed(collapsed, { persist = true, resetAuto = false } = {}) {
+  state.ui.mobileQuickActionsCollapsed = Boolean(collapsed);
+  if (resetAuto) {
+    state.ui.mobileQuickActionsAutoCollapsed = false;
+  }
+  if (persist) {
+    persistMobileQuickActionsCollapsed(state.ui.mobileQuickActionsCollapsed);
+  }
+  syncMobileQuickActionsState();
+}
+
+function handleMobileTopbarScroll() {
+  const isMobile = isMobileTopbarViewport();
+  const currentScrollY = Math.max(window.scrollY || 0, 0);
+  const delta = currentScrollY - mobileTopbarLastScrollY;
+  mobileTopbarLastScrollY = currentScrollY;
+
+  if (!isMobile) {
+    if (state.ui.mobileQuickActionsAutoCollapsed) {
+      state.ui.mobileQuickActionsAutoCollapsed = false;
+    }
+    syncMobileQuickActionsState();
+    return;
+  }
+
+  if (currentScrollY <= 24) {
+    if (state.ui.mobileQuickActionsAutoCollapsed) {
+      state.ui.mobileQuickActionsAutoCollapsed = false;
+    }
+    syncMobileQuickActionsState();
+    return;
+  }
+
+  if (!state.ui.mobileQuickActionsCollapsed) {
+    if (delta > 8) {
+      state.ui.mobileQuickActionsAutoCollapsed = true;
+    } else if (delta < -8) {
+      state.ui.mobileQuickActionsAutoCollapsed = false;
+    }
+  }
+
+  syncMobileQuickActionsState();
+}
+
+function onMobileTopbarScroll() {
+  if (mobileTopbarScrollTicking) {
+    return;
+  }
+  mobileTopbarScrollTicking = true;
+  window.requestAnimationFrame(() => {
+    mobileTopbarScrollTicking = false;
+    handleMobileTopbarScroll();
+  });
+}
+
+function initMobileTopbarState() {
+  state.ui.mobileQuickActionsCollapsed = readStoredMobileQuickActionsCollapsed();
+  state.ui.mobileQuickActionsAutoCollapsed = false;
+  mobileTopbarLastScrollY = Math.max(window.scrollY || 0, 0);
+  syncMobileQuickActionsState();
+  window.addEventListener('scroll', onMobileTopbarScroll, { passive: true });
+  window.addEventListener('resize', () => {
+    mobileTopbarLastScrollY = Math.max(window.scrollY || 0, 0);
+    if (!isMobileTopbarViewport()) {
+      state.ui.mobileQuickActionsAutoCollapsed = false;
+    }
+    syncMobileQuickActionsState();
   });
 }
 
@@ -4514,6 +4658,7 @@ function applyRoleUI() {
   updateChotuVisibility();
   updateSupportDeskVisibility();
   syncSupportDeskLiveTicker();
+  syncMobileQuickActionsState();
   if (isAdmin && activeModule === 'administrative') {
     void refreshCopilotAuditTimeline({ silent: true });
   }
@@ -14883,6 +15028,10 @@ function formatTime24(rawTime) {
   return `${String(Number(h)).padStart(2, '0')}:${String(Number(m || 0)).padStart(2, '0')}`;
 }
 
+function isMobileTimetableViewport() {
+  return window.matchMedia(`(max-width: ${MOBILE_TIMETABLE_MAX_WIDTH}px)`).matches;
+}
+
 function weekdayFromWeekStart(weekStartRaw) {
   if (!weekStartRaw) {
     return null;
@@ -15977,8 +16126,132 @@ function refreshStudentTimetableRealtimeStatus() {
   updateSelectedClassState();
 }
 
+function renderStudentTimetableMobile(classes, currentDayIndex) {
+  const timeline = document.createElement('div');
+  timeline.className = 'mobile-timetable';
+  timeline.setAttribute('role', 'list');
+  timeline.setAttribute('aria-label', 'Weekly class timetable (mobile timeline)');
+
+  const sorted = [...classes].sort((left, right) => {
+    const leftWeekday = Number(left.weekday || 0);
+    const rightWeekday = Number(right.weekday || 0);
+    if (leftWeekday !== rightWeekday) {
+      return leftWeekday - rightWeekday;
+    }
+    const leftStart = toMinutes(left.start_time);
+    const rightStart = toMinutes(right.start_time);
+    if (leftStart !== rightStart) {
+      return leftStart - rightStart;
+    }
+    return Number(left.schedule_id || 0) - Number(right.schedule_id || 0);
+  });
+
+  for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
+    const dayEntries = sorted.filter((item) => Number(item.weekday) === dayIndex);
+    if (!dayEntries.length) {
+      continue;
+    }
+
+    const dayGroup = document.createElement('section');
+    dayGroup.className = 'mobile-day-group';
+    dayGroup.setAttribute('role', 'listitem');
+    if (dayIndex === currentDayIndex) {
+      dayGroup.classList.add('current-day');
+    }
+
+    const dayHeader = document.createElement('header');
+    dayHeader.className = 'mobile-day-header';
+
+    const dayTitle = document.createElement('h4');
+    dayTitle.className = 'mobile-day-title';
+    dayTitle.textContent = DAY_LABELS[dayIndex];
+    dayHeader.appendChild(dayTitle);
+
+    const dayMeta = document.createElement('small');
+    dayMeta.className = 'mobile-day-meta';
+    const firstDate = String(dayEntries[0]?.class_date || '').trim();
+    if (firstDate) {
+      try {
+        dayMeta.textContent = parseISODateLocal(firstDate).toLocaleDateString('en-GB', {
+          day: '2-digit',
+          month: 'short',
+          year: 'numeric',
+        });
+      } catch (_) {
+        dayMeta.textContent = firstDate;
+      }
+    } else {
+      dayMeta.textContent = 'Class day';
+    }
+    if (dayIndex === currentDayIndex) {
+      dayMeta.textContent = `Today - ${dayMeta.textContent}`;
+    }
+    dayHeader.appendChild(dayMeta);
+    dayGroup.appendChild(dayHeader);
+
+    const dayList = document.createElement('div');
+    dayList.className = 'mobile-day-classes';
+    dayGroup.appendChild(dayList);
+
+    for (const item of dayEntries) {
+      const lines = slotTextLines(item);
+      const kpi = resolveTimetableKpi(item);
+
+      const card = document.createElement('article');
+      card.className = `calendar-class mobile-calendar-class ${getSlotClass(item)}`;
+      if (dayIndex === currentDayIndex) {
+        card.classList.add('current-day');
+      }
+      card.dataset.scheduleId = String(item.schedule_id);
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-selected', String(item.schedule_id === state.student.selectedScheduleId));
+      card.setAttribute(
+        'aria-label',
+        `${DAY_LABELS[item.weekday]}, ${formatTime24(item.start_time)} to ${formatTime24(item.end_time)}, ${lines.primary}, ${kpi.label}`
+      );
+      if (item.schedule_id === state.student.selectedScheduleId) {
+        card.classList.add('selected');
+      }
+
+      const time = document.createElement('p');
+      time.className = 'calendar-time';
+      time.textContent = `${formatTime24(item.start_time)} - ${formatTime24(item.end_time)}`;
+      card.appendChild(time);
+
+      const course = document.createElement('p');
+      course.className = 'calendar-course';
+      course.textContent = lines.primary;
+      card.appendChild(course);
+
+      if (lines.secondary) {
+        const room = document.createElement('p');
+        room.className = 'calendar-room';
+        room.textContent = lines.secondary;
+        card.appendChild(room);
+      }
+
+      const metaRow = document.createElement('div');
+      metaRow.className = 'calendar-meta-row';
+      const statusBadge = document.createElement('span');
+      statusBadge.className = `slot-status ${kpi.key}`;
+      statusBadge.textContent = kpi.label;
+      metaRow.appendChild(statusBadge);
+      card.appendChild(metaRow);
+
+      dayList.appendChild(card);
+    }
+
+    timeline.appendChild(dayGroup);
+  }
+
+  els.timetableGrid.classList.add('is-mobile-timeline');
+  els.timetableGrid.appendChild(timeline);
+}
+
 function renderStudentTimetable() {
   els.timetableGrid.innerHTML = '';
+  els.timetableGrid.classList.remove('is-mobile-timeline');
   const classes = state.student.timetable || [];
   if (!classes.length) {
     const emptyRow = buildEmptyStateRow({
@@ -15997,9 +16270,19 @@ function renderStudentTimetable() {
     updateSelectedClassState();
     return;
   }
+  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart);
+  const mobileLayout = isMobileTimetableViewport();
+  state.ui.studentTimetableMobileViewport = mobileLayout;
+
+  if (mobileLayout) {
+    renderStudentTimetableMobile(classes, currentDayIndex);
+    updateSelectedClassState();
+    focusTimetableContext({ smooth: true });
+    return;
+  }
+
   const { startMinute, endMinute } = getCalendarBounds(classes);
   const rows = Math.max(1, Math.ceil((endMinute - startMinute) / 60));
-  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart);
 
   const calendar = document.createElement('div');
   calendar.className = 'weekly-calendar';
@@ -16141,16 +16424,23 @@ function focusTimetableContext({ smooth = true } = {}) {
   if (!container) {
     return;
   }
+  const mobileTimeline = container.classList.contains('is-mobile-timeline');
 
   const selectedCard = state.student.selectedScheduleId
     ? container.querySelector(`.calendar-class[data-schedule-id="${state.student.selectedScheduleId}"]`)
     : null;
   const openCard = container.querySelector('.calendar-class.slot-open-window.current-day, .calendar-class.slot-open-window');
-  const currentDayHeader = container.querySelector('.calendar-day-header.current-day');
+  const currentDayHeader = mobileTimeline
+    ? container.querySelector('.mobile-day-group.current-day .mobile-day-header')
+    : container.querySelector('.calendar-day-header.current-day');
   const target = selectedCard || openCard || currentDayHeader;
 
   if (target) {
     target.scrollIntoView({ block: 'nearest', inline: 'center', behavior });
+  }
+
+  if (mobileTimeline) {
+    return;
   }
 
   const currentDayIndex = weekdayFromWeekStart(state.student.weekStart);
@@ -16177,6 +16467,39 @@ function focusTimetableContext({ smooth = true } = {}) {
 
   const targetTop = Math.max(0, best.offsetTop - Math.round(container.clientHeight * 0.28));
   container.scrollTo({ top: targetTop, behavior });
+}
+
+function refreshStudentTimetableViewportLayout() {
+  const nextMobile = isMobileTimetableViewport();
+  const previous = state.ui.studentTimetableMobileViewport;
+  if (previous === null) {
+    state.ui.studentTimetableMobileViewport = nextMobile;
+    return;
+  }
+  if (nextMobile === previous) {
+    return;
+  }
+  state.ui.studentTimetableMobileViewport = nextMobile;
+  if (authState.user?.role !== 'student') {
+    return;
+  }
+  if (!els.timetableGrid) {
+    return;
+  }
+  if (!Array.isArray(state.student.timetable) || !state.student.timetable.length) {
+    return;
+  }
+  renderStudentTimetable();
+}
+
+function queueStudentTimetableViewportRefresh() {
+  if (studentLayoutResizeTimer) {
+    window.clearTimeout(studentLayoutResizeTimer);
+  }
+  studentLayoutResizeTimer = window.setTimeout(() => {
+    studentLayoutResizeTimer = null;
+    refreshStudentTimetableViewportLayout();
+  }, 120);
 }
 
 function renderTimetableViewInfo() {
@@ -20055,6 +20378,13 @@ function bindEvents() {
     });
   }
 
+  if (els.topbarQuickToggleBtn) {
+    els.topbarQuickToggleBtn.addEventListener('click', () => {
+      const nextCollapsed = !(state.ui.mobileQuickActionsCollapsed || state.ui.mobileQuickActionsAutoCollapsed);
+      setMobileQuickActionsCollapsed(nextCollapsed, { persist: true, resetAuto: true });
+    });
+  }
+
   if (els.accountMenuBtn) {
     els.accountMenuBtn.addEventListener('click', () => {
       if (!authState.user) {
@@ -20658,6 +20988,7 @@ function bindEvents() {
     updateVerlynVisibility();
     updateSupportDeskVisibility();
     updateChotuVisibility();
+    queueStudentTimetableViewportRefresh();
   });
 
   if (els.supportDeskToggleBtn) {
@@ -22373,10 +22704,12 @@ async function init() {
   state.student.viewDate = els.weekStartDate.value;
   state.food.orderDate = els.foodOrderDate?.value || todayISO();
   state.ui.activeModule = normalizeModuleKey(moduleFromHash() || state.ui.activeModule);
+  state.ui.studentTimetableMobileViewport = isMobileTimetableViewport();
   applyTheme(getInitialTheme(''), { persist: false, userEmail: '' });
   restoreFoodDemoEnabled();
   bindStaticAssetFallbacks();
   startLiveDateTimeTicker();
+  initMobileTopbarState();
   setAuthMode('login');
   if (ENABLE_DECORATIVE_MOTION) {
     initParallax();
