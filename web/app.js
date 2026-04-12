@@ -17,6 +17,7 @@ const FOOD_PLATFORM_FEE_INR = 5;
 const FOOD_DEMO_STORAGE_KEY = 'foodhall_demo_enabled';
 const MOBILE_TOPBAR_BREAKPOINT_QUERY = '(max-width: 768px)';
 const MOBILE_QUICK_ACTIONS_STORAGE_KEY = 'ums_mobile_quick_actions_collapsed';
+const MOBILE_SIDEBAR_STORAGE_KEY = 'ums_mobile_sidebar_collapsed';
 const CLIENT_DEMO_FEATURES_ENABLED = (() => {
   try {
     const host = String(window.location.hostname || '').toLowerCase();
@@ -424,6 +425,7 @@ const state = {
   ui: {
     theme: 'light',
     activeModule: 'attendance',
+    mobileSidebarCollapsed: true,
     mobileQuickActionsCollapsed: false,
     mobileQuickActionsAutoCollapsed: false,
     studentTimetableMobileViewport: null,
@@ -478,6 +480,7 @@ const els = {
   mongoSyncStatus: document.getElementById('mongo-sync-status'),
   aiOutput: document.getElementById('ai-output'),
   statusLog: document.getElementById('status-log'),
+  umsSidebar: document.getElementById('mobile-section-nav'),
   mainDashboardHeader: document.getElementById('main-dashboard-header'),
   metricBlocks: document.getElementById('metric-blocks'),
   metricClassrooms: document.getElementById('metric-classrooms'),
@@ -601,6 +604,7 @@ const els = {
   navDashboardBtn: document.getElementById('nav-dashboard-btn'),
   navCoursesBtn: document.getElementById('nav-courses-btn'),
   navAttendanceBtn: document.getElementById('nav-attendance-btn'),
+  mobileSidebarToggleBtn: document.getElementById('mobile-sidebar-toggle-btn'),
   topNavAttendanceBtn: document.getElementById('top-nav-attendance'),
   topNavSaarthiBtn: document.getElementById('top-nav-saarthi'),
   topNavFoodBtn: document.getElementById('top-nav-food'),
@@ -1889,6 +1893,60 @@ function toggleTheme() {
 
 function isMobileTopbarViewport() {
   return window.matchMedia(MOBILE_TOPBAR_BREAKPOINT_QUERY).matches;
+}
+
+function readStoredMobileSidebarCollapsed() {
+  try {
+    const stored = window.localStorage.getItem(MOBILE_SIDEBAR_STORAGE_KEY);
+    if (stored === null) {
+      return true;
+    }
+    return stored === 'true';
+  } catch (_error) {
+    return true;
+  }
+}
+
+function persistMobileSidebarCollapsed(collapsed) {
+  try {
+    window.localStorage.setItem(MOBILE_SIDEBAR_STORAGE_KEY, collapsed ? 'true' : 'false');
+  } catch (_error) {
+    // Ignore storage access issues.
+  }
+}
+
+function syncMobileSidebarState() {
+  const sidebar = els.umsSidebar;
+  const isMobile = isMobileTopbarViewport();
+  const collapsed = isMobile && state.ui.mobileSidebarCollapsed;
+
+  if (sidebar) {
+    sidebar.classList.toggle('mobile-sidebar-collapsed', collapsed);
+  }
+
+  if (els.mobileSidebarToggleBtn) {
+    els.mobileSidebarToggleBtn.setAttribute('aria-expanded', String(!collapsed));
+    els.mobileSidebarToggleBtn.setAttribute(
+      'aria-label',
+      collapsed ? 'Show section navigation' : 'Hide section navigation'
+    );
+  }
+}
+
+function setMobileSidebarCollapsed(collapsed, { persist = true } = {}) {
+  state.ui.mobileSidebarCollapsed = Boolean(collapsed);
+  if (persist) {
+    persistMobileSidebarCollapsed(state.ui.mobileSidebarCollapsed);
+  }
+  syncMobileSidebarState();
+}
+
+function initMobileSidebarState() {
+  state.ui.mobileSidebarCollapsed = readStoredMobileSidebarCollapsed();
+  syncMobileSidebarState();
+  window.addEventListener('resize', () => {
+    syncMobileSidebarState();
+  });
 }
 
 function readStoredMobileQuickActionsCollapsed() {
@@ -4658,6 +4716,7 @@ function applyRoleUI() {
   updateChotuVisibility();
   updateSupportDeskVisibility();
   syncSupportDeskLiveTicker();
+  syncMobileSidebarState();
   syncMobileQuickActionsState();
   if (isAdmin && activeModule === 'administrative') {
     void refreshCopilotAuditTimeline({ silent: true });
@@ -4794,6 +4853,9 @@ function navigateSidebar(navKey) {
   setSidebarActive(navKey);
   target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' });
   flashSection(target);
+  if (isMobileTopbarViewport()) {
+    setMobileSidebarCollapsed(true, { persist: true });
+  }
 }
 
 function renderAlternateEmailStatus() {
@@ -16274,13 +16336,6 @@ function renderStudentTimetable() {
   const mobileLayout = isMobileTimetableViewport();
   state.ui.studentTimetableMobileViewport = mobileLayout;
 
-  if (mobileLayout) {
-    renderStudentTimetableMobile(classes, currentDayIndex);
-    updateSelectedClassState();
-    focusTimetableContext({ smooth: true });
-    return;
-  }
-
   const { startMinute, endMinute } = getCalendarBounds(classes);
   const rows = Math.max(1, Math.ceil((endMinute - startMinute) / 60));
 
@@ -20385,6 +20440,12 @@ function bindEvents() {
     });
   }
 
+  if (els.mobileSidebarToggleBtn) {
+    els.mobileSidebarToggleBtn.addEventListener('click', () => {
+      setMobileSidebarCollapsed(!state.ui.mobileSidebarCollapsed, { persist: true });
+    });
+  }
+
   if (els.accountMenuBtn) {
     els.accountMenuBtn.addEventListener('click', () => {
       if (!authState.user) {
@@ -22709,6 +22770,7 @@ async function init() {
   restoreFoodDemoEnabled();
   bindStaticAssetFallbacks();
   startLiveDateTimeTicker();
+  initMobileSidebarState();
   initMobileTopbarState();
   setAuthMode('login');
   if (ENABLE_DECORATIVE_MOTION) {

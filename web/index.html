@@ -303,7 +303,7 @@
         </div>
     </section>
 
-    <aside class="ums-sidebar" aria-label="Section Navigation">
+    <aside id="mobile-section-nav" class="ums-sidebar" aria-label="Section Navigation">
         <div class="ums-logo">
             <div class="ums-logo-mark-frame">
                 <img
@@ -317,6 +317,16 @@
             </div>
             <span>LPU SMART</span>
         </div>
+        <button
+            id="mobile-sidebar-toggle-btn"
+            class="mobile-sidebar-toggle"
+            type="button"
+            aria-controls="mobile-section-nav"
+            aria-expanded="false"
+            aria-label="Show section navigation"
+        >
+            <span class="mobile-sidebar-toggle-icon" aria-hidden="true"></span>
+        </button>
         <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">
             <span class="nav-glyph" aria-hidden="true">DB</span>
             <span class="nav-label">Dashboard</span>
