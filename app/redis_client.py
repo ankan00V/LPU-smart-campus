@@ -122,6 +122,22 @@ def _redis_required() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _redis_auto_degrade_on_quota_exceeded() -> bool:
+    raw = (os.getenv("REDIS_AUTO_DEGRADE_ON_QUOTA_EXCEEDED", "true") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _is_redis_quota_exceeded_error(message: str | None) -> bool:
+    raw = str(message or "").strip().lower()
+    return "max requests limit exceeded" in raw
+
+
+def _redis_quota_degraded() -> bool:
+    if not _redis_auto_degrade_on_quota_exceeded():
+        return False
+    return _is_redis_quota_exceeded_error(_redis_error)
+
+
 def _rate_limit_allow_local_fallback() -> bool:
     raw = (os.getenv("API_RATE_LIMIT_ALLOW_LOCAL_FALLBACK", "false") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -129,6 +145,14 @@ def _rate_limit_allow_local_fallback() -> bool:
 
 def redis_required() -> bool:
     return _redis_required()
+
+
+def redis_runtime_required() -> bool:
+    return _redis_required() and not _redis_quota_degraded()
+
+
+def redis_quota_degraded() -> bool:
+    return _redis_quota_degraded()
 
 
 def _redis_ssl_required() -> bool:
@@ -312,6 +336,8 @@ def redis_status() -> dict[str, Any]:
     return {
         "enabled": client is not None,
         "required": _redis_required(),
+        "runtime_required": redis_runtime_required(),
+        "quota_degraded": _redis_quota_degraded(),
         "host": host,
         "scheme": scheme,
         "remote_host": is_remote_service_host(host),
@@ -323,13 +349,13 @@ def redis_status() -> dict[str, Any]:
 def cache_get_json(key: str) -> Any | None:
     client = get_redis(required=False)
     if client is None:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(_redis_error or "Redis is unavailable")
         return None
     try:
         raw = _retry_redis_call(lambda active_client: active_client.get(key))
     except RedisError as exc:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(str(exc) or "Redis cache read failed") from exc
         return None
     if not raw:
@@ -343,7 +369,7 @@ def cache_get_json(key: str) -> Any | None:
 def cache_set_json(key: str, payload: Any, ttl_seconds: int = 30) -> bool:
     client = get_redis(required=False)
     if client is None:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(_redis_error or "Redis is unavailable")
         return False
     ttl = max(1, int(ttl_seconds))
@@ -357,7 +383,7 @@ def cache_set_json(key: str, payload: Any, ttl_seconds: int = 30) -> bool:
         )
         return True
     except RedisError as exc:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(str(exc) or "Redis cache write failed") from exc
         return False
 
@@ -365,14 +391,14 @@ def cache_set_json(key: str, payload: Any, ttl_seconds: int = 30) -> bool:
 def cache_delete(key: str) -> bool:
     client = get_redis(required=False)
     if client is None:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(_redis_error or "Redis is unavailable")
         return False
     try:
         _retry_redis_call(lambda active_client: active_client.delete(key))
         return True
     except RedisError as exc:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(str(exc) or "Redis cache delete failed") from exc
         return False
 
@@ -382,11 +408,12 @@ def rate_limit_hit(key: str, *, limit: int, window_seconds: int) -> RateLimitDec
     safe_window = max(1, int(window_seconds))
     now = time.time()
 
-    client = get_redis(required=True if _redis_required() else False)
+    runtime_required = redis_runtime_required()
+    client = get_redis(required=True if runtime_required else False)
     bucket = int(now // safe_window)
     redis_key = f"rl:{key}:{bucket}"
     if client is None:
-        if not _redis_required() and _rate_limit_allow_local_fallback():
+        if (not runtime_required) and (_rate_limit_allow_local_fallback() or _redis_quota_degraded()):
             return _local_rate_limit_hit(
                 redis_key,
                 limit=safe_limit,
@@ -425,7 +452,7 @@ def rate_limit_hit(key: str, *, limit: int, window_seconds: int) -> RateLimitDec
 def publish_json(channel: str, payload: dict[str, Any]) -> bool:
     client = get_redis(required=False)
     if client is None:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(_redis_error or "Redis publish channel is unavailable")
         return False
     try:
@@ -437,7 +464,7 @@ def publish_json(channel: str, payload: dict[str, Any]) -> bool:
         )
         return True
     except RedisError as exc:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(str(exc) or "Redis publish failed") from exc
         return False
 
@@ -451,7 +478,7 @@ def start_pubsub_listener(
 ) -> threading.Thread | None:
     client = get_redis(required=False)
     if client is None:
-        if _redis_required():
+        if redis_runtime_required():
             raise RuntimeError(_redis_error or "Redis pubsub is unavailable")
         return None
 
@@ -461,7 +488,7 @@ def start_pubsub_listener(
             pubsub = None
             active_client = get_redis(required=False)
             if active_client is None:
-                if _redis_required():
+                if redis_runtime_required():
                     logger.error(
                         "Redis pubsub unavailable for channel=%s; retrying. reason=%s",
                         channel,
@@ -503,7 +530,7 @@ def start_pubsub_listener(
                 message = str(exc or "").strip().lower()
                 if stop_event.is_set() or "closed file" in message:
                     break
-                if _redis_required():
+                if redis_runtime_required():
                     logger.exception(
                         "Redis pubsub listener error channel=%s error=%s",
                         channel,

@@ -68,6 +68,10 @@ def _production_env_secrets_allowed() -> bool:
     return False
 
 
+def _degraded_runtime_allowed_in_production() -> bool:
+    return _bool_env("APP_ALLOW_DEGRADED_RUNTIME_IN_PRODUCTION", default=False)
+
+
 def _coerce_utc_dt(value: str | datetime | None) -> datetime | None:
     if isinstance(value, datetime):
         if value.tzinfo is None:
@@ -199,19 +203,20 @@ def validate_production_secrets() -> None:
         raise RuntimeError("Production requires APP_FIELD_ENCRYPTION_REQUIRED=true.")
     if not _bool_env("APP_COOKIE_SECURE", default=False):
         raise RuntimeError("Production requires APP_COOKIE_SECURE=true.")
-    if not _bool_env("APP_RUNTIME_STRICT", default=True):
+    degraded_runtime_allowed = _degraded_runtime_allowed_in_production()
+    if not _bool_env("APP_RUNTIME_STRICT", default=True) and not degraded_runtime_allowed:
         raise RuntimeError("Production requires APP_RUNTIME_STRICT=true.")
     if not _bool_env("APP_MANAGED_SERVICES_REQUIRED", default=True):
         raise RuntimeError("Production requires APP_MANAGED_SERVICES_REQUIRED=true.")
-    if not _bool_env("REDIS_REQUIRED", default=True):
+    if not _bool_env("REDIS_REQUIRED", default=True) and not degraded_runtime_allowed:
         raise RuntimeError("Production requires REDIS_REQUIRED=true.")
-    if not _bool_env("WORKER_REQUIRED", default=True):
+    if not _bool_env("WORKER_REQUIRED", default=True) and not degraded_runtime_allowed:
         raise RuntimeError("Production requires WORKER_REQUIRED=true.")
-    if _bool_env("WORKER_INLINE_FALLBACK_ENABLED", default=False):
+    if _bool_env("WORKER_INLINE_FALLBACK_ENABLED", default=False) and not degraded_runtime_allowed:
         raise RuntimeError("Production requires WORKER_INLINE_FALLBACK_ENABLED=false.")
     if not _bool_env("MONGO_PERSISTENCE_REQUIRED", default=True):
         raise RuntimeError("Production requires MONGO_PERSISTENCE_REQUIRED=true.")
-    if not _bool_env("MONGO_STARTUP_STRICT", default=True):
+    if not _bool_env("MONGO_STARTUP_STRICT", default=True) and not degraded_runtime_allowed:
         raise RuntimeError("Production requires MONGO_STARTUP_STRICT=true.")
 
     get_field_encryptor.cache_clear()

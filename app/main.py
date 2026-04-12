@@ -41,7 +41,7 @@ from .outbox import dispatch_outbox_batch
 from .observability import install_observability, metrics_response, observability_router
 from .otp_delivery import assert_otp_delivery_ready
 from .performance import record_request_metric
-from .redis_client import close_redis, init_redis, redis_required, redis_status
+from .redis_client import close_redis, init_redis, redis_required, redis_runtime_required, redis_status
 from .rate_limit import enforce_rate_limit, rate_limit_headers
 from .realtime_bus import realtime_hub
 from .runtime_infra import managed_services_required
@@ -1247,7 +1247,7 @@ async def startup_event() -> None:
             )
             if redis_retry_delay_seconds > 0:
                 await asyncio.sleep(redis_retry_delay_seconds)
-    if not redis_ok and redis_required():
+    if not redis_ok and redis_runtime_required():
         detail = f" Details: {redis_error}" if redis_error else ""
         raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup." + detail)
     assert_worker_ready()

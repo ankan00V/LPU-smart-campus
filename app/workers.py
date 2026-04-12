@@ -11,6 +11,7 @@ import ssl
 from dotenv import dotenv_values, load_dotenv
 
 from .otp_delivery import send_login_otp
+from .redis_client import redis_quota_degraded
 from .runtime_infra import (
     install_socket_dns_fallback,
     is_remote_service_host,
@@ -178,6 +179,20 @@ def worker_required() -> bool:
     return _bool_env("WORKER_REQUIRED", default=False)
 
 
+def _worker_auto_degrade_on_redis_quota_exceeded() -> bool:
+    return _bool_env("WORKER_AUTO_DEGRADE_ON_REDIS_QUOTA_EXCEEDED", default=True)
+
+
+def _worker_degraded_due_redis_quota() -> bool:
+    if not _worker_auto_degrade_on_redis_quota_exceeded():
+        return False
+    return redis_quota_degraded()
+
+
+def worker_runtime_required() -> bool:
+    return worker_required() and (not _worker_degraded_due_redis_quota())
+
+
 def inline_fallback_enabled() -> bool:
     return _bool_env("WORKER_INLINE_FALLBACK_ENABLED", default=True)
 
@@ -290,6 +305,11 @@ def worker_transport_status() -> dict[str, Any]:
 def assert_worker_ready() -> None:
     if not worker_required():
         return
+    if _worker_degraded_due_redis_quota():
+        logger.warning(
+            "Worker startup requirement temporarily bypassed because Redis monthly quota is exhausted."
+        )
+        return
     if not worker_ready():
         raise RuntimeError(
             "WORKER_REQUIRED=true but Celery broker/backend is not configured or unavailable."
@@ -376,7 +396,7 @@ def dispatch_login_otp(
         payload = _send_login_otp_task(destination_email, otp_code)
         return _validated_otp_delivery_payload(payload)
 
-    required = worker_required()
+    required = worker_runtime_required()
     # OTP inline fallback is only allowed outside strict runtime mode.
     fallback_enabled = (
         (not _app_runtime_strict_enabled())
@@ -384,7 +404,7 @@ def dispatch_login_otp(
         and _otp_inline_fallback_runtime_allowed()
         and inline_fallback_enabled()
         and _otp_inline_fallback_enabled()
-    )
+    ) or _worker_degraded_due_redis_quota()
 
     def _run_inline_fallback(reason: str) -> dict[str, Any]:
         if required or not fallback_enabled:
@@ -450,8 +470,8 @@ def dispatch_login_otp(
 
 def enqueue_notification(payload: dict[str, Any]) -> str:
     enabled = _bool_env("WORKER_ENABLE_NOTIFICATIONS", default=True)
-    required = worker_required()
-    fallback_enabled = inline_fallback_enabled()
+    required = worker_runtime_required()
+    fallback_enabled = inline_fallback_enabled() or _worker_degraded_due_redis_quota()
     if required and not enabled:
         raise RuntimeError("WORKER_REQUIRED=true but WORKER_ENABLE_NOTIFICATIONS=false.")
     if enabled:
@@ -467,8 +487,8 @@ def enqueue_notification(payload: dict[str, Any]) -> str:
 
 def enqueue_face_reverification(payload: dict[str, Any]) -> str:
     enabled = _bool_env("WORKER_ENABLE_FACE_REVERIFY", default=True)
-    required = worker_required()
-    fallback_enabled = inline_fallback_enabled()
+    required = worker_runtime_required()
+    fallback_enabled = inline_fallback_enabled() or _worker_degraded_due_redis_quota()
     if required and not enabled:
         raise RuntimeError("WORKER_REQUIRED=true but WORKER_ENABLE_FACE_REVERIFY=false.")
     if enabled:
@@ -484,8 +504,8 @@ def enqueue_face_reverification(payload: dict[str, Any]) -> str:
 
 def enqueue_recompute(payload: dict[str, Any]) -> str:
     enabled = _bool_env("WORKER_ENABLE_RECOMPUTE", default=True)
-    required = worker_required()
-    fallback_enabled = inline_fallback_enabled()
+    required = worker_runtime_required()
+    fallback_enabled = inline_fallback_enabled() or _worker_degraded_due_redis_quota()
     if required and not enabled:
         raise RuntimeError("WORKER_REQUIRED=true but WORKER_ENABLE_RECOMPUTE=false.")
     if enabled:
