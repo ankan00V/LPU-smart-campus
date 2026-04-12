@@ -233,6 +233,43 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
             strict_startup=True,
         )
 
+    async def test_startup_event_skips_worker_assert_when_redis_unavailable_in_degraded_mode(self):
+        os.environ["MONGO_STARTUP_MAX_ATTEMPTS"] = "1"
+        os.environ["MONGO_STARTUP_SQL_SNAPSHOT_SYNC"] = "true"
+
+        mock_realtime_hub = mock.MagicMock()
+        mock_realtime_hub.start = mock.AsyncMock()
+        mock_realtime_hub.stop = mock.AsyncMock()
+
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("app.main._assert_strict_runtime_contract"))
+            stack.enter_context(mock.patch("app.main.init_sql_schema"))
+            stack.enter_context(mock.patch("app.main.validate_production_secrets"))
+            stack.enter_context(mock.patch("app.main.assert_otp_delivery_ready"))
+            stack.enter_context(mock.patch("app.main.init_redis", return_value=False))
+            stack.enter_context(
+                mock.patch(
+                    "app.main.redis_status",
+                    return_value={
+                        "enabled": False,
+                        "error": "max requests limit exceeded. Limit: 500000, Usage: 500000",
+                    },
+                )
+            )
+            stack.enter_context(mock.patch("app.main.redis_runtime_required", return_value=False))
+            worker_ready_assert = stack.enter_context(mock.patch("app.main.assert_worker_ready"))
+            stack.enter_context(mock.patch("app.main.realtime_hub", new=mock_realtime_hub))
+            stack.enter_context(mock.patch("app.main.mongo_persistence_required", return_value=False))
+            stack.enter_context(mock.patch("app.main.init_mongo", return_value=True))
+            stack.enter_context(mock.patch("app.main.mongo_status", return_value={"backend": "mongodb"}))
+            stack.enter_context(mock.patch("app.main._start_background_startup_bootstrap", return_value=True))
+            stack.enter_context(mock.patch("app.main._refresh_health_payload_async"))
+            await startup_event()
+
+        worker_ready_assert.assert_not_called()
+        mock_realtime_hub.bind_loop.assert_called_once()
+        mock_realtime_hub.start.assert_awaited_once()
+
     def test_runtime_strict_contract_allows_disabled_otp_startup_verification_for_local_dev(self):
         os.environ["APP_RUNTIME_STRICT"] = "true"
         os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "false"

@@ -51,6 +51,11 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # noqa: BLE001
     Celery = None
 
+try:  # pragma: no cover - optional dependency
+    import redis as redis_pkg
+except Exception:  # noqa: BLE001
+    redis_pkg = None
+
 
 TASK_SEND_OTP = "smartcampus.tasks.send_login_otp"
 TASK_NOTIFY = "smartcampus.tasks.send_notification"
@@ -193,9 +198,37 @@ def _worker_degraded_due_redis_quota() -> bool:
     if redis_quota_degraded():
         return True
     try:
-        return _is_redis_quota_exceeded_error(str(redis_status().get("error") or ""))
+        if _is_redis_quota_exceeded_error(str(redis_status().get("error") or "")):
+            return True
     except Exception:  # noqa: BLE001
+        pass
+    broker_url = _broker_url() or _backend_url()
+    if not broker_url or redis_pkg is None:
         return False
+    scheme = (_transport_status(broker_url).get("scheme") or "").strip().lower()
+    if scheme not in {"redis", "rediss"}:
+        return False
+    client = None
+    try:
+        client = redis_pkg.Redis.from_url(
+            broker_url,
+            decode_responses=True,
+            socket_timeout=_redis_socket_timeout_seconds(),
+            socket_connect_timeout=_redis_socket_timeout_seconds(),
+            health_check_interval=30,
+            socket_keepalive=_redis_socket_keepalive(),
+            retry_on_timeout=_redis_retry_on_timeout(),
+        )
+        client.ping()
+        return False
+    except Exception as exc:  # noqa: BLE001
+        return _is_redis_quota_exceeded_error(str(exc))
+    finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def worker_runtime_required() -> bool:

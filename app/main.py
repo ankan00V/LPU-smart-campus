@@ -1250,7 +1250,13 @@ async def startup_event() -> None:
     if not redis_ok and redis_runtime_required():
         detail = f" Details: {redis_error}" if redis_error else ""
         raise RuntimeError("REDIS_REQUIRED=true but Redis connection failed at startup." + detail)
-    assert_worker_ready()
+    if not redis_ok:
+        logger.warning(
+            "Redis unavailable at startup; skipping worker readiness assertion in degraded mode. error=%s",
+            redis_error or "unknown",
+        )
+    else:
+        assert_worker_ready()
     realtime_hub.bind_loop(asyncio.get_running_loop())
     await realtime_hub.start()
     requires_mongo = mongo_persistence_required()
