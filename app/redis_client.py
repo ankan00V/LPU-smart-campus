@@ -404,6 +404,7 @@ def cache_delete(key: str) -> bool:
 
 
 def rate_limit_hit(key: str, *, limit: int, window_seconds: int) -> RateLimitDecision:
+    global _redis_error
     safe_limit = max(1, int(limit))
     safe_window = max(1, int(window_seconds))
     now = time.time()
@@ -446,6 +447,21 @@ def rate_limit_hit(key: str, *, limit: int, window_seconds: int) -> RateLimitDec
             retry_after_seconds=retry_after,
         )
     except RedisError as exc:
+        message = str(exc) or "Redis rate limiter is unavailable"
+        # Upstash monthly quota exhaustion must degrade gracefully so API stays up.
+        if _redis_auto_degrade_on_quota_exceeded() and _is_redis_quota_exceeded_error(message):
+            _redis_error = message
+            close_redis()
+            logger.warning(
+                "Redis quota exceeded during rate limiting; using in-memory fallback window. key=%s",
+                key,
+            )
+            return _local_rate_limit_hit(
+                redis_key,
+                limit=safe_limit,
+                window_seconds=safe_window,
+                now=now,
+            )
         raise RuntimeError(str(exc) or "Redis rate limiter is unavailable") from exc
 
 
