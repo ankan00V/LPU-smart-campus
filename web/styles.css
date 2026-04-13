@@ -10366,6 +10366,22 @@ body.ums-theme .admin-identity-case-checks span {
     transition: background var(--motion-fast) var(--motion-ease), border-color var(--motion-fast) var(--motion-ease), transform var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
 }
 
+.mobile-drawer-section:not(.mobile-drawer-module-section) {
+    display: grid;
+    gap: 0.5rem;
+}
+
+.mobile-drawer-list {
+    display: grid;
+    gap: 0.5rem;
+}
+
+.mobile-drawer-list .ums-side-item {
+    width: 100%;
+    margin: 0;
+    justify-self: stretch;
+}
+
 .ums-side-item:hover {
     background: rgba(255, 255, 255, 0.12);
     border-color: rgba(172, 221, 255, 0.34);
@@ -15860,7 +15876,8 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 /* Final mobile navigation + attendance timetable overrides. */
 @media (max-width: 768px) {
     :root {
-        --mobile-navbar-height: 112px;
+        /* Excludes safe-area inset (added separately where needed). */
+        --mobile-navbar-height: 118px;
     }
 
     .dashboard,
@@ -15868,8 +15885,12 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         width: calc(100% - 20px);
         /* Reserve space for the fixed 2-row mobile navbar. */
         margin: 0 10px 28px;
-        padding-top: calc(env(safe-area-inset-top) + var(--mobile-navbar-height));
+        padding-top: calc(env(safe-area-inset-top) + var(--mobile-navbar-height) + 12px);
         padding-bottom: 0;
+    }
+
+    html {
+        scroll-padding-top: calc(env(safe-area-inset-top) + var(--mobile-navbar-height) + 18px);
     }
 
     #main-dashboard-header.topbar,
@@ -15890,7 +15911,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         border: 0;
         border-bottom: 1px solid rgba(209, 221, 232, 1);
         background: #ffffff;
-        box-shadow: none;
+        box-shadow: 0 8px 16px rgba(16, 32, 44, 0.06);
         backdrop-filter: none;
         -webkit-backdrop-filter: none;
         z-index: 60;
@@ -15905,8 +15926,8 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         grid-area: copy;
         min-height: 40px;
         display: flex;
-        flex-direction: column;
-        justify-content: center;
+        align-items: center;
+        justify-content: flex-start;
         gap: 0;
     }
 
@@ -15927,6 +15948,14 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         display: none;
     }
 
+    /* Hard-hide the desktop hero copy inside the navbar on mobile. */
+    #main-dashboard-header h1,
+    #main-dashboard-header .subline,
+    #main-dashboard-header .live-datetime,
+    #main-dashboard-header .hero-summary {
+        display: none !important;
+    }
+
     #main-dashboard-header .topbar-quick-actions-head,
     #main-dashboard-header .topbar-quick-toggle {
         display: none;
@@ -15935,7 +15964,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     #main-dashboard-header .mobile-topbar-row .mobile-dashboard-title {
         display: block;
         font-size: 15px;
-        font-weight: 600;
+        font-weight: 700;
         line-height: 1.2;
         letter-spacing: -0.02em;
         white-space: nowrap;
@@ -15944,32 +15973,13 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         color: #1f2d3a;
     }
 
-    #main-dashboard-header h1 {
-        display: none;
-    }
-
-    #main-dashboard-header .subline {
-        display: none;
-    }
-
-    #main-dashboard-header .live-datetime {
-        display: none;
-    }
-
-    #main-dashboard-header .hero-summary {
-        display: none;
-    }
-
-    #main-dashboard-header .hero-primary-cta,
-    body.ums-theme #main-dashboard-header .hero-primary-cta {
-        display: none;
-    }
-
     #main-dashboard-header .topbar-actions {
         grid-area: actions;
         display: flex;
         align-items: center;
         justify-content: flex-end;
+        align-self: center;
+        justify-self: end;
         gap: 8px;
     }
 
@@ -16210,20 +16220,17 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         border-color: rgba(114, 166, 203, 0.26);
     }
 
+    /* Make actions + tabs participate in the header grid. */
     #main-dashboard-header .topbar-control-row {
-        grid-area: quick;
-        position: static;
-        width: 100%;
-        z-index: auto;
-        display: block;
-        min-width: 0;
-        pointer-events: auto;
+        display: contents;
     }
 
     #main-dashboard-header .topbar-quick-actions-shell,
     body.ums-theme #main-dashboard-header .topbar-quick-actions-shell {
+        grid-area: quick;
         display: block;
         min-width: 0;
+        max-width: 100%;
         padding: 0;
         border-radius: 0;
         border: 0;
@@ -16248,7 +16255,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         justify-content: flex-start;
         gap: 8px;
         margin: 0;
-        padding: 0 0 2px;
+        padding: 0 2px 2px;
         overflow-x: auto;
         overflow-y: hidden;
         -webkit-overflow-scrolling: touch;
@@ -16267,7 +16274,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     #main-dashboard-header .ums-module-btn,
     body.ums-theme #main-dashboard-header .ums-module-btn {
         min-width: max-content;
-        min-height: 40px;
+        min-height: 38px;
         padding: 8px 12px;
         border-radius: 8px;
         display: inline-flex;
