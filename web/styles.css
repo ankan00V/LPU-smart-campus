@@ -15862,33 +15862,38 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     .dashboard,
     body.ums-theme .dashboard {
         width: calc(100% - 20px);
-        margin: 12px 10px calc(6.85rem + env(safe-area-inset-bottom));
+        margin: 84px 10px calc(6.85rem + env(safe-area-inset-bottom));
         padding-bottom: 0;
     }
 
     #main-dashboard-header.topbar,
     body.ums-theme #main-dashboard-header.topbar {
+        position: fixed !important;
         top: calc(env(safe-area-inset-top) + 8px) !important;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(520px, calc(100vw - 20px));
         grid-template-columns: minmax(0, 1fr) auto;
         grid-template-areas: "copy actions";
         align-items: center;
-        padding: 10px 14px;
-        gap: 12px;
-        border-radius: 20px;
-        background: rgba(8, 25, 38, 0.7);
-        box-shadow: 0 16px 34px rgba(5, 20, 34, 0.2);
-        backdrop-filter: blur(18px) saturate(132%);
-        -webkit-backdrop-filter: blur(18px) saturate(132%);
+        padding: 8px 12px;
+        gap: 10px;
+        border-radius: 16px;
+        background: rgba(8, 25, 38, 0.56);
+        box-shadow: 0 12px 28px rgba(5, 20, 34, 0.18);
+        backdrop-filter: blur(18px) saturate(128%);
+        -webkit-backdrop-filter: blur(18px) saturate(128%);
     }
 
     body.ums-theme #main-dashboard-header.topbar {
-        background: rgba(255, 255, 255, 0.76);
-        box-shadow: 0 14px 30px rgba(31, 58, 84, 0.14);
+        background: rgba(255, 255, 255, 0.62);
+        box-shadow: 0 10px 24px rgba(31, 58, 84, 0.12);
+        border-color: rgba(174, 206, 232, 0.6);
     }
 
     #main-dashboard-header .topbar-copy {
         grid-area: copy;
-        min-height: 44px;
+        min-height: 40px;
         display: flex;
         flex-direction: column;
         justify-content: center;
@@ -15934,8 +15939,9 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 
     #main-dashboard-header .hero-summary {
         position: fixed;
-        right: 14px;
-        bottom: calc(5.7rem + env(safe-area-inset-bottom));
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: calc(5.65rem + env(safe-area-inset-bottom));
         margin: 0;
         padding: 0;
         z-index: 29;
@@ -15947,7 +15953,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         padding: 0 14px;
         border-radius: 999px;
         font-size: 12px;
-        box-shadow: 0 14px 28px rgba(9, 33, 51, 0.22);
+        box-shadow: 0 16px 30px rgba(9, 33, 51, 0.22);
     }
 
     #main-dashboard-header .topbar-actions {
@@ -16207,20 +16213,20 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     body.ums-theme #main-dashboard-header .topbar-quick-actions-shell {
         display: block;
         min-width: 0;
-        padding: 8px 10px 9px;
+        padding: 6px 8px 7px;
         border-radius: 24px;
-        border: 1px solid rgba(144, 191, 226, 0.18);
-        background: rgba(9, 28, 42, 0.8);
-        box-shadow: 0 18px 38px rgba(5, 20, 34, 0.24);
+        border: 1px solid rgba(144, 191, 226, 0.14);
+        background: rgba(9, 28, 42, 0.62);
+        box-shadow: 0 18px 34px rgba(5, 20, 34, 0.2);
         backdrop-filter: blur(20px) saturate(132%);
         -webkit-backdrop-filter: blur(20px) saturate(132%);
         pointer-events: auto;
     }
 
     body.ums-theme #main-dashboard-header .topbar-quick-actions-shell {
-        border-color: rgba(168, 194, 216, 0.32);
-        background: rgba(255, 255, 255, 0.84);
-        box-shadow: 0 18px 36px rgba(25, 55, 81, 0.16);
+        border-color: rgba(174, 206, 232, 0.58);
+        background: rgba(255, 255, 255, 0.58);
+        box-shadow: 0 18px 34px rgba(25, 55, 81, 0.14);
     }
 
     #main-dashboard-header .ums-top-nav,
@@ -16247,14 +16253,14 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     #main-dashboard-header .ums-module-btn,
     body.ums-theme #main-dashboard-header .ums-module-btn {
         min-width: 0;
-        min-height: 56px;
-        padding: 7px 4px 6px;
-        border-radius: 18px;
+        min-height: 46px;
+        padding: 6px 4px;
+        border-radius: 16px;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 4px;
+        gap: 0;
         font-size: 11px;
         background: transparent;
         border: 1px solid transparent;
@@ -16264,10 +16270,10 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     #main-dashboard-header .module-glyph,
     body.ums-theme #main-dashboard-header .module-glyph {
         display: inline-flex;
-        width: 24px;
-        height: 24px;
-        flex: 0 0 24px;
-        border-radius: 9px;
+        width: 34px;
+        height: 34px;
+        flex: 0 0 34px;
+        border-radius: 14px;
         font-size: 9px;
     }
 
@@ -16275,17 +16281,29 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         font-size: 10px;
         line-height: 1.1;
         white-space: nowrap;
+        margin-top: 4px;
+    }
+
+    #main-dashboard-header .ums-module-btn:not(.active) .module-label {
+        display: none;
     }
 
     #main-dashboard-header .ums-module-btn.active,
     body.ums-theme #main-dashboard-header .ums-module-btn.active {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(171, 209, 236, 0.22);
+        background: transparent;
+        border-color: transparent;
     }
 
-    body.ums-theme #main-dashboard-header .ums-module-btn.active {
-        background: rgba(35, 104, 155, 0.09);
-        border-color: rgba(117, 167, 202, 0.22);
+    #main-dashboard-header .ums-module-btn.active .module-glyph {
+        background: linear-gradient(90deg, rgba(51, 132, 224, 0.92), rgba(74, 176, 255, 0.86));
+        color: #ffffff;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        box-shadow: 0 10px 18px rgba(8, 34, 55, 0.18);
+    }
+
+    body.ums-theme #main-dashboard-header .ums-module-btn.active .module-glyph {
+        border-color: rgba(255, 255, 255, 0.7);
+        box-shadow: 0 10px 18px rgba(23, 65, 95, 0.14);
     }
 
     #main-dashboard-header.mobile-quick-actions-collapsed .ums-top-nav,
@@ -16300,7 +16318,7 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 
     #main-dashboard-header.mobile-topbar-scrolled,
     body.ums-theme #main-dashboard-header.mobile-topbar-scrolled {
-        box-shadow: 0 18px 38px rgba(5, 20, 34, 0.22);
+        box-shadow: 0 14px 30px rgba(5, 20, 34, 0.18);
     }
 
     #student-courses-card .inline-controls {
