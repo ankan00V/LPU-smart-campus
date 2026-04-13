@@ -317,28 +317,36 @@
             </div>
             <span>LPU SMART</span>
         </div>
-        <button
-            id="mobile-sidebar-toggle-btn"
-            class="mobile-sidebar-toggle"
-            type="button"
-            aria-controls="mobile-section-nav"
-            aria-expanded="false"
-            aria-label="Show section navigation"
-        >
-            <span class="mobile-sidebar-toggle-icon" aria-hidden="true"></span>
-        </button>
-        <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">
-            <span class="nav-glyph" aria-hidden="true">DB</span>
-            <span class="nav-label">Dashboard</span>
-        </button>
-        <button id="nav-courses-btn" class="ums-side-item" data-nav="courses" type="button">
-            <span class="nav-glyph" aria-hidden="true">CR</span>
-            <span class="nav-label">My Courses</span>
-        </button>
-        <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">
-            <span class="nav-glyph" aria-hidden="true">AT</span>
-            <span class="nav-label">Attendance</span>
-        </button>
+        <div class="mobile-drawer-section">
+            <p class="mobile-drawer-heading">Sections</p>
+            <div class="mobile-drawer-list">
+                <button id="nav-dashboard-btn" class="ums-side-item active" data-nav="dashboard" type="button">
+                    <span class="nav-glyph" aria-hidden="true">DB</span>
+                    <span class="nav-label">Dashboard</span>
+                </button>
+                <button id="nav-courses-btn" class="ums-side-item" data-nav="courses" type="button">
+                    <span class="nav-glyph" aria-hidden="true">CR</span>
+                    <span class="nav-label">My Courses</span>
+                </button>
+                <button id="nav-attendance-btn" class="ums-side-item" data-nav="attendance" type="button">
+                    <span class="nav-glyph" aria-hidden="true">AT</span>
+                    <span class="nav-label">Attendance</span>
+                </button>
+            </div>
+        </div>
+        <div class="mobile-drawer-section mobile-drawer-module-section">
+            <p class="mobile-drawer-heading">More Modules</p>
+            <div class="mobile-drawer-module-list">
+                <button class="mobile-drawer-module-btn" data-mobile-module="administrative" type="button">
+                    <span class="nav-glyph" aria-hidden="true">AD</span>
+                    <span class="nav-label">Administrative</span>
+                </button>
+                <button class="mobile-drawer-module-btn" data-mobile-module="rms" type="button">
+                    <span class="nav-glyph" aria-hidden="true">RM</span>
+                    <span class="nav-label">RMS</span>
+                </button>
+            </div>
+        </div>
         <section id="verlyn-sidebar-widget" class="verlyn-sidebar-widget" aria-live="polite">
             <button id="verlyn-toggle-btn" class="verlyn-toggle-btn" type="button" aria-expanded="false" aria-controls="verlyn-panel">
                 <span class="verlyn-toggle-avatar" aria-hidden="true">C</span>
@@ -379,8 +387,23 @@ Ask about any module available to your role.</div>
         <header id="main-dashboard-header" class="topbar glass nav-anchor">
             <div class="ums-top-left">
                 <div class="topbar-copy">
+                    <div class="mobile-topbar-row">
+                        <button
+                            id="mobile-sidebar-toggle-btn"
+                            class="mobile-sidebar-toggle"
+                            type="button"
+                            aria-controls="mobile-section-nav"
+                            aria-expanded="false"
+                            aria-label="Show section navigation"
+                        >
+                            <span class="mobile-sidebar-toggle-icon" aria-hidden="true"></span>
+                        </button>
+                        <div class="mobile-topbar-title-wrap">
+                            <p class="mobile-dashboard-title">Student Success Dashboard</p>
+                        </div>
+                    </div>
                     <p class="kicker">UNIVERSITY MANAGEMENT SYSTEM</p>
-                    <p class="mobile-dashboard-title">Dashboard</p>
+                    <p class="mobile-dashboard-title">Student Success Dashboard</p>
                     <h1 id="dashboard-title">Campus Command Center</h1>
                     <p id="dashboard-subtitle" class="subline">Unified attendance, remedial, food, and operations workflows.</p>
                     <time id="live-datetime" class="live-datetime" aria-live="off">Loading campus local time...</time>

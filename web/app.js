@@ -1980,10 +1980,35 @@ function getTopModuleButtons() {
   ].filter(Boolean);
 }
 
+async function handleModuleNavigation(moduleKey, { closeMobileSidebar = false } = {}) {
+  if (!authState.user) {
+    openAuthOverlay('Sign in to access modules.');
+    return;
+  }
+  if (requiresRoleProfileSetup()) {
+    openProfileModal({ required: true });
+    return;
+  }
+  if (authState.user.role === 'student' && requiresStudentEnrollmentSetup()) {
+    openEnrollmentModal({ required: true });
+    return;
+  }
+
+  setActiveModule(moduleKey || 'attendance', { updateHash: true });
+  if (closeMobileSidebar && isMobileTopbarViewport()) {
+    setMobileSidebarCollapsed(true, { persist: true });
+  }
+  try {
+    await refreshActiveModuleData();
+  } catch (error) {
+    log(error.message);
+  }
+}
+
 function syncMobileQuickActionsState() {
   const header = els.mainDashboardHeader;
   const isMobile = isMobileTopbarViewport();
-  const collapsed = isMobile && (state.ui.mobileQuickActionsCollapsed || state.ui.mobileQuickActionsAutoCollapsed);
+  const collapsed = false;
 
   if (header) {
     header.classList.toggle('mobile-quick-actions-collapsed', collapsed);
@@ -2008,46 +2033,23 @@ function syncMobileQuickActionsState() {
 }
 
 function setMobileQuickActionsCollapsed(collapsed, { persist = true, resetAuto = false } = {}) {
-  state.ui.mobileQuickActionsCollapsed = Boolean(collapsed);
-  if (resetAuto) {
-    state.ui.mobileQuickActionsAutoCollapsed = false;
-  }
+  state.ui.mobileQuickActionsCollapsed = false;
+  state.ui.mobileQuickActionsAutoCollapsed = false;
   if (persist) {
-    persistMobileQuickActionsCollapsed(state.ui.mobileQuickActionsCollapsed);
+    persistMobileQuickActionsCollapsed(false);
   }
   syncMobileQuickActionsState();
 }
 
 function handleMobileTopbarScroll() {
   const isMobile = isMobileTopbarViewport();
-  const currentScrollY = Math.max(window.scrollY || 0, 0);
-  const delta = currentScrollY - mobileTopbarLastScrollY;
-  mobileTopbarLastScrollY = currentScrollY;
+  mobileTopbarLastScrollY = Math.max(window.scrollY || 0, 0);
 
   if (!isMobile) {
-    if (state.ui.mobileQuickActionsAutoCollapsed) {
-      state.ui.mobileQuickActionsAutoCollapsed = false;
-    }
+    state.ui.mobileQuickActionsAutoCollapsed = false;
     syncMobileQuickActionsState();
     return;
   }
-
-  if (currentScrollY <= 24) {
-    if (state.ui.mobileQuickActionsAutoCollapsed) {
-      state.ui.mobileQuickActionsAutoCollapsed = false;
-    }
-    syncMobileQuickActionsState();
-    return;
-  }
-
-  if (!state.ui.mobileQuickActionsCollapsed) {
-    if (delta > 8) {
-      state.ui.mobileQuickActionsAutoCollapsed = true;
-    } else if (delta < -8) {
-      state.ui.mobileQuickActionsAutoCollapsed = false;
-    }
-  }
-
   syncMobileQuickActionsState();
 }
 
@@ -2063,7 +2065,7 @@ function onMobileTopbarScroll() {
 }
 
 function initMobileTopbarState() {
-  state.ui.mobileQuickActionsCollapsed = readStoredMobileQuickActionsCollapsed();
+  state.ui.mobileQuickActionsCollapsed = false;
   state.ui.mobileQuickActionsAutoCollapsed = false;
   mobileTopbarLastScrollY = Math.max(window.scrollY || 0, 0);
   syncMobileQuickActionsState();
@@ -4466,6 +4468,14 @@ function setTopNavActive(moduleKey) {
     button.classList.toggle('active', isActive);
     button.setAttribute('aria-current', isActive ? 'page' : 'false');
   }
+  document.querySelectorAll('[data-mobile-module]').forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const isActive = normalizeModuleKey(button.dataset.mobileModule) === active;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-current', isActive ? 'page' : 'false');
+  });
   syncTopNavActiveButtonIntoView();
 }
 
@@ -4691,6 +4701,15 @@ function applyRoleUI() {
     setHidden(button, !visible);
     button.disabled = !visible;
   }
+  document.querySelectorAll('[data-mobile-module]').forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const moduleKey = normalizeModuleKey(button.dataset.mobileModule);
+    const visible = Boolean(role) && isModuleAccessible(moduleKey, role);
+    setHidden(button, !visible);
+    button.disabled = !visible;
+  });
 
   if (isStudent) {
     startStudentTimetableStatusTicker();
@@ -20381,27 +20400,18 @@ function bindEvents() {
   ].filter(Boolean);
   for (const button of topModuleButtons) {
     button.addEventListener('click', async () => {
-      if (!authState.user) {
-        openAuthOverlay('Sign in to access modules.');
-        return;
-      }
-      if (requiresRoleProfileSetup()) {
-        openProfileModal({ required: true });
-        return;
-      }
-      if (authState.user.role === 'student' && requiresStudentEnrollmentSetup()) {
-        openEnrollmentModal({ required: true });
-        return;
-      }
-      const requestedModule = button.dataset.module || 'attendance';
-      setActiveModule(requestedModule, { updateHash: true });
-      try {
-        await refreshActiveModuleData();
-      } catch (error) {
-        log(error.message);
-      }
+      await handleModuleNavigation(button.dataset.module || 'attendance');
     });
   }
+
+  document.querySelectorAll('[data-mobile-module]').forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    button.addEventListener('click', async () => {
+      await handleModuleNavigation(button.dataset.mobileModule || 'attendance', { closeMobileSidebar: true });
+    });
+  });
 
   window.addEventListener('hashchange', async () => {
     if (!authState.user) {
@@ -20435,14 +20445,35 @@ function bindEvents() {
 
   if (els.topbarQuickToggleBtn) {
     els.topbarQuickToggleBtn.addEventListener('click', () => {
-      const nextCollapsed = !(state.ui.mobileQuickActionsCollapsed || state.ui.mobileQuickActionsAutoCollapsed);
-      setMobileQuickActionsCollapsed(nextCollapsed, { persist: true, resetAuto: true });
+      setMobileQuickActionsCollapsed(false, { persist: true, resetAuto: true });
     });
   }
 
   if (els.mobileSidebarToggleBtn) {
     els.mobileSidebarToggleBtn.addEventListener('click', () => {
       setMobileSidebarCollapsed(!state.ui.mobileSidebarCollapsed, { persist: true });
+    });
+  }
+
+  if (els.umsSidebar && els.mobileSidebarToggleBtn) {
+    document.addEventListener('click', (event) => {
+      if (!isMobileTopbarViewport() || state.ui.mobileSidebarCollapsed) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (els.umsSidebar.contains(target) || els.mobileSidebarToggleBtn.contains(target)) {
+        return;
+      }
+      setMobileSidebarCollapsed(true, { persist: true });
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || !isMobileTopbarViewport() || state.ui.mobileSidebarCollapsed) {
+        return;
+      }
+      setMobileSidebarCollapsed(true, { persist: true });
     });
   }
 
