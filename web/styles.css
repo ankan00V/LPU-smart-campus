@@ -15859,36 +15859,46 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 
 /* Final mobile navigation + attendance timetable overrides. */
 @media (max-width: 768px) {
+    :root {
+        --mobile-navbar-height: 112px;
+    }
+
     .dashboard,
     body.ums-theme .dashboard {
         width: calc(100% - 20px);
-        margin: 84px 10px calc(6.85rem + env(safe-area-inset-bottom));
+        /* Reserve space for the fixed 2-row mobile navbar. */
+        margin: 0 10px 28px;
+        padding-top: calc(env(safe-area-inset-top) + var(--mobile-navbar-height));
         padding-bottom: 0;
     }
 
     #main-dashboard-header.topbar,
     body.ums-theme #main-dashboard-header.topbar {
         position: fixed !important;
-        top: calc(env(safe-area-inset-top) + 8px) !important;
-        left: 50%;
-        transform: translateX(-50%);
-        width: min(520px, calc(100vw - 20px));
+        top: 0 !important;
+        left: 0;
+        right: 0;
+        width: 100%;
         grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-areas: "copy actions";
+        grid-template-areas:
+            "copy actions"
+            "quick quick";
         align-items: center;
-        padding: 8px 12px;
+        padding: calc(env(safe-area-inset-top) + 10px) 16px 12px;
         gap: 10px;
-        border-radius: 16px;
-        background: rgba(8, 25, 38, 0.56);
-        box-shadow: 0 12px 28px rgba(5, 20, 34, 0.18);
-        backdrop-filter: blur(18px) saturate(128%);
-        -webkit-backdrop-filter: blur(18px) saturate(128%);
+        border-radius: 0;
+        border: 0;
+        border-bottom: 1px solid rgba(209, 221, 232, 1);
+        background: #ffffff;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        z-index: 60;
     }
 
     body.ums-theme #main-dashboard-header.topbar {
-        background: rgba(255, 255, 255, 0.62);
-        box-shadow: 0 10px 24px rgba(31, 58, 84, 0.12);
-        border-color: rgba(174, 206, 232, 0.6);
+        background: #ffffff;
+        border-bottom-color: rgba(209, 221, 232, 1);
     }
 
     #main-dashboard-header .topbar-copy {
@@ -15913,24 +15923,33 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 
     #main-dashboard-header .topbar-copy > .mobile-dashboard-title,
     #main-dashboard-header .kicker,
-    #main-dashboard-header h1,
-    #main-dashboard-header .subline,
-    #main-dashboard-header .live-datetime,
-    #main-dashboard-header .topbar-quick-actions-head,
-    #main-dashboard-header .topbar-quick-toggle,
     #main-dashboard-header .hero-kpi {
+        display: none;
+    }
+
+    #main-dashboard-header .topbar-quick-actions-head,
+    #main-dashboard-header .topbar-quick-toggle {
         display: none;
     }
 
     #main-dashboard-header .mobile-topbar-row .mobile-dashboard-title {
         display: block;
-        font-size: 17px;
-        font-weight: 700;
+        font-size: 15px;
+        font-weight: 600;
         line-height: 1.2;
         letter-spacing: -0.02em;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        color: #1f2d3a;
+    }
+
+    #main-dashboard-header h1 {
+        display: none;
+    }
+
+    #main-dashboard-header .subline {
+        display: none;
     }
 
     #main-dashboard-header .live-datetime {
@@ -15938,22 +15957,12 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     }
 
     #main-dashboard-header .hero-summary {
-        position: fixed;
-        left: 50%;
-        transform: translateX(-50%);
-        bottom: calc(5.65rem + env(safe-area-inset-bottom));
-        margin: 0;
-        padding: 0;
-        z-index: 29;
+        display: none;
     }
 
     #main-dashboard-header .hero-primary-cta,
     body.ums-theme #main-dashboard-header .hero-primary-cta {
-        min-height: 44px;
-        padding: 0 14px;
-        border-radius: 999px;
-        font-size: 12px;
-        box-shadow: 0 16px 30px rgba(9, 33, 51, 0.22);
+        display: none;
     }
 
     #main-dashboard-header .topbar-actions {
@@ -15976,6 +15985,8 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        background: rgba(31, 47, 62, 0.06);
+        border: 0;
     }
 
     #main-dashboard-header .theme-toggle-btn::before {
@@ -15996,6 +16007,8 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     #main-dashboard-header .account-trigger {
         width: 38px;
         height: 38px;
+        border-radius: 999px;
+        background: rgba(47, 134, 229, 0.14);
     }
 
     .mobile-sidebar-toggle {
@@ -16198,51 +16211,52 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
     }
 
     #main-dashboard-header .topbar-control-row {
-        position: fixed;
-        left: 50%;
-        bottom: calc(10px + env(safe-area-inset-bottom));
-        transform: translateX(-50%);
-        width: min(430px, calc(100vw - 20px));
-        z-index: 30;
+        grid-area: quick;
+        position: static;
+        width: 100%;
+        z-index: auto;
         display: block;
         min-width: 0;
-        pointer-events: none;
+        pointer-events: auto;
     }
 
     #main-dashboard-header .topbar-quick-actions-shell,
     body.ums-theme #main-dashboard-header .topbar-quick-actions-shell {
         display: block;
         min-width: 0;
-        padding: 6px 8px 7px;
-        border-radius: 24px;
-        border: 1px solid rgba(144, 191, 226, 0.14);
-        background: rgba(9, 28, 42, 0.62);
-        box-shadow: 0 18px 34px rgba(5, 20, 34, 0.2);
-        backdrop-filter: blur(20px) saturate(132%);
-        -webkit-backdrop-filter: blur(20px) saturate(132%);
+        padding: 0;
+        border-radius: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
         pointer-events: auto;
     }
 
     body.ums-theme #main-dashboard-header .topbar-quick-actions-shell {
-        border-color: rgba(174, 206, 232, 0.58);
-        background: rgba(255, 255, 255, 0.58);
-        box-shadow: 0 18px 34px rgba(25, 55, 81, 0.14);
+        border-color: transparent;
+        background: transparent;
+        box-shadow: none;
     }
 
     #main-dashboard-header .ums-top-nav,
     body.ums-theme #main-dashboard-header .ums-top-nav {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        align-items: stretch;
-        justify-content: stretch;
-        gap: 6px;
-        max-height: none;
-        margin-top: 0;
-        padding: 0;
-        overflow: visible;
-        opacity: 1;
-        transform: none;
-        scroll-snap-type: none;
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 8px;
+        margin: 0;
+        padding: 0 0 2px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    #main-dashboard-header .ums-top-nav::-webkit-scrollbar {
+        display: none;
     }
 
     #main-dashboard-header .ums-top-nav [data-module="administrative"],
@@ -16252,58 +16266,57 @@ body.ums-theme.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email
 
     #main-dashboard-header .ums-module-btn,
     body.ums-theme #main-dashboard-header .ums-module-btn {
-        min-width: 0;
-        min-height: 46px;
-        padding: 6px 4px;
-        border-radius: 16px;
-        display: flex;
-        flex-direction: column;
+        min-width: max-content;
+        min-height: 40px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        display: inline-flex;
+        flex-direction: row;
         align-items: center;
         justify-content: center;
-        gap: 0;
-        font-size: 11px;
-        background: transparent;
-        border: 1px solid transparent;
+        gap: 8px;
+        font-size: 13px;
+        background: rgba(31, 47, 62, 0.06);
+        border: 1px solid rgba(209, 221, 232, 1);
+        color: #2b3a48;
         box-shadow: none;
     }
 
     #main-dashboard-header .module-glyph,
     body.ums-theme #main-dashboard-header .module-glyph {
         display: inline-flex;
-        width: 34px;
-        height: 34px;
-        flex: 0 0 34px;
-        border-radius: 14px;
+        width: 18px;
+        height: 18px;
+        flex: 0 0 18px;
+        border-radius: 8px;
         font-size: 9px;
     }
 
     #main-dashboard-header .module-label {
-        font-size: 10px;
+        display: inline;
+        font-size: 13px;
         line-height: 1.1;
         white-space: nowrap;
-        margin-top: 4px;
-    }
-
-    #main-dashboard-header .ums-module-btn:not(.active) .module-label {
-        display: none;
+        margin: 0;
     }
 
     #main-dashboard-header .ums-module-btn.active,
     body.ums-theme #main-dashboard-header .ums-module-btn.active {
-        background: transparent;
-        border-color: transparent;
-    }
-
-    #main-dashboard-header .ums-module-btn.active .module-glyph {
-        background: linear-gradient(90deg, rgba(51, 132, 224, 0.92), rgba(74, 176, 255, 0.86));
+        background: #2f86e5;
+        border-color: #2f86e5;
         color: #ffffff;
-        border: 1px solid rgba(255, 255, 255, 0.24);
-        box-shadow: 0 10px 18px rgba(8, 34, 55, 0.18);
     }
 
-    body.ums-theme #main-dashboard-header .ums-module-btn.active .module-glyph {
-        border-color: rgba(255, 255, 255, 0.7);
-        box-shadow: 0 10px 18px rgba(23, 65, 95, 0.14);
+    body.ums-theme #main-dashboard-header .ums-module-btn {
+        background: #ffffff;
+        border-color: rgba(209, 221, 232, 1);
+        color: #2a3d50;
+    }
+
+    body.ums-theme #main-dashboard-header .ums-module-btn.active {
+        background: #2f86e5;
+        border-color: #2f86e5;
+        color: #ffffff;
     }
 
     #main-dashboard-header.mobile-quick-actions-collapsed .ums-top-nav,
