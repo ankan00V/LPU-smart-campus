@@ -2039,6 +2039,27 @@ class AttendanceRecoveryRecomputeOut(BaseModel):
     plans_touched: int
 
 
+class AttendanceRecoveryRetroDispatchRequest(BaseModel):
+    student_id: Optional[int] = Field(default=None, ge=1)
+    course_id: Optional[int] = Field(default=None, ge=1)
+    limit: int = Field(default=300, ge=1, le=5000)
+    force_resend: bool = False
+    dry_run: bool = False
+    cooldown_minutes: Optional[int] = Field(default=None, ge=1, le=10080)
+    refresh_scope: bool = True
+
+
+class AttendanceRecoveryRetroDispatchOut(BaseModel):
+    evaluated: int
+    eligible: int
+    dispatched: int
+    skipped_cooldown: int
+    failed: int
+    forced: bool
+    dry_run: bool
+    triggered_at: datetime
+
+
 class AttendanceSubmissionOut(BaseModel):
     id: int
     student_id: int

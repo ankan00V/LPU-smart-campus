@@ -56,3 +56,17 @@ Set these on the Railway service:
 - Railway will build the provided `Dockerfile`.
 - The container listens on port `8080` to match Railway public networking.
 - The worker stays inside the same container, so there is only one paid service.
+
+## Recovery Copilot Autopilot
+
+- Automatic mode: enable `ATTENDANCE_RECOVERY_AUTOPILOT_ENABLED=true` and set:
+  - `ATTENDANCE_RECOVERY_AUTOPILOT_INTERVAL_SECONDS` (default `900`)
+  - `ATTENDANCE_RECOVERY_AUTOPILOT_BATCH_SIZE` (default `400`)
+  - `ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES` (default `360`)
+  - `ATTENDANCE_RECOVERY_AI_GUIDANCE_ENABLED=true`
+- One-click admin endpoint:
+  - `POST /attendance/recovery/retro-notify`
+  - Body example:
+    - `{"limit": 400, "force_resend": false, "dry_run": false, "refresh_scope": true}`
+- Cron-friendly trigger script:
+  - `python3 scripts/recovery_retro_notify.py --base-url https://app.lpusmartcampus.site --admin-token <token> --limit 400`
