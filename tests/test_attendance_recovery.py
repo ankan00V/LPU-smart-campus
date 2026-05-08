@@ -1,6 +1,7 @@
 import json
 import unittest
 from datetime import date, datetime, time, timedelta
+from unittest import mock
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +12,7 @@ from app.attendance_recovery import (
     evaluate_attendance_recovery,
     get_admin_recovery_plans,
     get_faculty_recovery_plans,
+    retro_send_recovery_notifications,
 )
 from app.routers.admin import _build_admin_payload
 
@@ -457,6 +459,169 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertEqual(len(plans), 1)
         self.assertEqual(plans[0].id, 903)
         self.assertEqual(plans[0].risk_level, models.AttendanceRecoveryRiskLevel.CRITICAL)
+
+    @mock.patch("app.attendance_recovery.enqueue_notification", return_value="inline-thread")
+    @mock.patch("app.attendance_recovery._safe_send_recovery_email")
+    def test_recovery_notifications_when_overall_is_healthy_but_subject_is_below_threshold(
+        self,
+        _safe_send_recovery_email,
+        _enqueue_notification,
+    ):
+        self.db.add_all(
+            [
+                models.Course(
+                    id=302,
+                    code="CSE320",
+                    title="Distributed Systems",
+                    faculty_id=201,
+                ),
+                models.Enrollment(
+                    id=405,
+                    student_id=101,
+                    course_id=302,
+                ),
+            ]
+        )
+        self.db.commit()
+
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=4,
+        )
+        for idx in range(10):
+            self.db.add(
+                models.AttendanceRecord(
+                    id=2000 + idx,
+                    student_id=101,
+                    course_id=302,
+                    marked_by_faculty_id=201,
+                    attendance_date=self.today - timedelta(days=20 - idx),
+                    status=models.AttendanceStatus.PRESENT if idx < 9 else models.AttendanceStatus.ABSENT,
+                    source="seed",
+                )
+            )
+        self.db.commit()
+
+        evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+
+        calls = _safe_send_recovery_email.call_args_list
+        self.assertGreaterEqual(len(calls), 2)
+        student_call = next(
+            (
+                item
+                for item in calls
+                if str(item.kwargs.get("sent_to") or "").strip() == "student.one@example.com"
+            ),
+            None,
+        )
+        faculty_call = next(
+            (
+                item
+                for item in calls
+                if str(item.kwargs.get("sent_to") or "").strip() == "faculty.one@example.com"
+            ),
+            None,
+        )
+        self.assertIsNotNone(student_call)
+        self.assertIsNotNone(faculty_call)
+        student_body = str(student_call.kwargs.get("body") or "")
+        faculty_body = str(faculty_call.kwargs.get("body") or "")
+
+        self.assertIn("overall attendance is", student_body.lower())
+        self.assertIn("specific subjects need immediate attention", student_body.lower())
+        self.assertIn("saarthi", student_body.lower())
+        self.assertIn("campus resources", student_body.lower())
+        self.assertIn("schedule targeted remedial classes", faculty_body.lower())
+        self.assertIn("timely short class tests", faculty_body.lower())
+        self.assertGreaterEqual(_enqueue_notification.call_count, 2)
+
+    @mock.patch("app.attendance_recovery._dispatch_recovery_communications")
+    def test_retro_dispatch_skips_when_recent_notice_exists(self, _dispatch):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+        plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+        self.assertIsNotNone(plan)
+        _dispatch.reset_mock()
+        self.db.add(
+            models.NotificationLog(
+                student_id=101,
+                sent_to="student.one@example.com",
+                channel="attendance-recovery-student-email",
+                message="Recent recovery alert for CSE310",
+                created_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        result = retro_send_recovery_notifications(
+            self.db,
+            student_id=101,
+            course_id=301,
+            limit=20,
+            force_resend=False,
+            dry_run=False,
+            refresh_scope=False,
+            cooldown_minutes=360,
+        )
+        self.assertEqual(int(result["evaluated"]), 1)
+        self.assertEqual(int(result["eligible"]), 0)
+        self.assertEqual(int(result["dispatched"]), 0)
+        self.assertEqual(int(result["skipped_cooldown"]), 1)
+        _dispatch.assert_not_called()
+
+    @mock.patch("app.attendance_recovery._dispatch_recovery_communications")
+    def test_retro_dispatch_force_resend_bypasses_cooldown(self, _dispatch):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+        plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+        self.assertIsNotNone(plan)
+        _dispatch.reset_mock()
+        self.db.add(
+            models.NotificationLog(
+                student_id=101,
+                sent_to="student.one@example.com",
+                channel="attendance-recovery-student-email",
+                message="Recent recovery alert for CSE310",
+                created_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        result = retro_send_recovery_notifications(
+            self.db,
+            student_id=101,
+            course_id=301,
+            limit=20,
+            force_resend=True,
+            dry_run=False,
+            refresh_scope=False,
+            cooldown_minutes=360,
+        )
+        self.assertEqual(int(result["evaluated"]), 1)
+        self.assertEqual(int(result["eligible"]), 1)
+        self.assertEqual(int(result["dispatched"]), 1)
+        self.assertEqual(int(result["skipped_cooldown"]), 0)
+        _dispatch.assert_called_once()
 
 
 if __name__ == "__main__":

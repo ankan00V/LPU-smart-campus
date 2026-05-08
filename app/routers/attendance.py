@@ -21,6 +21,7 @@ from ..attendance_recovery import (
     get_faculty_recovery_plans,
     get_student_recovery_plans,
     recompute_attendance_recovery_scope,
+    retro_send_recovery_notifications,
     update_student_recovery_action,
 )
 from ..attendance_ledger import append_event_and_recompute, recompute_attendance_scope
@@ -4799,6 +4800,12 @@ def faculty_batch_review(
             "reviewed_at": datetime.utcnow(),
         },
     )
+    affected_student_ids = sorted({int(item.student_id) for item in pending_submissions})
+    event_scopes = {
+        "role:admin",
+        f"faculty:{int(reviewer_faculty_id or 0)}",
+        *(f"student:{sid}" for sid in affected_student_ids),
+    }
     publish_domain_event(
         "attendance.reviewed",
         payload={
@@ -4806,15 +4813,12 @@ def faculty_batch_review(
             "class_date": payload.class_date.isoformat(),
             "action": payload.action.value,
             "updated_submission_ids": [int(item.id) for item in pending_submissions],
+            "affected_student_ids": affected_student_ids,
             "approved": int(approved),
             "rejected": int(rejected),
             "faculty_id": int(reviewer_faculty_id or 0),
         },
-        scopes={
-            f"faculty:{int(reviewer_faculty_id or 0)}",
-            "role:admin",
-            "role:student",
-        },
+        scopes=event_scopes,
         topics={"attendance"},
         actor={
             "user_id": int(current_user.id),
@@ -5217,4 +5221,52 @@ def recompute_recovery_plans(
     return schemas.AttendanceRecoveryRecomputeOut(
         evaluated=int(result.get("evaluated", 0)),
         plans_touched=int(result.get("plans_touched", 0)),
+    )
+
+
+@router.post("/recovery/retro-notify", response_model=schemas.AttendanceRecoveryRetroDispatchOut)
+def retro_dispatch_recovery_notifications(
+    payload: schemas.AttendanceRecoveryRetroDispatchRequest,
+    db: Session = Depends(get_db),
+    _: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN)),
+):
+    result = retro_send_recovery_notifications(
+        db,
+        student_id=payload.student_id,
+        course_id=payload.course_id,
+        limit=payload.limit,
+        force_resend=bool(payload.force_resend),
+        dry_run=bool(payload.dry_run),
+        cooldown_minutes=payload.cooldown_minutes,
+        refresh_scope=bool(payload.refresh_scope),
+    )
+    if not payload.dry_run:
+        db.commit()
+    publish_domain_event(
+        "attendance.recovery.retro_notified",
+        payload={
+            "student_id": payload.student_id,
+            "course_id": payload.course_id,
+            "limit": int(payload.limit),
+            "dry_run": bool(payload.dry_run),
+            "force_resend": bool(payload.force_resend),
+            "evaluated": int(result.get("evaluated", 0)),
+            "eligible": int(result.get("eligible", 0)),
+            "dispatched": int(result.get("dispatched", 0)),
+            "skipped_cooldown": int(result.get("skipped_cooldown", 0)),
+            "failed": int(result.get("failed", 0)),
+        },
+        scopes={"role:admin"},
+        topics={"attendance", "admin"},
+        source="attendance",
+    )
+    return schemas.AttendanceRecoveryRetroDispatchOut(
+        evaluated=int(result.get("evaluated", 0)),
+        eligible=int(result.get("eligible", 0)),
+        dispatched=int(result.get("dispatched", 0)),
+        skipped_cooldown=int(result.get("skipped_cooldown", 0)),
+        failed=int(result.get("failed", 0)),
+        forced=bool(result.get("forced", False)),
+        dry_run=bool(result.get("dry_run", False)),
+        triggered_at=datetime.utcnow(),
     )

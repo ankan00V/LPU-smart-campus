@@ -20,6 +20,12 @@ from sqlalchemy.orm import Session
 
 from . import models
 from .attendance_ledger import append_attendance_event, recompute_attendance_record
+from .attendance_recovery import (
+    recovery_autopilot_batch_size,
+    recovery_autopilot_enabled,
+    recovery_autopilot_interval_seconds,
+    run_recovery_autopilot_cycle,
+)
 from .auth_utils import ACCESS_COOKIE_NAME, decode_access_token, hash_password, require_roles
 from .database import Base, SessionLocal, database_status, engine
 from .enterprise_controls import validate_production_secrets
@@ -117,6 +123,9 @@ _startup_sql_snapshot_sync_lock = threading.Lock()
 _startup_sql_snapshot_sync_thread: threading.Thread | None = None
 _startup_bootstrap_lock = threading.Lock()
 _startup_bootstrap_thread: threading.Thread | None = None
+_recovery_autopilot_lock = threading.Lock()
+_recovery_autopilot_thread: threading.Thread | None = None
+_recovery_autopilot_stop = threading.Event()
 
 
 def _strict_runtime_mode_enabled() -> bool:
@@ -305,6 +314,9 @@ def _rate_limit_user_principal(request: Request) -> str | None:
 
 
 def _build_health_payload() -> dict[str, Any]:
+    autopilot_running = bool(
+        _recovery_autopilot_thread is not None and _recovery_autopilot_thread.is_alive()
+    )
     return {
         "message": "Smart Campus Management API is running",
         "docs": "/docs",
@@ -320,6 +332,12 @@ def _build_health_payload() -> dict[str, Any]:
             "live": worker_live(timeout_seconds=_health_worker_live_timeout_seconds()),
             "inline_fallback_enabled": worker_inline_fallback_enabled(),
             "transport": worker_transport_status(),
+        },
+        "recovery_autopilot": {
+            "enabled": recovery_autopilot_enabled(),
+            "running": autopilot_running,
+            "interval_seconds": recovery_autopilot_interval_seconds(),
+            "batch_size": recovery_autopilot_batch_size(),
         },
     }
 
@@ -459,6 +477,87 @@ def _start_background_startup_bootstrap(*, startup_snapshot_sync: bool, requires
         _startup_bootstrap_thread = thread
         thread.start()
         return True
+
+
+def _run_recovery_autopilot_once() -> dict[str, Any]:
+    db = SessionLocal()
+    started_at = pytime.perf_counter()
+    try:
+        result = run_recovery_autopilot_cycle(
+            db,
+            limit=recovery_autopilot_batch_size(),
+        )
+        db.commit()
+        result_payload: dict[str, Any] = {
+            "evaluated": int(result.get("evaluated", 0)),
+            "eligible": int(result.get("eligible", 0)),
+            "dispatched": int(result.get("dispatched", 0)),
+            "skipped_cooldown": int(result.get("skipped_cooldown", 0)),
+            "failed": int(result.get("failed", 0)),
+            "elapsed_seconds": round(pytime.perf_counter() - started_at, 3),
+        }
+        publish_domain_event(
+            "attendance.recovery.autopilot.completed",
+            payload=result_payload,
+            scopes={"role:admin"},
+            topics={"attendance", "admin"},
+            source="attendance-autopilot",
+        )
+        return result_payload
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("Recovery autopilot cycle failed: %s", exc)
+        return {
+            "evaluated": 0,
+            "eligible": 0,
+            "dispatched": 0,
+            "skipped_cooldown": 0,
+            "failed": 1,
+            "elapsed_seconds": round(pytime.perf_counter() - started_at, 3),
+            "error": str(exc),
+        }
+    finally:
+        db.close()
+
+
+def _background_recovery_autopilot_loop() -> None:
+    global _recovery_autopilot_thread
+    try:
+        while not _recovery_autopilot_stop.is_set():
+            _run_recovery_autopilot_once()
+            wait_seconds = max(30, int(recovery_autopilot_interval_seconds()))
+            _recovery_autopilot_stop.wait(wait_seconds)
+    finally:
+        with _recovery_autopilot_lock:
+            _recovery_autopilot_thread = None
+
+
+def _start_recovery_autopilot() -> bool:
+    global _recovery_autopilot_thread
+    if not recovery_autopilot_enabled() or _running_under_pytest():
+        return False
+    with _recovery_autopilot_lock:
+        if _recovery_autopilot_thread is not None and _recovery_autopilot_thread.is_alive():
+            return False
+        _recovery_autopilot_stop.clear()
+        thread = threading.Thread(
+            target=_background_recovery_autopilot_loop,
+            name="smartcampus-recovery-autopilot",
+            daemon=True,
+        )
+        _recovery_autopilot_thread = thread
+        thread.start()
+        return True
+
+
+def _stop_recovery_autopilot() -> None:
+    thread: threading.Thread | None = None
+    with _recovery_autopilot_lock:
+        _recovery_autopilot_stop.set()
+        if _recovery_autopilot_thread is not None and _recovery_autopilot_thread.is_alive():
+            thread = _recovery_autopilot_thread
+    if thread is not None:
+        thread.join(timeout=1.5)
 
 
 def _health_payload() -> dict[str, Any]:
@@ -1323,11 +1422,22 @@ async def startup_event() -> None:
         logger.info("Startup bootstrap scheduled in background.")
     else:
         logger.info("Startup bootstrap already running in background.")
+    if _start_recovery_autopilot():
+        logger.info(
+            "Recovery autopilot started. interval_seconds=%s batch_size=%s",
+            recovery_autopilot_interval_seconds(),
+            recovery_autopilot_batch_size(),
+        )
+    elif recovery_autopilot_enabled():
+        logger.info("Recovery autopilot already running.")
+    else:
+        logger.info("Recovery autopilot disabled by configuration.")
     _refresh_health_payload_async()
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
+    _stop_recovery_autopilot()
     await realtime_hub.stop()
     close_redis()
     close_mongo()

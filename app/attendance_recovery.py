@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from . import models
+from .otp_delivery import send_notification_email
 from .realtime_bus import publish_domain_event
 from .saarthi_service import is_saarthi_course
+from .workers import enqueue_notification
+
+logger = logging.getLogger(__name__)
 ACTIVE_PLAN_STATUSES = (
     models.AttendanceRecoveryPlanStatus.ACTIVE,
     models.AttendanceRecoveryPlanStatus.ESCALATED,
@@ -72,6 +77,26 @@ def recovery_critical_threshold() -> float:
 
 def recovery_due_days() -> int:
     return max(2, _int_env("ATTENDANCE_RECOVERY_DUE_DAYS", 5))
+
+
+def recovery_retro_cooldown_minutes() -> int:
+    return max(5, _int_env("ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES", 360))
+
+
+def recovery_autopilot_enabled() -> bool:
+    return _bool_env("ATTENDANCE_RECOVERY_AUTOPILOT_ENABLED", default=True)
+
+
+def recovery_autopilot_interval_seconds() -> int:
+    return max(60, _int_env("ATTENDANCE_RECOVERY_AUTOPILOT_INTERVAL_SECONDS", 900))
+
+
+def recovery_autopilot_batch_size() -> int:
+    return max(10, min(2000, _int_env("ATTENDANCE_RECOVERY_AUTOPILOT_BATCH_SIZE", 400)))
+
+
+def recovery_ai_guidance_enabled() -> bool:
+    return _bool_env("ATTENDANCE_RECOVERY_AI_GUIDANCE_ENABLED", default=True)
 
 
 def recovery_watch_absences() -> int:
@@ -247,6 +272,345 @@ def _risk_level(
     if attendance_percent <= recovery_watch_threshold() or consecutive_absences >= recovery_watch_absences():
         return models.AttendanceRecoveryRiskLevel.WATCH
     return None
+
+
+def _student_attendance_overview(
+    db: Session,
+    *,
+    student_id: int,
+) -> tuple[float, list[dict[str, object]]]:
+    rows = (
+        db.query(
+            models.AttendanceRecord.course_id,
+            models.AttendanceRecord.status,
+        )
+        .filter(models.AttendanceRecord.student_id == int(student_id))
+        .all()
+    )
+    if not rows:
+        return 0.0, []
+    course_ids = sorted({int(row.course_id) for row in rows if row.course_id is not None})
+    courses = (
+        {
+            int(row.id): row
+            for row in db.query(models.Course).filter(models.Course.id.in_(course_ids or [0])).all()
+        }
+        if course_ids
+        else {}
+    )
+
+    by_course: dict[int, dict[str, int]] = {}
+    total_delivered = 0
+    total_present = 0
+    for row in rows:
+        course_id = int(row.course_id)
+        course = courses.get(course_id)
+        if is_saarthi_course(course):
+            continue
+        bucket = by_course.setdefault(course_id, {"delivered": 0, "present": 0})
+        bucket["delivered"] += 1
+        total_delivered += 1
+        if row.status == models.AttendanceStatus.PRESENT:
+            bucket["present"] += 1
+            total_present += 1
+
+    overall_percent = round((total_present / total_delivered) * 100.0, 2) if total_delivered else 0.0
+    subject_rows: list[dict[str, object]] = []
+    for course_id, counts in by_course.items():
+        delivered = int(counts.get("delivered", 0))
+        present = int(counts.get("present", 0))
+        percent = round((present / delivered) * 100.0, 2) if delivered else 0.0
+        course = courses.get(course_id)
+        subject_rows.append(
+            {
+                "course_id": course_id,
+                "course_code": str(course.code or f"C-{course_id}").strip().upper() if course else f"C-{course_id}",
+                "course_title": str(course.title or "").strip() if course else "Course",
+                "attendance_percent": percent,
+                "delivered_count": delivered,
+            }
+        )
+    subject_rows.sort(key=lambda item: (float(item["attendance_percent"]), str(item["course_code"])))
+    return overall_percent, subject_rows
+
+
+def _build_student_recovery_ai_guidance(
+    *,
+    risk_level: models.AttendanceRecoveryRiskLevel,
+    overall_attendance_percent: float,
+    course_attendance_percent: float,
+    consecutive_absences: int,
+    missed_remedials: int,
+    low_subjects: list[dict[str, object]],
+) -> list[str]:
+    if not recovery_ai_guidance_enabled():
+        return []
+    watch_threshold = recovery_watch_threshold()
+    below_subjects = [
+        row for row in low_subjects if float(row.get("attendance_percent") or 0.0) < watch_threshold
+    ]
+    gap = max(0.0, watch_threshold - float(course_attendance_percent))
+    guidance: list[str] = []
+    if risk_level == models.AttendanceRecoveryRiskLevel.CRITICAL or gap >= 20.0:
+        guidance.append("Start a strict 14-day recovery sprint with zero optional absences.")
+    elif risk_level == models.AttendanceRecoveryRiskLevel.HIGH or gap >= 10.0:
+        guidance.append("Follow a 7-day intensive recovery plan with daily concept revision.")
+    else:
+        guidance.append("Use a preventive recovery plan with consistent attendance for the next 2 weeks.")
+
+    if consecutive_absences >= recovery_high_absences():
+        guidance.append("Set fixed alarms and travel buffers so back-to-back absences stop immediately.")
+    if missed_remedials > 0:
+        guidance.append("Attend every pending remedial slot before adding new extracurricular commitments.")
+
+    if below_subjects:
+        priority_codes = ", ".join(str(row.get("course_code") or "").strip() for row in below_subjects[:3])
+        guidance.append(f"Prioritize weakest subjects first this week: {priority_codes}.")
+
+    if overall_attendance_percent >= watch_threshold and below_subjects:
+        guidance.append("Overall is safe, but subject risk is rising; prevent spillover to your aggregate score.")
+    return guidance
+
+
+def _build_faculty_recovery_ai_guidance(
+    *,
+    risk_level: models.AttendanceRecoveryRiskLevel,
+    course_attendance_percent: float,
+    consecutive_absences: int,
+) -> list[str]:
+    if not recovery_ai_guidance_enabled():
+        return []
+    guidance: list[str] = [
+        "Group missed learners by concept gap and run targeted remedial micro-batches.",
+        "Run short weekly diagnostic tests and adapt coverage based on weak outcomes.",
+    ]
+    if risk_level == models.AttendanceRecoveryRiskLevel.CRITICAL:
+        guidance.append(
+            "Escalate to a 3-checkpoint plan (remedial, quick test, attendance review) within 7 days."
+        )
+    elif consecutive_absences >= recovery_high_absences():
+        guidance.append("Start daily faculty check-ins until attendance trend stabilizes.")
+    if float(course_attendance_percent) < recovery_high_threshold():
+        guidance.append("Increase intervention intensity because subject attendance is in high-risk range.")
+    return guidance
+
+
+def _recent_recovery_notice_exists(
+    db: Session,
+    *,
+    student_id: int,
+    channel: str,
+    course_code: str,
+    cooldown_minutes: int,
+) -> bool:
+    cooldown = max(1, int(cooldown_minutes))
+    cutoff = datetime.utcnow() - timedelta(minutes=cooldown)
+    rows = (
+        db.query(models.NotificationLog.id)
+        .filter(
+            models.NotificationLog.student_id == int(student_id),
+            models.NotificationLog.channel.in_(
+                [
+                    str(channel),
+                    f"{channel}-suppressed",
+                ]
+            ),
+            models.NotificationLog.created_at >= cutoff,
+            models.NotificationLog.message.ilike(f"%{str(course_code or '').strip()}%"),
+        )
+        .limit(1)
+        .all()
+    )
+    return bool(rows)
+
+
+def _safe_send_recovery_email(
+    db: Session,
+    *,
+    student_id: int,
+    sent_to: str,
+    subject: str,
+    body: str,
+    channel: str,
+) -> None:
+    recipient = str(sent_to or "").strip()
+    if not recipient:
+        return
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        _write_notification_log(
+            db,
+            student_id=int(student_id),
+            sent_to=recipient,
+            channel=f"{channel}-suppressed",
+            message=f"{subject}\n{body}",
+        )
+        return
+    try:
+        delivery = send_notification_email(recipient, subject=subject, body=body)
+        _write_notification_log(
+            db,
+            student_id=int(student_id),
+            sent_to=recipient,
+            channel=str(delivery.get("channel") or channel),
+            message=f"{subject}\n{body}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Non-blocking recovery email dispatch failure to=%s error=%s", recipient, exc)
+
+
+def _safe_enqueue_recovery_notification(payload: dict[str, object]) -> None:
+    try:
+        enqueue_notification(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Non-blocking recovery notification enqueue failure payload=%s error=%s", payload, exc)
+
+
+def _dispatch_recovery_communications(
+    db: Session,
+    *,
+    student: models.Student,
+    course: models.Course,
+    faculty: models.Faculty | None,
+    risk_level: models.AttendanceRecoveryRiskLevel,
+    course_attendance_percent: float,
+    overall_attendance_percent: float,
+    low_subjects: list[dict[str, object]],
+    consecutive_absences: int,
+    missed_remedials: int,
+    next_makeup: models.MakeUpClass | None,
+    office_hour_slot: datetime | None,
+) -> None:
+    watch_threshold = recovery_watch_threshold()
+    low_subject_lines = [
+        f"- {str(row['course_code'])}: {float(row['attendance_percent']):.1f}%"
+        for row in low_subjects
+        if float(row.get("attendance_percent") or 0.0) < watch_threshold
+    ]
+    subject_focus = low_subject_lines or [f"- {str(course.code)}: {float(course_attendance_percent):.1f}%"]
+    ai_student_guidance = _build_student_recovery_ai_guidance(
+        risk_level=risk_level,
+        overall_attendance_percent=overall_attendance_percent,
+        course_attendance_percent=course_attendance_percent,
+        consecutive_absences=consecutive_absences,
+        missed_remedials=missed_remedials,
+        low_subjects=low_subjects,
+    )
+
+    if overall_attendance_percent < watch_threshold:
+        header_line = (
+            f"Your overall attendance is {overall_attendance_percent:.1f}% (below {watch_threshold:.0f}%). "
+            "Immediate recovery action is required."
+        )
+    else:
+        header_line = (
+            f"Your overall attendance is {overall_attendance_percent:.1f}% (>= {watch_threshold:.0f}%), "
+            "but specific subjects need immediate attention."
+        )
+
+    next_slot_line = (
+        f"- Remedial slot suggested: {next_makeup.class_date.isoformat()} at {next_makeup.start_time.strftime('%H:%M')}."
+        if next_makeup is not None
+        else "- Remedial slot is not scheduled yet; request one from your faculty immediately."
+    )
+    office_hour_line = (
+        f"- Faculty check-in suggested by: {office_hour_slot.isoformat()}."
+        if office_hour_slot is not None
+        else "- Request a faculty check-in window this week."
+    )
+    student_body = "\n".join(
+        [
+            f"Dear {student.name},",
+            "",
+            header_line,
+            "Subjects currently below the attendance safety threshold:",
+            *subject_focus,
+            "",
+            "Precautionary measures (start today):",
+            "- Attend every scheduled class for the next 14 days with zero unplanned absences.",
+            "- Coordinate with your faculty for remedial classes and timely class tests for recovery.",
+            "- Revise missed topics the same day and maintain a weekly catch-up checklist.",
+            next_slot_line,
+            office_hour_line,
+            "",
+            "Support resources:",
+            "- Talk to Saarthi in the app for real-time academic/wellbeing support.",
+            "- Use Campus Resources in the portal to plan recovery subject-wise.",
+            "",
+            "Recovery Copilot plan for you:",
+            *[f"- {line}" for line in ai_student_guidance],
+            "",
+            "If you are facing a genuine issue, raise it immediately so support can be activated.",
+        ]
+    )
+    student_subject = (
+        f"[Attendance Recovery] Action required for {course.code} "
+        f"({course_attendance_percent:.1f}%)"
+    )
+    _safe_send_recovery_email(
+        db,
+        student_id=int(student.id),
+        sent_to=str(student.email or "").strip(),
+        subject=student_subject,
+        body=student_body,
+        channel="attendance-recovery-student-email",
+    )
+    _safe_enqueue_recovery_notification(
+        {
+            "type": "attendance_recovery_student_alert",
+            "student_id": int(student.id),
+            "course_id": int(course.id),
+            "course_code": str(course.code or "").strip().upper(),
+            "risk_level": risk_level.value,
+            "overall_attendance_percent": float(overall_attendance_percent),
+            "course_attendance_percent": float(course_attendance_percent),
+        }
+    )
+
+    if faculty is None or not str(faculty.email or "").strip():
+        return
+    ai_faculty_guidance = _build_faculty_recovery_ai_guidance(
+        risk_level=risk_level,
+        course_attendance_percent=course_attendance_percent,
+        consecutive_absences=consecutive_absences,
+    )
+    faculty_body = "\n".join(
+        [
+            f"Dear {faculty.name or 'Faculty'},",
+            "",
+            (
+                f"{student.name} ({student.registration_number or 'unregistered'}) is below threshold in "
+                f"{course.code} at {course_attendance_percent:.1f}%."
+            ),
+            f"Overall student attendance snapshot: {overall_attendance_percent:.1f}%.",
+            "",
+            "Required intervention:",
+            "- Schedule targeted remedial classes for the missed learning outcomes.",
+            "- Run timely short class tests/assessments to verify recovery.",
+            "- Track attendance improvement weekly until the student is stable above threshold.",
+            "",
+            "Recovery Copilot recommendations:",
+            *[f"- {line}" for line in ai_faculty_guidance],
+        ]
+    )
+    _safe_send_recovery_email(
+        db,
+        student_id=int(student.id),
+        sent_to=str(faculty.email or "").strip(),
+        subject=f"[Recovery Copilot] Faculty intervention required for {student.name} in {course.code}",
+        body=faculty_body,
+        channel="attendance-recovery-faculty-email",
+    )
+    _safe_enqueue_recovery_notification(
+        {
+            "type": "attendance_recovery_faculty_alert",
+            "student_id": int(student.id),
+            "faculty_id": int(faculty.id),
+            "course_id": int(course.id),
+            "course_code": str(course.code or "").strip().upper(),
+            "risk_level": risk_level.value,
+            "course_attendance_percent": float(course_attendance_percent),
+        }
+    )
 
 
 def _recovery_summary(
@@ -740,6 +1104,7 @@ def evaluate_attendance_recovery(
         .all()
     )
     existing_plan = _active_plan(db, student_id=int(student_id), course_id=int(course_id))
+    previous_risk_level = existing_plan.risk_level if existing_plan is not None else None
     if not records:
         if existing_plan is not None:
             closed_plan = _close_plan(
@@ -794,6 +1159,7 @@ def evaluate_attendance_recovery(
     faculty_user = _auth_user_for_faculty(db, int(course.faculty_id or 0))
     student_user = _auth_user_for_student(db, int(student_id))
     plan = existing_plan
+    is_new_plan = existing_plan is None
     if plan is None:
         plan = models.AttendanceRecoveryPlan(
             student_id=int(student_id),
@@ -1032,6 +1398,25 @@ def evaluate_attendance_recovery(
             )
 
     _cancel_unused_actions(db, plan=plan, keep_action_ids=keep_action_ids)
+    if is_new_plan or (previous_risk_level is not None and previous_risk_level != risk_level):
+        overall_attendance_percent, low_subjects = _student_attendance_overview(
+            db,
+            student_id=int(student.id),
+        )
+        _dispatch_recovery_communications(
+            db,
+            student=student,
+            course=course,
+            faculty=faculty,
+            risk_level=risk_level,
+            course_attendance_percent=attendance_percent,
+            overall_attendance_percent=overall_attendance_percent,
+            low_subjects=low_subjects,
+            consecutive_absences=consecutive_absences,
+            missed_remedials=missed_remedials,
+            next_makeup=next_makeup,
+            office_hour_slot=office_hour_slot,
+        )
     _mirror_plan(plan)
     _publish_recovery_plan_event(
         "attendance.recovery.updated",
@@ -1077,6 +1462,148 @@ def recompute_attendance_recovery_scope(
         if plan is not None and (before_id == 0 or int(plan.id) == before_id):
             created_or_updated += 1
     return {"evaluated": evaluated, "plans_touched": created_or_updated}
+
+
+def retro_send_recovery_notifications(
+    db: Session,
+    *,
+    student_id: int | None = None,
+    course_id: int | None = None,
+    limit: int = 300,
+    force_resend: bool = False,
+    dry_run: bool = False,
+    cooldown_minutes: int | None = None,
+    refresh_scope: bool = True,
+) -> dict[str, int | bool]:
+    if refresh_scope:
+        recompute_attendance_recovery_scope(
+            db,
+            student_id=student_id,
+            course_id=course_id,
+            limit=limit,
+        )
+
+    query = db.query(models.AttendanceRecoveryPlan).filter(
+        models.AttendanceRecoveryPlan.status.in_(ACTIVE_PLAN_STATUSES)
+    )
+    if student_id is not None:
+        query = query.filter(models.AttendanceRecoveryPlan.student_id == int(student_id))
+    if course_id is not None:
+        query = query.filter(models.AttendanceRecoveryPlan.course_id == int(course_id))
+
+    plans = (
+        query.order_by(
+            models.AttendanceRecoveryPlan.updated_at.desc(),
+            models.AttendanceRecoveryPlan.id.desc(),
+        )
+        .limit(max(1, int(limit)))
+        .all()
+    )
+
+    cooloff = int(cooldown_minutes if cooldown_minutes is not None else recovery_retro_cooldown_minutes())
+    evaluated = 0
+    eligible = 0
+    dispatched = 0
+    skipped_cooldown = 0
+    failed = 0
+
+    for plan in plans:
+        evaluated += 1
+        student = db.get(models.Student, int(plan.student_id))
+        course = db.get(models.Course, int(plan.course_id))
+        if student is None or course is None or is_saarthi_course(course):
+            continue
+        faculty = db.get(models.Faculty, int(course.faculty_id)) if course.faculty_id else None
+        overall_attendance_percent, low_subjects = _student_attendance_overview(
+            db,
+            student_id=int(student.id),
+        )
+        student_section = _student_section(student)
+        next_makeup = _recommended_makeup_class(
+            db,
+            course_id=int(course.id),
+            student_section=student_section,
+            now_dt=datetime.utcnow(),
+        )
+        office_hour_slot = _next_office_hour_slot(
+            db,
+            course_id=int(course.id),
+            now_dt=datetime.utcnow(),
+        )
+
+        if not force_resend and _recent_recovery_notice_exists(
+            db,
+            student_id=int(student.id),
+            channel="attendance-recovery-student-email",
+            course_code=str(course.code or ""),
+            cooldown_minutes=cooloff,
+        ):
+            skipped_cooldown += 1
+            continue
+
+        eligible += 1
+        if dry_run:
+            continue
+        try:
+            _dispatch_recovery_communications(
+                db,
+                student=student,
+                course=course,
+                faculty=faculty,
+                risk_level=plan.risk_level,
+                course_attendance_percent=float(plan.attendance_percent or 0.0),
+                overall_attendance_percent=overall_attendance_percent,
+                low_subjects=low_subjects,
+                consecutive_absences=int(plan.consecutive_absences or 0),
+                missed_remedials=int(plan.missed_remedials or 0),
+                next_makeup=next_makeup,
+                office_hour_slot=office_hour_slot,
+            )
+            dispatched += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            logger.warning(
+                "Recovery retro-dispatch failed student_id=%s course_id=%s error=%s",
+                int(plan.student_id),
+                int(plan.course_id),
+                exc,
+            )
+
+    return {
+        "evaluated": int(evaluated),
+        "eligible": int(eligible),
+        "dispatched": int(dispatched),
+        "skipped_cooldown": int(skipped_cooldown),
+        "failed": int(failed),
+        "forced": bool(force_resend),
+        "dry_run": bool(dry_run),
+    }
+
+
+def run_recovery_autopilot_cycle(
+    db: Session,
+    *,
+    limit: int | None = None,
+) -> dict[str, int | bool]:
+    if not recovery_enabled() or not recovery_autopilot_enabled():
+        return {
+            "evaluated": 0,
+            "eligible": 0,
+            "dispatched": 0,
+            "skipped_cooldown": 0,
+            "failed": 0,
+            "forced": False,
+            "dry_run": False,
+        }
+    effective_limit = int(limit) if limit is not None else recovery_autopilot_batch_size()
+    return retro_send_recovery_notifications(
+        db,
+        limit=effective_limit,
+        force_resend=False,
+        dry_run=False,
+        cooldown_minutes=recovery_retro_cooldown_minutes(),
+        refresh_scope=True,
+    )
 
 
 def get_student_recovery_plans(
