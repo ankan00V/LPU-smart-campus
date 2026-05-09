@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-    quality-gate:
+  quality-gate:
     name: Quality Gate (Migrations + Lint + Tests)
     runs-on: ubuntu-latest
     timeout-minutes: 30
