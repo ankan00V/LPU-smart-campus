@@ -794,10 +794,11 @@ def mirror_event(
     *,
     source: str = "api",
     actor: dict[str, Any] | None = None,
+    scopes: set[str] | None = None,
     required: bool | None = None,
 ) -> bool:
     actor_payload = actor or {}
-    realtime_scopes: set[str] = {"role:admin"}
+    realtime_scopes: set[str] = set(scopes or {"role:admin"})
     actor_user_id = actor_payload.get("user_id")
     try:
         if actor_user_id is not None:

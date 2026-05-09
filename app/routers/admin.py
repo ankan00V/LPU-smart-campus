@@ -2159,6 +2159,7 @@ def rms_update_student_profile(
 
     changed_fields: list[str] = []
     now_dt = datetime.utcnow()
+    original_section = _normalize_rms_section(student.section)
 
     if payload.registration_number is not None:
         registration_number = _normalize_rms_registration_number(payload.registration_number)
@@ -2260,6 +2261,38 @@ def rms_update_student_profile(
     )
     message = "No profile changes were needed."
     if changed_fields:
+        relevant_faculty_ids: set[int] = set()
+        section_tokens = {token for token in {original_section, _normalize_rms_section(student.section)} if token}
+        if section_tokens:
+            section_faculty_rows = (
+                db.query(models.Faculty.id)
+                .filter(models.Faculty.section.in_(section_tokens))
+                .all()
+            )
+            for (faculty_id_value,) in section_faculty_rows:
+                if faculty_id_value is None:
+                    continue
+                relevant_faculty_ids.add(int(faculty_id_value))
+
+        enrolled_faculty_rows = (
+            db.query(models.Course.faculty_id)
+            .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+            .filter(
+                models.Enrollment.student_id == int(student.id),
+                models.Course.faculty_id.is_not(None),
+            )
+            .all()
+        )
+        for (faculty_id_value,) in enrolled_faculty_rows:
+            if faculty_id_value is None:
+                continue
+            relevant_faculty_ids.add(int(faculty_id_value))
+
+        event_scopes = {
+            "role:admin",
+            f"student:{int(student.id)}",
+            *(f"faculty:{faculty_id_value}" for faculty_id_value in sorted(relevant_faculty_ids)),
+        }
         message = f"Student profile updated: {', '.join(changed_fields)}."
         publish_domain_event(
             "rms.student.updated",
@@ -2270,7 +2303,7 @@ def rms_update_student_profile(
                 "section": str(student.section or "").strip().upper() or None,
                 "updated_at": now_dt.isoformat(),
             },
-            scopes={f"student:{int(student.id)}", "role:admin", "role:faculty"},
+            scopes=event_scopes,
             topics={"rms", "attendance"},
             actor={
                 "user_id": int(current_user.id),

@@ -202,6 +202,9 @@ def _worker_degraded_due_redis_quota() -> bool:
             return True
     except Exception:  # noqa: BLE001
         pass
+    # Keep startup checks deterministic in tests by avoiding live broker probes.
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return False
     broker_url = _broker_url() or _backend_url()
     if not broker_url or redis_pkg is None:
         return False
