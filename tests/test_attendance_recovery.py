@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from datetime import date, datetime, time, timedelta
 from unittest import mock
@@ -24,10 +25,16 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         SessionLocal = sessionmaker(bind=self.engine)
         self.db = SessionLocal()
         self.today = date.today()
+        self._previous_academic_start = os.environ.get("ACADEMIC_START_DATE")
+        os.environ["ACADEMIC_START_DATE"] = (self.today - timedelta(days=8)).isoformat()
         self.future_makeup_date = self.today + timedelta(days=1)
         self._seed_base()
 
     def tearDown(self):
+        if self._previous_academic_start is None:
+            os.environ.pop("ACADEMIC_START_DATE", None)
+        else:
+            os.environ["ACADEMIC_START_DATE"] = self._previous_academic_start
         self.db.close()
         self.engine.dispose()
 
@@ -153,9 +160,12 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
                 models.AttendanceStatus.PRESENT,
                 models.AttendanceStatus.PRESENT,
                 models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
                 models.AttendanceStatus.ABSENT,
             ],
-            start_offset_days=3,
+            start_offset_days=7,
         )
 
         plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
@@ -175,6 +185,36 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         faculty_meta = json.loads(actions[models.AttendanceRecoveryActionType.FACULTY_NUDGE].metadata_json or "{}")
         self.assertFalse(bool(remedial_meta.get("mandatory")))
         self.assertTrue(bool(faculty_meta.get("optional")))
+
+    def test_plan_is_created_from_delivered_schedule_evidence_even_with_sparse_records(self):
+        previous = os.environ.get("ACADEMIC_START_DATE")
+        os.environ["ACADEMIC_START_DATE"] = (self.today - timedelta(days=90)).isoformat()
+        try:
+            # Only one explicit present record, but many delivered classes are inferred from schedule history.
+            self._seed_attendance(
+                [
+                    models.AttendanceStatus.PRESENT,
+                ],
+                start_offset_days=3,
+            )
+            plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+            self.assertIsNotNone(plan)
+            assert plan is not None
+            self.assertGreater(plan.delivered_count, 1)
+            self.assertLess(plan.attendance_percent, 75.0)
+            self.assertIn(
+                plan.risk_level,
+                {
+                    models.AttendanceRecoveryRiskLevel.HIGH,
+                    models.AttendanceRecoveryRiskLevel.CRITICAL,
+                    models.AttendanceRecoveryRiskLevel.WATCH,
+                },
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("ACADEMIC_START_DATE", None)
+            else:
+                os.environ["ACADEMIC_START_DATE"] = previous
 
     def test_high_plan_requires_acknowledgement_actions_without_parent_or_rms_escalation(self):
         self._seed_attendance(
@@ -492,15 +532,15 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
             ],
             start_offset_days=4,
         )
-        for idx in range(10):
+        for idx in range(8):
             self.db.add(
                 models.AttendanceRecord(
                     id=2000 + idx,
                     student_id=101,
                     course_id=302,
                     marked_by_faculty_id=201,
-                    attendance_date=self.today - timedelta(days=20 - idx),
-                    status=models.AttendanceStatus.PRESENT if idx < 9 else models.AttendanceStatus.ABSENT,
+                    attendance_date=self.today - timedelta(days=7 - idx),
+                    status=models.AttendanceStatus.PRESENT if idx < 7 else models.AttendanceStatus.ABSENT,
                     source="seed",
                 )
             )

@@ -49,7 +49,7 @@ from .otp_delivery import assert_otp_delivery_ready
 from .performance import record_request_metric
 from .redis_client import close_redis, init_redis, redis_required, redis_runtime_required, redis_status
 from .rate_limit import enforce_rate_limit, rate_limit_headers
-from .realtime_bus import realtime_hub
+from .realtime_bus import publish_domain_event, realtime_hub
 from .runtime_infra import managed_services_required
 from .validation import validate_request_security_constraints
 from .workers import (

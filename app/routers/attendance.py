@@ -3516,6 +3516,13 @@ def get_student_attendance_aggregate(
 
     aggregate_percent = round((attended_total / delivered_total) * 100, 2) if delivered_total else 0.0
 
+    recompute_attendance_recovery_scope(
+        db,
+        student_id=int(current_user.student_id),
+        limit=max(200, len(course_ids) * 10),
+    )
+    db.commit()
+
     return schemas.StudentAttendanceAggregateOut(
         aggregate_percent=aggregate_percent,
         attended_total=attended_total,
@@ -3533,6 +3540,13 @@ def get_student_recovery_plan_list(
 ):
     if not current_user.student_id:
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    recompute_attendance_recovery_scope(
+        db,
+        student_id=int(current_user.student_id),
+        limit=1000,
+    )
+    db.commit()
 
     plans = get_student_recovery_plans(
         db,

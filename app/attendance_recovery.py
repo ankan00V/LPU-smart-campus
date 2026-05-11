@@ -257,6 +257,204 @@ def _last_absent_on(records: list[models.AttendanceRecord]) -> date | None:
     return None
 
 
+def _recovery_academic_start_date() -> date:
+    raw = (os.getenv("ACADEMIC_START_DATE", "2026-03-02") or "").strip()
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return date(2026, 3, 2)
+
+
+def _count_delivered_occurrences(
+    schedule: models.ClassSchedule,
+    *,
+    from_date: date,
+    now_dt: datetime,
+) -> int:
+    if from_date > now_dt.date():
+        return 0
+    start_offset = (int(schedule.weekday) - int(from_date.weekday())) % 7
+    first_class_date = from_date + timedelta(days=start_offset)
+    if first_class_date > now_dt.date():
+        return 0
+    total = ((now_dt.date() - first_class_date).days // 7) + 1
+    if total <= 0:
+        return 0
+    if now_dt.date().weekday() == int(schedule.weekday) and now_dt.time() < schedule.start_time:
+        total -= 1
+    return max(0, total)
+
+
+def _course_attendance_snapshot(
+    db: Session,
+    *,
+    student_id: int,
+    course_id: int,
+    now_dt: datetime,
+) -> dict[str, object]:
+    from_date = _recovery_academic_start_date()
+    today = now_dt.date()
+    schedules = (
+        db.query(models.ClassSchedule)
+        .filter(
+            models.ClassSchedule.course_id == int(course_id),
+            models.ClassSchedule.is_active.is_(True),
+        )
+        .all()
+    )
+    schedules_by_id = {int(row.id): row for row in schedules}
+    delivered_by_schedule = sum(
+        _count_delivered_occurrences(schedule, from_date=from_date, now_dt=now_dt)
+        for schedule in schedules
+    )
+
+    submission_rows = (
+        db.query(
+            models.AttendanceSubmission.schedule_id,
+            models.AttendanceSubmission.class_date,
+            models.AttendanceSubmission.status,
+        )
+        .filter(
+            models.AttendanceSubmission.student_id == int(student_id),
+            models.AttendanceSubmission.course_id == int(course_id),
+            models.AttendanceSubmission.class_date >= from_date,
+            models.AttendanceSubmission.class_date <= today,
+        )
+        .all()
+    )
+    submission_by_key: dict[tuple[int, date], models.AttendanceSubmissionStatus] = {}
+    submission_schedule_ids_by_date: dict[date, set[int]] = {}
+    delivered_submission_keys: set[tuple[int, date]] = set()
+    for schedule_id, class_date, status_value in submission_rows:
+        sid = int(schedule_id)
+        key = (sid, class_date)
+        delivered_submission_keys.add(key)
+        submission_by_key[key] = status_value
+        submission_schedule_ids_by_date.setdefault(class_date, set()).add(sid)
+
+    record_rows = (
+        db.query(
+            models.AttendanceRecord.attendance_date,
+            models.AttendanceRecord.status,
+        )
+        .filter(
+            models.AttendanceRecord.student_id == int(student_id),
+            models.AttendanceRecord.course_id == int(course_id),
+            models.AttendanceRecord.attendance_date >= from_date,
+            models.AttendanceRecord.attendance_date <= today,
+        )
+        .all()
+    )
+    records_by_date: dict[date, list[models.AttendanceStatus]] = {}
+    delivered_record_dates: set[date] = set()
+    for attendance_date, status_value in record_rows:
+        delivered_record_dates.add(attendance_date)
+        records_by_date.setdefault(attendance_date, []).append(status_value)
+
+    delivered_schedule_ids_by_date: dict[date, list[int]] = {}
+    for schedule in schedules:
+        offset = (int(schedule.weekday) - int(from_date.weekday())) % 7
+        class_date = from_date + timedelta(days=offset)
+        while class_date <= today:
+            if class_date < today or (class_date == today and now_dt.time() >= schedule.start_time):
+                delivered_schedule_ids_by_date.setdefault(class_date, []).append(int(schedule.id))
+            class_date += timedelta(days=7)
+
+    delivered_total = 0
+    attended_total = 0
+    delivered_slot_seen: set[tuple[int, date]] = set()
+    day_status: dict[date, bool] = {}
+
+    for class_date, schedule_ids in delivered_schedule_ids_by_date.items():
+        for schedule_id in sorted(schedule_ids):
+            key = (int(schedule_id), class_date)
+            if key in delivered_slot_seen:
+                continue
+            delivered_slot_seen.add(key)
+            delivered_total += 1
+            submission_status = submission_by_key.get(key)
+            present = False
+            if submission_status is not None:
+                present = submission_status == models.AttendanceSubmissionStatus.APPROVED
+            else:
+                record_statuses = records_by_date.get(class_date, [])
+                if any(status == models.AttendanceStatus.PRESENT for status in record_statuses):
+                    present = True
+            if present:
+                attended_total += 1
+                day_status[class_date] = True
+            else:
+                day_status.setdefault(class_date, False)
+
+    for key, submission_status in submission_by_key.items():
+        if key in delivered_slot_seen:
+            continue
+        schedule = schedules_by_id.get(int(key[0]))
+        if schedule is not None:
+            class_start = datetime.combine(key[1], schedule.start_time)
+            if class_start > now_dt:
+                continue
+        delivered_slot_seen.add(key)
+        delivered_total += 1
+        present = submission_status == models.AttendanceSubmissionStatus.APPROVED
+        if present:
+            attended_total += 1
+            day_status[key[1]] = True
+        else:
+            day_status.setdefault(key[1], False)
+
+    for class_date, statuses in records_by_date.items():
+        if class_date in day_status:
+            continue
+        if class_date in submission_schedule_ids_by_date:
+            continue
+        delivered_total += 1
+        present = any(status == models.AttendanceStatus.PRESENT for status in statuses)
+        if present:
+            attended_total += 1
+            day_status[class_date] = True
+        else:
+            day_status[class_date] = False
+
+    if delivered_total <= 0:
+        delivered_total = max(delivered_by_schedule, len(delivered_record_dates), len(delivered_submission_keys))
+        attended_total = min(
+            delivered_total,
+            sum(1 for _, status in record_rows if status == models.AttendanceStatus.PRESENT),
+        )
+        if delivered_total == 0:
+            return {
+                "attendance_percent": 0.0,
+                "present_count": 0,
+                "absent_count": 0,
+                "delivered_count": 0,
+                "consecutive_absences": 0,
+                "last_absent_on": None,
+            }
+
+    if attended_total > delivered_total:
+        attended_total = delivered_total
+    absent_total = max(0, delivered_total - attended_total)
+    attendance_percent = round((attended_total / delivered_total) * 100.0, 2) if delivered_total else 0.0
+
+    absent_days = sorted((day for day, present in day_status.items() if not present), reverse=True)
+    last_absent_on = absent_days[0] if absent_days else None
+    consecutive_absences = 0
+    for day in sorted(day_status.keys(), reverse=True):
+        if bool(day_status.get(day)):
+            break
+        consecutive_absences += 1
+
+    return {
+        "attendance_percent": attendance_percent,
+        "present_count": int(attended_total),
+        "absent_count": int(absent_total),
+        "delivered_count": int(delivered_total),
+        "consecutive_absences": int(consecutive_absences),
+        "last_absent_on": last_absent_on,
+    }
+
+
 def _risk_level(
     *,
     attendance_percent: float,
@@ -279,17 +477,38 @@ def _student_attendance_overview(
     *,
     student_id: int,
 ) -> tuple[float, list[dict[str, object]]]:
-    rows = (
-        db.query(
-            models.AttendanceRecord.course_id,
-            models.AttendanceRecord.status,
-        )
-        .filter(models.AttendanceRecord.student_id == int(student_id))
-        .all()
+    now_dt = datetime.utcnow()
+    course_ids = sorted(
+        {
+            int(row[0])
+            for row in (
+                db.query(models.Enrollment.course_id)
+                .filter(models.Enrollment.student_id == int(student_id))
+                .all()
+            )
+            if row and row[0] is not None
+        }
+        | {
+            int(row[0])
+            for row in (
+                db.query(models.AttendanceRecord.course_id)
+                .filter(models.AttendanceRecord.student_id == int(student_id))
+                .all()
+            )
+            if row and row[0] is not None
+        }
+        | {
+            int(row[0])
+            for row in (
+                db.query(models.AttendanceSubmission.course_id)
+                .filter(models.AttendanceSubmission.student_id == int(student_id))
+                .all()
+            )
+            if row and row[0] is not None
+        }
     )
-    if not rows:
+    if not course_ids:
         return 0.0, []
-    course_ids = sorted({int(row.course_id) for row in rows if row.course_id is not None})
     courses = (
         {
             int(row.id): row
@@ -299,28 +518,24 @@ def _student_attendance_overview(
         else {}
     )
 
-    by_course: dict[int, dict[str, int]] = {}
     total_delivered = 0
     total_present = 0
-    for row in rows:
-        course_id = int(row.course_id)
+    subject_rows: list[dict[str, object]] = []
+    for course_id in course_ids:
         course = courses.get(course_id)
         if is_saarthi_course(course):
             continue
-        bucket = by_course.setdefault(course_id, {"delivered": 0, "present": 0})
-        bucket["delivered"] += 1
-        total_delivered += 1
-        if row.status == models.AttendanceStatus.PRESENT:
-            bucket["present"] += 1
-            total_present += 1
-
-    overall_percent = round((total_present / total_delivered) * 100.0, 2) if total_delivered else 0.0
-    subject_rows: list[dict[str, object]] = []
-    for course_id, counts in by_course.items():
-        delivered = int(counts.get("delivered", 0))
-        present = int(counts.get("present", 0))
-        percent = round((present / delivered) * 100.0, 2) if delivered else 0.0
-        course = courses.get(course_id)
+        snapshot = _course_attendance_snapshot(
+            db,
+            student_id=int(student_id),
+            course_id=int(course_id),
+            now_dt=now_dt,
+        )
+        delivered = int(snapshot.get("delivered_count", 0) or 0)
+        present = int(snapshot.get("present_count", 0) or 0)
+        percent = float(snapshot.get("attendance_percent", 0.0) or 0.0)
+        total_delivered += delivered
+        total_present += present
         subject_rows.append(
             {
                 "course_id": course_id,
@@ -330,6 +545,8 @@ def _student_attendance_overview(
                 "delivered_count": delivered,
             }
         )
+
+    overall_percent = round((total_present / total_delivered) * 100.0, 2) if total_delivered else 0.0
     subject_rows.sort(key=lambda item: (float(item["attendance_percent"]), str(item["course_code"])))
     return overall_percent, subject_rows
 
@@ -1090,38 +1307,31 @@ def evaluate_attendance_recovery(
 
     now_dt = datetime.utcnow()
     faculty = db.get(models.Faculty, int(course.faculty_id)) if course.faculty_id else None
-    records = (
-        db.query(models.AttendanceRecord)
-        .filter(
-            models.AttendanceRecord.student_id == int(student_id),
-            models.AttendanceRecord.course_id == int(course_id),
-        )
-        .order_by(
-            models.AttendanceRecord.attendance_date.desc(),
-            models.AttendanceRecord.updated_at.desc(),
-            models.AttendanceRecord.id.desc(),
-        )
-        .all()
+    snapshot = _course_attendance_snapshot(
+        db,
+        student_id=int(student_id),
+        course_id=int(course_id),
+        now_dt=now_dt,
     )
     existing_plan = _active_plan(db, student_id=int(student_id), course_id=int(course_id))
     previous_risk_level = existing_plan.risk_level if existing_plan is not None else None
-    if not records:
+    delivered_count = int(snapshot.get("delivered_count", 0) or 0)
+    present_count = int(snapshot.get("present_count", 0) or 0)
+    absent_count = int(snapshot.get("absent_count", 0) or 0)
+    attendance_percent = float(snapshot.get("attendance_percent", 0.0) or 0.0)
+    consecutive_absences = int(snapshot.get("consecutive_absences", 0) or 0)
+    last_absent_on = snapshot.get("last_absent_on")
+
+    if delivered_count <= 0:
         if existing_plan is not None:
             closed_plan = _close_plan(
                 db,
                 plan=existing_plan,
-                summary=f"{course.code} attendance has no marked classes left in the ledger.",
+                summary=f"{course.code} attendance has no delivered classes in the current cycle.",
             )
             _publish_recovery_plan_event("attendance.recovery.recovered", plan=closed_plan)
             return closed_plan
         return None
-
-    delivered_count = len(records)
-    present_count = sum(1 for row in records if row.status == models.AttendanceStatus.PRESENT)
-    absent_count = sum(1 for row in records if row.status == models.AttendanceStatus.ABSENT)
-    attendance_percent = round((present_count / delivered_count) * 100.0, 2) if delivered_count else 0.0
-    consecutive_absences = _consecutive_absences(records)
-    last_absent_on = _last_absent_on(records)
     student_section = _student_section(student)
     next_makeup = _recommended_makeup_class(
         db,

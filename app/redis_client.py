@@ -135,6 +135,8 @@ def _is_redis_quota_exceeded_error(message: str | None) -> bool:
 def _redis_quota_degraded() -> bool:
     if not _redis_auto_degrade_on_quota_exceeded():
         return False
+    if not _redis_url():
+        return False
     return _is_redis_quota_exceeded_error(_redis_error)
 
 

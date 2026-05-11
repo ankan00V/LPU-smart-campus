@@ -561,9 +561,15 @@ def _safe_mirror_document(collection: str, document: dict, *, upsert_filter: dic
         )
 
 
-def _safe_mirror_event(event_name: str, payload: dict, *, actor: dict | None = None) -> None:
+def _safe_mirror_event(
+    event_name: str,
+    payload: dict,
+    *,
+    actor: dict | None = None,
+    scopes: set[str] | None = None,
+) -> None:
     try:
-        mirror_event(event_name, payload, actor=actor, required=False)
+        mirror_event(event_name, payload, actor=actor, scopes=scopes, required=False)
     except Exception as exc:
         logger.warning("Non-blocking remedial event mirror failure for event=%s: %s", event_name, exc)
 
@@ -1034,6 +1040,26 @@ def create_makeup_class(
         )
 
     _safe_sync_makeup_class_to_mongo(class_row, source="faculty-remedial-scheduler")
+    section_students = _students_matching_sections(db, sections)
+    section_student_ids = [int(row.id) for row in section_students]
+    enrolled_student_ids = (
+        {
+            int(row.student_id)
+            for row in db.query(models.Enrollment.student_id)
+            .filter(
+                models.Enrollment.course_id == int(class_row.course_id),
+                models.Enrollment.student_id.in_(section_student_ids or [0]),
+            )
+            .all()
+        }
+        if section_student_ids
+        else set()
+    )
+    class_event_scopes = {
+        "role:admin",
+        f"faculty:{int(class_row.faculty_id)}",
+        *(f"student:{sid}" for sid in sorted(enrolled_student_ids)),
+    }
     _safe_mirror_event(
         "remedial.class_scheduled",
         {
@@ -1053,6 +1079,7 @@ def create_makeup_class(
             "role": current_user.role.value,
             "faculty_id": current_user.faculty_id,
         },
+        scopes=class_event_scopes,
     )
     return _serialize_makeup_class(class_row)
 
