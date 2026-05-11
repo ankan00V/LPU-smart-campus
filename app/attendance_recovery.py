@@ -1648,20 +1648,44 @@ def recompute_attendance_recovery_scope(
     course_id: int | None = None,
     limit: int = 500,
 ) -> dict[str, int]:
-    query = db.query(models.AttendanceRecord.student_id, models.AttendanceRecord.course_id).distinct()
-    if student_id is not None:
-        query = query.filter(models.AttendanceRecord.student_id == int(student_id))
-    if course_id is not None:
-        query = query.filter(models.AttendanceRecord.course_id == int(course_id))
+    # Build the evaluation set from the same evidence used by the UI aggregate:
+    # enrollments + submissions + records. This avoids "2% overall but no plan"
+    # when AttendanceRecord rows are sparse (e.g. delivered inferred from schedules/submissions).
+    pairs_set: set[tuple[int, int]] = set()
+    normalized_student_id = int(student_id) if student_id is not None else None
+    normalized_course_id = int(course_id) if course_id is not None else None
 
-    pairs = (
-        query.order_by(
-            models.AttendanceRecord.student_id.asc(),
-            models.AttendanceRecord.course_id.asc(),
-        )
-        .limit(max(1, int(limit)))
-        .all()
-    )
+    enrollment_query = db.query(models.Enrollment.student_id, models.Enrollment.course_id)
+    if normalized_student_id is not None:
+        enrollment_query = enrollment_query.filter(models.Enrollment.student_id == normalized_student_id)
+    if normalized_course_id is not None:
+        enrollment_query = enrollment_query.filter(models.Enrollment.course_id == normalized_course_id)
+    for sid, cid in enrollment_query.distinct().limit(max(1, int(limit))).all():
+        if sid is None or cid is None:
+            continue
+        pairs_set.add((int(sid), int(cid)))
+
+    submission_query = db.query(models.AttendanceSubmission.student_id, models.AttendanceSubmission.course_id)
+    if normalized_student_id is not None:
+        submission_query = submission_query.filter(models.AttendanceSubmission.student_id == normalized_student_id)
+    if normalized_course_id is not None:
+        submission_query = submission_query.filter(models.AttendanceSubmission.course_id == normalized_course_id)
+    for sid, cid in submission_query.distinct().limit(max(1, int(limit))).all():
+        if sid is None or cid is None:
+            continue
+        pairs_set.add((int(sid), int(cid)))
+
+    record_query = db.query(models.AttendanceRecord.student_id, models.AttendanceRecord.course_id)
+    if normalized_student_id is not None:
+        record_query = record_query.filter(models.AttendanceRecord.student_id == normalized_student_id)
+    if normalized_course_id is not None:
+        record_query = record_query.filter(models.AttendanceRecord.course_id == normalized_course_id)
+    for sid, cid in record_query.distinct().limit(max(1, int(limit))).all():
+        if sid is None or cid is None:
+            continue
+        pairs_set.add((int(sid), int(cid)))
+
+    pairs = sorted(pairs_set, key=lambda item: (item[0], item[1]))[: max(1, int(limit))]
     evaluated = 0
     created_or_updated = 0
     for sid, cid in pairs:
