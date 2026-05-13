@@ -128,6 +128,7 @@ class AuthIdConsistencyTests(unittest.TestCase):
 
         with (
             patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
             patch("app.routers.auth.assess_applicant_risk", return_value=None),
             patch("app.routers.auth.mirror_event", return_value=None),
         ):
@@ -159,6 +160,7 @@ class AuthIdConsistencyTests(unittest.TestCase):
 
         with (
             patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
             patch("app.routers.auth.assess_applicant_risk", return_value=None),
             patch("app.routers.auth.mirror_event", return_value=None),
         ):

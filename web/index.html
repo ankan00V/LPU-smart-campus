@@ -38,7 +38,7 @@
                 <div class="auth-form-panel">
                     <p class="kicker">SECURE ACCESS</p>
                     <h2>Smart Campus Login</h2>
-                    <p class="auth-sub">Secure OTP access for admin, faculty, student, and operations accounts.</p>
+                    <p class="auth-sub">Students now login with email, password, and Cloudflare Turnstile. Faculty, admin, and owner accounts continue to use OTP-secured access.</p>
                     <div class="auth-highlights" aria-label="Platform highlights">
                         <span class="auth-highlight">Realtime Attendance</span>
                         <span class="auth-highlight">RMS Workflows</span>
@@ -51,11 +51,11 @@
                         </article>
                         <article class="auth-journey-step">
                             <span>2</span>
-                            <p>Login with email + password</p>
+                            <p>Students login with password</p>
                         </article>
                         <article class="auth-journey-step">
                             <span>3</span>
-                            <p>Verify OTP to enter dashboard</p>
+                            <p>Legacy student setup or privileged OTP</p>
                         </article>
                     </div>
 
@@ -74,7 +74,7 @@
             <section id="auth-login-section" class="auth-flow-section auth-login-section">
                 <div class="auth-section-head">
                     <h3>Account Login</h3>
-                    <p>Step 1 of 2: enter your credentials.</p>
+                    <p>Students use password login. Legacy student accounts can request a one-time setup OTP. Faculty, admin, and owner accounts still verify OTP.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -85,16 +85,21 @@
                     <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password">
                 </label>
                 <p id="auth-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
+                <p id="auth-recaptcha-hint" class="password-strength">Student login and signup are protected with Cloudflare Turnstile when configured.</p>
+                <div class="auth-actions auth-actions-emphasis">
+                    <button id="login-btn" class="btn btn-primary" type="button">Student Login</button>
+                </div>
             </section>
 
             <div id="auth-login-controls" class="auth-login-controls auth-flow-section auth-otp-section">
                 <div class="auth-section-head">
-                    <h3>Email Verification</h3>
+                    <h3>OTP Access</h3>
                     <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
                 </div>
+                <p class="auth-hint">Use OTP only for privileged accounts or one-time password setup on old student accounts.</p>
                 <div class="auth-actions auth-actions-emphasis">
                     <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
-                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Login</button>
+                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Continue</button>
                 </div>
                 <label id="auth-otp-wrap" class="field">
                     <span>OTP Code</span>
@@ -110,7 +115,7 @@
             <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
                 <div class="auth-section-head">
                     <h3>Create Account</h3>
-                    <p>Complete details once, then use Login + OTP.</p>
+                    <p>Students create a password during signup. Future student logins use email, password, and Cloudflare Turnstile.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -170,11 +175,13 @@
                 <button id="register-btn" class="btn btn-ghost" type="button">Register Account</button>
             </div>
 
-                    <p id="auth-message" class="auth-message" aria-live="polite">Login with email/password, request OTP, then verify to continue.</p>
-                    <p class="auth-hint">Signup once, then use Login + OTP for future access.</p>
+                    <p id="auth-message" class="auth-message" aria-live="polite">Students login with email and password. OTP is only for legacy student password setup or privileged roles.</p>
+                    <p class="auth-hint">If your student account is older and does not have a password yet, request a one-time setup OTP.</p>
                 </div>
             </div>
         </div>
+
+        <div id="student-auth-turnstile-anchor" class="hidden" aria-hidden="true"></div>
 
         <div id="otp-popup" class="otp-popup hidden" role="alertdialog" aria-live="polite" aria-modal="true">
             <div class="otp-popup-card glass">
@@ -222,6 +229,29 @@
                     <button id="forgot-cancel-btn" class="btn" type="button">Back to Login</button>
                 </div>
                 <p id="forgot-message" class="auth-message" aria-live="polite"></p>
+            </div>
+        </div>
+
+        <div id="password-bootstrap-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="password-bootstrap-title">
+            <div class="auth-modal-card glass">
+                <div class="auth-modal-head">
+                    <h3 id="password-bootstrap-title">Set Your Student Password</h3>
+                    <button id="password-bootstrap-logout-btn" class="btn btn-ghost" type="button">Logout</button>
+                </div>
+                <p class="auth-modal-sub">This is a one-time setup for older student accounts. After this, your login will use email, password, and Cloudflare Turnstile only.</p>
+                <label class="field">
+                    <span>New Password</span>
+                    <input id="password-bootstrap-new-password" type="password" placeholder="Create your password" autocomplete="new-password">
+                </label>
+                <p id="password-bootstrap-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
+                <label class="field">
+                    <span>Confirm Password</span>
+                    <input id="password-bootstrap-confirm-password" type="password" placeholder="Re-enter your password" autocomplete="new-password">
+                </label>
+                <div class="auth-actions">
+                    <button id="password-bootstrap-submit-btn" class="btn btn-primary" type="button">Save Password</button>
+                </div>
+                <p id="password-bootstrap-message" class="auth-message" aria-live="polite"></p>
             </div>
         </div>
 

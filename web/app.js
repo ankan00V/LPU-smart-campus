@@ -444,10 +444,19 @@ const authState = {
   user: null,
   pendingEmail: '',
   mode: 'login',
+  publicConfigLoaded: false,
+  studentAuthCaptchaEnabled: false,
+  studentAuthCaptchaSiteKey: '',
+  studentAuthCaptchaProvider: 'cloudflare-turnstile',
+  captchaScriptPromise: null,
+  turnstileWidgetId: null,
+  turnstileWidgetAction: '',
   otpCooldownUntilMs: 0,
   otpRequestInFlight: false,
   otpVerifyInFlight: false,
+  loginInFlight: false,
   registerInFlight: false,
+  passwordBootstrapInFlight: false,
   signupAdminPhotoDataUrl: '',
   forgotOtpCooldownUntilMs: 0,
   forgotOtpRequestInFlight: false,
@@ -517,6 +526,8 @@ const els = {
   authLoginSection: document.getElementById('auth-login-section'),
   authEmail: document.getElementById('auth-email'),
   authPassword: document.getElementById('auth-password'),
+  authRecaptchaHint: document.getElementById('auth-recaptcha-hint'),
+  authTurnstileAnchor: document.getElementById('student-auth-turnstile-anchor'),
   authSignupEmail: document.getElementById('auth-signup-email'),
   authSignupPassword: document.getElementById('auth-signup-password'),
   authSignupPasswordStrength: document.getElementById('auth-signup-password-strength'),
@@ -545,6 +556,7 @@ const els = {
   authOtp: document.getElementById('auth-otp'),
   authMessage: document.getElementById('auth-message'),
   authPasswordStrength: document.getElementById('auth-password-strength'),
+  loginBtn: document.getElementById('login-btn'),
   requestOtpBtn: document.getElementById('request-otp-btn'),
   verifyOtpBtn: document.getElementById('verify-otp-btn'),
   registerBtn: document.getElementById('register-btn'),
@@ -562,6 +574,13 @@ const els = {
   forgotCancelBtn: document.getElementById('forgot-cancel-btn'),
   forgotModalCloseBtn: document.getElementById('forgot-modal-close-btn'),
   forgotMessage: document.getElementById('forgot-message'),
+  passwordBootstrapModal: document.getElementById('password-bootstrap-modal'),
+  passwordBootstrapNewPassword: document.getElementById('password-bootstrap-new-password'),
+  passwordBootstrapConfirmPassword: document.getElementById('password-bootstrap-confirm-password'),
+  passwordBootstrapStrength: document.getElementById('password-bootstrap-strength'),
+  passwordBootstrapSubmitBtn: document.getElementById('password-bootstrap-submit-btn'),
+  passwordBootstrapLogoutBtn: document.getElementById('password-bootstrap-logout-btn'),
+  passwordBootstrapMessage: document.getElementById('password-bootstrap-message'),
   mfaSetupModal: document.getElementById('mfa-setup-modal'),
   mfaEnrollBtn: document.getElementById('mfa-enroll-btn'),
   mfaSecret: document.getElementById('mfa-secret'),
@@ -1068,6 +1087,154 @@ function setForgotMessage(message, isError = false, state = 'neutral') {
   });
 }
 
+function setPasswordBootstrapMessage(message, isError = false, state = 'neutral') {
+  if (!els.passwordBootstrapMessage) {
+    return;
+  }
+  setUiStateMessage(els.passwordBootstrapMessage, message || '', {
+    state: isError ? 'error' : state,
+  });
+}
+
+function isStudentAuthCaptchaEnabled() {
+  return Boolean(authState.studentAuthCaptchaEnabled && authState.studentAuthCaptchaSiteKey);
+}
+
+function setStudentAuthCaptchaHint() {
+  if (!els.authRecaptchaHint) {
+    return;
+  }
+  if (isStudentAuthCaptchaEnabled()) {
+    els.authRecaptchaHint.textContent = 'Student auth is protected by Cloudflare Turnstile before login, signup, and password reset.';
+  } else {
+    els.authRecaptchaHint.textContent = 'Student auth Cloudflare Turnstile is not configured in this environment yet.';
+  }
+}
+
+async function fetchAuthPublicConfig() {
+  try {
+    const config = await api('/auth/public-config', { skipAuth: true });
+    authState.studentAuthCaptchaEnabled = Boolean(config?.student_auth_captcha_enabled);
+    authState.studentAuthCaptchaSiteKey = String(config?.student_auth_captcha_site_key || '').trim();
+    authState.studentAuthCaptchaProvider = String(config?.student_auth_captcha_provider || 'cloudflare-turnstile').trim();
+  } catch (error) {
+    authState.studentAuthCaptchaEnabled = false;
+    authState.studentAuthCaptchaSiteKey = '';
+    authState.studentAuthCaptchaProvider = 'cloudflare-turnstile';
+    log(error?.message || 'Unable to load auth public config');
+  } finally {
+    authState.publicConfigLoaded = true;
+    setStudentAuthCaptchaHint();
+  }
+}
+
+async function ensureStudentCaptchaLoaded() {
+  if (!isStudentAuthCaptchaEnabled()) {
+    return false;
+  }
+  if (window.turnstile?.render && window.turnstile?.execute) {
+    return true;
+  }
+  if (!authState.captchaScriptPromise) {
+    authState.captchaScriptPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-student-turnstile="true"]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(true), { once: true });
+        existing.addEventListener('error', () => reject(new Error('Unable to load Cloudflare Turnstile.')), { once: true });
+        return;
+      }
+      const script = document.createElement('script');
+      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.async = true;
+      script.defer = true;
+      script.dataset.studentTurnstile = 'true';
+      script.addEventListener('load', () => resolve(true), { once: true });
+      script.addEventListener('error', () => reject(new Error('Unable to load Cloudflare Turnstile.')), { once: true });
+      document.head.appendChild(script);
+    }).catch((error) => {
+      authState.captchaScriptPromise = null;
+      throw error;
+    });
+  }
+  await authState.captchaScriptPromise;
+  return true;
+}
+
+function resetStudentTurnstileWidget() {
+  if (!window.turnstile || authState.turnstileWidgetId == null) {
+    return;
+  }
+  try {
+    window.turnstile.reset(authState.turnstileWidgetId);
+  } catch (_error) {
+    // Ignore widget reset failures and let the next execute rebuild if needed.
+  }
+}
+
+function ensureStudentTurnstileWidget(action) {
+  if (!els.authTurnstileAnchor) {
+    throw new Error('Cloudflare Turnstile anchor is missing from the auth overlay.');
+  }
+  const normalizedAction = String(action || '').trim() || 'student_auth';
+  if (authState.turnstileWidgetId != null && window.turnstile?.remove) {
+    try {
+      window.turnstile.remove(authState.turnstileWidgetId);
+    } catch (_error) {
+      // Ignore removal failures and continue with a fresh render attempt.
+    }
+    authState.turnstileWidgetId = null;
+    authState.turnstileWidgetAction = '';
+  }
+  els.authTurnstileAnchor.innerHTML = '';
+  authState.turnstileWidgetAction = normalizedAction;
+  return null;
+}
+
+async function acquireStudentCaptchaToken(action) {
+  if (!isStudentAuthCaptchaEnabled()) {
+    return '';
+  }
+  await ensureStudentCaptchaLoaded();
+  if (!window.turnstile?.render || !window.turnstile?.execute) {
+    throw new Error('Cloudflare Turnstile did not initialize correctly. Please reload and retry.');
+  }
+  ensureStudentTurnstileWidget(action);
+  return await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resetStudentTurnstileWidget();
+      fn(value);
+    };
+    try {
+      authState.turnstileWidgetId = window.turnstile.render(els.authTurnstileAnchor, {
+        sitekey: authState.studentAuthCaptchaSiteKey,
+        action: authState.turnstileWidgetAction || String(action || '').trim() || 'student_auth',
+        execution: 'execute',
+        appearance: 'interaction-only',
+        retry: 'never',
+        'response-field': false,
+        callback: (token) => {
+          if (!token) {
+            finish(reject, new Error('Cloudflare Turnstile verification did not produce a token.'));
+            return;
+          }
+          finish(resolve, token);
+        },
+        'error-callback': () => finish(reject, new Error('Cloudflare Turnstile verification failed. Please retry.')),
+        'expired-callback': () => finish(reject, new Error('Cloudflare Turnstile token expired. Please retry.')),
+        'timeout-callback': () => finish(reject, new Error('Cloudflare Turnstile timed out. Please retry.')),
+      });
+      window.turnstile.execute(els.authTurnstileAnchor);
+    } catch (error) {
+      finish(reject, error);
+    }
+  });
+}
+
 function isPrivilegedMfaRole(role) {
   const value = String(role || '').trim().toLowerCase();
   return value === 'admin' || value === 'faculty' || value === 'owner';
@@ -1490,6 +1657,60 @@ function validatePasswordStrengthOrThrow(password, label = 'Password') {
   }
 }
 
+function setLoginInFlight(inFlight) {
+  authState.loginInFlight = Boolean(inFlight);
+  if (els.loginBtn) {
+    els.loginBtn.disabled = authState.loginInFlight || isSignupMode() || isForgotPasswordPanelOpen();
+    els.loginBtn.textContent = authState.loginInFlight ? 'Logging in...' : 'Student Login';
+  }
+}
+
+function setPasswordBootstrapBusyState(inFlight) {
+  authState.passwordBootstrapInFlight = Boolean(inFlight);
+  if (els.passwordBootstrapSubmitBtn) {
+    els.passwordBootstrapSubmitBtn.disabled = authState.passwordBootstrapInFlight;
+    els.passwordBootstrapSubmitBtn.textContent = authState.passwordBootstrapInFlight ? 'Saving...' : 'Save Password';
+  }
+  if (els.passwordBootstrapLogoutBtn) {
+    els.passwordBootstrapLogoutBtn.disabled = authState.passwordBootstrapInFlight;
+  }
+}
+
+function isPasswordBootstrapRequired() {
+  return Boolean(authState.user?.role === 'student' && authState.user?.password_setup_required);
+}
+
+function maybeRequirePasswordBootstrap() {
+  if (!isPasswordBootstrapRequired()) {
+    setPasswordBootstrapModal(false);
+    return false;
+  }
+  setPasswordBootstrapModal(true);
+  return true;
+}
+
+function setPasswordBootstrapModal(open) {
+  if (!els.passwordBootstrapModal) {
+    return;
+  }
+  const shouldOpen = Boolean(open) && isPasswordBootstrapRequired();
+  setHidden(els.passwordBootstrapModal, !shouldOpen);
+  if (shouldOpen) {
+    setPasswordBootstrapMessage('Create your student password now. This is required once for older accounts.');
+    renderPasswordStrengthHint(els.passwordBootstrapStrength, els.passwordBootstrapNewPassword?.value || '');
+  } else {
+    if (els.passwordBootstrapNewPassword) {
+      els.passwordBootstrapNewPassword.value = '';
+    }
+    if (els.passwordBootstrapConfirmPassword) {
+      els.passwordBootstrapConfirmPassword.value = '';
+    }
+    setPasswordBootstrapMessage('');
+    renderPasswordStrengthHint(els.passwordBootstrapStrength, '');
+  }
+  setPasswordBootstrapBusyState(false);
+}
+
 function isForgotPasswordPanelOpen() {
   return Boolean(els.forgotPasswordPanel && !els.forgotPasswordPanel.classList.contains('hidden'));
 }
@@ -1678,10 +1899,11 @@ function renderOtpCooldown() {
   const verifyLoading = Boolean(authState.otpVerifyInFlight);
   const loginMode = !isSignupMode();
   const forgotActive = isForgotPasswordPanelOpen();
+  setLoginInFlight(Boolean(authState.loginInFlight));
   els.requestOtpBtn.disabled = otpLoading || cooldownActive || !loginMode || forgotActive;
   if (els.verifyOtpBtn) {
     els.verifyOtpBtn.disabled = !loginMode || forgotActive || verifyLoading;
-    els.verifyOtpBtn.textContent = verifyLoading ? 'Verifying...' : 'Verify OTP & Login';
+    els.verifyOtpBtn.textContent = verifyLoading ? 'Verifying...' : 'Verify OTP & Continue';
   }
   if (otpLoading) {
     els.requestOtpBtn.textContent = 'Sending OTP...';
@@ -1766,6 +1988,8 @@ function openAuthOverlay(message = 'Sign in to continue.') {
   resetMfaSetupUiState();
   setAuthMfaInputVisible(false);
   hideOtpPopup();
+  setPasswordBootstrapModal(false);
+  setLoginInFlight(false);
   setAuthMode('login');
   setForgotPasswordPanel(false);
   resetForgotPasswordState({ clearFields: true });
@@ -1777,6 +2001,7 @@ function closeAuthOverlay() {
   document.body.classList.remove('auth-signup-mode');
   els.authOverlay.classList.add('hidden');
   setMfaSetupModal(false);
+  setPasswordBootstrapModal(false);
   hideOtpPopup();
   syncFoodDemandLiveTicker();
 }
@@ -4120,10 +4345,11 @@ function setAuthMode(mode) {
   renderPasswordStrengthHint(els.authSignupPasswordStrength, els.authSignupPassword?.value || '');
 
   if (signup) {
-    setAuthMessage('Signup mode: fill all details and register your account.');
+    setAuthMessage('Signup mode: students create a password now, then use password login on future sign-ins.');
   } else {
-    setAuthMessage('Login first with email/password, request OTP, then verify to continue. Use MFA code if your role requires it.');
+    setAuthMessage('Students login with email, password, and Cloudflare Turnstile. Use OTP only for legacy student password setup or privileged roles.');
   }
+  setStudentAuthCaptchaHint();
   renderOtpCooldown();
   renderForgotOtpCooldown();
 }
@@ -19311,12 +19537,14 @@ async function requestForgotPasswordOtp() {
     { tone: 'sending', loading: true, closable: false }
   );
   try {
+    const captchaToken = await acquireStudentCaptchaToken('student_password_reset_request');
     const data = await api('/auth/password/request-otp', {
       method: 'POST',
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
         registration_number: registrationNumber,
+        captcha_token: captchaToken || undefined,
       }),
       skipAuth: true,
     });
@@ -19388,6 +19616,7 @@ async function resetForgotPassword() {
     throw new Error('New password and confirm password do not match.');
   }
   validatePasswordStrengthOrThrow(newPassword, 'New password');
+  const captchaToken = await acquireStudentCaptchaToken('student_password_reset_confirm');
 
   await api('/auth/password/reset', {
     method: 'POST',
@@ -19395,6 +19624,7 @@ async function resetForgotPassword() {
       email,
       reset_token: token,
       new_password: newPassword,
+      captcha_token: captchaToken || undefined,
     }),
     skipAuth: true,
   });
@@ -19417,6 +19647,88 @@ async function resetForgotPassword() {
   log('Password reset completed');
 }
 
+async function loginStudentWithPassword() {
+  if (authState.loginInFlight) {
+    return;
+  }
+  const email = (els.authEmail?.value || '').trim().toLowerCase();
+  const password = String(els.authPassword?.value || '');
+  if (!email || !password) {
+    throw new Error('Enter email and password first.');
+  }
+  if (!email.endsWith('@gmail.com')) {
+    throw new Error('Email must end with @gmail.com');
+  }
+
+  setLoginInFlight(true);
+  setAuthMessage('Verifying student login...', false, 'loading');
+  try {
+    const captchaToken = await acquireStudentCaptchaToken('student_login');
+    const data = await api('/auth/student/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email,
+        password,
+        captcha_token: captchaToken || undefined,
+      }),
+      skipAuth: true,
+    });
+    setSession(data.access_token, data.user);
+    setForgotPasswordPanel(false);
+    resetForgotPasswordState({ clearFields: true });
+    if (els.authPassword) {
+      els.authPassword.value = '';
+    }
+    renderPasswordStrengthHint(els.authPasswordStrength, '');
+    setAuthMessage('Login successful.');
+    log(`Student authenticated as ${data.user.role}`);
+    renderProfileSecurity();
+    const restored = await restoreSession();
+    if (restored && !authState.mfaSetupRequired) {
+      await refreshAll();
+    }
+  } finally {
+    setLoginInFlight(false);
+  }
+}
+
+async function submitPasswordBootstrap() {
+  if (authState.passwordBootstrapInFlight) {
+    return;
+  }
+  if (!isPasswordBootstrapRequired()) {
+    setPasswordBootstrapModal(false);
+    return;
+  }
+  const newPassword = String(els.passwordBootstrapNewPassword?.value || '');
+  const confirmPassword = String(els.passwordBootstrapConfirmPassword?.value || '');
+  if (!newPassword || !confirmPassword) {
+    throw new Error('Enter and confirm your new password.');
+  }
+  if (newPassword !== confirmPassword) {
+    throw new Error('New password and confirm password do not match.');
+  }
+  validatePasswordStrengthOrThrow(newPassword, 'Password');
+
+  setPasswordBootstrapBusyState(true);
+  setPasswordBootstrapMessage('Saving your password...', false, 'loading');
+  try {
+    await api('/auth/password/bootstrap', {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword }),
+    });
+    if (authState.user && typeof authState.user === 'object') {
+      authState.user.password_setup_required = false;
+    }
+    setPasswordBootstrapMessage('Password setup complete. Future student logins now use email and password only.', false, 'success');
+    setPasswordBootstrapModal(false);
+    setAuthMessage('Password setup complete. Future student logins use email and password.');
+    log('Student password bootstrap completed');
+  } finally {
+    setPasswordBootstrapBusyState(false);
+  }
+}
+
 async function requestOtp() {
   if (authState.otpRequestInFlight) {
     return;
@@ -19434,8 +19746,8 @@ async function requestOtp() {
   const email = els.authEmail.value.trim().toLowerCase();
   const password = els.authPassword.value;
 
-  if (!email || !password) {
-    throw new Error('Enter email and password first.');
+  if (!email) {
+    throw new Error('Enter email first.');
   }
   if (!email.endsWith('@gmail.com')) {
     throw new Error('Email must end with @gmail.com');
@@ -19449,12 +19761,17 @@ async function requestOtp() {
   );
   setAuthMessage('Sending OTP... please wait.');
   try {
+    let captchaToken = '';
+    if (!password) {
+      captchaToken = await acquireStudentCaptchaToken('student_legacy_password_setup');
+    }
     const data = await api('/auth/login/request-otp', {
       method: 'POST',
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
-        password,
+        password: password || undefined,
+        captcha_token: captchaToken || undefined,
         send_to_alternate: false,
       }),
       skipAuth: true,
@@ -19551,9 +19868,15 @@ async function registerAccount() {
 
   setRegisterInFlight(true);
   try {
+    const captchaToken = role === 'student'
+      ? await acquireStudentCaptchaToken('student_signup')
+      : '';
     await api('/auth/register', {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        captcha_token: captchaToken || undefined,
+      }),
       skipAuth: true,
     });
   } finally {
@@ -19640,6 +19963,7 @@ async function verifyOtpAndLogin() {
   els.authOtp.value = '';
   els.authPassword.value = '';
   renderPasswordStrengthHint(els.authPasswordStrength, '');
+  maybeRequirePasswordBootstrap();
 
   log(`Authenticated as ${data.user.role}`);
   renderProfileSecurity();
@@ -19662,6 +19986,7 @@ async function restoreSession() {
     setActiveModule(hashModule || defaultModuleForRole(user?.role), { updateHash: true });
     renderProfileSecurity();
     closeAuthOverlay();
+    maybeRequirePasswordBootstrap();
     const blockedByMfaEnrollment = await maybePromptPrivilegedMfaSetup();
     if (blockedByMfaEnrollment) {
       stopStudentRealtimeTicker();
@@ -20078,6 +20403,17 @@ function bindEvents() {
     }
   });
 
+  if (els.loginBtn) {
+    els.loginBtn.addEventListener('click', async () => {
+      try {
+        await loginStudentWithPassword();
+      } catch (error) {
+        setAuthMessage(error.message, true);
+        log(error.message);
+      }
+    });
+  }
+
   document.getElementById('register-btn').addEventListener('click', async () => {
     try {
       await registerAccount();
@@ -20284,6 +20620,14 @@ function bindEvents() {
     });
   }
 
+  if (els.passwordBootstrapModal) {
+    els.passwordBootstrapModal.addEventListener('click', (event) => {
+      if (event.target === els.passwordBootstrapModal && !authState.passwordBootstrapInFlight) {
+        setPasswordBootstrapModal(true);
+      }
+    });
+  }
+
   if (els.mfaHelpModal) {
     els.mfaHelpModal.addEventListener('click', (event) => {
       if (event.target === els.mfaHelpModal) {
@@ -20308,6 +20652,18 @@ function bindEvents() {
   if (els.authPassword) {
     els.authPassword.addEventListener('input', () => {
       renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword.value || '');
+    });
+    els.authPassword.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' || isSignupMode()) {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await loginStudentWithPassword();
+      } catch (error) {
+        setAuthMessage(error.message, true);
+        log(error.message);
+      }
     });
   }
 
@@ -20380,6 +20736,44 @@ function bindEvents() {
   if (els.forgotNewPassword) {
     els.forgotNewPassword.addEventListener('input', () => {
       renderPasswordStrengthHint(els.forgotPasswordStrength, els.forgotNewPassword.value || '');
+    });
+  }
+
+  if (els.passwordBootstrapNewPassword) {
+    els.passwordBootstrapNewPassword.addEventListener('input', () => {
+      renderPasswordStrengthHint(els.passwordBootstrapStrength, els.passwordBootstrapNewPassword.value || '');
+    });
+  }
+
+  if (els.passwordBootstrapSubmitBtn) {
+    els.passwordBootstrapSubmitBtn.addEventListener('click', async () => {
+      try {
+        await submitPasswordBootstrap();
+      } catch (error) {
+        setPasswordBootstrapMessage(error.message, true);
+        log(error.message);
+      }
+    });
+  }
+
+  if (els.passwordBootstrapLogoutBtn) {
+    els.passwordBootstrapLogoutBtn.addEventListener('click', async () => {
+      await logout('Logged out. Sign back in after you are ready to set your student password.');
+    });
+  }
+
+  if (els.passwordBootstrapConfirmPassword) {
+    els.passwordBootstrapConfirmPassword.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await submitPasswordBootstrap();
+      } catch (error) {
+        setPasswordBootstrapMessage(error.message, true);
+        log(error.message);
+      }
     });
   }
 
@@ -22813,6 +23207,7 @@ async function init() {
   bindSessionActivityWatchdog();
   bindEvents();
   initModalFocusTrapObserver();
+  await fetchAuthPublicConfig();
   renderFoodDemoToggle();
   syncFoodOrderActionState();
   renderWorkloadChart();
@@ -22825,6 +23220,7 @@ async function init() {
   setMfaActionBusyState();
   syncMfaCopyButtonsState();
   renderStudentAttendanceDemoToggle();
+  setLoginInFlight(false);
   setRegisterInFlight(false);
   setForgotPasswordPanel(false);
   updateAuthBadges();
