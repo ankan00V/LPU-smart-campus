@@ -1,11 +1,14 @@
 import hashlib
+import json
 import os
 import re
 import secrets
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import quote
+from urllib.error import URLError
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pymongo.errors import DuplicateKeyError, PyMongoError
@@ -64,6 +67,17 @@ PASSWORD_POLICY_MESSAGE = (
 )
 ACCESS_COOKIE_SECURE = (os.getenv("APP_COOKIE_SECURE", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9/_-]+$")
+RECAPTCHA_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+@router.get("/public-config", response_model=schemas.AuthPublicConfigOut)
+def get_auth_public_config() -> schemas.AuthPublicConfigOut:
+    enabled = _student_auth_recaptcha_enabled()
+    return schemas.AuthPublicConfigOut(
+        student_auth_captcha_enabled=enabled,
+        student_auth_captcha_site_key=_student_auth_recaptcha_site_key() if enabled else None,
+        student_auth_captcha_provider="cloudflare-turnstile",
+    )
 
 
 def _otp_resend_cooldown_seconds() -> int:
@@ -82,6 +96,86 @@ def _otp_delivery_timeout_seconds() -> int:
     except ValueError:
         value = 25
     return max(5, min(30, value))
+
+
+def _student_auth_recaptcha_site_key() -> str:
+    return str(os.getenv("STUDENT_AUTH_TURNSTILE_SITE_KEY", "") or "").strip()
+
+
+def _student_auth_recaptcha_secret_key() -> str:
+    return str(os.getenv("STUDENT_AUTH_TURNSTILE_SECRET_KEY", "") or "").strip()
+
+
+def _student_auth_recaptcha_enabled() -> bool:
+    raw = (os.getenv("STUDENT_AUTH_TURNSTILE_ENABLED", "false") or "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return False
+    return bool(_student_auth_recaptcha_site_key() and _student_auth_recaptcha_secret_key())
+
+
+def _student_auth_recaptcha_timeout_seconds() -> float:
+    raw = (os.getenv("STUDENT_AUTH_TURNSTILE_VERIFY_TIMEOUT_SECONDS", "6") or "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 6.0
+    return max(2.0, min(15.0, value))
+
+
+def _student_auth_recaptcha_expected_host() -> str | None:
+    base_url = str(os.getenv("APP_BASE_URL", "") or "").strip()
+    if not base_url:
+        return None
+    parsed = urlparse(base_url)
+    host = str(parsed.hostname or "").strip().lower()
+    return host or None
+
+
+def _verify_student_auth_recaptcha(
+    request: Request | None,
+    captcha_token: str | None,
+    *,
+    action: str,
+) -> None:
+    if not _student_auth_recaptcha_enabled():
+        return
+    token = str(captcha_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Turnstile verification is required.")
+
+    payload = {
+        "secret": _student_auth_recaptcha_secret_key(),
+        "response": token,
+    }
+    remote_ip = _request_ip(request)
+    if remote_ip:
+        payload["remoteip"] = remote_ip
+
+    verify_request = UrlRequest(
+        RECAPTCHA_VERIFY_URL,
+        data=urlencode(payload).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(verify_request, timeout=_student_auth_recaptcha_timeout_seconds()) as response:
+            verification = json.loads(response.read().decode("utf-8"))
+    except URLError as exc:
+        logger.exception("Turnstile verification transport failed for action=%s", action)
+        raise HTTPException(status_code=503, detail="Turnstile verification is temporarily unavailable.") from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Turnstile verification failed for action=%s", action)
+        raise HTTPException(status_code=503, detail="Turnstile verification is temporarily unavailable.") from exc
+
+    if not bool(verification.get("success")):
+        raise HTTPException(status_code=403, detail="Turnstile verification failed. Please retry.")
+    response_action = str(verification.get("action") or "").strip()
+    if response_action and response_action != action:
+        raise HTTPException(status_code=403, detail="Turnstile action mismatch. Please retry.")
+    expected_host = _student_auth_recaptcha_expected_host()
+    response_host = str(verification.get("hostname") or "").strip().lower()
+    if expected_host and response_host and response_host != expected_host:
+        raise HTTPException(status_code=403, detail="Turnstile host validation failed.")
 
 
 def _mongo_db_or_503():
@@ -219,11 +313,22 @@ def _auth_user_out(doc: dict) -> schemas.AuthUserOut:
         faculty_id=doc.get("faculty_id"),
         alternate_email=_get_alternate_email(doc),
         primary_login_verified=bool(doc.get("primary_login_verified", False)),
+        password_setup_required=_password_setup_required(doc),
         mfa_enabled=bool(doc.get("mfa_enabled", False)),
         is_active=bool(doc.get("is_active", True)),
         created_at=doc.get("created_at") or datetime.utcnow(),
         last_login_at=doc.get("last_login_at"),
     )
+
+
+def _password_setup_required(doc: dict[str, Any]) -> bool:
+    role_raw = str(doc.get("role", models.UserRole.STUDENT.value) or models.UserRole.STUDENT.value)
+    if role_raw != models.UserRole.STUDENT.value:
+        return False
+    explicit = doc.get("password_setup_required")
+    if explicit is not None:
+        return bool(explicit)
+    return not bool(doc.get("password_updated_at"))
 
 
 def _next_unique_id(db, *, collection: str, sequence_name: str) -> int:
@@ -689,6 +794,12 @@ def register_auth_user(
     email = _normalize_email(payload.email)
     _validate_role_email(email, role)
     _validate_password_strength(payload.password)
+    if role == models.UserRole.STUDENT:
+        _verify_student_auth_recaptcha(
+            request,
+            payload.captcha_token,
+            action="student_signup",
+        )
     admin_photo_data_url = str(payload.profile_photo_data_url or "").strip()
     if role == models.UserRole.ADMIN and not admin_photo_data_url:
         raise HTTPException(status_code=400, detail="Admin profile photo is required for registration")
@@ -930,6 +1041,8 @@ def register_auth_user(
             "is_active": True,
             "created_at": now,
             "last_login_at": None,
+            "password_updated_at": now,
+            "password_setup_required": False,
         }
         if admin_photo_object_key:
             user_doc["profile_photo_object_key"] = admin_photo_object_key
@@ -1069,7 +1182,7 @@ def request_login_otp(
             window_seconds=300,
         )
         user = db["auth_users"].find_one({"email": email})
-        if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
 
         if not bool(user.get("is_active", True)):
@@ -1080,6 +1193,19 @@ def request_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
+        requires_password_setup = _password_setup_required(user)
+        if requires_password_setup:
+            if role != models.UserRole.STUDENT:
+                raise HTTPException(status_code=403, detail="Password setup fallback is only available for student accounts")
+            _verify_student_auth_recaptcha(
+                request,
+                payload.captcha_token,
+                action="student_legacy_password_setup",
+            )
+        else:
+            candidate_password = str(payload.password or "")
+            if not candidate_password or not verify_password(candidate_password, user.get("password_hash", "")):
+                raise HTTPException(status_code=401, detail="Invalid email or password")
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
 
@@ -1179,7 +1305,11 @@ def request_login_otp(
         )
 
         return schemas.OTPRequestResponse(
-            message="OTP sent successfully",
+            message=(
+                "OTP sent successfully for student password setup"
+                if requires_password_setup
+                else "OTP sent successfully"
+            ),
             expires_at=expires_at,
             delivered_to=destination_email,
             cooldown_seconds=cooldown_seconds,
@@ -1197,6 +1327,112 @@ def request_login_otp(
                 "Unable to process OTP request right now. Please retry in a few seconds."
             ),
         ) from exc
+
+
+@router.post("/student/login", response_model=schemas.TokenResponse)
+def login_student_with_password(
+    payload: schemas.LoginPasswordRequest,
+    response: Response,
+    request: Request,
+    sql_db: Session = Depends(get_db),
+):
+    db = _mongo_db_or_503()
+    try:
+        email = _normalize_email(payload.email)
+        enforce_rate_limit(
+            request,
+            scope="auth.student.login",
+            principal=email,
+            limit=12,
+            window_seconds=300,
+        )
+        _verify_student_auth_recaptcha(
+            request,
+            payload.captcha_token,
+            action="student_login",
+        )
+        user = db["auth_users"].find_one({"email": email})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        if str(user.get("role") or "").strip() != models.UserRole.STUDENT.value:
+            raise HTTPException(status_code=403, detail="Student password login is only available for student accounts")
+        if not bool(user.get("is_active", True)):
+            raise HTTPException(status_code=403, detail="User account is inactive")
+        if _password_setup_required(user):
+            raise HTTPException(
+                status_code=428,
+                detail="Password setup required. Use the one-time OTP setup path to create your student password.",
+            )
+        password_hash = str(user.get("password_hash") or "").strip()
+        if not password_hash or not verify_password(payload.password, password_hash):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
+        user_id = _ensure_auth_user_id(db, user, sql_db)
+        _ensure_role_profile_link(
+            db,
+            sql_db,
+            user_doc=user,
+            role=models.UserRole.STUDENT,
+            email=email,
+        )
+        now = datetime.utcnow()
+        db["auth_users"].update_one(
+            {"id": user_id},
+            {"$set": {"last_login_at": now, "primary_login_verified": True}},
+        )
+        user["last_login_at"] = now
+        user["primary_login_verified"] = True
+
+        session_tokens = create_session_tokens(
+            db,
+            CurrentUser(
+                id=user_id,
+                email=user["email"],
+                role=models.UserRole.STUDENT,
+                student_id=user.get("student_id"),
+                faculty_id=user.get("faculty_id"),
+                alternate_email=_get_alternate_email(user),
+                primary_login_verified=True,
+                is_active=True,
+                created_at=user.get("created_at"),
+                last_login_at=user.get("last_login_at"),
+                mfa_enabled=False,
+                mfa_authenticated=False,
+            ),
+            request=request,
+        )
+        mirror_event(
+            "auth.student_login_success",
+            {
+                "user_id": user_id,
+                "email": user["email"],
+                "access_expires_at": session_tokens["access_expires_at"],
+                "refresh_expires_at": session_tokens["refresh_expires_at"],
+            },
+            actor={"user_id": user_id, "email": user["email"], "role": user["role"]},
+        )
+        _set_auth_cookies(
+            response,
+            access_token=session_tokens["access_token"],
+            access_expires_at=session_tokens["access_expires_at"],
+            refresh_token=session_tokens["refresh_token"],
+            refresh_expires_at=session_tokens["refresh_expires_at"],
+        )
+        return schemas.TokenResponse(
+            access_token=session_tokens["access_token"],
+            token_type="bearer",
+            expires_at=session_tokens["access_expires_at"],
+            refresh_token=session_tokens["refresh_token"],
+            refresh_expires_at=session_tokens["refresh_expires_at"],
+            user=_auth_user_out(user),
+        )
+    except HTTPException:
+        raise
+    except PyMongoError as exc:
+        _raise_auth_datastore_unavailable(exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unexpected student password login failure for email=%s", payload.email)
+        raise HTTPException(status_code=503, detail="Unable to login right now. Please retry in a few seconds.") from exc
 
 
 @router.post("/login/verify-otp", response_model=schemas.TokenResponse)
@@ -1425,6 +1661,11 @@ def request_password_reset_otp(
             limit=8,
             window_seconds=300,
         )
+        _verify_student_auth_recaptcha(
+            request,
+            payload.captcha_token,
+            action="student_password_reset_request",
+        )
         user = db["auth_users"].find_one({"email": email})
         if not user:
             sql_auth_user = (
@@ -1484,6 +1725,7 @@ def request_password_reset_otp(
                             "is_active": True,
                             "created_at": datetime.utcnow(),
                             "last_login_at": None,
+                            "password_setup_required": True,
                         }
                         _upsert_mongo_by_id(db, "auth_users", user_id, user)
                 if not user:
@@ -1789,6 +2031,11 @@ def reset_password(
             limit=12,
             window_seconds=600,
         )
+        _verify_student_auth_recaptcha(
+            request,
+            payload.captcha_token,
+            action="student_password_reset_confirm",
+        )
         user = db["auth_users"].find_one({"email": email})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid password reset request")
@@ -1825,7 +2072,7 @@ def reset_password(
         db["auth_password_resets"].update_one({"id": reset_row["id"]}, {"$set": {"used_at": now}})
         db["auth_users"].update_one(
             {"id": user_id},
-            {"$set": {"password_hash": hash_password(payload.new_password), "password_updated_at": now}},
+            {"$set": {"password_hash": hash_password(payload.new_password), "password_updated_at": now, "password_setup_required": False}},
         )
         db["auth_otps"].update_many(
             {"user_id": user_id, "purpose": {"$in": ["login", "password_reset"]}, "used_at": None},
@@ -1851,6 +2098,62 @@ def reset_password(
                 "Unable to reset password right now. Please retry in a few seconds."
             ),
         ) from exc
+
+
+@router.post("/password/bootstrap", response_model=schemas.MessageResponse)
+def bootstrap_student_password(
+    payload: schemas.PasswordBootstrapRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    sql_db: Session = Depends(get_db),
+):
+    db = _mongo_db_or_503()
+    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Invalid user session")
+    if str(user_doc.get("role") or "").strip() != models.UserRole.STUDENT.value:
+        raise HTTPException(status_code=403, detail="Password bootstrap is only available for student accounts")
+    if not _password_setup_required(user_doc):
+        raise HTTPException(status_code=400, detail="Password setup is already complete for this account")
+
+    _validate_password_strength(payload.new_password)
+    now = datetime.utcnow()
+    password_hash = hash_password(payload.new_password)
+    db["auth_users"].update_one(
+        {"id": int(current_user.id)},
+        {
+            "$set": {
+                "password_hash": password_hash,
+                "password_updated_at": now,
+                "password_setup_required": False,
+                "primary_login_verified": True,
+            }
+        },
+    )
+    try:
+        sql_user = sql_db.get(models.AuthUser, int(current_user.id))
+        if sql_user is not None:
+            sql_user.password_hash = password_hash
+            sql_db.commit()
+        else:
+            sql_db.rollback()
+    except Exception:
+        sql_db.rollback()
+        logger.exception("student_password_bootstrap_sql_sync_failed user_id=%s", current_user.id)
+
+    mirror_event(
+        "auth.student_password_bootstrap",
+        {
+            "user_id": int(current_user.id),
+            "email": str(user_doc.get("email") or "").strip().lower(),
+            "updated_at": now,
+        },
+        actor={
+            "user_id": int(current_user.id),
+            "email": str(user_doc.get("email") or "").strip().lower(),
+            "role": models.UserRole.STUDENT.value,
+        },
+    )
+    return schemas.MessageResponse(message="Password setup complete. Use email and password for future student logins.")
 
 
 @router.get("/mfa/status", response_model=schemas.MFAStatusResponse)

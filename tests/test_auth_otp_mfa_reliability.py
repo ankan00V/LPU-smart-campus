@@ -159,6 +159,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "student_id": None,
                 "faculty_id": None,
                 "is_active": True,
+                "password_updated_at": datetime.utcnow(),
                 "created_at": datetime.utcnow(),
             }
         )
@@ -196,6 +197,79 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         delivery = mongo["auth_otp_delivery"].find_one({"id": 3})
         self.assertIsNotNone(delivery)
         self.assertEqual(delivery["status"], "sent")
+
+    def test_student_password_login_requires_password_setup_completion(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 70,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": None,
+                "faculty_id": None,
+                "is_active": True,
+                "password_setup_required": True,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.login_student_with_password(
+                    schemas.LoginPasswordRequest(email="legacy.student@gmail.com", password="Student@123"),
+                    response=Response(),
+                    request=_request("/auth/student/login"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 428)
+
+    def test_student_password_login_succeeds_with_completed_password_setup(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 71,
+                "email": "student.ready@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 9,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+        session_tokens = {
+            "access_token": "access-token",
+            "access_expires_at": datetime.utcnow() + timedelta(minutes=30),
+            "refresh_token": "refresh-token",
+            "refresh_expires_at": datetime.utcnow() + timedelta(days=7),
+        }
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=71),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.create_session_tokens", return_value=session_tokens),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.login_student_with_password(
+                schemas.LoginPasswordRequest(email="student.ready@gmail.com", password="Student@123"),
+                response=Response(),
+                request=_request("/auth/student/login"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertEqual(result.access_token, "access-token")
+        self.assertEqual(result.user.email, "student.ready@gmail.com")
+        self.assertFalse(result.user.password_setup_required)
 
     def test_verify_login_otp_blocks_inactive_account(self):
         mongo = _FakeMongo()

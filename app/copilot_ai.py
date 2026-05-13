@@ -217,6 +217,33 @@ def _copilot_openrouter_api_keys() -> list[str]:
     return _dedup_preserve_order(_partition_shared_pool(shared, pick_even_indexes=False))
 
 
+def _copilot_bedrock_api_keys() -> list[str]:
+    collected: list[str] = []
+    # Official env var recognized by Bedrock API keys.
+    primary = str(resolve_secret("AWS_BEARER_TOKEN_BEDROCK", default="") or "").strip()
+    if primary:
+        collected.append(primary)
+    # Optional app-scoped alias.
+    for name in ("COPILOT_BEDROCK_API_KEY",):
+        value = str(resolve_secret(name, default="") or "").strip()
+        if value:
+            collected.append(value)
+    return _dedup_preserve_order(collected)
+
+
+def _copilot_bedrock_region() -> str:
+    raw = str(resolve_secret("COPILOT_BEDROCK_REGION", default="") or "").strip() or str(os.getenv("AWS_REGION") or "").strip() or "us-east-1"
+    return raw
+
+
+def _copilot_bedrock_model_id() -> str:
+    explicit = str(resolve_secret("COPILOT_BEDROCK_MODEL_ID", default="") or "").strip()
+    if explicit:
+        return explicit
+    # Safe, generally available model for Converse.
+    return "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+
+
 def _copilot_llm_enabled() -> bool:
     if os.getenv("PYTEST_CURRENT_TEST"):
         return False
@@ -228,6 +255,8 @@ def _copilot_llm_provider() -> str:
     explicit = str(os.getenv("COPILOT_LLM_PROVIDER") or "").strip().lower()
     if explicit:
         return explicit
+    if _copilot_bedrock_api_keys():
+        return "bedrock"
     if _copilot_gemini_api_keys():
         return "gemini"
     if _copilot_openrouter_api_keys():
@@ -359,6 +388,26 @@ def _extract_openrouter_text(payload: dict[str, Any]) -> str:
             if parts:
                 return "\n".join(parts).strip()
     return ""
+
+
+def _extract_bedrock_text(payload: dict[str, Any]) -> str:
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return ""
+    message = output.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
 
 
 def _error_detail(exc: urllib_error.HTTPError) -> str:
@@ -644,6 +693,58 @@ def _try_openrouter_json(
     return None
 
 
+def _try_bedrock_json(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    deadline: float,
+) -> dict[str, Any] | None:
+    keys = _copilot_bedrock_api_keys()
+    if not keys:
+        return None
+    region = _copilot_bedrock_region()
+    model_id = _copilot_bedrock_model_id()
+    endpoint = (
+        f"https://bedrock-runtime.{region}.amazonaws.com/model/{urllib_parse.quote(model_id, safe='')}/converse"
+    )
+    body = {
+        "system": [{"text": system_prompt}],
+        "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
+        "inferenceConfig": {"temperature": _copilot_temperature(), "maxTokens": 360},
+    }
+
+    for api_key in keys:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        timeout = min(_copilot_request_timeout_seconds(), max(1.0, remaining))
+        request = urllib_request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=timeout) as response:
+                parsed = json.loads(response.read().decode("utf-8"))
+        except urllib_error.HTTPError as exc:
+            detail = _error_detail(exc)
+            if _is_key_rotation_error(exc.code, detail):
+                continue
+            return None
+        except (urllib_error.URLError, TimeoutError, json.JSONDecodeError):
+            return None
+
+        text = _extract_bedrock_text(parsed if isinstance(parsed, dict) else {})
+        result = _extract_json_object(text)
+        if result:
+            return result
+    return None
+
+
 def generate_structured_copilot_answer(
     *,
     query_text: str,
@@ -674,7 +775,13 @@ def generate_structured_copilot_answer(
     deadline = time.monotonic() + _copilot_total_timeout_seconds()
 
     parsed: dict[str, Any] | None = None
-    if provider == "gemini":
+    if provider == "bedrock":
+        parsed = _try_bedrock_json(system_prompt=system_prompt, user_prompt=user_prompt, deadline=deadline)
+        if parsed is None:
+            parsed = _try_openrouter_json(system_prompt=system_prompt, user_prompt=user_prompt, deadline=deadline)
+        if parsed is None:
+            parsed = _try_gemini_json(system_prompt=system_prompt, user_prompt=user_prompt, deadline=deadline)
+    elif provider == "gemini":
         parsed = _try_gemini_json(system_prompt=system_prompt, user_prompt=user_prompt, deadline=deadline)
         if parsed is None:
             parsed = _try_openrouter_json(system_prompt=system_prompt, user_prompt=user_prompt, deadline=deadline)

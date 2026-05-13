@@ -1594,6 +1594,7 @@ class AuthRegisterRequest(BaseModel):
     section: Optional[str] = Field(default=None, min_length=1, max_length=80)
     semester: Optional[int] = Field(default=None, ge=1, le=12)
     parent_email: Optional[str] = None
+    captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
     invite_token: Optional[str] = Field(default=None, min_length=12, max_length=240)
     provisioning_token: Optional[str] = Field(default=None, min_length=12, max_length=240)
 
@@ -1635,6 +1636,7 @@ class AuthUserOut(BaseModel):
     faculty_id: Optional[int]
     alternate_email: Optional[str] = None
     primary_login_verified: bool = False
+    password_setup_required: bool = False
     mfa_enabled: bool = False
     is_active: bool
     created_at: datetime
@@ -1644,9 +1646,16 @@ class AuthUserOut(BaseModel):
         from_attributes = True
 
 
-class LoginOTPRequest(BaseModel):
+class LoginPasswordRequest(BaseModel):
     email: str
     password: str = Field(min_length=8, max_length=128)
+    captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
+
+
+class LoginOTPRequest(BaseModel):
+    email: str
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
     send_to_alternate: bool = False
 
 
@@ -1666,6 +1675,10 @@ class VerifyOTPRequest(BaseModel):
     email: str
     otp_code: str = Field(min_length=4, max_length=10)
     mfa_code: Optional[str] = Field(default=None, min_length=6, max_length=20)
+
+
+class PasswordBootstrapRequest(BaseModel):
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class TokenResponse(BaseModel):
@@ -1720,6 +1733,7 @@ class MFABackupCodeRotateResponse(BaseModel):
 class PasswordResetOTPRequest(BaseModel):
     email: str
     registration_number: str = Field(min_length=3, max_length=40)
+    captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
 
 
 class PasswordResetVerifyOTPRequest(BaseModel):
@@ -1737,10 +1751,17 @@ class PasswordResetConfirmRequest(BaseModel):
     email: str
     reset_token: str = Field(min_length=20, max_length=300)
     new_password: str = Field(min_length=8, max_length=128)
+    captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
 
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class AuthPublicConfigOut(BaseModel):
+    student_auth_captcha_enabled: bool = False
+    student_auth_captcha_site_key: Optional[str] = None
+    student_auth_captcha_provider: str = "cloudflare-turnstile"
 
 
 class TimetableOverrideScope(str, Enum):

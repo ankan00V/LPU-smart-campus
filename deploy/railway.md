@@ -39,7 +39,13 @@ Set these on the Railway service:
 - `WORKER_WAIT_FOR_OTP_RESULT=true`
 - `OTP_DELIVERY_DIRECT_SYNC=true`
 - `OTP_DELIVERY_MODE=smtp`
-- `SENDGRID_API_KEY` if you want the HTTPS fallback path for Railway
+- `OTP_SMTP_HOST=smtp.gmail.com`
+- `OTP_SMTP_PORT=587`
+- `OTP_SMTP_USERNAME` (your Gmail address)
+- `OTP_SMTP_PASSWORD` (Google app password, no spaces)
+- `OTP_SMTP_STARTTLS=true`
+- `OTP_SMTP_USE_SSL=false`
+- Keep SendGrid variables present but commented out until you re-enable it
 
 ## Deploy Order
 
@@ -47,9 +53,8 @@ Set these on the Railway service:
 2. Add the variables above.
 3. Make sure Neon, Atlas, and Upstash are reachable from Railway.
 4. Deploy the service.
-5. If SMTP delivery still fails on Railway, set `SENDGRID_API_KEY` and keep `OTP_DELIVERY_MODE=smtp` so the app can fall back to SendGrid over HTTPS.
 5. Open the Railway URL and confirm `/` returns the health payload.
-6. Log in with OTP and verify one worker-backed action.
+6. Log in with OTP and verify Recovery Copilot emails deliver via SMTP.
 
 ## Notes
 
@@ -64,6 +69,13 @@ Set these on the Railway service:
   - `ATTENDANCE_RECOVERY_AUTOPILOT_BATCH_SIZE` (default `400`)
   - `ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES` (default `360`)
   - `ATTENDANCE_RECOVERY_AI_GUIDANCE_ENABLED=true`
+  - `ATTENDANCE_RECOVERY_STUDENT_EMAIL_COOLDOWN_MINUTES` (default `1440`)
+  - `ATTENDANCE_RECOVERY_FACULTY_EMAIL_COOLDOWN_MINUTES` (default `1440`)
+
+- Bedrock personalization (optional):
+  - Set `AWS_BEARER_TOKEN_BEDROCK` in Railway Variables (do not commit it).
+  - For Campus Copilot: `COPILOT_LLM_PROVIDER=bedrock`, `COPILOT_BEDROCK_REGION`, `COPILOT_BEDROCK_MODEL_ID`
+  - For Recovery Copilot emails: `RECOVERY_LLM_EMAIL_ENABLED=true`, `RECOVERY_LLM_PROVIDER=bedrock`, `RECOVERY_BEDROCK_REGION`, `RECOVERY_BEDROCK_MODEL_ID`
 - One-click admin endpoint:
   - `POST /attendance/recovery/retro-notify`
   - Body example:
