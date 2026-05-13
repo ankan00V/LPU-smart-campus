@@ -331,6 +331,15 @@ def _password_setup_required(doc: dict[str, Any]) -> bool:
     return not bool(doc.get("password_updated_at"))
 
 
+def _student_signup_verification_pending(doc: dict[str, Any]) -> bool:
+    role_raw = str(doc.get("role", models.UserRole.STUDENT.value) or models.UserRole.STUDENT.value)
+    if role_raw != models.UserRole.STUDENT.value:
+        return False
+    if not bool(doc.get("signup_verification_required", False)):
+        return False
+    return not bool(doc.get("primary_login_verified", False))
+
+
 def _next_unique_id(db, *, collection: str, sequence_name: str) -> int:
     try:
         candidate = next_sequence(sequence_name)
@@ -1043,6 +1052,7 @@ def register_auth_user(
             "last_login_at": None,
             "password_updated_at": now,
             "password_setup_required": False,
+            "signup_verification_required": role == models.UserRole.STUDENT,
         }
         if admin_photo_object_key:
             user_doc["profile_photo_object_key"] = admin_photo_object_key
@@ -1194,18 +1204,27 @@ def request_login_otp(
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
         requires_password_setup = _password_setup_required(user)
-        if requires_password_setup:
-            if role != models.UserRole.STUDENT:
-                raise HTTPException(status_code=403, detail="Password setup fallback is only available for student accounts")
+        signup_verification_pending = _student_signup_verification_pending(user)
+        if role == models.UserRole.STUDENT:
+            if requires_password_setup:
+                raise HTTPException(
+                    status_code=428,
+                    detail="Student password setup is pending. Use Forgot Password to create your password first.",
+                )
+            if not signup_verification_pending:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Students do not use OTP during sign in. Use student password login instead.",
+                )
+        candidate_password = str(payload.password or "")
+        if not candidate_password or not verify_password(candidate_password, user.get("password_hash", "")):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        if role in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
             _verify_student_auth_recaptcha(
                 request,
                 payload.captcha_token,
-                action="student_legacy_password_setup",
+                action="privileged_login_otp_request",
             )
-        else:
-            candidate_password = str(payload.password or "")
-            if not candidate_password or not verify_password(candidate_password, user.get("password_hash", "")):
-                raise HTTPException(status_code=401, detail="Invalid email or password")
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
 
@@ -1306,8 +1325,8 @@ def request_login_otp(
 
         return schemas.OTPRequestResponse(
             message=(
-                "OTP sent successfully for student password setup"
-                if requires_password_setup
+                "OTP sent successfully. Verify it to complete your student signup."
+                if signup_verification_pending
                 else "OTP sent successfully"
             ),
             expires_at=expires_at,
@@ -1358,10 +1377,15 @@ def login_student_with_password(
             raise HTTPException(status_code=403, detail="Student password login is only available for student accounts")
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
+        if _student_signup_verification_pending(user):
+            raise HTTPException(
+                status_code=428,
+                detail="Complete student signup OTP verification before signing in.",
+            )
         if _password_setup_required(user):
             raise HTTPException(
                 status_code=428,
-                detail="Password setup required. Use the one-time OTP setup path to create your student password.",
+                detail="Student password setup is pending. Use Forgot Password to create your password first.",
             )
         password_hash = str(user.get("password_hash") or "").strip()
         if not password_hash or not verify_password(payload.password, password_hash):
@@ -1520,6 +1544,8 @@ def verify_login_otp(
             raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
+        if role == models.UserRole.STUDENT and bool(user.get("signup_verification_required", False)):
+            auth_update["signup_verification_required"] = False
         if mfa_authenticated:
             auth_update["mfa_last_verified_at"] = now
 
@@ -1529,6 +1555,8 @@ def verify_login_otp(
         )
         user["last_login_at"] = now
         user["primary_login_verified"] = True
+        if role == models.UserRole.STUDENT:
+            user["signup_verification_required"] = False
         user["mfa_enabled"] = mfa_enabled
 
         session_tokens = create_session_tokens(

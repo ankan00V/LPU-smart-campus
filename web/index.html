@@ -38,44 +38,32 @@
                 <div class="auth-form-panel">
                     <p class="kicker">SECURE ACCESS</p>
                     <h2>Smart Campus Login</h2>
-                    <p class="auth-sub">Students now login with email, password, and Cloudflare Turnstile. Faculty, admin, and owner accounts continue to use OTP-secured access.</p>
+                    <p class="auth-sub">Use your role, email, and password to continue. Students sign in with password plus Turnstile. Faculty, admin, and vendor access also complete OTP verification.</p>
                     <div class="auth-highlights" aria-label="Platform highlights">
                         <span class="auth-highlight">Realtime Attendance</span>
                         <span class="auth-highlight">RMS Workflows</span>
                         <span class="auth-highlight">Role-Based Security</span>
-                    </div>
-                    <div class="auth-journey" aria-label="Getting started">
-                        <article class="auth-journey-step">
-                            <span>1</span>
-                            <p>Create account once</p>
-                        </article>
-                        <article class="auth-journey-step">
-                            <span>2</span>
-                            <p>Students login with password</p>
-                        </article>
-                        <article class="auth-journey-step">
-                            <span>3</span>
-                            <p>Legacy student setup or privileged OTP</p>
-                        </article>
                     </div>
 
             <div class="auth-mode-switch" role="tablist" aria-label="Authentication Mode">
                 <button id="auth-mode-login-btn" class="btn auth-mode-btn active" type="button" role="tab" aria-selected="true">Login</button>
                 <button id="auth-mode-signup-btn" class="btn auth-mode-btn" type="button" role="tab" aria-selected="false">Signup</button>
             </div>
-            <div class="auth-progress" aria-hidden="true">
-                <span class="auth-progress-dot active"></span>
-                <span class="auth-progress-label">Step 1 — Account Login</span>
-                <span class="auth-progress-arrow">•</span>
-                <span class="auth-progress-dot"></span>
-                <span class="auth-progress-label">Step 2 — Email Verification</span>
-            </div>
 
             <section id="auth-login-section" class="auth-flow-section auth-login-section">
                 <div class="auth-section-head">
-                    <h3>Account Login</h3>
-                    <p>Students use password login. Legacy student accounts can request a one-time setup OTP. Faculty, admin, and owner accounts still verify OTP.</p>
+                    <h3>Sign In</h3>
+                    <p>Select your role, enter your credentials, and complete the security check.</p>
                 </div>
+                <label class="field">
+                    <span>Role</span>
+                    <select id="auth-login-role-select">
+                        <option value="student">Student</option>
+                        <option value="faculty">Faculty</option>
+                        <option value="admin">Admin</option>
+                        <option value="owner">Vendor</option>
+                    </select>
+                </label>
                 <label class="field">
                     <span>Email</span>
                     <input id="auth-email" type="email" placeholder="you@gmail.com" autocomplete="username">
@@ -85,21 +73,20 @@
                     <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password">
                 </label>
                 <p id="auth-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
-                <p id="auth-recaptcha-hint" class="password-strength">Student login and signup are protected with Cloudflare Turnstile when configured.</p>
                 <div class="auth-actions auth-actions-emphasis">
-                    <button id="login-btn" class="btn btn-primary" type="button">Student Login</button>
+                    <button id="login-btn" class="btn btn-primary" type="button">Student Sign In</button>
+                    <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
                 </div>
             </section>
 
             <div id="auth-login-controls" class="auth-login-controls auth-flow-section auth-otp-section">
                 <div class="auth-section-head">
-                    <h3>OTP Access</h3>
-                    <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
+                    <h3 id="auth-otp-title">OTP Verification</h3>
                 </div>
-                <p class="auth-hint">Use OTP only for privileged accounts or one-time password setup on old student accounts.</p>
+                <p id="auth-otp-hint" class="auth-hint">OTP is used for faculty, admin, and vendor sign in, and once during student signup verification.</p>
                 <div class="auth-actions auth-actions-emphasis">
                     <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
-                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Continue</button>
+                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP</button>
                 </div>
                 <label id="auth-otp-wrap" class="field">
                     <span>OTP Code</span>
@@ -115,7 +102,7 @@
             <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
                 <div class="auth-section-head">
                     <h3>Create Account</h3>
-                    <p>Students create a password during signup. Future student logins use email, password, and Cloudflare Turnstile.</p>
+                    <p>Students verify OTP during signup. Other roles continue with the role-specific onboarding flow after registration.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -129,10 +116,10 @@
                 <label id="auth-role-wrap" class="field">
                     <span>Role</span>
                     <select id="auth-role-select">
-                        <option value="admin">admin (@gmail.com)</option>
-                        <option value="faculty">faculty (@gmail.com)</option>
                         <option value="student">student (@gmail.com)</option>
-                        <option value="owner">shop owner (@gmail.com)</option>
+                        <option value="faculty">faculty</option>
+                        <option value="admin">admin</option>
+                        <option value="owner">vendor</option>
                     </select>
                 </label>
                 <label id="auth-signup-admin-photo-wrap" class="field hidden">
@@ -172,16 +159,17 @@
             </div>
 
             <div id="auth-signup-actions" class="auth-actions auth-signup-actions hidden">
-                <button id="register-btn" class="btn btn-ghost" type="button">Register Account</button>
+                <button id="register-btn" class="btn btn-ghost" type="button">Create Account</button>
             </div>
 
-                    <p id="auth-message" class="auth-message" aria-live="polite">Students login with email and password. OTP is only for legacy student password setup or privileged roles.</p>
-                    <p class="auth-hint">If your student account is older and does not have a password yet, request a one-time setup OTP.</p>
+                    <div id="auth-turnstile-wrap" class="auth-flow-section auth-turnstile-wrap">
+                        <p id="auth-recaptcha-hint" class="password-strength">Complete the Cloudflare Turnstile security check before continuing.</p>
+                        <div id="student-auth-turnstile-anchor" class="auth-turnstile-anchor" aria-label="Cloudflare Turnstile security check"></div>
+                    </div>
+                    <p id="auth-message" class="auth-message" aria-live="polite">Students sign in with password and Turnstile. Faculty, admin, and vendor continue with Turnstile and OTP verification.</p>
                 </div>
             </div>
         </div>
-
-        <div id="student-auth-turnstile-anchor" class="hidden" aria-hidden="true"></div>
 
         <div id="otp-popup" class="otp-popup hidden" role="alertdialog" aria-live="polite" aria-modal="true">
             <div class="otp-popup-card glass">
