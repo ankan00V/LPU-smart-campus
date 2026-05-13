@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260411a">
-    <script src="/web/app.js?v=20260411a" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260513b">
+    <script src="/web/app.js?v=20260513b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -38,7 +38,6 @@
                 <div class="auth-form-panel">
                     <p class="kicker">SECURE ACCESS</p>
                     <h2>Smart Campus Login</h2>
-                    <p class="auth-sub">Use your role, email, and password to continue. Students sign in with password plus Turnstile. Faculty, admin, and vendor access also complete OTP verification.</p>
                     <div class="auth-highlights" aria-label="Platform highlights">
                         <span class="auth-highlight">Realtime Attendance</span>
                         <span class="auth-highlight">RMS Workflows</span>
@@ -83,7 +82,7 @@
                 <div class="auth-section-head">
                     <h3 id="auth-otp-title">OTP Verification</h3>
                 </div>
-                <p id="auth-otp-hint" class="auth-hint">OTP is used for faculty, admin, and vendor sign in, and once during student signup verification.</p>
+                <p id="auth-otp-hint" class="auth-hint">Request OTP, then verify it to continue.</p>
                 <div class="auth-actions auth-actions-emphasis">
                     <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
                     <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP</button>
@@ -102,7 +101,6 @@
             <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
                 <div class="auth-section-head">
                     <h3>Create Account</h3>
-                    <p>Students verify OTP during signup. Other roles continue with the role-specific onboarding flow after registration.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -128,21 +126,45 @@
                     <small class="field-hint">Upload a clear headshot for admin verification.</small>
                     <img id="auth-signup-admin-photo-preview" class="auth-photo-preview hidden" alt="Admin photo preview">
                 </label>
-                <label id="auth-signup-registration-wrap" class="field">
-                    <span>Registration Number (student)</span>
-                    <input id="auth-signup-registration" type="text" placeholder="e.g. 22BCS101">
-                </label>
-                <label id="auth-signup-faculty-id-wrap" class="field hidden">
-                    <span>Faculty Identifier (faculty)</span>
-                    <input id="auth-signup-faculty-id" type="text" placeholder="e.g. FAC-CSE-11">
-                </label>
                 <label class="field">
                     <span>Full Name</span>
                     <input id="auth-name" type="text" placeholder="Your full name">
                 </label>
                 <label class="field">
                     <span>Department</span>
-                    <input id="auth-department" type="text" placeholder="CSE">
+                    <select id="auth-department">
+                        <option value="" selected>Select school</option>
+                        <option value="School of Computer Science &amp; Engineering">School of Computer Science &amp; Engineering</option>
+                        <option value="School of Electronics &amp; Electrical Engineering">School of Electronics &amp; Electrical Engineering</option>
+                        <option value="School of Mechanical Engineering">School of Mechanical Engineering</option>
+                        <option value="School of Civil Engineering">School of Civil Engineering</option>
+                        <option value="School of Bioengineering &amp; Biosciences">School of Bioengineering &amp; Biosciences</option>
+                        <option value="School of Chemical Engineering &amp; Physical Sciences">School of Chemical Engineering &amp; Physical Sciences</option>
+                        <option value="School of Agriculture">School of Agriculture</option>
+                        <option value="Mittal School of Business">Mittal School of Business</option>
+                        <option value="School of Commerce &amp; Economics">School of Commerce &amp; Economics</option>
+                        <option value="School of Computer Applications">School of Computer Applications</option>
+                        <option value="School of Hotel Management &amp; Tourism">School of Hotel Management &amp; Tourism</option>
+                        <option value="School of Fashion Design">School of Fashion Design</option>
+                        <option value="School of Interior &amp; Furniture Design">School of Interior &amp; Furniture Design</option>
+                        <option value="School of Architecture &amp; Design">School of Architecture &amp; Design</option>
+                        <option value="School of Journalism, Film &amp; Creative Arts">School of Journalism, Film &amp; Creative Arts</option>
+                        <option value="School of Law">School of Law</option>
+                        <option value="School of Pharmacy">School of Pharmacy</option>
+                        <option value="School of Physiotherapy &amp; Paramedical Sciences">School of Physiotherapy &amp; Paramedical Sciences</option>
+                        <option value="School of Education">School of Education</option>
+                        <option value="School of Physical Education">School of Physical Education</option>
+                        <option value="School of Liberal &amp; Creative Arts">School of Liberal &amp; Creative Arts</option>
+                        <option value="School of Humanities">School of Humanities</option>
+                        <option value="School of Social Sciences &amp; Languages">School of Social Sciences &amp; Languages</option>
+                        <option value="School of Polytechnic">School of Polytechnic</option>
+                        <option value="School of Aerospace Engineering">School of Aerospace Engineering</option>
+                        <option value="School of Robotics &amp; Automation">School of Robotics &amp; Automation</option>
+                        <option value="School of Animation &amp; Multimedia">School of Animation &amp; Multimedia</option>
+                        <option value="School of Performing Arts">School of Performing Arts</option>
+                        <option value="School of Ayurvedic Pharmaceutical Sciences">School of Ayurvedic Pharmaceutical Sciences</option>
+                        <option value="School of Vocational Studies">School of Vocational Studies</option>
+                    </select>
                 </label>
                 <label id="auth-section-wrap" class="field">
                     <span>Section (student only)</span>
@@ -150,7 +172,21 @@
                 </label>
                 <label id="auth-semester-wrap" class="field">
                     <span>Semester (student only)</span>
-                    <input id="auth-semester" type="number" min="1" max="12" placeholder="1-12">
+                    <select id="auth-semester">
+                        <option value="" selected>Select semester</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                        <option value="10">10</option>
+                        <option value="11">11</option>
+                        <option value="12">12</option>
+                    </select>
                 </label>
                 <label id="auth-parent-email-wrap" class="field">
                     <span>Parent Email (optional)</span>
@@ -166,7 +202,7 @@
                         <p id="auth-recaptcha-hint" class="password-strength">Complete the Cloudflare Turnstile security check before continuing.</p>
                         <div id="student-auth-turnstile-anchor" class="auth-turnstile-anchor" aria-label="Cloudflare Turnstile security check"></div>
                     </div>
-                    <p id="auth-message" class="auth-message" aria-live="polite">Students sign in with password and Turnstile. Faculty, admin, and vendor continue with Turnstile and OTP verification.</p>
+                    <p id="auth-message" class="auth-message" aria-live="polite">Complete the security check to continue.</p>
                 </div>
             </div>
         </div>
@@ -177,6 +213,24 @@
                 <h4 id="otp-popup-title">OTP Sent</h4>
                 <p id="otp-popup-text">OTP has been sent.</p>
                 <button id="otp-popup-close-btn" class="btn btn-primary" type="button">OK</button>
+            </div>
+        </div>
+
+        <div id="signup-verification-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="signup-verification-title">
+            <div class="auth-modal-card glass signup-verification-card">
+                <div class="auth-modal-head">
+                    <h3 id="signup-verification-title">Verify Mail</h3>
+                </div>
+                <p id="signup-verification-copy" class="auth-modal-sub">Enter the OTP sent to your email.</p>
+                <label class="field">
+                    <span>OTP Code</span>
+                    <input id="signup-verification-otp" type="text" inputmode="numeric" placeholder="Enter email OTP" maxlength="6" autocomplete="one-time-code">
+                </label>
+                <div class="auth-actions">
+                    <button id="signup-verification-verify-btn" class="btn btn-primary" type="button">Verify OTP</button>
+                    <button id="signup-verification-resend-btn" class="btn btn-secondary" type="button">Resend OTP</button>
+                </div>
+                <p id="signup-verification-message" class="auth-message" aria-live="polite"></p>
             </div>
         </div>
 

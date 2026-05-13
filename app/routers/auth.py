@@ -331,13 +331,14 @@ def _password_setup_required(doc: dict[str, Any]) -> bool:
     return not bool(doc.get("password_updated_at"))
 
 
-def _student_signup_verification_pending(doc: dict[str, Any]) -> bool:
-    role_raw = str(doc.get("role", models.UserRole.STUDENT.value) or models.UserRole.STUDENT.value)
-    if role_raw != models.UserRole.STUDENT.value:
-        return False
+def _signup_verification_pending(doc: dict[str, Any]) -> bool:
     if not bool(doc.get("signup_verification_required", False)):
         return False
     return not bool(doc.get("primary_login_verified", False))
+
+
+def _student_signup_verification_pending(doc: dict[str, Any]) -> bool:
+    return _signup_verification_pending(doc)
 
 
 def _next_unique_id(db, *, collection: str, sequence_name: str) -> int:
@@ -589,6 +590,84 @@ def _generate_admin_registration_number(db) -> str:
         if not db["auth_users"].find_one({"registration_number": candidate}):
             return candidate
     raise HTTPException(status_code=500, detail="Unable to generate admin registration number")
+
+
+def _arrival_year(value: datetime | None, fallback: datetime | None = None) -> int:
+    source = value or fallback or datetime.utcnow()
+    return int(source.year)
+
+
+def _student_registration_number_for_position(year: int, position: int) -> str:
+    if position < 1 or position > 99999:
+        raise HTTPException(status_code=500, detail="Student registration sequence exhausted for year")
+    return f"1{year % 100:02d}{position:05d}"
+
+
+def _faculty_identifier_for_position(year: int, position: int) -> str:
+    if position < 1 or position > 9999:
+        raise HTTPException(status_code=500, detail="Faculty identifier sequence exhausted for year")
+    year_suffix = f"{year % 100:02d}"[::-1]
+    return f"{year_suffix}{position:04d}"
+
+
+def _students_for_year(sql_db: Session, year: int) -> list[models.Student]:
+    rows = sql_db.query(models.Student).all()
+    return sorted(
+        [row for row in rows if _arrival_year(row.created_at) == year],
+        key=lambda row: (row.created_at or datetime.min, int(row.id or 0)),
+    )
+
+
+def _faculty_for_year(sql_db: Session, year: int) -> list[models.Faculty]:
+    rows = sql_db.query(models.Faculty).all()
+    return sorted(
+        [row for row in rows if _arrival_year(row.created_at) == year],
+        key=lambda row: (row.created_at or datetime.min, int(row.id or 0)),
+    )
+
+
+def _next_student_registration_number(sql_db: Session, *, now: datetime) -> str:
+    year = _arrival_year(now)
+    position = len(_students_for_year(sql_db, year)) + 1
+    return _student_registration_number_for_position(year, position)
+
+
+def _next_faculty_identifier(sql_db: Session, *, now: datetime) -> str:
+    year = _arrival_year(now)
+    position = len(_faculty_for_year(sql_db, year)) + 1
+    return _faculty_identifier_for_position(year, position)
+
+
+def _arrival_position(rows: list[Any], target_id: int | None) -> int:
+    for index, row in enumerate(rows, start=1):
+        if int(row.id or 0) == int(target_id or 0):
+            return index
+    return len(rows) + 1
+
+
+def reissue_generated_profile_identifiers(sql_db: Session) -> dict[str, int]:
+    """Replace manually supplied profile IDs with deterministic arrival-order IDs."""
+    student_updates = 0
+    faculty_updates = 0
+
+    student_years = sorted({_arrival_year(row.created_at) for row in sql_db.query(models.Student).all()})
+    for year in student_years:
+        for position, student in enumerate(_students_for_year(sql_db, year), start=1):
+            generated = _student_registration_number_for_position(year, position)
+            if student.registration_number != generated:
+                student.registration_number = generated
+                student_updates += 1
+
+    faculty_years = sorted({_arrival_year(row.created_at) for row in sql_db.query(models.Faculty).all()})
+    for year in faculty_years:
+        for position, faculty in enumerate(_faculty_for_year(sql_db, year), start=1):
+            generated = _faculty_identifier_for_position(year, position)
+            if faculty.faculty_identifier != generated:
+                faculty.faculty_identifier = generated
+                faculty_updates += 1
+
+    sql_db.flush()
+    return {"students": student_updates, "faculty": faculty_updates}
 
 
 def _normalize_faculty_identifier(value: str) -> str:
@@ -862,17 +941,6 @@ def register_auth_user(
                     status_code=400,
                     detail="section can contain only letters, numbers, slash, hyphen, and underscore",
                 )
-            incoming_registration = None
-            if payload.registration_number is not None and str(payload.registration_number or "").strip():
-                incoming_registration = _normalize_registration_number(str(payload.registration_number))
-                duplicate = (
-                    sql_db.query(models.Student)
-                    .filter(models.Student.registration_number == incoming_registration)
-                    .first()
-                )
-                if duplicate and str(duplicate.email or "").strip().lower() != email:
-                    raise HTTPException(status_code=409, detail="registration_number already exists")
-
             student = sql_db.query(models.Student).filter(models.Student.email == email).first()
             if student:
                 student.name = payload.name
@@ -881,17 +949,18 @@ def register_auth_user(
                 student.parent_email = payload.parent_email
                 student.section = incoming_section
                 student.section_updated_at = now
-                if incoming_registration:
-                    existing_registration = str(student.registration_number or "").strip().upper()
-                    if existing_registration and existing_registration != incoming_registration:
-                        raise HTTPException(status_code=409, detail="registration_number already linked to this student")
-                    if not existing_registration:
-                        student.registration_number = incoming_registration
+                if not str(student.registration_number or "").strip():
+                    student_year = _arrival_year(student.created_at, now)
+                    student.registration_number = _student_registration_number_for_position(
+                        student_year,
+                        _arrival_position(_students_for_year(sql_db, student_year), student.id),
+                    )
             else:
+                generated_registration = _next_student_registration_number(sql_db, now=now)
                 student = models.Student(
                     name=payload.name,
                     email=email,
-                    registration_number=incoming_registration,
+                    registration_number=generated_registration,
                     parent_email=payload.parent_email,
                     section=incoming_section,
                     section_updated_at=now,
@@ -939,16 +1008,6 @@ def register_auth_user(
                         status_code=400,
                         detail="section can contain only letters, numbers, slash, hyphen, and underscore",
                     )
-            incoming_faculty_identifier = None
-            if payload.faculty_identifier is not None and str(payload.faculty_identifier or "").strip():
-                incoming_faculty_identifier = _normalize_faculty_identifier(str(payload.faculty_identifier))
-                duplicate = (
-                    sql_db.query(models.Faculty)
-                    .filter(models.Faculty.faculty_identifier == incoming_faculty_identifier)
-                    .first()
-                )
-                if duplicate and str(duplicate.email or "").strip().lower() != email:
-                    raise HTTPException(status_code=409, detail="faculty_identifier already exists")
             faculty = sql_db.query(models.Faculty).filter(models.Faculty.email == email).first()
             if faculty:
                 faculty.name = payload.name
@@ -956,17 +1015,18 @@ def register_auth_user(
                 if incoming_section:
                     faculty.section = incoming_section
                     faculty.section_updated_at = now
-                if incoming_faculty_identifier:
-                    existing_identifier = str(faculty.faculty_identifier or "").strip().upper()
-                    if existing_identifier and existing_identifier != incoming_faculty_identifier:
-                        raise HTTPException(status_code=409, detail="faculty_identifier already linked to this faculty")
-                    if not existing_identifier:
-                        faculty.faculty_identifier = incoming_faculty_identifier
+                if not str(faculty.faculty_identifier or "").strip():
+                    faculty_year = _arrival_year(faculty.created_at, now)
+                    faculty.faculty_identifier = _faculty_identifier_for_position(
+                        faculty_year,
+                        _arrival_position(_faculty_for_year(sql_db, faculty_year), faculty.id),
+                    )
             else:
+                generated_faculty_identifier = _next_faculty_identifier(sql_db, now=now)
                 faculty = models.Faculty(
                     name=payload.name,
                     email=email,
-                    faculty_identifier=incoming_faculty_identifier,
+                    faculty_identifier=generated_faculty_identifier,
                     section=incoming_section or None,
                     section_updated_at=now if incoming_section else None,
                     department=payload.department,
@@ -1052,7 +1112,7 @@ def register_auth_user(
             "last_login_at": None,
             "password_updated_at": now,
             "password_setup_required": False,
-            "signup_verification_required": role == models.UserRole.STUDENT,
+            "signup_verification_required": True,
         }
         if admin_photo_object_key:
             user_doc["profile_photo_object_key"] = admin_photo_object_key
@@ -1325,7 +1385,7 @@ def request_login_otp(
 
         return schemas.OTPRequestResponse(
             message=(
-                "OTP sent successfully. Verify it to complete your student signup."
+                "OTP sent successfully. Verify it to complete your signup."
                 if signup_verification_pending
                 else "OTP sent successfully"
             ),
@@ -1380,7 +1440,7 @@ def login_student_with_password(
         if _student_signup_verification_pending(user):
             raise HTTPException(
                 status_code=428,
-                detail="Complete student signup OTP verification before signing in.",
+                detail="Complete signup OTP verification before signing in.",
             )
         if _password_setup_required(user):
             raise HTTPException(
@@ -1544,7 +1604,7 @@ def verify_login_otp(
             raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
-        if role == models.UserRole.STUDENT and bool(user.get("signup_verification_required", False)):
+        if bool(user.get("signup_verification_required", False)):
             auth_update["signup_verification_required"] = False
         if mfa_authenticated:
             auth_update["mfa_last_verified_at"] = now
@@ -1555,7 +1615,7 @@ def verify_login_otp(
         )
         user["last_login_at"] = now
         user["primary_login_verified"] = True
-        if role == models.UserRole.STUDENT:
+        if bool(user.get("signup_verification_required", False)):
             user["signup_verification_required"] = False
         user["mfa_enabled"] = mfa_enabled
 
