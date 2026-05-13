@@ -168,6 +168,7 @@ let otpCooldownTimer = null;
 let forgotOtpCooldownTimer = null;
 let foodPopupTimer = null;
 let foodToastTimer = null;
+let authRoleNoticeTimer = null;
 let foodOrdersPulseTimer = null;
 let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
@@ -446,6 +447,7 @@ const authState = {
   mode: 'login',
   signupOtpPending: false,
   signupVerificationRole: '',
+  passwordlessOtpPending: false,
   publicConfigLoaded: false,
   studentAuthCaptchaEnabled: false,
   studentAuthCaptchaSiteKey: '',
@@ -612,6 +614,7 @@ const els = {
   otpPopupText: document.getElementById('otp-popup-text'),
   otpPopupCloseBtn: document.getElementById('otp-popup-close-btn'),
   signupVerificationModal: document.getElementById('signup-verification-modal'),
+  signupVerificationTitle: document.getElementById('signup-verification-title'),
   signupVerificationCopy: document.getElementById('signup-verification-copy'),
   signupVerificationOtp: document.getElementById('signup-verification-otp'),
   signupVerificationVerifyBtn: document.getElementById('signup-verification-verify-btn'),
@@ -1675,7 +1678,7 @@ function setLoginInFlight(inFlight) {
   authState.loginInFlight = Boolean(inFlight);
   if (els.loginBtn) {
     els.loginBtn.disabled = authState.loginInFlight || isSignupMode() || isForgotPasswordPanelOpen();
-    els.loginBtn.textContent = authState.loginInFlight ? 'Logging in...' : 'Student Login';
+    els.loginBtn.textContent = authState.loginInFlight ? 'Signing in...' : 'Student Sign In';
   }
 }
 
@@ -1691,7 +1694,10 @@ function setPasswordBootstrapBusyState(inFlight) {
 }
 
 function isPasswordBootstrapRequired() {
-  return Boolean(authState.user?.role === 'student' && authState.user?.password_setup_required);
+  return Boolean(
+    authState.user?.password_setup_required
+    && ['student', 'faculty', 'admin'].includes(String(authState.user?.role || '').trim().toLowerCase())
+  );
 }
 
 function maybeRequirePasswordBootstrap() {
@@ -1710,7 +1716,8 @@ function setPasswordBootstrapModal(open) {
   const shouldOpen = Boolean(open) && isPasswordBootstrapRequired();
   setHidden(els.passwordBootstrapModal, !shouldOpen);
   if (shouldOpen) {
-    setPasswordBootstrapMessage('Create your student password now. This is required once for older accounts.');
+    const roleLabel = loginRoleLabel(String(authState.user?.role || '').trim().toLowerCase());
+    setPasswordBootstrapMessage(`Create your ${roleLabel} password now. This is required once for older accounts.`);
     renderPasswordStrengthHint(els.passwordBootstrapStrength, els.passwordBootstrapNewPassword?.value || '');
   } else {
     if (els.passwordBootstrapNewPassword) {
@@ -1820,6 +1827,18 @@ function showOtpPopup(title, text, options = {}) {
   els.otpPopup.classList.remove('hidden');
 }
 
+function showTimedRoleNotice(title, text, autoHideMs = 15000) {
+  if (authRoleNoticeTimer) {
+    window.clearTimeout(authRoleNoticeTimer);
+    authRoleNoticeTimer = null;
+  }
+  showOtpPopup(title, text, { tone: 'info', loading: false, closable: false });
+  authRoleNoticeTimer = window.setTimeout(() => {
+    hideOtpPopup();
+    authRoleNoticeTimer = null;
+  }, Math.max(1000, Number(autoHideMs || 15000)));
+}
+
 function showFoodPopup(title, text, { isError = false, autoHideMs = 2200 } = {}) {
   if (!document.body.classList.contains('auth-open')) {
     showFoodToast(title, text, { isError, autoHideMs });
@@ -1912,7 +1931,10 @@ function setSignupVerificationBusy(flag) {
   }
 }
 
-function setSignupVerificationModal(open, { email = authState.pendingEmail, role = authState.signupVerificationRole } = {}) {
+function setSignupVerificationModal(
+  open,
+  { email = authState.pendingEmail, role = authState.signupVerificationRole, purpose = 'signup' } = {}
+) {
   if (!els.signupVerificationModal) {
     return;
   }
@@ -1921,14 +1943,26 @@ function setSignupVerificationModal(open, { email = authState.pendingEmail, role
   els.signupVerificationModal.setAttribute('aria-hidden', String(!shouldOpen));
   if (shouldOpen) {
     const normalizedRole = loginRoleLabel(role || selectedLoginRole());
-    if (els.signupVerificationCopy) {
-      els.signupVerificationCopy.textContent = `Enter the OTP sent to ${email || 'your email'} to verify your ${normalizedRole} account.`;
+    const passwordlessLogin = purpose === 'passwordless-login';
+    if (els.signupVerificationTitle) {
+      els.signupVerificationTitle.textContent = passwordlessLogin ? 'Verify Temporary OTP' : 'Verify Email';
     }
-    setSignupVerificationMessage('Check your mailbox and enter the OTP to finish account creation.');
+    if (els.signupVerificationCopy) {
+      els.signupVerificationCopy.textContent = passwordlessLogin
+        ? `Enter the OTP sent to ${email || 'your email'} to continue. You will set your password immediately after verification.`
+        : `Enter the OTP sent to ${email || 'your email'} to verify your ${normalizedRole} account.`;
+    }
+    setSignupVerificationMessage(
+      passwordlessLogin
+        ? 'Check your mailbox and enter the OTP to continue.'
+        : 'Check your mailbox and enter the OTP to finish account creation.'
+    );
     if (els.signupVerificationOtp) {
       els.signupVerificationOtp.value = '';
       els.signupVerificationOtp.focus({ preventScroll: true });
     }
+  } else if (els.signupVerificationTitle) {
+    els.signupVerificationTitle.textContent = 'Verify Email';
   }
   syncModalFocusTrap(els.signupVerificationModal);
 }
@@ -4384,9 +4418,18 @@ function isSignupOtpVerificationPending() {
   return Boolean(authState.signupOtpPending);
 }
 
+function isPasswordlessOtpLoginPending() {
+  return Boolean(authState.passwordlessOtpPending);
+}
+
 function resetSignupOtpVerificationState() {
   authState.signupOtpPending = false;
   authState.signupVerificationRole = '';
+  setSignupVerificationModal(false);
+}
+
+function resetPasswordlessOtpLoginState() {
+  authState.passwordlessOtpPending = false;
   setSignupVerificationModal(false);
 }
 
@@ -4414,6 +4457,19 @@ function renderLoginRoleUi() {
   }
   if (els.loginViaOtpBtn) {
     setHidden(els.loginViaOtpBtn, role !== 'student' || signupOtpPending);
+  }
+  if (els.authPassword) {
+    els.authPassword.placeholder = role === 'faculty' || role === 'admin'
+      ? 'Enter password or leave blank for older accounts'
+      : 'Enter password';
+  }
+  if (els.authPasswordStrength) {
+    if (role === 'faculty' || role === 'admin') {
+      els.authPasswordStrength.classList.remove('strong', 'medium', 'weak');
+      els.authPasswordStrength.textContent = 'Password is required for standard accounts. Older faculty/admin accounts without a password may leave this blank, request OTP, then set a password immediately after login.';
+    } else {
+      renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword?.value || '');
+    }
   }
 }
 
@@ -19881,10 +19937,10 @@ async function submitPasswordBootstrap() {
     if (authState.user && typeof authState.user === 'object') {
       authState.user.password_setup_required = false;
     }
-    setPasswordBootstrapMessage('Password setup complete. Future student logins now use email and password only.', false, 'success');
+    setPasswordBootstrapMessage('Password setup complete. Future logins now use email and password.', false, 'success');
     setPasswordBootstrapModal(false);
-    setAuthMessage('Password setup complete. Future student logins use email and password.');
-    log('Student password bootstrap completed');
+    setAuthMessage('Password setup complete. Future logins use email and password.');
+    log('Account password bootstrap completed');
   } finally {
     setPasswordBootstrapBusyState(false);
   }
@@ -19920,7 +19976,8 @@ async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogi
   if (!signupOtpPending && !loginRoleNeedsOtp(loginRole) && !studentPasswordlessLogin) {
     throw new Error('Students sign in directly with password. Use Login via OTP only if your account does not have a password set yet.');
   }
-  if (!password && !studentPasswordlessLogin) {
+  const privilegedLegacyAllowed = !signupOtpPending && (loginRole === 'faculty' || loginRole === 'admin');
+  if (!password && !studentPasswordlessLogin && !privilegedLegacyAllowed) {
     throw new Error('Enter password first.');
   }
 
@@ -19943,7 +20000,7 @@ async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogi
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
-        password: studentPasswordlessLogin ? undefined : password,
+        password: studentPasswordlessLogin ? undefined : (password || undefined),
         captcha_token: captchaToken || undefined,
         send_to_alternate: false,
       }),
@@ -20109,6 +20166,7 @@ async function verifyOtpAndLogin() {
     return;
   }
   const completingSignup = isSignupOtpVerificationPending();
+  const completingPasswordlessLogin = isPasswordlessOtpLoginPending();
   const email = (els.authEmail.value.trim() || authState.pendingEmail).toLowerCase();
   const otpCode = els.authOtp.value.trim();
   const mfaCode = String(els.authMfaCode?.value || '').trim().replace(/\s+/g, '');
@@ -20147,6 +20205,7 @@ async function verifyOtpAndLogin() {
 
   setSession(data.access_token, data.user);
   resetSignupOtpVerificationState();
+  resetPasswordlessOtpLoginState();
   renderAuthOtpSection();
   if (els.authMfaCode) {
     els.authMfaCode.value = '';
@@ -20157,7 +20216,11 @@ async function verifyOtpAndLogin() {
   }
   setForgotPasswordPanel(false);
   resetForgotPasswordState({ clearFields: true });
-  setAuthMessage(completingSignup ? 'Account created successfully.' : 'Login successful.');
+  setAuthMessage(
+    completingSignup
+      ? 'Account created successfully.'
+      : (completingPasswordlessLogin ? 'OTP verified. Set your password now.' : 'Login successful.')
+  );
   if (completingSignup) {
     showFoodToast(
       'Account Created',
@@ -20204,12 +20267,11 @@ async function requestStudentPasswordlessOtp() {
   }
   try {
     await requestOtp({ studentPasswordlessLogin: true });
+    authState.passwordlessOtpPending = true;
+    authState.pendingEmail = email;
     renderAuthOtpSection();
-    setHidden(els.authLoginControls, false);
-    setAuthMessage('Temporary OTP sent. Verify it, then set your password immediately.');
-    if (els.authOtp) {
-      els.authOtp.focus();
-    }
+    setSignupVerificationModal(true, { email, role: 'student', purpose: 'passwordless-login' });
+    setAuthMessage('Temporary OTP sent. Enter it in the popup, then set your password immediately.');
   } catch (error) {
     const detail = String(error?.message || '');
     if (/already have a password set|forgot password flow/i.test(detail)) {
@@ -20684,8 +20746,13 @@ function bindEvents() {
     els.signupVerificationResendBtn.addEventListener('click', async () => {
       try {
         setSignupVerificationMessage('Resending OTP...');
-        await requestOtp({ suppressStatusPopup: true });
-        setSignupVerificationMessage('OTP resent. Check your mailbox and enter the latest code.');
+        if (isPasswordlessOtpLoginPending()) {
+          await requestOtp({ suppressStatusPopup: true, studentPasswordlessLogin: true });
+          setSignupVerificationMessage('Temporary OTP resent. Check your mailbox and enter the latest code.');
+        } else {
+          await requestOtp({ suppressStatusPopup: true });
+          setSignupVerificationMessage('OTP resent. Check your mailbox and enter the latest code.');
+        }
       } catch (error) {
         setSignupVerificationMessage(error.message, true);
         setAuthMessage(error.message, true);
@@ -20947,13 +21014,21 @@ function bindEvents() {
   if (els.authLoginRoleSelect) {
     els.authLoginRoleSelect.addEventListener('change', () => {
       resetSignupOtpVerificationState();
+      resetPasswordlessOtpLoginState();
       setAuthMfaInputVisible(false);
       renderAuthOtpSection();
       const role = selectedLoginRole();
       if (role === 'student') {
-        setAuthMessage('Complete the security check to continue.');
+        setAuthMessage('Students sign in with password and Turnstile.');
       } else {
-        setAuthMessage(`Request OTP to continue as ${loginRoleLabel(role)}.`);
+        setAuthMessage(`Complete Turnstile, then request OTP to continue as ${loginRoleLabel(role)}.`);
+        if (role === 'faculty' || role === 'admin') {
+          showTimedRoleNotice(
+            'Important notice for older accounts',
+            'If you are an older faculty or admin user and do not have a password set yet, leave the password field blank, request OTP using your email, and set your password immediately after login to avoid future inconvenience.',
+            15000,
+          );
+        }
       }
     });
   }
@@ -20969,7 +21044,11 @@ function bindEvents() {
 
   if (els.authPassword) {
     els.authPassword.addEventListener('input', () => {
-      renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword.value || '');
+      if (selectedLoginRole() === 'faculty' || selectedLoginRole() === 'admin') {
+        renderLoginRoleUi();
+      } else {
+        renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword.value || '');
+      }
     });
     els.authPassword.addEventListener('keydown', async (event) => {
       if (event.key !== 'Enter' || isSignupMode() || isForgotPasswordPanelOpen()) {

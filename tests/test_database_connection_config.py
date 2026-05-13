@@ -64,6 +64,14 @@ class DatabaseConnectionConfigTests(unittest.TestCase):
         self.assertNotIn("-pooler.", database.POSTGRES_ADMIN_DATABASE_URL or "")
         self.assertTrue((database.POSTGRES_ADMIN_LIBPQ_URL or "").startswith("postgresql://"))
 
+    def test_managed_services_reject_sqlite_even_when_runtime_strict_is_disabled(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        os.environ["SQLALCHEMY_DATABASE_URL"] = "sqlite:///./.runtime/local-dev.sqlite"
+
+        with self.assertRaisesRegex(RuntimeError, "Managed runtime requires SQLALCHEMY_DATABASE_URL"):
+            self._reload_database()
+
     def test_nslookup_hostaddr_parser_skips_dns_server_address(self):
         os.environ["APP_RUNTIME_STRICT"] = "false"
         os.environ["SQLALCHEMY_DATABASE_URL"] = (

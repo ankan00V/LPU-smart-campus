@@ -11,7 +11,7 @@ from pymongo.errors import PyMongoError
 
 from .enterprise_controls import apply_pii_encryption_policy
 from .realtime_bus import infer_topics, publish_domain_event
-from .runtime_infra import install_socket_dns_fallback, is_remote_service_host, normalize_host, split_url
+from .runtime_infra import install_socket_dns_fallback, is_remote_service_host, managed_services_required, normalize_host, split_url
 
 _mongo_client: MongoClient | None = None
 _mongo_db = None
@@ -37,6 +37,8 @@ def _is_production_env() -> bool:
 
 
 def _mongita_fallback_enabled() -> bool:
+    if managed_services_required() or _strict_runtime_enabled():
+        return False
     default = not _is_production_env()
     return _bool_env("MONGO_MONGITA_FALLBACK", default=default)
 

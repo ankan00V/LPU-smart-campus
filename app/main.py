@@ -575,9 +575,9 @@ def _health_payload() -> dict[str, Any]:
 
 
 def _assert_strict_runtime_contract() -> None:
-    if not _strict_runtime_mode_enabled():
-        return
     managed_services_required = _managed_services_contract_enabled()
+    if not _strict_runtime_mode_enabled() and not managed_services_required:
+        return
     db_state = _database_status_with_startup_retry()
     mongo_state = mongo_status()
     redis_state = redis_status()
@@ -585,13 +585,15 @@ def _assert_strict_runtime_contract() -> None:
         db_error = str(db_state.get("error") or "").strip()
         detail = f" Details: {db_error}" if db_error else ""
         raise RuntimeError(
-            "APP_RUNTIME_STRICT=true requires a live PostgreSQL SQLALCHEMY_DATABASE_URL."
+            "Managed runtime requires a live PostgreSQL SQLALCHEMY_DATABASE_URL."
             + detail
         )
     if not mongo_persistence_required():
         raise RuntimeError(
-            "APP_RUNTIME_STRICT=true requires MONGO_PERSISTENCE_REQUIRED=true."
+            "Managed runtime requires MONGO_PERSISTENCE_REQUIRED=true."
         )
+    if managed_services_required and str(mongo_state.get("backend") or "").strip().lower() == "mongita":
+        raise RuntimeError("APP_MANAGED_SERVICES_REQUIRED=true forbids local Mongita Mongo fallback.")
     if not redis_required():
         raise RuntimeError("APP_RUNTIME_STRICT=true requires REDIS_REQUIRED=true.")
     if not worker_required():

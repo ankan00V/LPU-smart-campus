@@ -323,7 +323,11 @@ def _auth_user_out(doc: dict) -> schemas.AuthUserOut:
 
 def _password_setup_required(doc: dict[str, Any]) -> bool:
     role_raw = str(doc.get("role", models.UserRole.STUDENT.value) or models.UserRole.STUDENT.value)
-    if role_raw != models.UserRole.STUDENT.value:
+    if role_raw not in {
+        models.UserRole.STUDENT.value,
+        models.UserRole.ADMIN.value,
+        models.UserRole.FACULTY.value,
+    }:
         return False
     explicit = doc.get("password_setup_required")
     if explicit is not None:
@@ -1275,10 +1279,17 @@ def request_login_otp(
                     ),
                 )
         candidate_password = str(payload.password or "")
-        if not requires_password_setup and (
-            not candidate_password or not verify_password(candidate_password, user.get("password_hash", ""))
-        ):
-            raise HTTPException(status_code=401, detail="Invalid email or password")
+        if requires_password_setup and role in {
+            models.UserRole.STUDENT,
+            models.UserRole.ADMIN,
+            models.UserRole.FACULTY,
+        }:
+            if candidate_password and not verify_password(candidate_password, user.get("password_hash", "")):
+                raise HTTPException(status_code=401, detail="Incorrect password")
+        elif not candidate_password:
+            raise HTTPException(status_code=401, detail="Password is required for this account")
+        elif not verify_password(candidate_password, user.get("password_hash", "")):
+            raise HTTPException(status_code=401, detail="Incorrect password")
         if role == models.UserRole.STUDENT and requires_password_setup:
             _verify_student_auth_recaptcha(
                 request,
@@ -2205,7 +2216,7 @@ def reset_password(
 
 
 @router.post("/password/bootstrap", response_model=schemas.MessageResponse)
-def bootstrap_student_password(
+def bootstrap_account_password(
     payload: schemas.PasswordBootstrapRequest,
     current_user: CurrentUser = Depends(get_current_user),
     sql_db: Session = Depends(get_db),
@@ -2214,8 +2225,13 @@ def bootstrap_student_password(
     user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
     if not user_doc:
         raise HTTPException(status_code=401, detail="Invalid user session")
-    if str(user_doc.get("role") or "").strip() != models.UserRole.STUDENT.value:
-        raise HTTPException(status_code=403, detail="Password bootstrap is only available for student accounts")
+    role_raw = str(user_doc.get("role") or "").strip()
+    if role_raw not in {
+        models.UserRole.STUDENT.value,
+        models.UserRole.ADMIN.value,
+        models.UserRole.FACULTY.value,
+    }:
+        raise HTTPException(status_code=403, detail="Password bootstrap is not available for this account")
     if not _password_setup_required(user_doc):
         raise HTTPException(status_code=400, detail="Password setup is already complete for this account")
 
@@ -2242,22 +2258,23 @@ def bootstrap_student_password(
             sql_db.rollback()
     except Exception:
         sql_db.rollback()
-        logger.exception("student_password_bootstrap_sql_sync_failed user_id=%s", current_user.id)
+        logger.exception("account_password_bootstrap_sql_sync_failed user_id=%s", current_user.id)
 
     mirror_event(
-        "auth.student_password_bootstrap",
+        "auth.account_password_bootstrap",
         {
             "user_id": int(current_user.id),
             "email": str(user_doc.get("email") or "").strip().lower(),
             "updated_at": now,
+            "role": role_raw,
         },
         actor={
             "user_id": int(current_user.id),
             "email": str(user_doc.get("email") or "").strip().lower(),
-            "role": models.UserRole.STUDENT.value,
+            "role": role_raw,
         },
     )
-    return schemas.MessageResponse(message="Password setup complete. Use email and password for future student logins.")
+    return schemas.MessageResponse(message="Password setup complete. Use email and password for future logins.")
 
 
 @router.get("/mfa/status", response_model=schemas.MFAStatusResponse)
