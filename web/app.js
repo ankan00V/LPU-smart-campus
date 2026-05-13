@@ -562,6 +562,7 @@ const els = {
   authMessage: document.getElementById('auth-message'),
   authPasswordStrength: document.getElementById('auth-password-strength'),
   loginBtn: document.getElementById('login-btn'),
+  loginViaOtpBtn: document.getElementById('login-via-otp-btn'),
   requestOtpBtn: document.getElementById('request-otp-btn'),
   verifyOtpBtn: document.getElementById('verify-otp-btn'),
   registerBtn: document.getElementById('register-btn'),
@@ -4410,6 +4411,9 @@ function renderLoginRoleUi() {
   }
   if (els.forgotPasswordToggleBtn) {
     setHidden(els.forgotPasswordToggleBtn, role !== 'student' || signupOtpPending);
+  }
+  if (els.loginViaOtpBtn) {
+    setHidden(els.loginViaOtpBtn, role !== 'student' || signupOtpPending);
   }
 }
 
@@ -19829,12 +19833,19 @@ async function loginStudentWithPassword() {
       renderAuthOtpSection();
       setSignupVerificationModal(true, { email, role: 'student' });
       setAuthMessage('Finish signup first. Request or enter the OTP sent to your email.', true);
-    } else if (/forgot password/i.test(detail) || /password setup is pending/i.test(detail)) {
+    } else if (/password setup is pending|password set yet|temporary otp/i.test(detail)) {
+      setAuthMessage('You do not have a password set yet. Login via temporary OTP and set your password immediately.', true);
+      showOtpPopup(
+        'Password Not Set',
+        'You do not have your password set yet. Login via temporary OTP, then set your password immediately.',
+        { tone: 'danger', loading: false, closable: true }
+      );
+    } else if (/forgot password/i.test(detail)) {
       setForgotPasswordPanel(true);
       if (els.forgotEmail && !els.forgotEmail.value.trim()) {
         els.forgotEmail.value = email;
       }
-      setAuthMessage('Set a password first using Forgot Password, then sign in again.', true);
+      setAuthMessage('Use Forgot Password to reset your password, then sign in again.', true);
     }
     throw error;
   } finally {
@@ -19879,7 +19890,7 @@ async function submitPasswordBootstrap() {
   }
 }
 
-async function requestOtp({ suppressStatusPopup = false } = {}) {
+async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogin = false } = {}) {
   if (authState.otpRequestInFlight) {
     return;
   }
@@ -19906,10 +19917,10 @@ async function requestOtp({ suppressStatusPopup = false } = {}) {
   if (!email.endsWith('@gmail.com')) {
     throw new Error('Email must end with @gmail.com');
   }
-  if (!signupOtpPending && !loginRoleNeedsOtp(loginRole)) {
-    throw new Error('Students sign in directly with password. OTP is used only during signup verification.');
+  if (!signupOtpPending && !loginRoleNeedsOtp(loginRole) && !studentPasswordlessLogin) {
+    throw new Error('Students sign in directly with password. Use Login via OTP only if your account does not have a password set yet.');
   }
-  if (!password) {
+  if (!password && !studentPasswordlessLogin) {
     throw new Error('Enter password first.');
   }
 
@@ -19923,8 +19934,8 @@ async function requestOtp({ suppressStatusPopup = false } = {}) {
   }
   setAuthMessage('Sending OTP... please wait.');
   try {
-    const captchaAction = signupOtpPending && loginRole === 'student'
-      ? 'student_signup_verification'
+    const captchaAction = loginRole === 'student'
+      ? (signupOtpPending ? 'student_signup_verification' : 'student_login')
       : 'privileged_login_otp_request';
     const captchaToken = await acquireStudentCaptchaToken(captchaAction);
     const data = await api('/auth/login/request-otp', {
@@ -19932,7 +19943,7 @@ async function requestOtp({ suppressStatusPopup = false } = {}) {
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
-        password,
+        password: studentPasswordlessLogin ? undefined : password,
         captcha_token: captchaToken || undefined,
         send_to_alternate: false,
       }),
@@ -20173,6 +20184,44 @@ async function submitPrimaryAuthAction() {
     return;
   }
   await requestOtp();
+}
+
+async function requestStudentPasswordlessOtp() {
+  if (isSignupMode()) {
+    setAuthMode('login');
+  }
+  resetSignupOtpVerificationState();
+  setAuthMfaInputVisible(false);
+  const email = (els.authEmail?.value || '').trim().toLowerCase();
+  if (!email) {
+    throw new Error('Enter email first.');
+  }
+  if (!email.endsWith('@gmail.com')) {
+    throw new Error('Email must end with @gmail.com');
+  }
+  if (els.authLoginRoleSelect) {
+    els.authLoginRoleSelect.value = 'student';
+  }
+  try {
+    await requestOtp({ studentPasswordlessLogin: true });
+    renderAuthOtpSection();
+    setHidden(els.authLoginControls, false);
+    setAuthMessage('Temporary OTP sent. Verify it, then set your password immediately.');
+    if (els.authOtp) {
+      els.authOtp.focus();
+    }
+  } catch (error) {
+    const detail = String(error?.message || '');
+    if (/already have a password set|forgot password flow/i.test(detail)) {
+      setAuthMessage(detail, true);
+      showOtpPopup(
+        'Password Login Required',
+        detail,
+        { tone: 'danger', loading: false, closable: true }
+      );
+    }
+    throw error;
+  }
 }
 
 async function restoreSession() {
@@ -20668,6 +20717,17 @@ function bindEvents() {
   if (els.forgotPasswordToggleBtn) {
     els.forgotPasswordToggleBtn.addEventListener('click', () => {
       setForgotPasswordPanel(true);
+    });
+  }
+
+  if (els.loginViaOtpBtn) {
+    els.loginViaOtpBtn.addEventListener('click', async () => {
+      try {
+        await requestStudentPasswordlessOtp();
+      } catch (error) {
+        setAuthMessage(error.message, true);
+        log(error.message);
+      }
     });
   }
 

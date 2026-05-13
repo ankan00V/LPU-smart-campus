@@ -1266,20 +1266,26 @@ def request_login_otp(
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
         if role == models.UserRole.STUDENT:
-            if requires_password_setup:
-                raise HTTPException(
-                    status_code=428,
-                    detail="Student password setup is pending. Use Forgot Password to create your password first.",
-                )
-            if not signup_verification_pending:
+            if not signup_verification_pending and not requires_password_setup:
                 raise HTTPException(
                     status_code=403,
-                    detail="Students do not use OTP during sign in. Use student password login instead.",
+                    detail=(
+                        "Dear user, you already have a password set. Please login using that for security reasons. "
+                        "In case you forgot your password, use the forgot password flow to reset it."
+                    ),
                 )
         candidate_password = str(payload.password or "")
-        if not candidate_password or not verify_password(candidate_password, user.get("password_hash", "")):
+        if not requires_password_setup and (
+            not candidate_password or not verify_password(candidate_password, user.get("password_hash", ""))
+        ):
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        if role in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
+        if role == models.UserRole.STUDENT and requires_password_setup:
+            _verify_student_auth_recaptcha(
+                request,
+                payload.captcha_token,
+                action="student_login",
+            )
+        elif role in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
             _verify_student_auth_recaptcha(
                 request,
                 payload.captcha_token,
@@ -1445,7 +1451,7 @@ def login_student_with_password(
         if _password_setup_required(user):
             raise HTTPException(
                 status_code=428,
-                detail="Student password setup is pending. Use Forgot Password to create your password first.",
+                detail="You do not have your password set yet. Login via temporary OTP and set your password immediately.",
             )
         password_hash = str(user.get("password_hash") or "").strip()
         if not password_hash or not verify_password(payload.password, password_hash):
@@ -1547,6 +1553,16 @@ def verify_login_otp(
         _validate_role_email(email, role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
+        if role == models.UserRole.STUDENT and not (
+            _password_setup_required(user) or _student_signup_verification_pending(user)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Dear user, you already have a password set. Please login using that for security reasons. "
+                    "In case you forgot your password, use the forgot password flow to reset it."
+                ),
+            )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
 

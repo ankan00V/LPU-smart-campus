@@ -3559,6 +3559,33 @@ body.ums-theme #executive-section .donut-core {
     font-size: 0.74rem;
 }
 
+.auth-inline-link {
+    margin-left: auto;
+    align-self: center;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: #9fc4ff;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.22rem 0;
+    text-decoration: underline;
+    text-underline-offset: 0.22em;
+}
+
+.auth-inline-link:hover,
+.auth-inline-link:focus-visible {
+    color: #dbe8ff;
+}
+
+.auth-inline-link:focus-visible {
+    outline: 2px solid rgba(122, 168, 255, 0.8);
+    outline-offset: 3px;
+    border-radius: 6px;
+}
+
 .password-strength {
     margin: 0.14rem 0 0.16rem;
     font-size: 0.73rem;
