@@ -1710,6 +1710,18 @@ function maybeRequirePasswordBootstrap() {
   return true;
 }
 
+function effectiveOtpVerificationEmail() {
+  const pendingEmail = String(authState.pendingEmail || '').trim().toLowerCase();
+  const enteredEmail = String(els.authEmail?.value || '').trim().toLowerCase();
+  if (pendingEmail) {
+    if (els.authEmail && enteredEmail !== pendingEmail) {
+      els.authEmail.value = pendingEmail;
+    }
+    return pendingEmail;
+  }
+  return enteredEmail;
+}
+
 function setPasswordBootstrapModal(open) {
   if (!els.passwordBootstrapModal) {
     return;
@@ -20195,7 +20207,7 @@ async function verifyOtpAndLogin() {
   }
   const completingSignup = isSignupOtpVerificationPending();
   const completingPasswordlessLogin = isPasswordlessOtpLoginPending();
-  const email = (els.authEmail.value.trim() || authState.pendingEmail).toLowerCase();
+  const email = effectiveOtpVerificationEmail();
   const otpCode = els.authOtp.value.trim();
   const mfaCode = String(els.authMfaCode?.value || '').trim().replace(/\s+/g, '');
 
@@ -20232,6 +20244,7 @@ async function verifyOtpAndLogin() {
   }
 
   setSession(data.access_token, data.user);
+  authState.pendingEmail = String(data.user?.email || email || '').trim().toLowerCase();
   resetSignupOtpVerificationState();
   resetPasswordlessOtpLoginState();
   renderAuthOtpSection();
@@ -20264,6 +20277,7 @@ async function verifyOtpAndLogin() {
   log(`Authenticated as ${data.user.role}`);
   renderProfileSecurity();
   await refreshAll();
+  maybeRequirePasswordBootstrap();
 }
 
 async function submitPrimaryAuthAction() {
