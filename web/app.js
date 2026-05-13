@@ -2053,6 +2053,18 @@ function openAuthOverlay(message = 'Sign in to continue.') {
   setAuthMessage(message);
 }
 
+function shouldRouteInitialAuthTab(event) {
+  if (event.key !== 'Tab' || event.shiftKey || !document.body.classList.contains('auth-open') || isSignupMode()) {
+    return false;
+  }
+  const active = document.activeElement;
+  return active === document.body
+    || active === document.documentElement
+    || active === els.authOverlay
+    || active === els.authModeLoginBtn
+    || active === els.authModeSignupBtn;
+}
+
 function closeAuthOverlay() {
   document.body.classList.remove('auth-open');
   document.body.classList.remove('auth-signup-mode');
@@ -20536,6 +20548,14 @@ async function refreshAll() {
 
 function bindEvents() {
   bindAdminSubmodulePickers();
+
+  document.addEventListener('keydown', (event) => {
+    if (!shouldRouteInitialAuthTab(event) || !els.authEmail) {
+      return;
+    }
+    event.preventDefault();
+    els.authEmail.focus({ preventScroll: true });
+  }, true);
 
   document.getElementById('refresh-btn').addEventListener('click', async () => {
     try {
