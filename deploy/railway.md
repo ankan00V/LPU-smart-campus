@@ -69,6 +69,13 @@ Set these on the Railway service:
   - `ATTENDANCE_RECOVERY_AUTOPILOT_BATCH_SIZE` (default `400`)
   - `ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES` (default `360`)
   - `ATTENDANCE_RECOVERY_AI_GUIDANCE_ENABLED=true`
+  - `ATTENDANCE_RECOVERY_STUDENT_EMAIL_COOLDOWN_MINUTES` (default `1440`)
+  - `ATTENDANCE_RECOVERY_FACULTY_EMAIL_COOLDOWN_MINUTES` (default `1440`)
+
+- Bedrock personalization (optional):
+  - Set `AWS_BEARER_TOKEN_BEDROCK` in Railway Variables (do not commit it).
+  - For Campus Copilot: `COPILOT_LLM_PROVIDER=bedrock`, `COPILOT_BEDROCK_REGION`, `COPILOT_BEDROCK_MODEL_ID`
+  - For Recovery Copilot emails: `RECOVERY_LLM_EMAIL_ENABLED=true`, `RECOVERY_LLM_PROVIDER=bedrock`, `RECOVERY_BEDROCK_REGION`, `RECOVERY_BEDROCK_MODEL_ID`
 - One-click admin endpoint:
   - `POST /attendance/recovery/retro-notify`
   - Body example:

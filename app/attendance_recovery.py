@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 from . import models
 from .otp_delivery import send_notification_email
 from .realtime_bus import publish_domain_event
+from .recovery_ai import (
+    generate_recovery_faculty_email_body,
+    generate_recovery_student_email_body,
+    recovery_ai_email_enabled,
+)
 from .saarthi_service import is_saarthi_course
 from .workers import enqueue_notification
 
@@ -81,6 +86,16 @@ def recovery_due_days() -> int:
 
 def recovery_retro_cooldown_minutes() -> int:
     return max(5, _int_env("ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES", 360))
+
+
+def recovery_student_email_cooldown_minutes() -> int:
+    # Production anti-spam: do not email a student more than once per 24h while they are at-risk.
+    return max(30, _int_env("ATTENDANCE_RECOVERY_STUDENT_EMAIL_COOLDOWN_MINUTES", 1440))
+
+
+def recovery_faculty_email_cooldown_minutes() -> int:
+    # Keep faculty nudges bounded as well.
+    return max(30, _int_env("ATTENDANCE_RECOVERY_FACULTY_EMAIL_COOLDOWN_MINUTES", 1440))
 
 
 def recovery_autopilot_enabled() -> bool:
@@ -641,6 +656,28 @@ def _recent_recovery_notice_exists(
     return bool(rows)
 
 
+def _recent_recovery_notice_exists_any(
+    db: Session,
+    *,
+    student_id: int,
+    channel: str,
+    cooldown_minutes: int,
+) -> bool:
+    cooldown = max(1, int(cooldown_minutes))
+    cutoff = datetime.utcnow() - timedelta(minutes=cooldown)
+    rows = (
+        db.query(models.NotificationLog.id)
+        .filter(
+            models.NotificationLog.student_id == int(student_id),
+            models.NotificationLog.channel.in_([str(channel), f"{channel}-suppressed"]),
+            models.NotificationLog.created_at >= cutoff,
+        )
+        .limit(1)
+        .all()
+    )
+    return bool(rows)
+
+
 def _safe_send_recovery_email(
     db: Session,
     *,
@@ -697,6 +734,16 @@ def _dispatch_recovery_communications(
     next_makeup: models.MakeUpClass | None,
     office_hour_slot: datetime | None,
 ) -> None:
+    # Anti-spam: send at most one recovery mail per 24h to the student while they are at-risk.
+    # This applies across courses since the body includes a subject-level breakdown.
+    if _recent_recovery_notice_exists_any(
+        db,
+        student_id=int(student.id),
+        channel="attendance-recovery-student-email",
+        cooldown_minutes=recovery_student_email_cooldown_minutes(),
+    ):
+        return
+
     watch_threshold = recovery_watch_threshold()
     low_subject_lines = [
         f"- {str(row['course_code'])}: {float(row['attendance_percent']):.1f}%"
@@ -759,6 +806,20 @@ def _dispatch_recovery_communications(
             "If you are facing a genuine issue, raise it immediately so support can be activated.",
         ]
     )
+    if recovery_ai_email_enabled():
+        ai_body = generate_recovery_student_email_body(
+            student_name=str(student.name or "").strip(),
+            overall_attendance_percent=float(overall_attendance_percent),
+            watch_threshold=float(watch_threshold),
+            subject_focus_lines=list(subject_focus),
+            risk_level=str(risk_level.value),
+            consecutive_absences=int(consecutive_absences),
+            missed_remedials=int(missed_remedials),
+            next_slot_line=str(next_slot_line),
+            office_hour_line=str(office_hour_line),
+        )
+        if ai_body:
+            student_body = ai_body
     student_subject = (
         f"[Attendance Recovery] Action required for {course.code} "
         f"({course_attendance_percent:.1f}%)"
@@ -785,6 +846,15 @@ def _dispatch_recovery_communications(
 
     if faculty is None or not str(faculty.email or "").strip():
         return
+    # Anti-spam faculty nudges: once/day per student-course.
+    if _recent_recovery_notice_exists(
+        db,
+        student_id=int(student.id),
+        channel="attendance-recovery-faculty-email",
+        course_code=str(course.code or ""),
+        cooldown_minutes=recovery_faculty_email_cooldown_minutes(),
+    ):
+        return
     ai_faculty_guidance = _build_faculty_recovery_ai_guidance(
         risk_level=risk_level,
         course_attendance_percent=course_attendance_percent,
@@ -809,6 +879,18 @@ def _dispatch_recovery_communications(
             *[f"- {line}" for line in ai_faculty_guidance],
         ]
     )
+    if recovery_ai_email_enabled():
+        ai_body = generate_recovery_faculty_email_body(
+            faculty_name=str(faculty.name or "").strip() or "Faculty",
+            student_name=str(student.name or "").strip(),
+            course_code=str(course.code or "").strip().upper(),
+            course_attendance_percent=float(course_attendance_percent),
+            overall_attendance_percent=float(overall_attendance_percent),
+            risk_level=str(risk_level.value),
+            consecutive_absences=int(consecutive_absences),
+        )
+        if ai_body:
+            faculty_body = ai_body
     _safe_send_recovery_email(
         db,
         student_id=int(student.id),
@@ -1608,7 +1690,25 @@ def evaluate_attendance_recovery(
             )
 
     _cancel_unused_actions(db, plan=plan, keep_action_ids=keep_action_ids)
-    if is_new_plan or (previous_risk_level is not None and previous_risk_level != risk_level):
+    should_dispatch = bool(
+        is_new_plan
+        or (previous_risk_level is not None and previous_risk_level != risk_level)
+        or (
+            risk_level
+            in {
+                models.AttendanceRecoveryRiskLevel.WATCH,
+                models.AttendanceRecoveryRiskLevel.HIGH,
+                models.AttendanceRecoveryRiskLevel.CRITICAL,
+            }
+            and not _recent_recovery_notice_exists_any(
+                db,
+                student_id=int(student.id),
+                channel="attendance-recovery-student-email",
+                cooldown_minutes=recovery_student_email_cooldown_minutes(),
+            )
+        )
+    )
+    if should_dispatch:
         overall_attendance_percent, low_subjects = _student_attendance_overview(
             db,
             student_id=int(student.id),
