@@ -169,6 +169,7 @@ let forgotOtpCooldownTimer = null;
 let foodPopupTimer = null;
 let foodToastTimer = null;
 let authRoleNoticeTimer = null;
+let authRoleNoticeCountdownTimer = null;
 let foodOrdersPulseTimer = null;
 let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
@@ -1790,6 +1791,14 @@ function hideOtpPopup() {
   if (!els.otpPopup) {
     return;
   }
+  if (authRoleNoticeTimer) {
+    window.clearTimeout(authRoleNoticeTimer);
+    authRoleNoticeTimer = null;
+  }
+  if (authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
+  }
   if (els.otpPopupLoader) {
     els.otpPopupLoader.classList.add('hidden');
   }
@@ -1807,6 +1816,10 @@ function hideOtpPopup() {
 function showOtpPopup(title, text, options = {}) {
   if (!els.otpPopup || !els.otpPopupTitle || !els.otpPopupText) {
     return;
+  }
+  if (!options.preserveTimedNotice && authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
   }
   const tone = String(options.tone || 'info');
   const loading = Boolean(options.loading);
@@ -1832,11 +1845,26 @@ function showTimedRoleNotice(title, text, autoHideMs = 15000) {
     window.clearTimeout(authRoleNoticeTimer);
     authRoleNoticeTimer = null;
   }
-  showOtpPopup(title, text, { tone: 'info', loading: false, closable: false });
+  if (authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
+  }
+  const durationMs = Math.max(1000, Number(autoHideMs || 15000));
+  const startedAt = Date.now();
+  const renderCountdown = () => {
+    const elapsedMs = Date.now() - startedAt;
+    const remainingSeconds = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
+    showOtpPopup(
+      title,
+      `${text}\n\nThis notice closes in ${remainingSeconds}s.`,
+      { tone: 'info', loading: false, closable: false, preserveTimedNotice: true }
+    );
+  };
+  renderCountdown();
+  authRoleNoticeCountdownTimer = window.setInterval(renderCountdown, 1000);
   authRoleNoticeTimer = window.setTimeout(() => {
     hideOtpPopup();
-    authRoleNoticeTimer = null;
-  }, Math.max(1000, Number(autoHideMs || 15000)));
+  }, durationMs);
 }
 
 function showFoodPopup(title, text, { isError = false, autoHideMs = 2200 } = {}) {
