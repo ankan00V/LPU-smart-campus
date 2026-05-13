@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -6,8 +7,14 @@ from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 from app import models, schemas
-from app.routers.auth import register_auth_user
+from app.routers.auth import register_auth_user, reissue_generated_profile_identifiers
 from app.routers.enterprise import _upsert_federated_user
+
+
+class _FixedDatetime(datetime):
+    @classmethod
+    def utcnow(cls):
+        return cls(2026, 5, 13, 12, 0, 0)
 
 
 class _UpdateResult:
@@ -122,11 +129,12 @@ class AuthIdConsistencyTests(unittest.TestCase):
             department="CSE",
             semester=3,
             section="K23AA",
-            registration_number="12200123",
+            registration_number="MANUAL-OLD",
             parent_email="parent@example.com",
         )
 
         with (
+            patch("app.routers.auth.datetime", _FixedDatetime),
             patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
             patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
             patch("app.routers.auth.assess_applicant_risk", return_value=None),
@@ -144,6 +152,7 @@ class AuthIdConsistencyTests(unittest.TestCase):
         self.assertEqual(result.id, sql_user.id)
         self.assertEqual(mongo_user["id"], sql_user.id)
         self.assertEqual(mongo_user["student_id"], sql_student.id)
+        self.assertEqual(sql_student.registration_number, "12600001")
 
     def test_register_normalizes_student_signup_text_fields_to_uppercase(self):
         payload = schemas.AuthRegisterRequest(
@@ -159,6 +168,7 @@ class AuthIdConsistencyTests(unittest.TestCase):
         )
 
         with (
+            patch("app.routers.auth.datetime", _FixedDatetime),
             patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
             patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
             patch("app.routers.auth.assess_applicant_risk", return_value=None),
@@ -175,9 +185,72 @@ class AuthIdConsistencyTests(unittest.TestCase):
         self.assertEqual(sql_student.name, "CASE STUDENT")
         self.assertEqual(sql_student.department, "CSE AI")
         self.assertEqual(sql_student.section, "K23AA")
-        self.assertEqual(sql_student.registration_number, "22BCS101")
+        self.assertEqual(sql_student.registration_number, "12600001")
         self.assertEqual(sql_student.parent_email, "parent@example.com")
         self.assertEqual(mongo_user["name"], "CASE STUDENT")
+
+    def test_register_generates_faculty_identifier_from_reversed_year_and_arrival_position(self):
+        payload = schemas.AuthRegisterRequest(
+            email="faculty.generated@gmail.com",
+            password="Faculty@123",
+            role=models.UserRole.FACULTY,
+            name="Generated Faculty",
+            department="CSE",
+            faculty_identifier="FAC-MANUAL",
+        )
+
+        with (
+            patch("app.routers.auth.datetime", _FixedDatetime),
+            patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
+            patch("app.routers.auth.assess_applicant_risk", return_value=None),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            register_auth_user(payload, request=_request("/auth/register"), sql_db=self.db)
+
+        sql_faculty = self.db.query(models.Faculty).filter(models.Faculty.email == "faculty.generated@gmail.com").first()
+
+        self.assertIsNotNone(sql_faculty)
+        self.assertEqual(sql_faculty.faculty_identifier, "620001")
+
+    def test_reissue_generated_profile_identifiers_replaces_manual_ids_by_arrival_order(self):
+        self.db.add_all(
+            [
+                models.Student(
+                    name="FIRST STUDENT",
+                    email="first.student@gmail.com",
+                    registration_number="22BCS101",
+                    section="K23AA",
+                    department="CSE",
+                    semester=1,
+                    created_at=datetime(2026, 1, 3, 9, 0, 0),
+                ),
+                models.Student(
+                    name="SECOND STUDENT",
+                    email="second.student@gmail.com",
+                    registration_number="22BCS102",
+                    section="K23AA",
+                    department="CSE",
+                    semester=1,
+                    created_at=datetime(2026, 1, 4, 9, 0, 0),
+                ),
+                models.Faculty(
+                    name="FIRST FACULTY",
+                    email="first.faculty@gmail.com",
+                    faculty_identifier="FAC-CSE-11",
+                    department="CSE",
+                    created_at=datetime(2026, 1, 2, 9, 0, 0),
+                ),
+            ]
+        )
+        self.db.commit()
+
+        counts = reissue_generated_profile_identifiers(self.db)
+
+        students = self.db.query(models.Student).order_by(models.Student.created_at).all()
+        faculty = self.db.query(models.Faculty).one()
+        self.assertEqual(counts, {"students": 2, "faculty": 1})
+        self.assertEqual([student.registration_number for student in students], ["12600001", "12600002"])
+        self.assertEqual(faculty.faculty_identifier, "620001")
 
     def test_federated_upsert_reuses_existing_sql_auth_user_id(self):
         sql_user = models.AuthUser(

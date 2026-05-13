@@ -148,14 +148,14 @@ def _request(path: str) -> Request:
 
 
 class AuthOtpMfaReliabilityTests(unittest.TestCase):
-    def test_request_login_otp_allows_retry_after_failed_delivery(self):
+    def test_request_login_otp_allows_retry_after_failed_delivery_for_privileged_roles(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
             {
                 "id": 7,
-                "email": "student@gmail.com",
-                "password_hash": hash_password("Student@123"),
-                "role": models.UserRole.STUDENT.value,
+                "email": "faculty@gmail.com",
+                "password_hash": hash_password("Faculty@123"),
+                "role": models.UserRole.FACULTY.value,
                 "student_id": None,
                 "faculty_id": None,
                 "is_active": True,
@@ -183,12 +183,17 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             patch("app.routers.auth._ensure_auth_user_id", return_value=7),
             patch("app.routers.auth._ensure_role_profile_link", return_value=None),
             patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
             patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}),
             patch("app.routers.auth._next_unique_id", side_effect=[2, 3]),
             patch("app.routers.auth.mirror_event", return_value=None),
         ):
             result = auth.request_login_otp(
-                schemas.LoginOTPRequest(email="student@gmail.com", password="Student@123"),
+                schemas.LoginOTPRequest(
+                    email="faculty@gmail.com",
+                    password="Faculty@123",
+                    captcha_token="turnstile-token-1234567890",
+                ),
                 request=_request("/auth/login/request-otp"),
                 sql_db=SimpleNamespace(),
             )

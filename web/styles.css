@@ -704,6 +704,28 @@ select {
     background: rgba(22, 52, 76, 0.72);
 }
 
+.auth-overlay input[type="file"] {
+    min-height: 3.45rem;
+    padding-block: 0.56rem;
+    line-height: 1.2;
+}
+
+.auth-overlay input[type="file"]::file-selector-button {
+    margin-right: 0.8rem;
+    border: 1px solid rgba(177, 219, 255, 0.44);
+    border-radius: 10px;
+    padding: 0.56rem 0.85rem;
+    font: inherit;
+    font-weight: 600;
+    color: #15324a;
+    background: linear-gradient(180deg, rgba(246, 250, 255, 0.96), rgba(221, 237, 248, 0.92));
+    cursor: pointer;
+}
+
+.auth-overlay input[type="file"]::file-selector-button:hover {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(231, 243, 252, 0.96));
+}
+
 input[readonly] {
     cursor: text;
     opacity: 0.96;
@@ -3390,6 +3412,8 @@ body.ums-theme #executive-section .donut-core {
 }
 
 .auth-flow-section {
+    display: grid;
+    gap: 0.62rem;
     margin-bottom: 0.54rem;
     padding: 0.72rem;
     border-radius: 12px;
@@ -3431,6 +3455,16 @@ body.ums-theme #executive-section .donut-core {
     margin-top: 0.25rem;
 }
 
+.auth-turnstile-anchor {
+    min-height: 72px;
+    display: flex;
+    align-items: center;
+}
+
+.auth-turnstile-anchor iframe {
+    max-width: 100%;
+}
+
 .auth-photo-preview {
     width: 120px;
     height: 120px;
@@ -3450,7 +3484,7 @@ body.ums-theme #executive-section .donut-core {
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.5rem;
-    margin-bottom: 0.4rem;
+    margin-bottom: 0;
 }
 
 .auth-section-head h3 {
@@ -3469,7 +3503,7 @@ body.ums-theme #executive-section .donut-core {
 }
 
 .auth-actions {
-    margin: 0.42rem 0 0.45rem;
+    margin: 0.08rem 0 0;
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -3549,6 +3583,10 @@ body.ums-theme #executive-section .donut-core {
     font-size: 0.8rem;
 }
 
+.auth-message.error {
+    color: #ffb4a8;
+}
+
 body.auth-open:not(.auth-signup-mode) .auth-card {
     overflow: hidden;
 }
@@ -3603,6 +3641,7 @@ body.auth-open.auth-signup-mode #auth-signup-fields {
 body.auth-open.auth-signup-mode #auth-signup-fields .auth-section-head,
 body.auth-open.auth-signup-mode #auth-signup-fields .password-strength,
 body.auth-open.auth-signup-mode #auth-signup-fields #auth-role-wrap,
+body.auth-open.auth-signup-mode #auth-signup-fields #auth-signup-admin-photo-wrap,
 body.auth-open.auth-signup-mode #auth-signup-fields #auth-signup-registration-wrap,
 body.auth-open.auth-signup-mode #auth-signup-fields #auth-signup-faculty-id-wrap,
 body.auth-open.auth-signup-mode #auth-signup-fields #auth-parent-email-wrap {
@@ -3667,6 +3706,14 @@ body.auth-open:not(.auth-signup-mode) .auth-journey {
     margin: 0;
     font-size: 0.82rem;
     color: #a9c8e5;
+}
+
+.signup-verification-card {
+    width: min(420px, 100%);
+}
+
+.signup-verification-card .auth-actions {
+    margin-top: 0.1rem;
 }
 
 .mfa-setup-card {
@@ -13913,6 +13960,8 @@ body.ums-theme .auth-flow-section,
 body.ums-theme .auth-login-section,
 body.ums-theme .auth-otp-section,
 body.ums-theme .auth-signup-section {
+    display: grid;
+    gap: 10px;
     margin: 0;
     padding: 12px;
     border-radius: 16px;
@@ -13962,7 +14011,7 @@ body.ums-theme .auth-section-head {
     align-items: flex-start;
     justify-content: space-between;
     gap: 8px;
-    margin-bottom: 8px;
+    margin-bottom: 0;
 }
 
 body.ums-theme .auth-section-head h3,

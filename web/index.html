@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260411a">
-    <script src="/web/app.js?v=20260411a" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260513b">
+    <script src="/web/app.js?v=20260513b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -38,44 +38,31 @@
                 <div class="auth-form-panel">
                     <p class="kicker">SECURE ACCESS</p>
                     <h2>Smart Campus Login</h2>
-                    <p class="auth-sub">Students now login with email, password, and Cloudflare Turnstile. Faculty, admin, and owner accounts continue to use OTP-secured access.</p>
                     <div class="auth-highlights" aria-label="Platform highlights">
                         <span class="auth-highlight">Realtime Attendance</span>
                         <span class="auth-highlight">RMS Workflows</span>
                         <span class="auth-highlight">Role-Based Security</span>
-                    </div>
-                    <div class="auth-journey" aria-label="Getting started">
-                        <article class="auth-journey-step">
-                            <span>1</span>
-                            <p>Create account once</p>
-                        </article>
-                        <article class="auth-journey-step">
-                            <span>2</span>
-                            <p>Students login with password</p>
-                        </article>
-                        <article class="auth-journey-step">
-                            <span>3</span>
-                            <p>Legacy student setup or privileged OTP</p>
-                        </article>
                     </div>
 
             <div class="auth-mode-switch" role="tablist" aria-label="Authentication Mode">
                 <button id="auth-mode-login-btn" class="btn auth-mode-btn active" type="button" role="tab" aria-selected="true">Login</button>
                 <button id="auth-mode-signup-btn" class="btn auth-mode-btn" type="button" role="tab" aria-selected="false">Signup</button>
             </div>
-            <div class="auth-progress" aria-hidden="true">
-                <span class="auth-progress-dot active"></span>
-                <span class="auth-progress-label">Step 1 — Account Login</span>
-                <span class="auth-progress-arrow">•</span>
-                <span class="auth-progress-dot"></span>
-                <span class="auth-progress-label">Step 2 — Email Verification</span>
-            </div>
 
             <section id="auth-login-section" class="auth-flow-section auth-login-section">
                 <div class="auth-section-head">
-                    <h3>Account Login</h3>
-                    <p>Students use password login. Legacy student accounts can request a one-time setup OTP. Faculty, admin, and owner accounts still verify OTP.</p>
+                    <h3>Sign In</h3>
+                    <p>Select your role, enter your credentials, and complete the security check.</p>
                 </div>
+                <label class="field">
+                    <span>Role</span>
+                    <select id="auth-login-role-select">
+                        <option value="student">Student</option>
+                        <option value="faculty">Faculty</option>
+                        <option value="admin">Admin</option>
+                        <option value="owner">Vendor</option>
+                    </select>
+                </label>
                 <label class="field">
                     <span>Email</span>
                     <input id="auth-email" type="email" placeholder="you@gmail.com" autocomplete="username">
@@ -85,21 +72,20 @@
                     <input id="auth-password" type="password" placeholder="Enter password" autocomplete="current-password">
                 </label>
                 <p id="auth-password-strength" class="password-strength">Password: minimum 8 characters with letters, numbers, and special character.</p>
-                <p id="auth-recaptcha-hint" class="password-strength">Student login and signup are protected with Cloudflare Turnstile when configured.</p>
                 <div class="auth-actions auth-actions-emphasis">
-                    <button id="login-btn" class="btn btn-primary" type="button">Student Login</button>
+                    <button id="login-btn" class="btn btn-primary" type="button">Student Sign In</button>
+                    <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
                 </div>
             </section>
 
             <div id="auth-login-controls" class="auth-login-controls auth-flow-section auth-otp-section">
                 <div class="auth-section-head">
-                    <h3>OTP Access</h3>
-                    <button id="forgot-password-toggle-btn" class="btn btn-ghost forgot-password-toggle" type="button">Forgot Password?</button>
+                    <h3 id="auth-otp-title">OTP Verification</h3>
                 </div>
-                <p class="auth-hint">Use OTP only for privileged accounts or one-time password setup on old student accounts.</p>
+                <p id="auth-otp-hint" class="auth-hint">Request OTP, then verify it to continue.</p>
                 <div class="auth-actions auth-actions-emphasis">
                     <button id="request-otp-btn" class="btn btn-secondary" type="button">Request OTP</button>
-                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP & Continue</button>
+                    <button id="verify-otp-btn" class="btn btn-primary" type="button">Verify OTP</button>
                 </div>
                 <label id="auth-otp-wrap" class="field">
                     <span>OTP Code</span>
@@ -115,7 +101,6 @@
             <div id="auth-signup-fields" class="auth-flow-section auth-signup-section hidden">
                 <div class="auth-section-head">
                     <h3>Create Account</h3>
-                    <p>Students create a password during signup. Future student logins use email, password, and Cloudflare Turnstile.</p>
                 </div>
                 <label class="field">
                     <span>Email</span>
@@ -129,10 +114,10 @@
                 <label id="auth-role-wrap" class="field">
                     <span>Role</span>
                     <select id="auth-role-select">
-                        <option value="admin">admin (@gmail.com)</option>
-                        <option value="faculty">faculty (@gmail.com)</option>
                         <option value="student">student (@gmail.com)</option>
-                        <option value="owner">shop owner (@gmail.com)</option>
+                        <option value="faculty">faculty</option>
+                        <option value="admin">admin</option>
+                        <option value="owner">vendor</option>
                     </select>
                 </label>
                 <label id="auth-signup-admin-photo-wrap" class="field hidden">
@@ -141,21 +126,45 @@
                     <small class="field-hint">Upload a clear headshot for admin verification.</small>
                     <img id="auth-signup-admin-photo-preview" class="auth-photo-preview hidden" alt="Admin photo preview">
                 </label>
-                <label id="auth-signup-registration-wrap" class="field">
-                    <span>Registration Number (student)</span>
-                    <input id="auth-signup-registration" type="text" placeholder="e.g. 22BCS101">
-                </label>
-                <label id="auth-signup-faculty-id-wrap" class="field hidden">
-                    <span>Faculty Identifier (faculty)</span>
-                    <input id="auth-signup-faculty-id" type="text" placeholder="e.g. FAC-CSE-11">
-                </label>
                 <label class="field">
                     <span>Full Name</span>
                     <input id="auth-name" type="text" placeholder="Your full name">
                 </label>
                 <label class="field">
                     <span>Department</span>
-                    <input id="auth-department" type="text" placeholder="CSE">
+                    <select id="auth-department">
+                        <option value="" selected>Select school</option>
+                        <option value="School of Computer Science &amp; Engineering">School of Computer Science &amp; Engineering</option>
+                        <option value="School of Electronics &amp; Electrical Engineering">School of Electronics &amp; Electrical Engineering</option>
+                        <option value="School of Mechanical Engineering">School of Mechanical Engineering</option>
+                        <option value="School of Civil Engineering">School of Civil Engineering</option>
+                        <option value="School of Bioengineering &amp; Biosciences">School of Bioengineering &amp; Biosciences</option>
+                        <option value="School of Chemical Engineering &amp; Physical Sciences">School of Chemical Engineering &amp; Physical Sciences</option>
+                        <option value="School of Agriculture">School of Agriculture</option>
+                        <option value="Mittal School of Business">Mittal School of Business</option>
+                        <option value="School of Commerce &amp; Economics">School of Commerce &amp; Economics</option>
+                        <option value="School of Computer Applications">School of Computer Applications</option>
+                        <option value="School of Hotel Management &amp; Tourism">School of Hotel Management &amp; Tourism</option>
+                        <option value="School of Fashion Design">School of Fashion Design</option>
+                        <option value="School of Interior &amp; Furniture Design">School of Interior &amp; Furniture Design</option>
+                        <option value="School of Architecture &amp; Design">School of Architecture &amp; Design</option>
+                        <option value="School of Journalism, Film &amp; Creative Arts">School of Journalism, Film &amp; Creative Arts</option>
+                        <option value="School of Law">School of Law</option>
+                        <option value="School of Pharmacy">School of Pharmacy</option>
+                        <option value="School of Physiotherapy &amp; Paramedical Sciences">School of Physiotherapy &amp; Paramedical Sciences</option>
+                        <option value="School of Education">School of Education</option>
+                        <option value="School of Physical Education">School of Physical Education</option>
+                        <option value="School of Liberal &amp; Creative Arts">School of Liberal &amp; Creative Arts</option>
+                        <option value="School of Humanities">School of Humanities</option>
+                        <option value="School of Social Sciences &amp; Languages">School of Social Sciences &amp; Languages</option>
+                        <option value="School of Polytechnic">School of Polytechnic</option>
+                        <option value="School of Aerospace Engineering">School of Aerospace Engineering</option>
+                        <option value="School of Robotics &amp; Automation">School of Robotics &amp; Automation</option>
+                        <option value="School of Animation &amp; Multimedia">School of Animation &amp; Multimedia</option>
+                        <option value="School of Performing Arts">School of Performing Arts</option>
+                        <option value="School of Ayurvedic Pharmaceutical Sciences">School of Ayurvedic Pharmaceutical Sciences</option>
+                        <option value="School of Vocational Studies">School of Vocational Studies</option>
+                    </select>
                 </label>
                 <label id="auth-section-wrap" class="field">
                     <span>Section (student only)</span>
@@ -163,7 +172,21 @@
                 </label>
                 <label id="auth-semester-wrap" class="field">
                     <span>Semester (student only)</span>
-                    <input id="auth-semester" type="number" min="1" max="12" placeholder="1-12">
+                    <select id="auth-semester">
+                        <option value="" selected>Select semester</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                        <option value="10">10</option>
+                        <option value="11">11</option>
+                        <option value="12">12</option>
+                    </select>
                 </label>
                 <label id="auth-parent-email-wrap" class="field">
                     <span>Parent Email (optional)</span>
@@ -172,16 +195,17 @@
             </div>
 
             <div id="auth-signup-actions" class="auth-actions auth-signup-actions hidden">
-                <button id="register-btn" class="btn btn-ghost" type="button">Register Account</button>
+                <button id="register-btn" class="btn btn-ghost" type="button">Create Account</button>
             </div>
 
-                    <p id="auth-message" class="auth-message" aria-live="polite">Students login with email and password. OTP is only for legacy student password setup or privileged roles.</p>
-                    <p class="auth-hint">If your student account is older and does not have a password yet, request a one-time setup OTP.</p>
+                    <div id="auth-turnstile-wrap" class="auth-flow-section auth-turnstile-wrap">
+                        <p id="auth-recaptcha-hint" class="password-strength">Complete the Cloudflare Turnstile security check before continuing.</p>
+                        <div id="student-auth-turnstile-anchor" class="auth-turnstile-anchor" aria-label="Cloudflare Turnstile security check"></div>
+                    </div>
+                    <p id="auth-message" class="auth-message" aria-live="polite">Complete the security check to continue.</p>
                 </div>
             </div>
         </div>
-
-        <div id="student-auth-turnstile-anchor" class="hidden" aria-hidden="true"></div>
 
         <div id="otp-popup" class="otp-popup hidden" role="alertdialog" aria-live="polite" aria-modal="true">
             <div class="otp-popup-card glass">
@@ -189,6 +213,24 @@
                 <h4 id="otp-popup-title">OTP Sent</h4>
                 <p id="otp-popup-text">OTP has been sent.</p>
                 <button id="otp-popup-close-btn" class="btn btn-primary" type="button">OK</button>
+            </div>
+        </div>
+
+        <div id="signup-verification-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="signup-verification-title">
+            <div class="auth-modal-card glass signup-verification-card">
+                <div class="auth-modal-head">
+                    <h3 id="signup-verification-title">Verify Mail</h3>
+                </div>
+                <p id="signup-verification-copy" class="auth-modal-sub">Enter the OTP sent to your email.</p>
+                <label class="field">
+                    <span>OTP Code</span>
+                    <input id="signup-verification-otp" type="text" inputmode="numeric" placeholder="Enter email OTP" maxlength="6" autocomplete="one-time-code">
+                </label>
+                <div class="auth-actions">
+                    <button id="signup-verification-verify-btn" class="btn btn-primary" type="button">Verify OTP</button>
+                    <button id="signup-verification-resend-btn" class="btn btn-secondary" type="button">Resend OTP</button>
+                </div>
+                <p id="signup-verification-message" class="auth-message" aria-live="polite"></p>
             </div>
         </div>
 
