@@ -4,9 +4,10 @@ from contextlib import ExitStack
 from unittest import mock
 
 os.environ["APP_RUNTIME_STRICT"] = "false"
+os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "false"
 os.environ["SQLALCHEMY_DATABASE_URL"] = "sqlite:///:memory:"
 
-from app import otp_delivery, redis_client, workers
+from app import mongo, otp_delivery, redis_client, workers
 from app.main import _assert_strict_runtime_contract, _otp_verify_connection_on_startup, startup_event
 
 
@@ -350,6 +351,48 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
             mock.patch("app.main.worker_transport_status", return_value={}),
         ):
             _assert_strict_runtime_contract()
+
+    def test_managed_services_contract_runs_even_when_runtime_strict_is_disabled(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        os.environ["MONGO_PERSISTENCE_REQUIRED"] = "true"
+        os.environ["REDIS_REQUIRED"] = "true"
+        os.environ["WORKER_REQUIRED"] = "true"
+        os.environ["WORKER_ENABLE_OTP"] = "true"
+        os.environ["WORKER_ENABLE_NOTIFICATIONS"] = "true"
+        os.environ["WORKER_ENABLE_FACE_REVERIFY"] = "true"
+        os.environ["WORKER_ENABLE_RECOMPUTE"] = "true"
+        os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
+        os.environ["WORKER_WAIT_FOR_OTP_RESULT"] = "true"
+        os.environ["OTP_DELIVERY_MODE"] = "smtp"
+        with (
+            mock.patch(
+                "app.main.database_status",
+                return_value={
+                    "backend": "postgresql",
+                    "connected": True,
+                    "remote_host": True,
+                    "tls_enabled": True,
+                },
+            ),
+            mock.patch("app.main.mongo_status", return_value={"remote_host": True, "tls_enabled": True}),
+            mock.patch("app.main.redis_status", return_value={"remote_host": True, "tls_enabled": True}),
+            mock.patch(
+                "app.main.worker_transport_status",
+                return_value={
+                    "broker": {"configured": True, "remote_host": True, "tls_enabled": True},
+                    "backend": {"configured": True, "remote_host": True, "tls_enabled": True},
+                },
+            ),
+        ):
+            _assert_strict_runtime_contract()
+
+    def test_managed_services_disables_local_mongita_fallback(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        os.environ["MONGO_MONGITA_FALLBACK"] = "true"
+
+        self.assertFalse(mongo._mongita_fallback_enabled())
 
     def test_runtime_strict_contract_rejects_local_managed_services(self):
         os.environ["APP_RUNTIME_STRICT"] = "true"

@@ -57,6 +57,10 @@ def _strict_runtime_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _managed_services_enabled() -> bool:
+    return managed_services_required()
+
+
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
     raw = (_env(name, str(default)) or "").strip()
     try:
@@ -89,9 +93,9 @@ def _normalized_postgres_url(raw: str) -> str:
 def _normalized_database_url() -> str:
     raw = (_env("SQLALCHEMY_DATABASE_URL") or "").strip()
     if not raw:
-        if _strict_runtime_enabled():
+        if _strict_runtime_enabled() or _managed_services_enabled():
             raise RuntimeError(
-                "APP_RUNTIME_STRICT=true requires SQLALCHEMY_DATABASE_URL to be set to a live PostgreSQL DSN."
+                "Managed runtime requires SQLALCHEMY_DATABASE_URL to be set to a live PostgreSQL DSN."
             )
         raw = "sqlite:///./campus.db"
     if raw.startswith("postgres://") or (raw.startswith("postgresql://") and not raw.startswith("postgresql+")):
@@ -104,10 +108,16 @@ def _normalized_database_url() -> str:
         if suffix and not suffix.startswith("/"):
             raw = f"sqlite:///{(PROJECT_ROOT / suffix).resolve()}"
 
-    if _strict_runtime_enabled() and not raw.startswith("postgresql"):
+    if (_strict_runtime_enabled() or _managed_services_enabled()) and not raw.startswith("postgresql"):
         raise RuntimeError(
-            "APP_RUNTIME_STRICT=true requires SQLALCHEMY_DATABASE_URL to point to PostgreSQL."
+            "Managed runtime requires SQLALCHEMY_DATABASE_URL to point to PostgreSQL."
         )
+    if _managed_services_enabled() and raw.startswith("postgresql"):
+        host = str(make_url(raw).host or "").strip()
+        if not is_remote_service_host(host):
+            raise RuntimeError(
+                "APP_MANAGED_SERVICES_REQUIRED=true requires SQLALCHEMY_DATABASE_URL to use a non-local PostgreSQL host."
+            )
     return raw
 
 
