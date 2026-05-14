@@ -701,12 +701,16 @@ def _safe_send_recovery_email(
         return
     try:
         delivery = send_notification_email(recipient, subject=subject, body=body)
+        delivery_channel = str(delivery.get("channel") or "").strip()
+        logged_message = f"{subject}\n{body}"
+        if delivery_channel and delivery_channel != str(channel):
+            logged_message = f"{logged_message}\n\n[delivery-backend:{delivery_channel}]"
         _write_notification_log(
             db,
             student_id=int(student_id),
             sent_to=recipient,
-            channel=str(delivery.get("channel") or channel),
-            message=f"{subject}\n{body}",
+            channel=str(channel),
+            message=logged_message,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Non-blocking recovery email dispatch failure to=%s error=%s", recipient, exc)

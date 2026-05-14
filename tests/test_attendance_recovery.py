@@ -9,6 +9,8 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models
 from app.attendance_recovery import (
+    _recent_recovery_notice_exists_any,
+    _safe_send_recovery_email,
     complete_remedial_recovery_action,
     evaluate_attendance_recovery,
     get_admin_recovery_plans,
@@ -662,6 +664,38 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertEqual(int(result["dispatched"]), 1)
         self.assertEqual(int(result["skipped_cooldown"]), 0)
         _dispatch.assert_called_once()
+
+    @mock.patch("app.attendance_recovery.send_notification_email", return_value={"channel": "smtp-email"})
+    def test_recovery_email_logs_logical_channel_for_cooldown(self, _send_notification_email):
+        with mock.patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            _safe_send_recovery_email(
+                self.db,
+                student_id=101,
+                sent_to="student.one@example.com",
+                subject="[Attendance Recovery] Action required for CSE310 (62.5%)",
+                body="Recovery mail body",
+                channel="attendance-recovery-student-email",
+            )
+        self.db.commit()
+
+        rows = (
+            self.db.query(models.NotificationLog)
+            .filter(models.NotificationLog.student_id == 101)
+            .order_by(models.NotificationLog.id.desc())
+            .all()
+        )
+        self.assertTrue(rows)
+        self.assertEqual(rows[0].channel, "attendance-recovery-student-email")
+        self.assertIn("[delivery-backend:smtp-email]", rows[0].message)
+        self.assertTrue(
+            _recent_recovery_notice_exists_any(
+                self.db,
+                student_id=101,
+                channel="attendance-recovery-student-email",
+                cooldown_minutes=1440,
+            )
+        )
 
 
 if __name__ == "__main__":
