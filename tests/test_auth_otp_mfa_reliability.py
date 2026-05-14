@@ -235,6 +235,41 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 428)
         self.assertIn("Login via temporary OTP", ctx.exception.detail)
 
+    def test_student_password_login_rejects_expired_password(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 71,
+                "email": "expired.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 91,
+                "faculty_id": None,
+                "is_active": True,
+                "primary_login_verified": True,
+                "password_updated_at": datetime.utcnow() - timedelta(days=91),
+                "created_at": datetime.utcnow() - timedelta(days=120),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth.create_session_tokens") as create_session_tokens,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.login_student_with_password(
+                    schemas.LoginPasswordRequest(email="expired.student@gmail.com", password="Student@123"),
+                    response=Response(),
+                    request=_request("/auth/student/login"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 428)
+        self.assertIn("expired", str(ctx.exception.detail).lower())
+        create_session_tokens.assert_not_called()
+
     def test_student_passwordless_login_otp_is_allowed_only_for_password_setup_accounts(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
@@ -920,6 +955,56 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail, "OTP already used. Request a new OTP.")
+
+    def test_verify_login_otp_rejects_expired_password_for_faculty(self):
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 15,
+                "email": "expired.faculty@gmail.com",
+                "password_hash": hash_password("Faculty@123"),
+                "role": models.UserRole.FACULTY.value,
+                "student_id": None,
+                "faculty_id": 33,
+                "is_active": True,
+                "mfa_enabled": False,
+                "password_updated_at": datetime.utcnow() - timedelta(days=91),
+                "created_at": datetime.utcnow() - timedelta(days=120),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 32,
+                "user_id": 15,
+                "purpose": "login",
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=15),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth.create_session_tokens") as create_session_tokens,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.verify_login_otp(
+                    schemas.VerifyOTPRequest(email="expired.faculty@gmail.com", otp_code="123456"),
+                    response=Response(),
+                    request=_request("/auth/login/verify-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 428)
+        self.assertIn("expired", str(ctx.exception.detail).lower())
+        create_session_tokens.assert_not_called()
 
     def test_verify_and_consume_mfa_code_accepts_spaced_backup_code(self):
         mongo = _FakeMongo()

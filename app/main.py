@@ -1201,6 +1201,29 @@ def apply_mysql_enrollment_schema_migrations() -> None:
                 continue
             connection.execute(text(f"ALTER TABLE students MODIFY COLUMN {column_name} LONGTEXT NULL"))
 
+
+def apply_auth_user_schema_migrations() -> None:
+    inspector = sa_inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "auth_users" not in table_names:
+        return
+
+    auth_columns = {column["name"] for column in inspector.get_columns("auth_users")}
+    if "password_updated_at" in auth_columns:
+        return
+
+    column_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+    with engine.begin() as connection:
+        connection.execute(text(f"ALTER TABLE auth_users ADD COLUMN password_updated_at {column_type}"))
+        connection.execute(
+            text(
+                "UPDATE auth_users "
+                "SET password_updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
+                "WHERE password_updated_at IS NULL"
+            )
+        )
+
+
 def _sql_startup_max_attempts() -> int:
     raw = (os.getenv("SQL_STARTUP_MAX_ATTEMPTS", "3") or "").strip()
     try:
@@ -1228,6 +1251,7 @@ def init_sql_schema() -> None:
             Base.metadata.create_all(bind=engine)
             apply_sqlite_migrations()
             apply_mysql_enrollment_schema_migrations()
+            apply_auth_user_schema_migrations()
             return
         except Exception as exc:  # noqa: BLE001
             last_exc = exc

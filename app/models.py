@@ -719,6 +719,7 @@ class AuthUser(Base):
     faculty_id = Column(Integer, ForeignKey("faculty.id"), unique=True, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     last_login_at = Column(DateTime, nullable=True)
+    password_updated_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     student = relationship("Student")

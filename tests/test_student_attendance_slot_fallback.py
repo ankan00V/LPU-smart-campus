@@ -115,12 +115,16 @@ class StudentAttendanceSlotFallbackAlignmentTests(unittest.TestCase):
         )
 
     def test_aggregate_counts_record_fallback_for_missing_same_day_slots(self):
-        with patch("app.routers.attendance._academic_start_date", return_value=self.class_date):
+        with (
+            patch("app.routers.attendance._academic_start_date", return_value=self.class_date),
+            patch("app.routers.attendance.recompute_attendance_recovery_scope") as recompute_scope,
+        ):
             payload = get_student_attendance_aggregate(
                 db=self.db,
                 current_user=self._student_user(),
             )
 
+        recompute_scope.assert_not_called()
         self.assertEqual(payload.attended_total, 2)
         self.assertEqual(payload.delivered_total, 2)
         self.assertEqual(payload.aggregate_percent, 100.0)

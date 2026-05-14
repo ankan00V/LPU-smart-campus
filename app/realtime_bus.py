@@ -88,6 +88,22 @@ def _realtime_dedupe_max() -> int:
         return 5000
 
 
+def _int_env(name: str, default: int, minimum: int = 0) -> int:
+    raw = (os.getenv(name, str(default)) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = int(default)
+    return max(minimum, value)
+
+
+def _enabled_flag(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _publish_backend_event(event: dict[str, Any]) -> None:
     errors: list[tuple[str, str]] = []
     successes = 0
@@ -167,7 +183,10 @@ def _start_backend_listeners(
                 thread_name="realtime-redis-listener",
             )
         elif backend == "postgres":
-            thread = _start_postgres_listener(on_message=on_message, stop_event=stop_event)
+            if _postgres_listener_dsn() is None:
+                thread = None
+            else:
+                thread = _start_postgres_listener(on_message=on_message, stop_event=stop_event)
         elif backend == "mongo":
             thread = _start_mongo_listener(on_message=on_message, stop_event=stop_event)
         else:
@@ -185,7 +204,7 @@ def _publish_postgres_event(event: dict[str, Any]) -> None:
     channel = _realtime_pg_channel()
     payload = json.dumps(event, separators=(",", ":"), ensure_ascii=True)
     with engine.begin() as conn:
-        conn.execute(text(f"NOTIFY {channel}, :payload"), {"payload": payload})
+        conn.execute(text("SELECT pg_notify(:channel, :payload)"), {"channel": channel, "payload": payload})
 
 
 def _postgres_dsn() -> str | None:
@@ -198,6 +217,33 @@ def _postgres_dsn() -> str | None:
         return postgres_libpq_url(override)
     return postgres_libpq_url(SQLALCHEMY_DATABASE_URL)
 
+def _postgres_listener_dsn() -> str | None:
+    try:
+        from .database import SQLALCHEMY_DATABASE_URL, postgres_libpq_url
+        from sqlalchemy.engine import make_url
+    except Exception:
+        return None
+
+    override = (os.getenv("REALTIME_PG_DSN") or "").strip()
+    if override:
+        return postgres_libpq_url(override)
+
+    value = str(SQLALCHEMY_DATABASE_URL or "").strip()
+    try:
+        safe_url = make_url(value)
+    except Exception:
+        return postgres_libpq_url(value)
+
+    host = str(safe_url.host or "").strip()
+    if "-pooler." in host or ".pooler." in host:
+        LOGGER.warning(
+            "Postgres realtime listener disabled because SQLALCHEMY_DATABASE_URL points to a pooler. "
+            "Set REALTIME_PG_DSN to a direct PostgreSQL URL to enable LISTEN/NOTIFY."
+        )
+        return None
+
+    return postgres_libpq_url(value)
+
 
 def _drain_pg_notifies(conn, on_message) -> None:
     poll_fn = getattr(conn, "poll", None)
@@ -207,11 +253,18 @@ def _drain_pg_notifies(conn, on_message) -> None:
         except Exception:
             return
 
-    notifies = list(getattr(conn, "notifies", []) or [])
-    try:
-        getattr(conn, "notifies", []).clear()
-    except Exception:
-        pass
+    raw_notifies = getattr(conn, "notifies", [])
+    if callable(raw_notifies):
+        try:
+            notifies = list(raw_notifies(timeout=0, stop_after=100))
+        except TypeError:
+            notifies = list(raw_notifies())
+    else:
+        notifies = list(raw_notifies or [])
+        try:
+            raw_notifies.clear()
+        except Exception:
+            pass
 
     for notify in notifies:
         payload = getattr(notify, "payload", None)
@@ -241,9 +294,9 @@ def _start_postgres_listener(*, on_message, stop_event: threading.Event) -> thre
     def _runner() -> None:
         reconnect_delay = 0.4
         while not stop_event.is_set():
-            dsn = _postgres_dsn()
+            dsn = _postgres_listener_dsn()
             if not dsn:
-                LOGGER.error("Postgres realtime backend requires SQLALCHEMY_DATABASE_URL.")
+                LOGGER.error("Postgres realtime backend requires SQLALCHEMY_DATABASE_URL or REALTIME_PG_DSN.")
                 stop_event.wait(reconnect_delay)
                 reconnect_delay = min(5.0, reconnect_delay * 1.8)
                 continue
@@ -255,7 +308,10 @@ def _start_postgres_listener(*, on_message, stop_event: threading.Event) -> thre
 
             conn = None
             try:
-                conn = psycopg.connect(dsn)
+                conn = psycopg.connect(
+                    dsn,
+                    connect_timeout=_int_env("REALTIME_PG_CONNECT_TIMEOUT_SECONDS", 8, minimum=1),
+                )
                 conn.autocommit = True
                 conn.execute(f"LISTEN {_realtime_pg_channel()}")
                 reconnect_delay = 0.4

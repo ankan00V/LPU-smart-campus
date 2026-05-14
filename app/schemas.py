@@ -1637,6 +1637,8 @@ class AuthUserOut(BaseModel):
     alternate_email: Optional[str] = None
     primary_login_verified: bool = False
     password_setup_required: bool = False
+    password_expired: bool = False
+    password_expires_at: Optional[datetime] = None
     mfa_enabled: bool = False
     is_active: bool
     created_at: datetime

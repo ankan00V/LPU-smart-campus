@@ -31,6 +31,7 @@ ACCESS_COOKIE_NAME = (os.getenv("APP_ACCESS_COOKIE_NAME", "lpu_access_token") or
 REFRESH_COOKIE_NAME = (os.getenv("APP_REFRESH_COOKIE_NAME", "lpu_refresh_token") or "lpu_refresh_token").strip()
 JWT_ALGORITHM = "HS256"
 REQUIRED_JWT_CLAIMS = ("sub", "role", "sid", "jti", "typ", "exp", "iat", "nbf")
+PASSWORD_EXPIRED_DETAIL = "Your password has expired. Reset it before signing in."
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
@@ -61,6 +62,69 @@ class CurrentUser:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _password_max_age_days() -> int:
+    raw = (os.getenv("AUTH_PASSWORD_MAX_AGE_DAYS", "90") or "90").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 90
+    return max(1, min(3650, value))
+
+
+def _read_auth_value(user: Any, key: str) -> Any:
+    if isinstance(user, dict):
+        return user.get(key)
+    return getattr(user, key, None)
+
+
+def _coerce_utc_naive_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        if raw.endswith("Z"):
+            raw = f"{raw[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def password_expires_at(user: Any) -> datetime | None:
+    base = _coerce_utc_naive_datetime(_read_auth_value(user, "password_updated_at"))
+    if base is None:
+        base = _coerce_utc_naive_datetime(_read_auth_value(user, "created_at"))
+    if base is None:
+        return None
+    return base + timedelta(days=_password_max_age_days())
+
+
+def password_expired(user: Any, *, now: datetime | None = None) -> bool:
+    if bool(_read_auth_value(user, "password_setup_required")):
+        return False
+    if not str(_read_auth_value(user, "password_hash") or "").strip():
+        return False
+    expires_at = password_expires_at(user)
+    if expires_at is None:
+        return True
+    current = _coerce_utc_naive_datetime(now) or datetime.utcnow()
+    return expires_at <= current
+
+
+def require_password_current(user: Any) -> None:
+    if password_expired(user):
+        raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
 
 
 def _int_or_zero(value: Any) -> int:
@@ -130,6 +194,7 @@ def upsert_sql_auth_user_record(
     is_active: bool = True,
     last_login_at: datetime | None = None,
     created_at: datetime | None = None,
+    password_updated_at: datetime | None = None,
     requested_id: int | None = None,
 ) -> tuple[models.AuthUser, bool]:
     email_norm = str(email or "").strip().lower()
@@ -153,8 +218,13 @@ def upsert_sql_auth_user_record(
         if str(existing_by_email.email or "").strip().lower() != email_norm:
             existing_by_email.email = email_norm
             changed = True
-        if existing_by_email.password_hash != password_hash:
+        password_changed = existing_by_email.password_hash != password_hash
+        if password_changed:
             existing_by_email.password_hash = password_hash
+            existing_by_email.password_updated_at = password_updated_at or datetime.utcnow()
+            changed = True
+        elif not existing_by_email.password_updated_at:
+            existing_by_email.password_updated_at = password_updated_at or existing_by_email.created_at or datetime.utcnow()
             changed = True
         if existing_by_email.role != role:
             existing_by_email.role = role
@@ -185,8 +255,13 @@ def upsert_sql_auth_user_record(
                     detail="Auth user id collision detected. Contact support to reconcile auth records.",
                 )
             changed = False
-            if existing_by_id.password_hash != password_hash:
+            password_changed = existing_by_id.password_hash != password_hash
+            if password_changed:
                 existing_by_id.password_hash = password_hash
+                existing_by_id.password_updated_at = password_updated_at or datetime.utcnow()
+                changed = True
+            elif not existing_by_id.password_updated_at:
+                existing_by_id.password_updated_at = password_updated_at or existing_by_id.created_at or datetime.utcnow()
                 changed = True
             if existing_by_id.role != role:
                 existing_by_id.role = role
@@ -217,6 +292,7 @@ def upsert_sql_auth_user_record(
         is_active=is_active,
         last_login_at=last_login_at,
         created_at=created_at or datetime.utcnow(),
+        password_updated_at=password_updated_at or created_at or datetime.utcnow(),
     )
     db.add(new_user)
     db.flush()
@@ -554,6 +630,9 @@ def rotate_session_tokens(db, *, refresh_token: str, request: Request) -> dict[s
     if not bool(user_doc.get("is_active", True)):
         revoke_session(db, sid=sid, reason="refresh_user_inactive")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account is inactive")
+    if password_expired(user_doc):
+        revoke_session(db, sid=sid, reason="password_expired")
+        raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
 
     role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
     current_user = CurrentUser(
@@ -722,6 +801,10 @@ def get_current_user(
 
         if not user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user session")
+        if password_expired(user_doc):
+            if sid:
+                revoke_session(db, sid=sid, reason="password_expired")
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
 
         db["auth_sessions"].update_one({"sid": sid}, {"$set": {"last_seen_at": _utc_now()}})
         return user
@@ -845,6 +928,7 @@ def _ensure_sql_auth_user(user_doc: dict[str, Any], sql_db: Session | None = Non
     is_active = bool(user_doc.get("is_active", True))
     created_at = user_doc.get("created_at")
     last_login_at = user_doc.get("last_login_at")
+    password_updated_at = _coerce_utc_naive_datetime(user_doc.get("password_updated_at"))
 
     owns_session = sql_db is None
     db = sql_db or SessionLocal()
@@ -860,8 +944,13 @@ def _ensure_sql_auth_user(user_doc: dict[str, Any], sql_db: Session | None = Non
             if existing.role != role:
                 existing.role = role
                 changed = True
-            if existing.password_hash != password_hash:
+            password_changed = existing.password_hash != password_hash
+            if password_changed:
                 existing.password_hash = password_hash
+                existing.password_updated_at = password_updated_at or datetime.utcnow()
+                changed = True
+            elif not existing.password_updated_at:
+                existing.password_updated_at = password_updated_at or existing.created_at or datetime.utcnow()
                 changed = True
             if role == models.UserRole.STUDENT:
                 if existing.faculty_id is not None:
@@ -918,6 +1007,7 @@ def _ensure_sql_auth_user(user_doc: dict[str, Any], sql_db: Session | None = Non
             is_active=is_active,
             last_login_at=last_login_at,
             created_at=created_at or datetime.utcnow(),
+            password_updated_at=password_updated_at or created_at or datetime.utcnow(),
         )
         db.add(new_user)
         db.flush()

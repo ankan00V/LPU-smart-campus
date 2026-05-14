@@ -85,7 +85,12 @@ def recovery_due_days() -> int:
 
 
 def recovery_retro_cooldown_minutes() -> int:
-    return max(5, _int_env("ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES", 360))
+    # The retro/autopilot loop must never undercut the student anti-spam window.
+    # A stale lower env value used to let the loop re-evaluate students too often.
+    return max(
+        recovery_student_email_cooldown_minutes(),
+        _int_env("ATTENDANCE_RECOVERY_RETRO_NOTIFY_COOLDOWN_MINUTES", 1440),
+    )
 
 
 def recovery_student_email_cooldown_minutes() -> int:
@@ -96,6 +101,13 @@ def recovery_student_email_cooldown_minutes() -> int:
 def recovery_faculty_email_cooldown_minutes() -> int:
     # Keep faculty nudges bounded as well.
     return max(30, _int_env("ATTENDANCE_RECOVERY_FACULTY_EMAIL_COOLDOWN_MINUTES", 1440))
+
+
+def _recovery_email_cooldown_minutes_for_channel(channel: str) -> int:
+    normalized = str(channel or "").strip()
+    if normalized == "attendance-recovery-faculty-email":
+        return recovery_faculty_email_cooldown_minutes()
+    return recovery_student_email_cooldown_minutes()
 
 
 def recovery_autopilot_enabled() -> bool:
@@ -686,34 +698,44 @@ def _safe_send_recovery_email(
     subject: str,
     body: str,
     channel: str,
-) -> None:
+) -> bool:
     recipient = str(sent_to or "").strip()
     if not recipient:
-        return
+        return False
+    normalized_channel = str(channel or "").strip() or "attendance-recovery-student-email"
+    if _recent_recovery_notice_exists_any(
+        db,
+        student_id=int(student_id),
+        channel=normalized_channel,
+        cooldown_minutes=_recovery_email_cooldown_minutes_for_channel(normalized_channel),
+    ):
+        return False
     if "PYTEST_CURRENT_TEST" in os.environ:
         _write_notification_log(
             db,
             student_id=int(student_id),
             sent_to=recipient,
-            channel=f"{channel}-suppressed",
+            channel=f"{normalized_channel}-suppressed",
             message=f"{subject}\n{body}",
         )
-        return
+        return True
     try:
         delivery = send_notification_email(recipient, subject=subject, body=body)
         delivery_channel = str(delivery.get("channel") or "").strip()
         logged_message = f"{subject}\n{body}"
-        if delivery_channel and delivery_channel != str(channel):
+        if delivery_channel and delivery_channel != normalized_channel:
             logged_message = f"{logged_message}\n\n[delivery-backend:{delivery_channel}]"
         _write_notification_log(
             db,
             student_id=int(student_id),
             sent_to=recipient,
-            channel=str(channel),
+            channel=normalized_channel,
             message=logged_message,
         )
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning("Non-blocking recovery email dispatch failure to=%s error=%s", recipient, exc)
+        return False
 
 
 def _safe_enqueue_recovery_notification(payload: dict[str, object]) -> None:
@@ -1838,7 +1860,10 @@ def retro_send_recovery_notifications(
         .all()
     )
 
-    cooloff = int(cooldown_minutes if cooldown_minutes is not None else recovery_retro_cooldown_minutes())
+    cooloff = max(
+        recovery_student_email_cooldown_minutes(),
+        int(cooldown_minutes if cooldown_minutes is not None else recovery_retro_cooldown_minutes()),
+    )
     evaluated = 0
     eligible = 0
     dispatched = 0
@@ -1869,11 +1894,10 @@ def retro_send_recovery_notifications(
             now_dt=datetime.utcnow(),
         )
 
-        if not force_resend and _recent_recovery_notice_exists(
+        if not force_resend and _recent_recovery_notice_exists_any(
             db,
             student_id=int(student.id),
             channel="attendance-recovery-student-email",
-            course_code=str(course.code or ""),
             cooldown_minutes=cooloff,
         ):
             skipped_cooldown += 1

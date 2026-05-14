@@ -18,6 +18,7 @@ from app.attendance_recovery import (
     retro_send_recovery_notifications,
 )
 from app.routers.admin import _build_admin_payload
+from app.routers.attendance import get_student_recovery_plan_list
 
 
 class AttendanceRecoveryWorkflowTests(unittest.TestCase):
@@ -624,6 +625,48 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         _dispatch.assert_not_called()
 
     @mock.patch("app.attendance_recovery._dispatch_recovery_communications")
+    def test_retro_dispatch_cooldown_is_per_student_not_per_course_text(self, _dispatch):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+        plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+        self.assertIsNotNone(plan)
+        _dispatch.reset_mock()
+        self.db.add(
+            models.NotificationLog(
+                student_id=101,
+                sent_to="student.one@example.com",
+                channel="attendance-recovery-student-email",
+                message="Recent recovery alert without the current course code",
+                created_at=datetime.utcnow(),
+            )
+        )
+        self.db.commit()
+
+        result = retro_send_recovery_notifications(
+            self.db,
+            student_id=101,
+            course_id=301,
+            limit=20,
+            force_resend=False,
+            dry_run=False,
+            refresh_scope=False,
+            cooldown_minutes=360,
+        )
+        self.assertEqual(int(result["evaluated"]), 1)
+        self.assertEqual(int(result["eligible"]), 0)
+        self.assertEqual(int(result["dispatched"]), 0)
+        self.assertEqual(int(result["skipped_cooldown"]), 1)
+        _dispatch.assert_not_called()
+
+    @mock.patch("app.attendance_recovery._dispatch_recovery_communications")
     def test_retro_dispatch_force_resend_bypasses_cooldown(self, _dispatch):
         self._seed_attendance(
             [
@@ -696,6 +739,68 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
                 cooldown_minutes=1440,
             )
         )
+
+    @mock.patch("app.attendance_recovery.send_notification_email", return_value={"channel": "smtp-email"})
+    def test_recovery_email_send_layer_blocks_second_mail_within_24_hours(self, _send_notification_email):
+        with mock.patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}):
+            os.environ.pop("PYTEST_CURRENT_TEST", None)
+            first_sent = _safe_send_recovery_email(
+                self.db,
+                student_id=101,
+                sent_to="student.one@example.com",
+                subject="[Attendance Recovery] First alert",
+                body="First recovery mail body",
+                channel="attendance-recovery-student-email",
+            )
+            second_sent = _safe_send_recovery_email(
+                self.db,
+                student_id=101,
+                sent_to="student.one@example.com",
+                subject="[Attendance Recovery] Duplicate alert",
+                body="Duplicate recovery mail body",
+                channel="attendance-recovery-student-email",
+            )
+        self.db.commit()
+
+        self.assertTrue(first_sent)
+        self.assertFalse(second_sent)
+        _send_notification_email.assert_called_once()
+        rows = (
+            self.db.query(models.NotificationLog)
+            .filter(
+                models.NotificationLog.student_id == 101,
+                models.NotificationLog.channel == "attendance-recovery-student-email",
+            )
+            .all()
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertIn("First alert", rows[0].message)
+
+    def test_student_recovery_plan_read_does_not_recompute_or_dispatch(self):
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=8,
+        )
+        plan = evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+        self.assertIsNotNone(plan)
+
+        with mock.patch("app.routers.attendance.recompute_attendance_recovery_scope") as recompute_scope:
+            payload = get_student_recovery_plan_list(
+                include_resolved=False,
+                limit=12,
+                db=self.db,
+                current_user=self.db.get(models.AuthUser, 801),
+            )
+
+        recompute_scope.assert_not_called()
+        self.assertEqual(len(payload.plans), 1)
+        self.assertEqual(payload.plans[0].course_code, "CSE310")
 
 
 if __name__ == "__main__":

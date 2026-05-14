@@ -18,6 +18,7 @@ _mongo_db = None
 _mongo_error: str | None = None
 _last_init_attempt: datetime | None = None
 _mongo_backend: str | None = None
+_mongo_active_uri: str | None = None
 LOGGER = logging.getLogger(__name__)
 
 try:
@@ -184,6 +185,14 @@ def _mongo_hosts(value: str | None = None) -> list[str]:
         if normalized:
             hosts.append(normalized)
     return hosts
+
+
+def _mongo_uri_remote(value: str) -> bool:
+    scheme = _mongo_scheme(value)
+    hosts = _mongo_hosts(value)
+    return scheme in {"mongodb", "mongodb+srv"} and bool(hosts) and all(
+        is_remote_service_host(host) for host in hosts
+    )
 
 
 def _mongo_tls_enabled() -> bool:
@@ -505,7 +514,7 @@ def mongo_persistence_required() -> bool:
 
 
 def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
-    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend
+    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend, _mongo_active_uri
 
     uri = _mongo_uri()
     fallback_uri = _mongo_uri_fallback()
@@ -521,8 +530,29 @@ def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
     if not uri_candidates:
         _mongo_client = None
         _mongo_db = None
+        _mongo_active_uri = None
         _mongo_error = "MONGODB_URI is not configured"
         return False
+
+    if managed_services_required():
+        if not uri:
+            _mongo_client = None
+            _mongo_db = None
+            _mongo_backend = None
+            _mongo_active_uri = None
+            _mongo_error = "APP_MANAGED_SERVICES_REQUIRED=true requires MONGO_URI or MONGODB_URI"
+            return False
+        invalid_candidates = [candidate for candidate in uri_candidates if not _mongo_uri_remote(candidate)]
+        if invalid_candidates:
+            _mongo_client = None
+            _mongo_db = None
+            _mongo_backend = None
+            _mongo_active_uri = None
+            _mongo_error = (
+                "APP_MANAGED_SERVICES_REQUIRED=true requires MongoDB candidates "
+                "to use non-local mongodb:// or mongodb+srv:// hosts"
+            )
+            return False
 
     now = datetime.now(timezone.utc)
     if (
@@ -572,6 +602,7 @@ def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
                 _mongo_client = client
                 _mongo_db = client[_mongo_db_name()]
                 _mongo_backend = "pymongo"
+                _mongo_active_uri = candidate_uri
                 if ensure_indexes:
                     _ensure_indexes(_mongo_db)
                 _mongo_error = None
@@ -594,6 +625,7 @@ def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
             _mongo_client = client
             _mongo_db = client[_mongo_db_name()]
             _mongo_backend = "mongita"
+            _mongo_active_uri = None
             try:
                 if ensure_indexes:
                     _ensure_indexes(_mongo_db)
@@ -607,12 +639,13 @@ def init_mongo(force: bool = False, *, ensure_indexes: bool = True) -> bool:
     _mongo_client = None
     _mongo_db = None
     _mongo_backend = None
+    _mongo_active_uri = None
     _mongo_error = " | ".join(errors) if errors else "MongoDB connection failed"
     return False
 
 
 def close_mongo() -> None:
-    global _mongo_client, _mongo_db, _last_init_attempt, _mongo_backend
+    global _mongo_client, _mongo_db, _last_init_attempt, _mongo_backend, _mongo_active_uri
 
     if _mongo_client is not None:
         try:
@@ -623,10 +656,11 @@ def close_mongo() -> None:
     _mongo_db = None
     _last_init_attempt = None
     _mongo_backend = None
+    _mongo_active_uri = None
 
 
 def invalidate_mongo_connection(exc: Exception | None = None) -> None:
-    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend
+    global _mongo_client, _mongo_db, _mongo_error, _last_init_attempt, _mongo_backend, _mongo_active_uri
 
     if exc is not None:
         _mongo_error = str(exc)
@@ -641,6 +675,7 @@ def invalidate_mongo_connection(exc: Exception | None = None) -> None:
     _mongo_client = None
     _mongo_db = None
     _mongo_backend = None
+    _mongo_active_uri = None
     # Allow immediate reconnect attempts after an operation-level failure.
     _last_init_attempt = None
 
@@ -660,13 +695,14 @@ def get_mongo_db(required: bool = False):
 
 def mongo_status() -> dict[str, Any]:
     enabled = _get_mongo_db() is not None
-    hosts = _mongo_hosts()
+    status_uri = _mongo_active_uri or _mongo_uri()
+    hosts = _mongo_hosts(status_uri)
     remote_host = bool(hosts) and all(is_remote_service_host(host) for host in hosts)
     return {
         "enabled": enabled,
         "backend": _mongo_backend,
         "database": _mongo_db_name() if enabled else None,
-        "uri_scheme": _mongo_scheme(),
+        "uri_scheme": _mongo_scheme(status_uri),
         "host": hosts[0] if hosts else None,
         "hosts": hosts,
         "remote_host": remote_host,
