@@ -332,6 +332,9 @@ def _password_setup_required(doc: dict[str, Any]) -> bool:
     explicit = doc.get("password_setup_required")
     if explicit is not None:
         return bool(explicit)
+    password_hash = str(doc.get("password_hash") or "").strip()
+    if password_hash:
+        return False
     return not bool(doc.get("password_updated_at"))
 
 

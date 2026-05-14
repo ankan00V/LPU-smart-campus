@@ -344,6 +344,51 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertIn("already have a password set", ctx.exception.detail)
 
+    def test_student_passwordless_login_otp_rejects_password_ready_accounts_when_flag_is_missing(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 74,
+                "email": "ready.flagless.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 274,
+                "faculty_id": None,
+                "is_active": True,
+                "primary_login_verified": True,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["students"].insert_one(
+            {
+                "id": 274,
+                "name": "READY FLAGLESS",
+                "email": "ready.flagless.student@gmail.com",
+                "registration_number": "12200274",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.request_login_otp(
+                    schemas.LoginOTPRequest(
+                        email="ready.flagless.student@gmail.com",
+                        captcha_token="turnstile-token-1234567890",
+                    ),
+                    request=_request("/auth/login/request-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("already have a password set", ctx.exception.detail)
+
     def test_faculty_passwordless_login_otp_is_allowed_for_legacy_accounts(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
