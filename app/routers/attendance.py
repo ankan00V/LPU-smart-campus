@@ -49,6 +49,7 @@ from ..saarthi_service import (
     should_materialize_saarthi_attendance,
 )
 from ..workers import enqueue_face_reverification, enqueue_recompute
+from .auth import reissue_generated_profile_identifiers
 
 router = APIRouter(prefix="/attendance", tags=["Attendance Management"])
 logger = logging.getLogger(__name__)
@@ -67,6 +68,12 @@ FACULTY_SECTION_LOCK_MINUTES = 24 * 60
 STUDENT_SECTION_LOCK_MINUTES = 48 * 60
 FACULTY_ID_IMMUTABLE_MESSAGE = (
     "Faculty ID is permanent and can't be changed without admin permissions."
+)
+SYSTEM_ASSIGNED_STUDENT_ID_MESSAGE = (
+    "Registration number is system-assigned from arrival order and cannot be entered manually."
+)
+SYSTEM_ASSIGNED_FACULTY_ID_MESSAGE = (
+    "Faculty ID is system-assigned from arrival order and cannot be entered manually."
 )
 PROFILE_NAME_IMMUTABLE_MESSAGE = (
     "Full name can be set once from profile setup and then changed only by admin."
@@ -476,6 +483,23 @@ def _public_media_reference(object_key: str | None, legacy_data_url: str | None)
     return value or None
 
 
+def _display_media_reference(db: Session, *, object_key: str | None, legacy_data_url: str | None) -> str | None:
+    key = str(object_key or "").strip()
+    if key:
+        # Local dev snapshots can retain object-key references after the metadata rows or
+        # remote blob mirror are gone. In that case, fail soft instead of returning a
+        # permanently broken image URL to the UI.
+        if (os.getenv("APP_RUNTIME_STRICT", "true") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+            restored = data_url_for_object(db, key)
+            if restored:
+                return restored
+            value = str(legacy_data_url or "").strip()
+            return value or None
+        return signed_url_for_object(key)
+    value = str(legacy_data_url or "").strip()
+    return value or None
+
+
 def _media_data_url_for_processing(db: Session, *, object_key: str | None, legacy_data_url: str | None) -> str | None:
     if object_key:
         restored = data_url_for_object(db, object_key)
@@ -501,7 +525,7 @@ def _faculty_profile_photo_data_url(db: Session, faculty: models.Faculty) -> str
     )
 
 
-def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
+def _sync_student_to_mongo(db: Session, student: models.Student, *, source: str) -> None:
     _upsert_mongo_by_id(
         "students",
         student.id,
@@ -512,7 +536,11 @@ def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
             "parent_email": student.parent_email,
             "profile_photo_data_url": None,
             "profile_photo_object_key": student.profile_photo_object_key,
-            "profile_photo_url": _public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
+            "profile_photo_url": _display_media_reference(
+                db,
+                object_key=student.profile_photo_object_key,
+                legacy_data_url=student.profile_photo_data_url,
+            ),
             "profile_photo_updated_at": student.profile_photo_updated_at,
             "profile_photo_locked_until": student.profile_photo_locked_until,
             "profile_face_template_json": student.profile_face_template_json,
@@ -530,7 +558,7 @@ def _sync_student_to_mongo(student: models.Student, *, source: str) -> None:
     )
 
 
-def _sync_faculty_to_mongo(faculty: models.Faculty, *, source: str) -> None:
+def _sync_faculty_to_mongo(db: Session, faculty: models.Faculty, *, source: str) -> None:
     _upsert_mongo_by_id(
         "faculty",
         faculty.id,
@@ -542,7 +570,11 @@ def _sync_faculty_to_mongo(faculty: models.Faculty, *, source: str) -> None:
             "section_updated_at": faculty.section_updated_at,
             "profile_photo_data_url": None,
             "profile_photo_object_key": faculty.profile_photo_object_key,
-            "profile_photo_url": _public_media_reference(faculty.profile_photo_object_key, faculty.profile_photo_data_url),
+            "profile_photo_url": _display_media_reference(
+                db,
+                object_key=faculty.profile_photo_object_key,
+                legacy_data_url=faculty.profile_photo_data_url,
+            ),
             "profile_photo_updated_at": faculty.profile_photo_updated_at,
             "profile_photo_locked_until": faculty.profile_photo_locked_until,
             "department": faculty.department,
@@ -552,7 +584,7 @@ def _sync_faculty_to_mongo(faculty: models.Faculty, *, source: str) -> None:
     )
 
 
-def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
+def _student_profile_out(db: Session, student: models.Student) -> schemas.StudentProfileOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
     section_change_window_open, section_locked_until, section_lock_minutes_remaining = _student_section_lock_state(student)
     has_section = bool(re.sub(r"\s+", "", str(student.section or "").strip()))
@@ -568,7 +600,11 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
         department=student.department,
         semester=student.semester,
         has_profile_photo=has_photo,
-        photo_data_url=_public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
+        photo_data_url=_display_media_reference(
+            db,
+            object_key=student.profile_photo_object_key,
+            legacy_data_url=student.profile_photo_data_url,
+        ),
         can_update_photo_now=can_update_now,
         photo_locked_until=locked_until,
         photo_lock_days_remaining=lock_days_remaining,
@@ -579,17 +615,30 @@ def _student_profile_out(student: models.Student) -> schemas.StudentProfileOut:
     )
 
 
-def _student_photo_out(student: models.Student) -> schemas.StudentProfilePhotoOut:
+def _student_photo_out(db: Session, student: models.Student) -> schemas.StudentProfilePhotoOut:
     can_update_now, locked_until, lock_days_remaining = _photo_lock_state(student)
     has_photo = bool(student.profile_photo_object_key or student.profile_photo_data_url)
     return schemas.StudentProfilePhotoOut(
         has_profile_photo=has_photo,
-        photo_data_url=_public_media_reference(student.profile_photo_object_key, student.profile_photo_data_url),
+        photo_data_url=_display_media_reference(
+            db,
+            object_key=student.profile_photo_object_key,
+            legacy_data_url=student.profile_photo_data_url,
+        ),
         can_update_now=can_update_now,
         locked_until=locked_until,
         lock_days_remaining=lock_days_remaining,
         registration_number=student.registration_number,
     )
+
+
+def _reissue_profile_identifiers_if_needed(db: Session) -> dict[str, int]:
+    counts = reissue_generated_profile_identifiers(db)
+    if counts["students"] or counts["faculty"]:
+        db.commit()
+    else:
+        db.flush()
+    return counts
 
 
 def _apply_student_profile_update(
@@ -612,13 +661,7 @@ def _apply_student_profile_update(
             changed = True
 
     if payload.registration_number is not None:
-        registration_number = _normalize_registration_number(payload.registration_number)
-        existing_registration = (student.registration_number or "").strip().upper()
-        if existing_registration and registration_number != existing_registration:
-            raise HTTPException(status_code=403, detail=REGISTRATION_IMMUTABLE_MESSAGE)
-        if not existing_registration:
-            student.registration_number = registration_number
-            changed = True
+        raise HTTPException(status_code=400, detail=SYSTEM_ASSIGNED_STUDENT_ID_MESSAGE)
 
     if payload.section is not None:
         incoming_section = _normalize_section_token(payload.section)
@@ -728,7 +771,7 @@ def _student_section_lock_state(
     return False, locked_until, max(0, remaining_minutes)
 
 
-def _faculty_profile_out(faculty: models.Faculty) -> schemas.FacultyProfileOut:
+def _faculty_profile_out(db: Session, faculty: models.Faculty) -> schemas.FacultyProfileOut:
     can_update_photo_now, photo_locked_until, photo_lock_days_remaining = _faculty_photo_lock_state(faculty)
     can_update_section_now, section_locked_until, section_lock_minutes_remaining = _faculty_section_lock_state(faculty)
     has_photo = bool(faculty.profile_photo_object_key or faculty.profile_photo_data_url)
@@ -741,7 +784,11 @@ def _faculty_profile_out(faculty: models.Faculty) -> schemas.FacultyProfileOut:
         section=faculty.section,
         section_updated_at=faculty.section_updated_at,
         has_profile_photo=has_photo,
-        photo_data_url=_public_media_reference(faculty.profile_photo_object_key, faculty.profile_photo_data_url),
+        photo_data_url=_display_media_reference(
+            db,
+            object_key=faculty.profile_photo_object_key,
+            legacy_data_url=faculty.profile_photo_data_url,
+        ),
         can_update_photo_now=can_update_photo_now,
         photo_locked_until=photo_locked_until,
         photo_lock_days_remaining=photo_lock_days_remaining,
@@ -771,23 +818,7 @@ def _apply_faculty_profile_update(
             changed = True
 
     if payload.faculty_identifier is not None:
-        faculty_identifier = _normalize_faculty_identifier(payload.faculty_identifier)
-        existing_faculty_identifier = (faculty.faculty_identifier or "").strip().upper()
-        if existing_faculty_identifier and faculty_identifier != existing_faculty_identifier:
-            raise HTTPException(status_code=403, detail=FACULTY_ID_IMMUTABLE_MESSAGE)
-        if not existing_faculty_identifier:
-            conflict = (
-                db.query(models.Faculty)
-                .filter(
-                    models.Faculty.faculty_identifier == faculty_identifier,
-                    models.Faculty.id != faculty.id,
-                )
-                .first()
-            )
-            if conflict:
-                raise HTTPException(status_code=409, detail="Faculty ID already exists")
-            faculty.faculty_identifier = faculty_identifier
-            changed = True
+        raise HTTPException(status_code=400, detail=SYSTEM_ASSIGNED_FACULTY_ID_MESSAGE)
 
     if payload.section is not None:
         incoming_section = _normalize_section_token(payload.section)
@@ -2409,7 +2440,9 @@ def get_faculty_profile(
     if not faculty:
         raise HTTPException(status_code=404, detail="Faculty not found")
 
-    return _faculty_profile_out(faculty)
+    _reissue_profile_identifiers_if_needed(db)
+    db.refresh(faculty)
+    return _faculty_profile_out(db, faculty)
 
 
 @router.put("/faculty/profile", response_model=schemas.FacultyProfileOut)
@@ -2425,13 +2458,17 @@ def update_faculty_profile(
     if not faculty:
         raise HTTPException(status_code=404, detail="Faculty not found")
 
+    _reissue_profile_identifiers_if_needed(db)
+    db.refresh(faculty)
+
     if (
         payload.name is None
-        and payload.faculty_identifier is None
         and payload.section is None
         and payload.photo_data_url is None
     ):
-        raise HTTPException(status_code=400, detail="Provide name, faculty_identifier, section, and/or photo_data_url")
+        if payload.faculty_identifier is not None:
+            raise HTTPException(status_code=400, detail=SYSTEM_ASSIGNED_FACULTY_ID_MESSAGE)
+        raise HTTPException(status_code=400, detail="Provide name, section, and/or photo_data_url")
 
     changed, _ = _apply_faculty_profile_update(faculty, payload, db=db)
     if changed:
@@ -2439,16 +2476,17 @@ def update_faculty_profile(
     else:
         db.flush()
 
-    _sync_faculty_to_mongo(faculty, source="faculty-profile-update")
+    _sync_faculty_to_mongo(db, faculty, source="faculty-profile-update")
 
     try:
-        mongo_db = get_mongo_db(required=True)
-        mongo_db["auth_users"].update_one(
-            {"id": int(current_user.id)},
-            {"$set": {"name": faculty.name}},
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        mongo_db = get_mongo_db(required=False)
+        if mongo_db is not None:
+            mongo_db["auth_users"].update_one(
+                {"id": int(current_user.id)},
+                {"$set": {"name": faculty.name}},
+            )
+    except RuntimeError:
+        logger.warning("faculty_profile_auth_mirror_skipped user_id=%s", int(current_user.id))
 
     mirror_document(
         "faculty_profiles",
@@ -2471,7 +2509,7 @@ def update_faculty_profile(
         upsert_filter={"faculty_id": faculty.id},
     )
 
-    return _faculty_profile_out(faculty)
+    return _faculty_profile_out(db, faculty)
 
 
 @router.put("/faculty/students/{student_id}/section", response_model=schemas.StudentProfileOut)
@@ -2488,7 +2526,7 @@ def faculty_update_student_section(
     target_section = _normalize_section_token(payload.section)
     current_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
     if target_section == current_section:
-        return _student_profile_out(student)
+        return _student_profile_out(db, student)
 
     now_dt = datetime.utcnow()
     can_change_section_now, _, section_lock_minutes_remaining = _student_section_lock_state(student, now_dt)
@@ -2524,7 +2562,7 @@ def faculty_update_student_section(
     student.section_updated_at = now_dt
     db.commit()
 
-    _sync_student_to_mongo(student, source="faculty-approved-section-update")
+    _sync_student_to_mongo(db, student, source="faculty-approved-section-update")
     mirror_document(
         "student_section_updates",
         {
@@ -2540,7 +2578,7 @@ def faculty_update_student_section(
         upsert_filter={"student_id": student.id},
     )
 
-    return _student_profile_out(student)
+    return _student_profile_out(db, student)
 
 
 @router.get("/student/profile-photo", response_model=schemas.StudentProfilePhotoOut)
@@ -2555,7 +2593,7 @@ def get_student_profile_photo(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    return _student_photo_out(student)
+    return _student_photo_out(db, student)
 
 
 @router.get("/student/profile", response_model=schemas.StudentProfileOut)
@@ -2570,7 +2608,9 @@ def get_student_profile(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    return _student_profile_out(student)
+    _reissue_profile_identifiers_if_needed(db)
+    db.refresh(student)
+    return _student_profile_out(db, student)
 
 
 @router.put("/student/profile", response_model=schemas.StudentProfileOut)
@@ -2586,16 +2626,20 @@ def update_student_profile(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
+    _reissue_profile_identifiers_if_needed(db)
+    db.refresh(student)
+
     had_registration_number = bool((student.registration_number or "").strip())
     had_enrollment_video = bool(student.enrollment_video_template_json)
 
     if (
         payload.name is None
-        and payload.registration_number is None
         and payload.photo_data_url is None
         and payload.section is None
     ):
-        raise HTTPException(status_code=400, detail="Provide name, registration_number, section, and/or photo_data_url")
+        if payload.registration_number is not None:
+            raise HTTPException(status_code=400, detail=SYSTEM_ASSIGNED_STUDENT_ID_MESSAGE)
+        raise HTTPException(status_code=400, detail="Provide name, section, and/or photo_data_url")
 
     changed, photo_changed = _apply_student_profile_update(student, payload, db=db)
     if photo_changed:
@@ -2606,16 +2650,17 @@ def update_student_profile(
     else:
         db.flush()
 
-    _sync_student_to_mongo(student, source="student-profile-update")
+    _sync_student_to_mongo(db, student, source="student-profile-update")
 
     try:
-        mongo_db = get_mongo_db(required=True)
-        mongo_db["auth_users"].update_one(
-            {"id": int(current_user.id)},
-            {"$set": {"name": student.name}},
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        mongo_db = get_mongo_db(required=False)
+        if mongo_db is not None:
+            mongo_db["auth_users"].update_one(
+                {"id": int(current_user.id)},
+                {"$set": {"name": student.name}},
+            )
+    except RuntimeError:
+        logger.warning("student_profile_auth_mirror_skipped user_id=%s", int(current_user.id))
 
     mirror_document(
         "student_profile_faces",
@@ -2646,7 +2691,7 @@ def update_student_profile(
             trigger="student_profile_update",
         )
 
-    return _student_profile_out(student)
+    return _student_profile_out(db, student)
 
 
 @router.put("/student/profile-photo", response_model=schemas.StudentProfilePhotoOut)
@@ -2677,7 +2722,7 @@ def update_student_profile_photo(
     else:
         db.flush()
 
-    _sync_student_to_mongo(student, source="student-profile-update")
+    _sync_student_to_mongo(db, student, source="student-profile-update")
 
     mirror_document(
         "student_profile_faces",
@@ -2705,7 +2750,7 @@ def update_student_profile_photo(
             trigger="student_profile_photo_update",
         )
 
-    return _student_photo_out(student)
+    return _student_photo_out(db, student)
 
 
 @router.put("/student/enrollment-video", response_model=schemas.StudentEnrollmentVideoOut)
@@ -2774,7 +2819,7 @@ def update_student_enrollment_video(
             detail="Enrollment video could not be persisted. Retry after checking database storage health.",
         ) from exc
 
-    _sync_student_to_mongo(student, source="student-enrollment-video")
+    _sync_student_to_mongo(db, student, source="student-enrollment-video")
 
     mirror_document(
         "student_enrollment_videos",

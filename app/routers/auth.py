@@ -332,6 +332,9 @@ def _password_setup_required(doc: dict[str, Any]) -> bool:
     explicit = doc.get("password_setup_required")
     if explicit is not None:
         return bool(explicit)
+    password_hash = str(doc.get("password_hash") or "").strip()
+    if password_hash:
+        return False
     return not bool(doc.get("password_updated_at"))
 
 
@@ -651,27 +654,38 @@ def _arrival_position(rows: list[Any], target_id: int | None) -> int:
 
 def reissue_generated_profile_identifiers(sql_db: Session) -> dict[str, int]:
     """Replace manually supplied profile IDs with deterministic arrival-order IDs."""
-    student_updates = 0
-    faculty_updates = 0
+    student_updates: list[tuple[models.Student, str]] = []
+    faculty_updates: list[tuple[models.Faculty, str]] = []
 
     student_years = sorted({_arrival_year(row.created_at) for row in sql_db.query(models.Student).all()})
     for year in student_years:
         for position, student in enumerate(_students_for_year(sql_db, year), start=1):
             generated = _student_registration_number_for_position(year, position)
             if student.registration_number != generated:
-                student.registration_number = generated
-                student_updates += 1
+                student_updates.append((student, generated))
 
     faculty_years = sorted({_arrival_year(row.created_at) for row in sql_db.query(models.Faculty).all()})
     for year in faculty_years:
         for position, faculty in enumerate(_faculty_for_year(sql_db, year), start=1):
             generated = _faculty_identifier_for_position(year, position)
             if faculty.faculty_identifier != generated:
-                faculty.faculty_identifier = generated
-                faculty_updates += 1
+                faculty_updates.append((faculty, generated))
+
+    for student, _ in student_updates:
+        student.registration_number = f"REISSUE-STU-{int(student.id or 0)}"
+    for faculty, _ in faculty_updates:
+        faculty.faculty_identifier = f"REISSUE-FAC-{int(faculty.id or 0)}"
+
+    if student_updates or faculty_updates:
+        sql_db.flush()
+
+    for student, generated in student_updates:
+        student.registration_number = generated
+    for faculty, generated in faculty_updates:
+        faculty.faculty_identifier = generated
 
     sql_db.flush()
-    return {"students": student_updates, "faculty": faculty_updates}
+    return {"students": len(student_updates), "faculty": len(faculty_updates)}
 
 
 def _normalize_faculty_identifier(value: str) -> str:
@@ -1118,7 +1132,26 @@ def _has_real_profile_for_legacy_otp_login(
     sql_get = getattr(sql_db, "get", None)
     sql_query = getattr(sql_db, "query", None)
     if role == models.UserRole.ADMIN:
-        return True
+        sql_auth_user = None
+        if callable(sql_query):
+            sql_auth_user = (
+                sql_query(models.AuthUser)
+                .filter(func.lower(models.AuthUser.email) == email_norm)
+                .first()
+            )
+        if sql_auth_user and sql_auth_user.role == models.UserRole.ADMIN:
+            return True
+        if bool(user_doc.get("signup_verification_required", False)):
+            return True
+        if bool(user_doc.get("primary_login_verified", False)):
+            return True
+        if str(user_doc.get("registration_number") or "").strip():
+            return True
+        if str(user_doc.get("profile_photo_object_key") or "").strip():
+            return True
+        if user_doc.get("profile_photo_updated_at"):
+            return True
+        return False
     if role == models.UserRole.STUDENT:
         student_id = user_doc.get("student_id")
         try:
@@ -1551,28 +1584,18 @@ def request_login_otp(
         _validate_role_email(email, role)
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
-        if role == models.UserRole.STUDENT:
-            if not signup_verification_pending and not requires_password_setup:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Dear user, you already have a password set. Please login using that for security reasons. "
-                        "In case you forgot your password, use the forgot password flow to reset it."
-                    ),
-                )
         candidate_password = str(payload.password or "")
-        if requires_password_setup and role in {
-            models.UserRole.STUDENT,
+        if role != models.UserRole.STUDENT and requires_password_setup and role in {
             models.UserRole.ADMIN,
             models.UserRole.FACULTY,
         }:
             if candidate_password and not verify_password(candidate_password, user.get("password_hash", "")):
                 raise HTTPException(status_code=401, detail="Incorrect password")
-        elif not candidate_password:
+        elif role != models.UserRole.STUDENT and not candidate_password:
             raise HTTPException(status_code=401, detail="Password is required for this account")
-        elif not verify_password(candidate_password, user.get("password_hash", "")):
+        elif role != models.UserRole.STUDENT and not verify_password(candidate_password, user.get("password_hash", "")):
             raise HTTPException(status_code=401, detail="Incorrect password")
-        if role == models.UserRole.STUDENT and requires_password_setup:
+        if role == models.UserRole.STUDENT:
             _verify_student_auth_recaptcha(
                 request,
                 payload.captcha_token,
@@ -1586,7 +1609,19 @@ def request_login_otp(
             )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
-        if requires_password_setup and not _has_real_profile_for_legacy_otp_login(
+        if role == models.UserRole.STUDENT and not _has_real_profile_for_legacy_otp_login(
+            db,
+            sql_db,
+            role=role,
+            user_doc=user,
+            email=email,
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="There is no account associated with this mail, kindly create one first.",
+            )
+
+        if role != models.UserRole.STUDENT and requires_password_setup and not _has_real_profile_for_legacy_otp_login(
             db,
             sql_db,
             role=role,
@@ -1857,16 +1892,6 @@ def verify_login_otp(
         _validate_role_email(email, role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
-        if role == models.UserRole.STUDENT and not (
-            _password_setup_required(user) or _student_signup_verification_pending(user)
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Dear user, you already have a password set. Please login using that for security reasons. "
-                    "In case you forgot your password, use the forgot password flow to reset it."
-                ),
-            )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
         if _password_setup_required(user) and not _has_real_profile_for_legacy_otp_login(

@@ -154,6 +154,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             "APP_FIELD_ENCRYPTION_REQUIRED",
             "APP_COOKIE_SECURE",
             "APP_RUNTIME_STRICT",
+            "APP_MANAGED_SERVICES_REQUIRED",
             "REDIS_REQUIRED",
             "WORKER_REQUIRED",
             "WORKER_INLINE_FALLBACK_ENABLED",
@@ -175,6 +176,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
             os.environ["APP_COOKIE_SECURE"] = "true"
             os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
             os.environ["REDIS_REQUIRED"] = "true"
             os.environ["WORKER_REQUIRED"] = "true"
             os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
@@ -205,6 +207,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             "APP_FIELD_ENCRYPTION_REQUIRED",
             "APP_COOKIE_SECURE",
             "APP_RUNTIME_STRICT",
+            "APP_MANAGED_SERVICES_REQUIRED",
             "REDIS_REQUIRED",
             "WORKER_REQUIRED",
             "WORKER_INLINE_FALLBACK_ENABLED",
@@ -228,6 +231,7 @@ class EnterpriseControlsTests(unittest.TestCase):
             os.environ["APP_FIELD_ENCRYPTION_REQUIRED"] = "true"
             os.environ["APP_COOKIE_SECURE"] = "true"
             os.environ["APP_RUNTIME_STRICT"] = "true"
+            os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
             os.environ["REDIS_REQUIRED"] = "true"
             os.environ["WORKER_REQUIRED"] = "true"
             os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "false"
