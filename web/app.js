@@ -4516,12 +4516,15 @@ function renderLoginRoleUi() {
 function renderAuthOtpSection() {
   const role = selectedLoginRole();
   const signupOtpPending = isSignupOtpVerificationPending();
+  const studentOtpPending = isPasswordlessOtpLoginPending();
   if (els.authOtpTitle) {
     els.authOtpTitle.textContent = signupOtpPending ? 'Complete Signup Verification' : 'OTP Verification';
   }
   if (els.authOtpHint) {
     if (signupOtpPending) {
       els.authOtpHint.textContent = 'Enter the OTP sent to your email to finish signup.';
+    } else if (studentOtpPending && role === 'student') {
+      els.authOtpHint.textContent = 'Enter the OTP sent to your email to complete student sign in.';
     } else if (loginRoleNeedsOtp(role)) {
       els.authOtpHint.textContent = 'Request OTP, then verify it to continue.';
     } else {
@@ -20014,10 +20017,10 @@ async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogi
     throw new Error('Email must end with @gmail.com');
   }
   if (!signupOtpPending && !loginRoleNeedsOtp(loginRole) && !studentPasswordlessLogin) {
-    throw new Error('Students sign in directly with password. Use Login via OTP only if your account does not have a password set yet.');
+    throw new Error('Students can sign in with either password or OTP. Use Login via OTP to continue with your email.');
   }
   const privilegedLegacyAllowed = !signupOtpPending && (loginRole === 'faculty' || loginRole === 'admin');
-  if (!password && !studentPasswordlessLogin && !privilegedLegacyAllowed) {
+  if (!password && loginRole !== 'student' && !studentPasswordlessLogin && !privilegedLegacyAllowed) {
     throw new Error('Enter password first.');
   }
 
@@ -20313,17 +20316,8 @@ async function requestStudentPasswordlessOtp() {
     authState.pendingEmail = email;
     renderAuthOtpSection();
     setSignupVerificationModal(true, { email, role: 'student', purpose: 'passwordless-login' });
-    setAuthMessage('Temporary OTP sent. Enter it in the popup, then set your password immediately.');
+    setAuthMessage('OTP sent. Enter it in the popup to continue student sign in.');
   } catch (error) {
-    const detail = String(error?.message || '');
-    if (/already have a password set|forgot password flow/i.test(detail)) {
-      setAuthMessage(detail, true);
-      showOtpPopup(
-        'Password Login Required',
-        detail,
-        { tone: 'danger', loading: false, closable: true }
-      );
-    }
     throw error;
   }
 }

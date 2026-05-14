@@ -310,7 +310,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             "There is no account associated with this mail, kindly create one first.",
         )
 
-    def test_student_passwordless_login_otp_rejects_password_ready_accounts(self):
+    def test_student_passwordless_login_otp_is_allowed_for_password_ready_accounts(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
             {
@@ -318,7 +318,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "email": "ready.student@gmail.com",
                 "password_hash": hash_password("Student@123"),
                 "role": models.UserRole.STUDENT.value,
-                "student_id": None,
+                "student_id": 273,
                 "faculty_id": None,
                 "is_active": True,
                 "password_setup_required": False,
@@ -326,25 +326,41 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "created_at": datetime.utcnow(),
             }
         )
+        mongo["students"].insert_one(
+            {
+                "id": 273,
+                "name": "READY STUDENT",
+                "email": "ready.student@gmail.com",
+                "registration_number": "12200273",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
+                "created_at": datetime.utcnow(),
+            }
+        )
 
         with (
             patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=73),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
             patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}),
+            patch("app.routers.auth._next_unique_id", side_effect=[113, 114]),
+            patch("app.routers.auth.mirror_event", return_value=None),
         ):
-            with self.assertRaises(HTTPException) as ctx:
-                auth.request_login_otp(
-                    schemas.LoginOTPRequest(
-                        email="ready.student@gmail.com",
-                        captcha_token="turnstile-token-1234567890",
-                    ),
-                    request=_request("/auth/login/request-otp"),
-                    sql_db=SimpleNamespace(),
-                )
+            result = auth.request_login_otp(
+                schemas.LoginOTPRequest(
+                    email="ready.student@gmail.com",
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/login/request-otp"),
+                sql_db=SimpleNamespace(),
+            )
 
-        self.assertEqual(ctx.exception.status_code, 403)
-        self.assertIn("already have a password set", ctx.exception.detail)
+        self.assertEqual(result.message, "OTP sent successfully")
 
-    def test_student_passwordless_login_otp_rejects_password_ready_accounts_when_flag_is_missing(self):
+    def test_student_passwordless_login_otp_is_allowed_for_password_ready_accounts_when_flag_is_missing(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
             {
@@ -374,20 +390,24 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
 
         with (
             patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=74),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
             patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}),
+            patch("app.routers.auth._next_unique_id", side_effect=[115, 116]),
+            patch("app.routers.auth.mirror_event", return_value=None),
         ):
-            with self.assertRaises(HTTPException) as ctx:
-                auth.request_login_otp(
-                    schemas.LoginOTPRequest(
-                        email="ready.flagless.student@gmail.com",
-                        captcha_token="turnstile-token-1234567890",
-                    ),
-                    request=_request("/auth/login/request-otp"),
-                    sql_db=SimpleNamespace(),
-                )
+            result = auth.request_login_otp(
+                schemas.LoginOTPRequest(
+                    email="ready.flagless.student@gmail.com",
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/login/request-otp"),
+                sql_db=SimpleNamespace(),
+            )
 
-        self.assertEqual(ctx.exception.status_code, 403)
-        self.assertIn("already have a password set", ctx.exception.detail)
+        self.assertEqual(result.message, "OTP sent successfully")
 
     def test_faculty_passwordless_login_otp_is_allowed_for_legacy_accounts(self):
         mongo = _FakeMongo()

@@ -1554,28 +1554,18 @@ def request_login_otp(
         _validate_role_email(email, role)
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
-        if role == models.UserRole.STUDENT:
-            if not signup_verification_pending and not requires_password_setup:
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Dear user, you already have a password set. Please login using that for security reasons. "
-                        "In case you forgot your password, use the forgot password flow to reset it."
-                    ),
-                )
         candidate_password = str(payload.password or "")
-        if requires_password_setup and role in {
-            models.UserRole.STUDENT,
+        if role != models.UserRole.STUDENT and requires_password_setup and role in {
             models.UserRole.ADMIN,
             models.UserRole.FACULTY,
         }:
             if candidate_password and not verify_password(candidate_password, user.get("password_hash", "")):
                 raise HTTPException(status_code=401, detail="Incorrect password")
-        elif not candidate_password:
+        elif role != models.UserRole.STUDENT and not candidate_password:
             raise HTTPException(status_code=401, detail="Password is required for this account")
-        elif not verify_password(candidate_password, user.get("password_hash", "")):
+        elif role != models.UserRole.STUDENT and not verify_password(candidate_password, user.get("password_hash", "")):
             raise HTTPException(status_code=401, detail="Incorrect password")
-        if role == models.UserRole.STUDENT and requires_password_setup:
+        if role == models.UserRole.STUDENT:
             _verify_student_auth_recaptcha(
                 request,
                 payload.captcha_token,
@@ -1589,7 +1579,19 @@ def request_login_otp(
             )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
-        if requires_password_setup and not _has_real_profile_for_legacy_otp_login(
+        if role == models.UserRole.STUDENT and not _has_real_profile_for_legacy_otp_login(
+            db,
+            sql_db,
+            role=role,
+            user_doc=user,
+            email=email,
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="There is no account associated with this mail, kindly create one first.",
+            )
+
+        if role != models.UserRole.STUDENT and requires_password_setup and not _has_real_profile_for_legacy_otp_login(
             db,
             sql_db,
             role=role,
@@ -1860,16 +1862,6 @@ def verify_login_otp(
         _validate_role_email(email, role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
-        if role == models.UserRole.STUDENT and not (
-            _password_setup_required(user) or _student_signup_verification_pending(user)
-        ):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "Dear user, you already have a password set. Please login using that for security reasons. "
-                    "In case you forgot your password, use the forgot password flow to reset it."
-                ),
-            )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
         if _password_setup_required(user) and not _has_real_profile_for_legacy_otp_login(
