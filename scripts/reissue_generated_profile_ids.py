@@ -31,7 +31,12 @@ def _sync_mongo_profiles(sql_db) -> None:
         )
         mongo_db["auth_users"].update_one(
             {"student_id": int(student.id)},
-            {"$set": {"student_id": int(student.id)}},
+            {
+                "$set": {
+                    "student_id": int(student.id),
+                    "registration_number": student.registration_number,
+                }
+            },
         )
 
     for faculty in sql_db.query(models.Faculty).all():
@@ -48,7 +53,12 @@ def _sync_mongo_profiles(sql_db) -> None:
         )
         mongo_db["auth_users"].update_one(
             {"faculty_id": int(faculty.id)},
-            {"$set": {"faculty_id": int(faculty.id)}},
+            {
+                "$set": {
+                    "faculty_id": int(faculty.id),
+                    "faculty_identifier": faculty.faculty_identifier,
+                }
+            },
         )
 
 

@@ -652,6 +652,7 @@ const els = {
   accountSection: document.getElementById('account-section'),
   profilePrimaryEmail: document.getElementById('profile-primary-email'),
   profileFullName: document.getElementById('profile-full-name'),
+  profileIdField: document.getElementById('profile-id-field'),
   profileIdLabel: document.getElementById('profile-id-label'),
   profileAlternateEmail: document.getElementById('profile-alternate-email'),
   saveAlternateEmailBtn: document.getElementById('save-alternate-email-btn'),
@@ -5595,16 +5596,16 @@ function openProfileModal({ required = false } = {}) {
   if (els.profileModalSubtitle) {
     if (role === 'faculty') {
       els.profileModalSubtitle.textContent = required
-        ? 'Enter full name, upload profile photo, set faculty ID, and set section before using the portal.'
-        : 'Manage faculty ID, section, profile photo, and secondary email.';
+        ? 'Enter full name, upload profile photo, and set section before using the portal. Faculty ID is assigned automatically.'
+        : 'Manage section, profile photo, and secondary email. Faculty ID is assigned automatically.';
     } else if (role === 'admin') {
       els.profileModalSubtitle.textContent = 'Admin identity is managed centrally. Use attendance controls for approve/disapprove and schedule actions.';
     } else if (role === 'owner') {
       els.profileModalSubtitle.textContent = 'Vendor identity is separate and connected to your assigned shop data.';
     } else {
       els.profileModalSubtitle.textContent = required
-        ? 'Enter full name, upload your profile photo, set registration number, and set section before using the portal.'
-        : 'Manage profile photo, registration number, section, and secondary email.';
+        ? 'Enter full name, upload your profile photo, and set section before using the portal. Registration number is assigned automatically.'
+        : 'Manage profile photo, section, and secondary email. Registration number is assigned automatically.';
     }
   }
   if (els.profileCloseBtn) {
@@ -5727,7 +5728,6 @@ function requiresStudentProfileSetup() {
     return false;
   }
   return !hasValidProfileName(state.student.name || authState.user?.name || '')
-    || !state.student.registrationNumber
     || !state.student.section
     || !state.student.profilePhotoDataUrl;
 }
@@ -5740,7 +5740,6 @@ function requiresFacultyProfileSetup() {
     return false;
   }
   return !hasValidProfileName(state.facultyProfile.name || authState.user?.name || '')
-    || !state.facultyProfile.facultyIdentifier
     || !state.facultyProfile.section
     || !state.facultyProfile.profilePhotoDataUrl;
 }
@@ -5818,9 +5817,12 @@ function renderProfileSecurity() {
     if (els.profileIdLabel) {
       els.profileIdLabel.textContent = 'Registration Number';
     }
+    if (els.profileIdField) {
+      setHidden(els.profileIdField, true);
+    }
     if (els.profileRegistrationNumber) {
       els.profileRegistrationNumber.value = '';
-      els.profileRegistrationNumber.disabled = false;
+      els.profileRegistrationNumber.disabled = true;
       els.profileRegistrationNumber.placeholder = 'e.g. R9P132A48';
     }
     if (els.profileRegistrationNote) {
@@ -5895,23 +5897,27 @@ function renderProfileSecurity() {
         ? 'Vendor ID'
         : 'Registration Number';
   }
+  if (els.profileIdField) {
+    setHidden(els.profileIdField, isStudent || isFaculty);
+  }
   if (els.profileRegistrationNumber) {
     els.profileRegistrationNumber.value = currentIdValue;
-    els.profileRegistrationNumber.disabled = !isProfileEditableRole || Boolean(currentIdValue);
+    els.profileRegistrationNumber.disabled = true;
     els.profileRegistrationNumber.placeholder = isFaculty
-      ? 'e.g. FAC-CSE-1024'
+      ? 'System-assigned'
       : isOwner
         ? 'Auto-assigned from account'
-        : 'e.g. R9P132A48';
+        : 'System-assigned';
   }
   if (els.profileRegistrationNote) {
+    const visibleId = currentIdValue || 'pending assignment';
     els.profileRegistrationNote.textContent = isFaculty
-      ? 'Faculty ID is permanent and cannot be changed without admin permissions.'
+      ? `Faculty ID: ${visibleId}. This is assigned automatically from your faculty arrival order.`
       : isAdmin
         ? 'Admin ID is linked to your account and managed centrally.'
       : isOwner
         ? 'Vendor ID is mapped from your account and connected to owned shop data.'
-        : 'Registration number is permanent and cannot be changed without admin permissions.';
+        : `Registration Number: ${visibleId}. This is assigned automatically from your student arrival order.`;
   }
   if (els.profileSectionWrap) {
     setHidden(els.profileSectionWrap, !isFaculty && !isStudent);
@@ -15935,21 +15941,18 @@ function updateProfileSaveState() {
     const draftName = normalizeProfileName(els.profileFullName?.value || '');
     const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
     const hasName = hasValidProfileName(existingName || draftName);
-    const draftRegistration = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
     const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
     const existingSection = state.student.section || '';
-    const hasRegistration = Boolean(state.student.registrationNumber || draftRegistration);
     const hasSection = Boolean(existingSection || draftSection);
     const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
     const hasNewName = hasValidProfileName(draftName) && draftName !== existingName;
-    const hasNewReg = Boolean(draftRegistration) && draftRegistration !== (state.student.registrationNumber || '');
     const hasNewSection = Boolean(draftSection) && draftSection !== existingSection;
     const hasNewPhoto = Boolean(state.student.pendingProfilePhotoDataUrl)
       && state.student.pendingProfilePhotoDataUrl !== (state.student.profilePhotoDataUrl || '');
     const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
 
     if (setupRequired) {
-      els.saveProfilePhotoBtn.disabled = !(hasName && hasRegistration && hasSection && hasPhoto);
+      els.saveProfilePhotoBtn.disabled = !(hasName && hasSection && hasPhoto);
       return;
     }
 
@@ -15958,22 +15961,18 @@ function updateProfileSaveState() {
       return;
     }
 
-    els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewReg || hasNewPhoto || (!existingSection && hasNewSection));
+    els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewPhoto || (!existingSection && hasNewSection));
     return;
   }
 
   const draftName = normalizeProfileName(els.profileFullName?.value || '');
   const existingName = normalizeProfileName(state.facultyProfile.name || authState.user?.name || '');
   const hasName = hasValidProfileName(existingName || draftName);
-  const draftFacultyId = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-  const existingFacultyId = state.facultyProfile.facultyIdentifier || '';
   const existingSection = (state.facultyProfile.section || '').trim().toUpperCase().replace(/\s+/g, '');
-  const hasFacultyId = Boolean(existingFacultyId || draftFacultyId);
   const hasSection = Boolean(existingSection || draftSection);
   const hasPhoto = Boolean(state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl);
   const hasNewName = hasValidProfileName(draftName) && draftName !== existingName;
-  const hasNewFacultyId = Boolean(draftFacultyId) && draftFacultyId !== existingFacultyId;
   const hasNewSection = Boolean(draftSection) && draftSection !== existingSection;
   const hasNewPhoto = Boolean(state.facultyProfile.pendingProfilePhotoDataUrl)
     && state.facultyProfile.pendingProfilePhotoDataUrl !== (state.facultyProfile.profilePhotoDataUrl || '');
@@ -15981,14 +15980,14 @@ function updateProfileSaveState() {
   const setupRequired = state.facultyProfile.profileSetupRequired || requiresFacultyProfileSetup();
 
   if (setupRequired) {
-    els.saveProfilePhotoBtn.disabled = !(hasName && hasFacultyId && hasSection && hasPhoto);
+    els.saveProfilePhotoBtn.disabled = !(hasName && hasSection && hasPhoto);
     return;
   }
   if (sectionLocked && hasNewSection) {
     els.saveProfilePhotoBtn.disabled = true;
     return;
   }
-  els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewFacultyId || hasNewSection || hasNewPhoto);
+  els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewSection || hasNewPhoto);
 }
 
 function renderStudentProfileStatus() {
@@ -15998,16 +15997,14 @@ function renderStudentProfileStatus() {
 
   const draftName = normalizeProfileName(els.profileFullName?.value || '');
   const hasName = hasValidProfileName(state.student.name || authState.user?.name || draftName);
-  const draftRegistration = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const existingSection = state.student.section || '';
-  const hasRegistration = Boolean(state.student.registrationNumber || draftRegistration);
   const hasSection = Boolean(existingSection || draftSection);
   const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
   const sectionEditAttempt = Boolean(existingSection) && Boolean(draftSection) && draftSection !== existingSection;
 
-  if (!hasName && !hasRegistration && !hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Full name, registration number, section, and profile photo are required before continuing.';
+  if (!hasName && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Full name, section, and profile photo are required before continuing. Registration number is assigned automatically.';
     updateProfileSaveState();
     return;
   }
@@ -16016,13 +16013,8 @@ function renderStudentProfileStatus() {
     updateProfileSaveState();
     return;
   }
-  if (!hasRegistration && !hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Registration number, section, and profile photo are required before continuing.';
-    updateProfileSaveState();
-    return;
-  }
-  if (!hasRegistration) {
-    els.profileStatus.textContent = 'Registration number is required and becomes permanent after save.';
+  if (!hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Section and profile photo are required before continuing. Registration number is assigned automatically.';
     updateProfileSaveState();
     return;
   }
@@ -16061,14 +16053,12 @@ function renderFacultyProfileStatus() {
 
   const draftName = normalizeProfileName(els.profileFullName?.value || '');
   const hasName = hasValidProfileName(state.facultyProfile.name || authState.user?.name || draftName);
-  const draftFacultyId = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-  const hasFacultyId = Boolean(state.facultyProfile.facultyIdentifier || draftFacultyId);
   const hasSection = Boolean(state.facultyProfile.section || draftSection);
   const hasPhoto = Boolean(state.facultyProfile.profilePhotoDataUrl || state.facultyProfile.pendingProfilePhotoDataUrl);
 
-  if (!hasName && !hasFacultyId && !hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Full name, faculty ID, section, and profile photo are required before continuing.';
+  if (!hasName && !hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Full name, section, and profile photo are required before continuing. Faculty ID is assigned automatically.';
     updateProfileSaveState();
     return;
   }
@@ -16077,13 +16067,8 @@ function renderFacultyProfileStatus() {
     updateProfileSaveState();
     return;
   }
-  if (!hasFacultyId && !hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Faculty ID, section, and profile photo are required before continuing.';
-    updateProfileSaveState();
-    return;
-  }
-  if (!hasFacultyId) {
-    els.profileStatus.textContent = 'Faculty ID is required and becomes permanent after save.';
+  if (!hasSection && !hasPhoto) {
+    els.profileStatus.textContent = 'Section and profile photo are required before continuing. Faculty ID is assigned automatically.';
     updateProfileSaveState();
     return;
   }
@@ -16275,18 +16260,14 @@ async function loadFacultyProfile() {
 async function saveFacultyProfile() {
   const profileName = normalizeProfileName(els.profileFullName?.value || '');
   const existingName = normalizeProfileName(state.facultyProfile.name || authState.user?.name || '');
-  const facultyIdentifier = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const section = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-  const existingFacultyIdentifier = state.facultyProfile.facultyIdentifier || '';
   const existingSection = (state.facultyProfile.section || '').trim().toUpperCase().replace(/\s+/g, '');
   const nextPhotoDataUrl = state.facultyProfile.pendingProfilePhotoDataUrl || '';
   const hasNameAfterSave = hasValidProfileName(existingName || profileName);
   const hasNewName = hasValidProfileName(profileName) && profileName !== existingName;
-  const hasNewFacultyIdentifier = Boolean(facultyIdentifier) && facultyIdentifier !== existingFacultyIdentifier;
   const hasNewSection = Boolean(section) && section !== existingSection;
   const hasNewPhoto = Boolean(nextPhotoDataUrl) && nextPhotoDataUrl !== state.facultyProfile.profilePhotoDataUrl;
   const setupRequired = state.facultyProfile.profileSetupRequired || requiresFacultyProfileSetup();
-  const hasFacultyIdentifierAfterSave = Boolean(existingFacultyIdentifier || facultyIdentifier);
   const hasSectionAfterSave = Boolean(existingSection || section);
   const hasPhotoAfterSave = Boolean(state.facultyProfile.profilePhotoDataUrl || nextPhotoDataUrl);
 
@@ -16294,23 +16275,11 @@ async function saveFacultyProfile() {
     if (!hasNameAfterSave) {
       throw new Error('Enter your full name before saving profile.');
     }
-    if (!hasFacultyIdentifierAfterSave) {
-      throw new Error('Enter your faculty ID before saving profile.');
-    }
     if (!hasSectionAfterSave) {
       throw new Error('Enter section before saving profile.');
     }
     if (!hasPhotoAfterSave) {
       throw new Error('Upload profile photo before saving profile.');
-    }
-  }
-
-  if (hasNewFacultyIdentifier && !existingFacultyIdentifier) {
-    const confirmed = window.confirm(
-      "Faculty ID is permanent and can't be changed without admin permissions later. Continue?"
-    );
-    if (!confirmed) {
-      throw new Error('Faculty ID confirmation is required.');
     }
   }
 
@@ -16324,9 +16293,6 @@ async function saveFacultyProfile() {
   const payload = {};
   if (hasNewName || (!existingName && hasValidProfileName(profileName))) {
     payload.name = profileName;
-  }
-  if (hasNewFacultyIdentifier || (!existingFacultyIdentifier && facultyIdentifier)) {
-    payload.faculty_identifier = facultyIdentifier;
   }
   if (hasNewSection || (!existingSection && section)) {
     payload.section = section;
@@ -16348,7 +16314,7 @@ async function saveFacultyProfile() {
 
   if (!Object.keys(payload).length) {
     if (setupRequired) {
-      throw new Error('Add faculty ID, section, and profile photo before continuing.');
+      throw new Error('Add section and profile photo before continuing. Faculty ID is assigned automatically.');
     }
     throw new Error('No profile changes to save.');
   }
@@ -16405,27 +16371,20 @@ async function saveFacultyProfile() {
 async function saveStudentProfilePhoto() {
   const profileName = normalizeProfileName(els.profileFullName?.value || '');
   const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
-  const registrationNumber = (els.profileRegistrationNumber?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const section = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-  const existingRegistration = state.student.registrationNumber || '';
   const existingSection = state.student.section || '';
-  const hasNewReg = Boolean(registrationNumber) && registrationNumber !== existingRegistration;
   const hasNewSection = Boolean(section) && section !== existingSection;
   const nextPhotoDataUrl = state.student.pendingProfilePhotoDataUrl || '';
   const hasNewPhoto = Boolean(nextPhotoDataUrl) && nextPhotoDataUrl !== state.student.profilePhotoDataUrl;
   const hasNewName = hasValidProfileName(profileName) && profileName !== existingName;
   const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
   const hasNameAfterSave = hasValidProfileName(existingName || profileName);
-  const hasRegistrationAfterSave = Boolean(existingRegistration || registrationNumber);
   const hasSectionAfterSave = Boolean(existingSection || section);
   const hasPhotoAfterSave = Boolean(state.student.profilePhotoDataUrl || nextPhotoDataUrl);
 
   if (setupRequired) {
     if (!hasNameAfterSave) {
       throw new Error('Enter your full name before saving profile.');
-    }
-    if (!hasRegistrationAfterSave) {
-      throw new Error('Enter your registration number before saving profile.');
     }
     if (!hasSectionAfterSave) {
       throw new Error('Enter your section before saving profile.');
@@ -16435,14 +16394,6 @@ async function saveStudentProfilePhoto() {
     }
   }
 
-  if (hasNewReg && !existingRegistration) {
-    const confirmed = window.confirm(
-      "Registration number is permanent and can't be changed without admin permissions later. Continue?"
-    );
-    if (!confirmed) {
-      throw new Error('Registration number confirmation is required.');
-    }
-  }
   if (hasNewSection && existingSection) {
     if (state.student.sectionChangeRequiresFacultyApproval) {
       throw new Error('Section change requires faculty approval. Ask your faculty to approve the update.');
@@ -16455,9 +16406,6 @@ async function saveStudentProfilePhoto() {
   const payload = {};
   if (hasNewName || (!existingName && hasValidProfileName(profileName))) {
     payload.name = profileName;
-  }
-  if (hasNewReg || (!existingRegistration && registrationNumber)) {
-    payload.registration_number = registrationNumber;
   }
   if (hasNewSection || (!existingSection && section)) {
     payload.section = section;
@@ -16479,7 +16427,7 @@ async function saveStudentProfilePhoto() {
 
   if (!Object.keys(payload).length) {
     if (setupRequired) {
-      throw new Error('Add registration number, section, and profile photo before continuing.');
+      throw new Error('Add section and profile photo before continuing. Registration number is assigned automatically.');
     }
     throw new Error('No profile changes to save.');
   }
@@ -19636,7 +19584,7 @@ async function startStudentSelfieFlow() {
   state.student.kpiScheduleId = scheduleId;
   state.student.selectedScheduleId = scheduleId;
   if (!state.student.registrationNumber) {
-    throw new Error('Complete profile setup with registration number first.');
+    throw new Error('Registration number is being assigned automatically. Refresh your profile and try again.');
   }
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo first. It is required for facial attendance.');
@@ -19655,7 +19603,7 @@ async function startStudentDemoAttendanceFlow(resolvedState = null) {
     throw new Error('Demo attendance is disabled. Enable Demo Attendance first.');
   }
   if (!state.student.registrationNumber) {
-    throw new Error('Complete profile setup with registration number first.');
+    throw new Error('Registration number is being assigned automatically. Refresh your profile and try again.');
   }
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo first. It is required for facial attendance.');

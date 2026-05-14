@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import models, schemas
 from app.routers.attendance import (
+    _student_profile_out,
     update_student_enrollment_video,
     update_student_profile_photo,
 )
@@ -152,6 +153,25 @@ class StudentEnrollmentVideoTests(unittest.TestCase):
         sync_student_mock.assert_called_once()
         mirror_document_mock.assert_called_once()
         screening_mock.assert_called_once_with(self.db, student_id=101)
+
+    @patch("app.routers.attendance.data_url_for_object", return_value=None)
+    @patch("app.routers.attendance.signed_url_for_object", return_value="/assets/media/stale-key")
+    @patch("app.routers.attendance.os.getenv", return_value="false")
+    def test_student_profile_output_fails_soft_for_stale_local_object_key(
+        self,
+        _getenv_mock,
+        signed_url_mock,
+        data_url_mock,
+    ):
+        self.student.profile_photo_object_key = "students/101/stale-profile.png"
+        self.student.profile_photo_data_url = None
+        self.db.commit()
+
+        result = _student_profile_out(self.db, self.student)
+
+        self.assertIsNone(result.photo_data_url)
+        data_url_mock.assert_called_once_with(self.db, "students/101/stale-profile.png")
+        signed_url_mock.assert_not_called()
 
 
 if __name__ == "__main__":

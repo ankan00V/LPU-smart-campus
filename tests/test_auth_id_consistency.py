@@ -2,11 +2,13 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 from app import models, schemas
+from app.routers.attendance import get_faculty_profile, get_student_profile, update_student_profile
 from app.routers.auth import _ensure_role_profile_link, register_auth_user, reissue_generated_profile_identifiers
 from app.routers.enterprise import _upsert_federated_user
 
@@ -291,6 +293,95 @@ class AuthIdConsistencyTests(unittest.TestCase):
         self.assertEqual(counts, {"students": 2, "faculty": 1})
         self.assertEqual([student.registration_number for student in students], ["12600001", "12600002"])
         self.assertEqual(faculty.faculty_identifier, "620001")
+
+    def test_student_profile_get_reissues_manual_registration_by_arrival_order(self):
+        student = models.Student(
+            name="MANUAL STUDENT",
+            email="manual.student@gmail.com",
+            registration_number="22BCS101",
+            section="K23AA",
+            department="CSE",
+            semester=1,
+            created_at=datetime(2026, 1, 3, 9, 0, 0),
+        )
+        self.db.add(student)
+        self.db.commit()
+        self.db.refresh(student)
+        auth_user = models.AuthUser(
+            email=student.email,
+            password_hash="hash",
+            role=models.UserRole.STUDENT,
+            student_id=student.id,
+            is_active=True,
+        )
+        self.db.add(auth_user)
+        self.db.commit()
+        self.db.refresh(auth_user)
+
+        out = get_student_profile(db=self.db, current_user=auth_user)
+
+        self.assertEqual(out.registration_number, "12600001")
+        self.assertEqual(self.db.get(models.Student, student.id).registration_number, "12600001")
+
+    def test_faculty_profile_get_reissues_manual_identifier_by_arrival_order(self):
+        faculty = models.Faculty(
+            name="MANUAL FACULTY",
+            email="manual.faculty@gmail.com",
+            faculty_identifier="FAC-CSE-11",
+            department="CSE",
+            created_at=datetime(2026, 1, 2, 9, 0, 0),
+        )
+        self.db.add(faculty)
+        self.db.commit()
+        self.db.refresh(faculty)
+        auth_user = models.AuthUser(
+            email=faculty.email,
+            password_hash="hash",
+            role=models.UserRole.FACULTY,
+            faculty_id=faculty.id,
+            is_active=True,
+        )
+        self.db.add(auth_user)
+        self.db.commit()
+        self.db.refresh(auth_user)
+
+        out = get_faculty_profile(db=self.db, current_user=auth_user)
+
+        self.assertEqual(out.faculty_identifier, "620001")
+        self.assertEqual(self.db.get(models.Faculty, faculty.id).faculty_identifier, "620001")
+
+    def test_student_profile_rejects_manual_registration_number_updates(self):
+        student = models.Student(
+            name="SYSTEM STUDENT",
+            email="system.student@gmail.com",
+            registration_number="12600001",
+            section="K23AA",
+            department="CSE",
+            semester=1,
+            created_at=datetime(2026, 1, 3, 9, 0, 0),
+        )
+        self.db.add(student)
+        self.db.commit()
+        self.db.refresh(student)
+        auth_user = models.AuthUser(
+            email=student.email,
+            password_hash="hash",
+            role=models.UserRole.STUDENT,
+            student_id=student.id,
+            is_active=True,
+        )
+        self.db.add(auth_user)
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as exc:
+            update_student_profile(
+                schemas.StudentProfileUpdateRequest(registration_number="22BCS101"),
+                db=self.db,
+                current_user=auth_user,
+            )
+
+        self.assertEqual(exc.exception.status_code, 400)
+        self.assertIn("system-assigned", exc.exception.detail)
 
     def test_federated_upsert_reuses_existing_sql_auth_user_id(self):
         sql_user = models.AuthUser(
