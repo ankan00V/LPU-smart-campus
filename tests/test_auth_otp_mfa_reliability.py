@@ -243,10 +243,22 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "email": "legacy.student@gmail.com",
                 "password_hash": hash_password("temporary-placeholder"),
                 "role": models.UserRole.STUDENT.value,
-                "student_id": None,
+                "student_id": 172,
                 "faculty_id": None,
                 "is_active": True,
                 "password_setup_required": True,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["students"].insert_one(
+            {
+                "id": 172,
+                "name": "LEGACY STUDENT",
+                "email": "legacy.student@gmail.com",
+                "registration_number": "12200172",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
                 "created_at": datetime.utcnow(),
             }
         )
@@ -274,6 +286,29 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         otp = mongo["auth_otps"].find_one({"id": 101})
         self.assertIsNotNone(otp)
         self.assertEqual(otp["purpose"], "login")
+
+    def test_request_login_otp_rejects_unknown_email_with_create_account_message(self):
+        mongo = _FakeMongo()
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.request_login_otp(
+                    schemas.LoginOTPRequest(
+                        email="missing.user@gmail.com",
+                        captcha_token="turnstile-token-1234567890",
+                    ),
+                    request=_request("/auth/login/request-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(
+            ctx.exception.detail,
+            "There is no account associated with this mail, kindly create one first.",
+        )
 
     def test_student_passwordless_login_otp_rejects_password_ready_accounts(self):
         mongo = _FakeMongo()
@@ -321,6 +356,17 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "faculty_id": 14,
                 "is_active": True,
                 "password_setup_required": True,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["faculty"].insert_one(
+            {
+                "id": 14,
+                "name": "LEGACY FACULTY",
+                "email": "legacy.faculty@gmail.com",
+                "faculty_identifier": "FAC0014",
+                "section": "K23AA",
+                "department": "CSE",
                 "created_at": datetime.utcnow(),
             }
         )
@@ -576,6 +622,99 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         otp_row = mongo["auth_otps"].find_one({"id": 22})
         self.assertIsNotNone(otp_row["used_at"])
 
+    def test_verify_login_otp_preserves_password_bootstrap_requirement_for_legacy_student(self):
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 14,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("temporary-placeholder"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 91,
+                "faculty_id": None,
+                "is_active": True,
+                "password_setup_required": True,
+                "mfa_enabled": False,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["students"].insert_one(
+            {
+                "id": 91,
+                "name": "LEGACY STUDENT",
+                "email": "legacy.student@gmail.com",
+                "registration_number": "12200091",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 32,
+                "user_id": 14,
+                "purpose": "login",
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine("sqlite:///:memory:")
+        models.Base.metadata.create_all(bind=engine)
+        SessionLocal = sessionmaker(bind=engine)
+        sql_db = SessionLocal()
+        sql_db.add(
+            models.AuthUser(
+                id=14,
+                email="legacy.student@gmail.com",
+                password_hash=hash_password("temporary-placeholder"),
+                role=models.UserRole.STUDENT,
+                student_id=91,
+                is_active=True,
+                created_at=datetime.utcnow(),
+            )
+        )
+        sql_db.commit()
+
+        try:
+            with (
+                patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+                patch("app.routers.auth._ensure_auth_user_id", return_value=14),
+                patch("app.routers.auth.enforce_rate_limit", return_value=None),
+                patch("app.routers.auth.mirror_event", return_value=None),
+                patch("app.routers.auth._set_auth_cookies", return_value=None),
+                patch(
+                    "app.routers.auth.create_session_tokens",
+                    return_value={
+                        "access_token": "access-token",
+                        "access_expires_at": datetime.utcnow() + timedelta(minutes=15),
+                        "refresh_token": "refresh-token",
+                        "refresh_expires_at": datetime.utcnow() + timedelta(days=14),
+                    },
+                ),
+            ):
+                result = auth.verify_login_otp(
+                    schemas.VerifyOTPRequest(email="legacy.student@gmail.com", otp_code="123456"),
+                    response=Response(),
+                    request=_request("/auth/login/verify-otp"),
+                    sql_db=sql_db,
+                )
+        finally:
+            sql_db.close()
+            engine.dispose()
+
+        self.assertTrue(result.user.password_setup_required)
+        self.assertEqual(result.user.student_id, 91)
+
     def test_verify_login_otp_rejects_consume_race(self):
         mongo = _FakeMongo(auth_otps_collection=_ConsumeConflictCollection())
         otp_hash, otp_salt = hash_otp("123456")
@@ -589,6 +728,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "faculty_id": None,
                 "is_active": True,
                 "mfa_enabled": False,
+                "password_updated_at": datetime.utcnow(),
                 "created_at": datetime.utcnow(),
             }
         )

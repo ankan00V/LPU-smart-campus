@@ -845,9 +845,27 @@ def _ensure_role_profile_link(
         aligned = align_student_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
         if aligned is not None:
             return
+        created = _restore_missing_student_profile_from_mongo(
+            db,
+            sql_db,
+            user_doc=user_doc,
+            email=email,
+        )
+        if created is not None:
+            align_student_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
+            return
     if role == models.UserRole.FACULTY:
         aligned = align_faculty_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
         if aligned is not None:
+            return
+        created = _restore_missing_faculty_profile_from_mongo(
+            db,
+            sql_db,
+            user_doc=user_doc,
+            email=email,
+        )
+        if created is not None:
+            align_faculty_profile_id_with_sql(db, sql_db, email=email, user_doc=user_doc)
             return
 
     if profile_id:
@@ -871,6 +889,267 @@ def _ensure_role_profile_link(
 
     db["auth_users"].update_one({"id": user_doc["id"]}, {"$set": {field_name: int(profile.id)}})
     user_doc[field_name] = int(profile.id)
+
+
+def _decrypt_mongo_pii_value(collection: str, doc_id: int, field_name: str, doc: dict[str, Any]) -> str | None:
+    raw_value = doc.get(field_name)
+    if isinstance(raw_value, str) and raw_value.strip():
+        return raw_value.strip()
+    encrypted_value = doc.get(f"{field_name}_encrypted")
+    if not isinstance(encrypted_value, str) or not encrypted_value.strip():
+        return None
+    aad = f"{collection}:{int(doc_id)}:{field_name}"
+    try:
+        return decrypt_pii(encrypted_value.strip(), aad=aad)
+    except Exception:
+        logger.exception(
+            "mongo_profile_field_decrypt_failed collection=%s id=%s field=%s",
+            collection,
+            int(doc_id),
+            field_name,
+        )
+        return None
+
+
+def _restore_missing_student_profile_from_mongo(
+    db,
+    sql_db: Session,
+    *,
+    user_doc: dict[str, Any],
+    email: str,
+) -> int | None:
+    email_norm = _normalize_email(email)
+    if not email_norm:
+        return None
+
+    student_doc = None
+    linked_student_id = user_doc.get("student_id")
+    try:
+        linked_student_id = int(linked_student_id) if linked_student_id is not None else None
+    except (TypeError, ValueError):
+        linked_student_id = None
+    if linked_student_id:
+        student_doc = db["students"].find_one({"id": linked_student_id})
+    if not student_doc:
+        student_doc = db["students"].find_one({"email": email_norm})
+    if not student_doc:
+        return None
+
+    try:
+        source_student_id = int(student_doc.get("id") or 0) or linked_student_id
+    except (TypeError, ValueError):
+        source_student_id = linked_student_id
+
+    name = str(student_doc.get("name") or "").strip()
+    department = str(student_doc.get("department") or "").strip()
+    semester_raw = student_doc.get("semester")
+    try:
+        semester = int(semester_raw)
+    except (TypeError, ValueError):
+        semester = 0
+
+    if not name or not department or semester <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Student profile data is incomplete. Please contact support to restore your account profile.",
+        )
+
+    target_id = source_student_id if source_student_id and not sql_db.get(models.Student, int(source_student_id)) else None
+    if target_id is None and linked_student_id:
+        existing = sql_db.get(models.Student, int(linked_student_id))
+        if existing and _normalize_email(str(existing.email or "")) != email_norm:
+            raise HTTPException(status_code=409, detail="Student profile id collision detected")
+
+    student = models.Student(
+        id=int(target_id) if target_id else None,
+        name=name,
+        email=email_norm,
+        registration_number=str(student_doc.get("registration_number") or "").strip() or None,
+        parent_email=_decrypt_mongo_pii_value("students", int(source_student_id or 0), "parent_email", student_doc),
+        section=str(student_doc.get("section") or "").strip() or None,
+        section_updated_at=_coerce_datetime(student_doc.get("section_updated_at")),
+        profile_photo_data_url=_decrypt_mongo_pii_value(
+            "students",
+            int(source_student_id or 0),
+            "profile_photo_data_url",
+            student_doc,
+        ),
+        profile_photo_object_key=str(student_doc.get("profile_photo_object_key") or "").strip() or None,
+        profile_photo_updated_at=_coerce_datetime(student_doc.get("profile_photo_updated_at")),
+        profile_photo_locked_until=_coerce_datetime(student_doc.get("profile_photo_locked_until")),
+        profile_face_template_json=_decrypt_mongo_pii_value(
+            "students",
+            int(source_student_id or 0),
+            "profile_face_template_json",
+            student_doc,
+        ),
+        profile_face_template_updated_at=_coerce_datetime(student_doc.get("profile_face_template_updated_at")),
+        enrollment_video_template_json=_decrypt_mongo_pii_value(
+            "students",
+            int(source_student_id or 0),
+            "enrollment_video_template_json",
+            student_doc,
+        ),
+        enrollment_video_updated_at=_coerce_datetime(student_doc.get("enrollment_video_updated_at")),
+        enrollment_video_locked_until=_coerce_datetime(student_doc.get("enrollment_video_locked_until")),
+        department=department,
+        semester=semester,
+        created_at=_coerce_datetime(student_doc.get("created_at")) or datetime.utcnow(),
+    )
+    try:
+        sql_db.add(student)
+        sql_db.flush()
+        sql_db.commit()
+    except Exception:
+        sql_db.rollback()
+        raise
+
+    if not source_student_id or int(student.id) != int(source_student_id):
+        _upsert_mongo_by_id(
+            db,
+            "students",
+            int(student.id),
+            {
+                "name": student.name,
+                "email": student.email,
+                "registration_number": student.registration_number,
+                "parent_email": student.parent_email,
+                "section": student.section,
+                "section_updated_at": student.section_updated_at,
+                "profile_photo_data_url": student.profile_photo_data_url,
+                "profile_photo_object_key": student.profile_photo_object_key,
+                "profile_photo_updated_at": student.profile_photo_updated_at,
+                "profile_photo_locked_until": student.profile_photo_locked_until,
+                "profile_face_template_json": student.profile_face_template_json,
+                "profile_face_template_updated_at": student.profile_face_template_updated_at,
+                "enrollment_video_template_json": student.enrollment_video_template_json,
+                "enrollment_video_updated_at": student.enrollment_video_updated_at,
+                "enrollment_video_locked_until": student.enrollment_video_locked_until,
+                "department": student.department,
+                "semester": student.semester,
+                "created_at": student.created_at,
+                "source": "auth-profile-restore",
+            },
+        )
+    return int(student.id)
+
+
+def _restore_missing_faculty_profile_from_mongo(
+    db,
+    sql_db: Session,
+    *,
+    user_doc: dict[str, Any],
+    email: str,
+) -> int | None:
+    email_norm = _normalize_email(email)
+    if not email_norm:
+        return None
+
+    faculty_doc = None
+    linked_faculty_id = user_doc.get("faculty_id")
+    try:
+        linked_faculty_id = int(linked_faculty_id) if linked_faculty_id is not None else None
+    except (TypeError, ValueError):
+        linked_faculty_id = None
+    if linked_faculty_id:
+        faculty_doc = db["faculty"].find_one({"id": linked_faculty_id})
+    if not faculty_doc:
+        faculty_doc = db["faculty"].find_one({"email": email_norm})
+    if not faculty_doc:
+        return None
+
+    try:
+        source_faculty_id = int(faculty_doc.get("id") or 0) or linked_faculty_id
+    except (TypeError, ValueError):
+        source_faculty_id = linked_faculty_id
+
+    name = str(faculty_doc.get("name") or "").strip()
+    department = str(faculty_doc.get("department") or "").strip()
+    if not name or not department:
+        raise HTTPException(
+            status_code=409,
+            detail="Faculty profile data is incomplete. Please contact support to restore your account profile.",
+        )
+
+    target_id = source_faculty_id if source_faculty_id and not sql_db.get(models.Faculty, int(source_faculty_id)) else None
+    if target_id is None and linked_faculty_id:
+        existing = sql_db.get(models.Faculty, int(linked_faculty_id))
+        if existing and _normalize_email(str(existing.email or "")) != email_norm:
+            raise HTTPException(status_code=409, detail="Faculty profile id collision detected")
+
+    faculty = models.Faculty(
+        id=int(target_id) if target_id else None,
+        name=name,
+        email=email_norm,
+        faculty_identifier=str(faculty_doc.get("faculty_identifier") or "").strip() or None,
+        section=str(faculty_doc.get("section") or "").strip() or None,
+        section_updated_at=_coerce_datetime(faculty_doc.get("section_updated_at")),
+        profile_photo_data_url=_decrypt_mongo_pii_value(
+            "faculty",
+            int(source_faculty_id or 0),
+            "profile_photo_data_url",
+            faculty_doc,
+        ),
+        profile_photo_object_key=str(faculty_doc.get("profile_photo_object_key") or "").strip() or None,
+        profile_photo_updated_at=_coerce_datetime(faculty_doc.get("profile_photo_updated_at")),
+        profile_photo_locked_until=_coerce_datetime(faculty_doc.get("profile_photo_locked_until")),
+        department=department,
+        created_at=_coerce_datetime(faculty_doc.get("created_at")) or datetime.utcnow(),
+    )
+    try:
+        sql_db.add(faculty)
+        sql_db.flush()
+        sql_db.commit()
+    except Exception:
+        sql_db.rollback()
+        raise
+    return int(faculty.id)
+
+
+def _has_real_profile_for_legacy_otp_login(
+    db,
+    sql_db: Session,
+    *,
+    role: models.UserRole,
+    user_doc: dict[str, Any],
+    email: str,
+) -> bool:
+    email_norm = _normalize_email(email)
+    sql_get = getattr(sql_db, "get", None)
+    sql_query = getattr(sql_db, "query", None)
+    if role == models.UserRole.ADMIN:
+        return True
+    if role == models.UserRole.STUDENT:
+        student_id = user_doc.get("student_id")
+        try:
+            student_id = int(student_id) if student_id is not None else None
+        except (TypeError, ValueError):
+            student_id = None
+        if student_id and callable(sql_get) and sql_get(models.Student, student_id):
+            return True
+        if callable(sql_query) and sql_query(models.Student).filter(func.lower(models.Student.email) == email_norm).first():
+            return True
+        if student_id and db["students"].find_one({"id": student_id}):
+            return True
+        if db["students"].find_one({"email": email_norm}):
+            return True
+        return False
+    if role == models.UserRole.FACULTY:
+        faculty_id = user_doc.get("faculty_id")
+        try:
+            faculty_id = int(faculty_id) if faculty_id is not None else None
+        except (TypeError, ValueError):
+            faculty_id = None
+        if faculty_id and callable(sql_get) and sql_get(models.Faculty, faculty_id):
+            return True
+        if callable(sql_query) and sql_query(models.Faculty).filter(func.lower(models.Faculty.email) == email_norm).first():
+            return True
+        if faculty_id and db["faculty"].find_one({"id": faculty_id}):
+            return True
+        if db["faculty"].find_one({"email": email_norm}):
+            return True
+        return False
+    return True
 
 
 @router.post("/register", response_model=schemas.AuthUserOut, status_code=status.HTTP_201_CREATED)
@@ -1257,7 +1536,10 @@ def request_login_otp(
         )
         user = db["auth_users"].find_one({"email": email})
         if not user:
-            raise HTTPException(status_code=401, detail="Invalid email or password")
+            raise HTTPException(
+                status_code=404,
+                detail="There is no account associated with this mail, kindly create one first.",
+            )
 
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
@@ -1304,6 +1586,17 @@ def request_login_otp(
             )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
+        if requires_password_setup and not _has_real_profile_for_legacy_otp_login(
+            db,
+            sql_db,
+            role=role,
+            user_doc=user,
+            email=email,
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="There is no account associated with this mail, kindly create one first.",
+            )
 
         destination_email = user["email"]
         if payload.send_to_alternate:
@@ -1576,6 +1869,17 @@ def verify_login_otp(
             )
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
+        if _password_setup_required(user) and not _has_real_profile_for_legacy_otp_login(
+            db,
+            sql_db,
+            role=role,
+            user_doc=user,
+            email=email,
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="There is no account associated with this mail, kindly create one first.",
+            )
 
         otp_row = db["auth_otps"].find_one(
             {

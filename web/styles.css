@@ -3902,6 +3902,7 @@ body.auth-open:not(.auth-signup-mode) .auth-journey {
     font-size: 0.95rem;
     color: #e6f5ff;
     line-height: 1.4;
+    white-space: pre-line;
 }
 
 .otp-popup-card[data-tone="sending"] {

@@ -169,6 +169,7 @@ let forgotOtpCooldownTimer = null;
 let foodPopupTimer = null;
 let foodToastTimer = null;
 let authRoleNoticeTimer = null;
+let authRoleNoticeCountdownTimer = null;
 let foodOrdersPulseTimer = null;
 let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
@@ -1709,6 +1710,18 @@ function maybeRequirePasswordBootstrap() {
   return true;
 }
 
+function effectiveOtpVerificationEmail() {
+  const pendingEmail = String(authState.pendingEmail || '').trim().toLowerCase();
+  const enteredEmail = String(els.authEmail?.value || '').trim().toLowerCase();
+  if (pendingEmail) {
+    if (els.authEmail && enteredEmail !== pendingEmail) {
+      els.authEmail.value = pendingEmail;
+    }
+    return pendingEmail;
+  }
+  return enteredEmail;
+}
+
 function setPasswordBootstrapModal(open) {
   if (!els.passwordBootstrapModal) {
     return;
@@ -1790,6 +1803,14 @@ function hideOtpPopup() {
   if (!els.otpPopup) {
     return;
   }
+  if (authRoleNoticeTimer) {
+    window.clearTimeout(authRoleNoticeTimer);
+    authRoleNoticeTimer = null;
+  }
+  if (authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
+  }
   if (els.otpPopupLoader) {
     els.otpPopupLoader.classList.add('hidden');
   }
@@ -1807,6 +1828,10 @@ function hideOtpPopup() {
 function showOtpPopup(title, text, options = {}) {
   if (!els.otpPopup || !els.otpPopupTitle || !els.otpPopupText) {
     return;
+  }
+  if (!options.preserveTimedNotice && authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
   }
   const tone = String(options.tone || 'info');
   const loading = Boolean(options.loading);
@@ -1832,11 +1857,26 @@ function showTimedRoleNotice(title, text, autoHideMs = 15000) {
     window.clearTimeout(authRoleNoticeTimer);
     authRoleNoticeTimer = null;
   }
-  showOtpPopup(title, text, { tone: 'info', loading: false, closable: false });
+  if (authRoleNoticeCountdownTimer) {
+    window.clearInterval(authRoleNoticeCountdownTimer);
+    authRoleNoticeCountdownTimer = null;
+  }
+  const durationMs = Math.max(1000, Number(autoHideMs || 15000));
+  const startedAt = Date.now();
+  const renderCountdown = () => {
+    const elapsedMs = Date.now() - startedAt;
+    const remainingSeconds = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
+    showOtpPopup(
+      title,
+      `${text}\n\nThis notice closes in ${remainingSeconds}s.`,
+      { tone: 'info', loading: false, closable: false, preserveTimedNotice: true }
+    );
+  };
+  renderCountdown();
+  authRoleNoticeCountdownTimer = window.setInterval(renderCountdown, 1000);
   authRoleNoticeTimer = window.setTimeout(() => {
     hideOtpPopup();
-    authRoleNoticeTimer = null;
-  }, Math.max(1000, Number(autoHideMs || 15000)));
+  }, durationMs);
 }
 
 function showFoodPopup(title, text, { isError = false, autoHideMs = 2200 } = {}) {
@@ -20167,7 +20207,7 @@ async function verifyOtpAndLogin() {
   }
   const completingSignup = isSignupOtpVerificationPending();
   const completingPasswordlessLogin = isPasswordlessOtpLoginPending();
-  const email = (els.authEmail.value.trim() || authState.pendingEmail).toLowerCase();
+  const email = effectiveOtpVerificationEmail();
   const otpCode = els.authOtp.value.trim();
   const mfaCode = String(els.authMfaCode?.value || '').trim().replace(/\s+/g, '');
 
@@ -20204,6 +20244,7 @@ async function verifyOtpAndLogin() {
   }
 
   setSession(data.access_token, data.user);
+  authState.pendingEmail = String(data.user?.email || email || '').trim().toLowerCase();
   resetSignupOtpVerificationState();
   resetPasswordlessOtpLoginState();
   renderAuthOtpSection();
@@ -20236,6 +20277,7 @@ async function verifyOtpAndLogin() {
   log(`Authenticated as ${data.user.role}`);
   renderProfileSecurity();
   await refreshAll();
+  maybeRequirePasswordBootstrap();
 }
 
 async function submitPrimaryAuthAction() {

@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 
 from app import models, schemas
-from app.routers.auth import register_auth_user, reissue_generated_profile_identifiers
+from app.routers.auth import _ensure_role_profile_link, register_auth_user, reissue_generated_profile_identifiers
 from app.routers.enterprise import _upsert_federated_user
 
 
@@ -153,6 +153,46 @@ class AuthIdConsistencyTests(unittest.TestCase):
         self.assertEqual(mongo_user["id"], sql_user.id)
         self.assertEqual(mongo_user["student_id"], sql_student.id)
         self.assertEqual(sql_student.registration_number, "12600001")
+
+    def test_ensure_role_profile_link_restores_missing_sql_student_profile_from_mongo(self):
+        self.mongo["auth_users"].insert_one(
+            {
+                "id": 44,
+                "email": "legacy.student@gmail.com",
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 91,
+                "is_active": True,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        self.mongo["students"].insert_one(
+            {
+                "id": 91,
+                "name": "LEGACY STUDENT",
+                "email": "legacy.student@gmail.com",
+                "registration_number": "12200091",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        user_doc = self.mongo["auth_users"].find_one({"id": 44})
+
+        _ensure_role_profile_link(
+            self.mongo,
+            self.db,
+            user_doc=user_doc,
+            role=models.UserRole.STUDENT,
+            email="legacy.student@gmail.com",
+        )
+
+        sql_student = self.db.get(models.Student, 91)
+        self.assertIsNotNone(sql_student)
+        self.assertEqual(sql_student.email, "legacy.student@gmail.com")
+        self.assertEqual(sql_student.department, "CSE")
+        self.assertEqual(sql_student.semester, 4)
+        self.assertEqual(user_doc["student_id"], 91)
 
     def test_register_normalizes_student_signup_text_fields_to_uppercase(self):
         payload = schemas.AuthRegisterRequest(
