@@ -22,7 +22,7 @@ try:
     print(f"   Required: {status.get('required')}")
     
     if 'dual_redis' in status:
-        print(f"\n3. Dual Redis Status:")
+        print("\n3. Dual Redis Status:")
         dual = status['dual_redis']
         print(f"   Dual Enabled: {dual.get('dual_redis_enabled')}")
         print(f"   Active Instance: {dual.get('active_instance')}")

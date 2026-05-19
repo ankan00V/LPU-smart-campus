@@ -10,7 +10,6 @@ This script verifies:
 5. Cache operations work with failover
 """
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -19,7 +18,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.redis_client import (
+from app.redis_client import (  # noqa: E402
     init_redis,
     redis_status,
     cache_set_json,
@@ -27,7 +26,6 @@ from app.redis_client import (
     rate_limit_hit,
     publish_json,
 )
-from app.redis_dual_client import dual_redis_status
 
 
 def print_section(title: str) -> None:
@@ -56,18 +54,18 @@ def test_redis_initialization() -> bool:
         
         if success:
             status = redis_status()
-            print(f"\nRedis Status:")
+            print("\nRedis Status:")
             print(f"  Enabled: {status.get('enabled')}")
             print(f"  Required: {status.get('required')}")
             
             if 'dual_redis' in status:
-                print(f"\n  Dual Redis Configuration:")
+                print("\n  Dual Redis Configuration:")
                 dual = status['dual_redis']
                 print(f"    Dual Redis Enabled: {dual.get('dual_redis_enabled')}")
                 print(f"    Active Instance: {dual.get('active_instance')}")
                 print(f"    Any Connected: {dual.get('any_connected')}")
                 
-                print(f"\n  Redis Instances:")
+                print("\n  Redis Instances:")
                 for inst in dual.get('instances', []):
                     print(f"    - {inst['name']}:")
                     print(f"        Active: {inst['active']}")
