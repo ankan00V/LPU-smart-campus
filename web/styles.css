@@ -3134,6 +3134,73 @@ body.ums-theme #executive-section .donut-core {
 
 .skeleton-line:nth-child(3) {
     width: 72%;
+
+/* Enhanced Loading Skeletons for Production */
+.loading-skeleton {
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.skeleton-pulse {
+    background: linear-gradient(90deg, rgba(73, 125, 165, 0.2) 0%, rgba(130, 183, 224, 0.44) 50%, rgba(73, 125, 165, 0.2) 100%);
+    background-size: 220% 100%;
+    animation: skeleton-shimmer 1.35s var(--motion-ease) infinite;
+    border-radius: var(--radius-sm);
+}
+
+.skeleton-text {
+    height: 1rem;
+    width: 100%;
+}
+
+.skeleton-text:nth-child(2) {
+    width: 85%;
+}
+
+.skeleton-text:nth-child(3) {
+    width: 70%;
+}
+
+.skeleton-bar {
+    height: 2.5rem;
+    width: 100%;
+    margin-top: var(--space-2);
+}
+
+.skeleton-card {
+    height: 8rem;
+    width: 100%;
+}
+
+@keyframes skeleton-shimmer {
+    0% {
+        background-position: 220% 0;
+    }
+    100% {
+        background-position: -20% 0;
+    }
+}
+
+/* Loading state for chips */
+.chip.is-loading {
+    animation: pulse-loading 1.5s ease-in-out infinite;
+}
+
+.chip.is-error {
+    background: rgba(255, 132, 80, 0.2);
+    color: var(--warn);
+}
+
+@keyframes pulse-loading {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.6;
+    }
+}
 }
 
 .log-line {

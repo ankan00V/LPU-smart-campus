@@ -6,8 +6,8 @@ const RAZORPAY_SDK_ORIGIN = 'https://checkout.razorpay.com';
 const RAZORPAY_SDK_LOAD_TIMEOUT_MS = 12000;
 const ENABLE_DECORATIVE_MOTION = false;
 const USE_CLIENT_AI_FACE_ASSIST = false;
-const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 12000;
-const LIVE_VERIFICATION_MAX_ATTEMPTS = 8;
+const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 25000; // Increased from 12s to 25s for production reliability
+const LIVE_VERIFICATION_MAX_ATTEMPTS = 10; // Increased from 8 to 10 attempts
 const LIVE_VERIFICATION_BURST_FRAMES = 8;
 const LIVE_VERIFICATION_BURST_INTERVAL_MS = 140;
 const PASSWORD_POLICY_TEXT = 'Minimum 8 characters with letters, numbers, and a special character.';
@@ -6666,7 +6666,14 @@ function clearSession() {
 }
 
 async function api(path, options = {}) {
-  const { skipAuth = false, timeoutMs = 30000, ...requestOptions } = options;
+  const {
+    skipAuth = false,
+    timeoutMs = 60000, // Increased from 30s to 60s for production reliability
+    retries = 2, // Add retry support
+    retryDelay = 1000, // Initial retry delay in ms
+    ...requestOptions
+  } = options;
+  
   const method = String(requestOptions.method || 'GET').toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
@@ -6677,35 +6684,105 @@ async function api(path, options = {}) {
     headers.Authorization = `Bearer ${authState.token}`;
   }
 
-  const controller = requestOptions.signal ? null : new AbortController();
-  const signal = requestOptions.signal || controller?.signal;
-  const timeoutHandle = controller
-    ? window.setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 30000))
-    : null;
+  let lastError = null;
+  
+  // Retry logic with exponential backoff
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = requestOptions.signal ? null : new AbortController();
+    const signal = requestOptions.signal || controller?.signal;
+    const timeoutHandle = controller
+      ? window.setTimeout(() => controller.abort(), Math.max(5000, Number(timeoutMs) || 60000))
+      : null;
 
-  let response;
-  try {
-    response = await fetch(path, {
-      ...requestOptions,
-      headers,
-      signal,
-      credentials: requestOptions.credentials || 'same-origin',
-      cache: requestOptions.cache || (method === 'GET' || method === 'HEAD' ? 'no-store' : undefined),
-    });
-  } catch (err) {
-    if (err?.name === 'AbortError') {
-      const seconds = Math.max(5, Math.round((Math.max(5000, Number(timeoutMs) || 30000)) / 1000));
-      const timeoutError = new Error(`Request timed out after ${seconds}s. Please retry.`);
-      timeoutError.status = 408;
-      throw timeoutError;
-    }
-    throw err;
-  } finally {
-    if (timeoutHandle) {
-      window.clearTimeout(timeoutHandle);
+    let response;
+    try {
+      response = await fetch(path, {
+        ...requestOptions,
+        headers,
+        signal,
+        credentials: requestOptions.credentials || 'same-origin',
+        cache: requestOptions.cache || (method === 'GET' || method === 'HEAD' ? 'no-store' : undefined),
+      });
+      
+      if (timeoutHandle) {
+        window.clearTimeout(timeoutHandle);
+      }
+      
+      if (!response.ok) {
+        let detail = `Request failed: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          detail = errorData?.detail || errorData?.message || detail;
+        } catch (_) {
+          // Keep default detail if JSON parsing fails
+        }
+        const error = new Error(detail);
+        error.status = response.status;
+        
+        // Retry on 5xx errors or 408/429
+        if (attempt < retries && (response.status >= 500 || response.status === 408 || response.status === 429)) {
+          lastError = error;
+          const delay = retryDelay * Math.pow(2, attempt); // Exponential backoff
+          await new Promise(resolve => window.setTimeout(resolve, delay));
+          continue;
+        }
+        
+        throw error;
+      }
+      
+      // Success - return response
+      return response;
+      
+    } catch (err) {
+      if (timeoutHandle) {
+        window.clearTimeout(timeoutHandle);
+      }
+      
+      if (err?.name === 'AbortError') {
+        const seconds = Math.max(5, Math.round((Math.max(5000, Number(timeoutMs) || 60000)) / 1000));
+        const timeoutError = new Error(`Request timed out after ${seconds}s. Retrying...`);
+        timeoutError.status = 408;
+        
+        // Retry on timeout
+        if (attempt < retries) {
+          lastError = timeoutError;
+          const delay = retryDelay * Math.pow(2, attempt);
+          await new Promise(resolve => window.setTimeout(resolve, delay));
+          continue;
+        }
+        
+        throw timeoutError;
+      }
+      
+      // Network errors - retry
+      if (attempt < retries) {
+        lastError = err;
+        const delay = retryDelay * Math.pow(2, attempt);
+        await new Promise(resolve => window.setTimeout(resolve, delay));
+        continue;
+      }
+      
+      throw err;
     }
   }
+  
+  // If we exhausted all retries, throw the last error
+  throw lastError || new Error('Request failed after retries');
+}
 
+async function apiWithFallback(path, options = {}, fallbackValue = null) {
+  try {
+    const response = await api(path, options);
+    return await response.json();
+  } catch (error) {
+    log(`API call failed: ${error.message}. Using fallback.`);
+    return fallbackValue;
+  }
+}
+
+// Keep old function signature for compatibility but with better error handling
+async function apiLegacy(path, options = {}) {
+  const response = await api(path, options);
   if (!response.ok) {
     let detail = `Request failed: ${response.status}`;
     try {
@@ -8054,8 +8131,23 @@ function renderAdminInsights() {
   const profile = (insights && typeof insights.profile === 'object') ? insights.profile : null;
   const summary = state.admin?.summary || {};
   if (!profile) {
-    profileWrap.innerHTML = '<div class="list-item">Administrative planning profile is loading...</div>';
-    benchmarkWrap.innerHTML = '<div class="list-item">Live benchmark overlay is loading...</div>';
+    // Enhanced loading skeleton with animation
+    profileWrap.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+      </div>
+    `;
+    benchmarkWrap.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+      </div>
+    `;
     return;
   }
 
@@ -8173,10 +8265,30 @@ function renderAdminInsights() {
 async function refreshAdminInsights(options = {}) {
   const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
   const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
-  const payload = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`);
-  state.admin.insights = payload && typeof payload === 'object' ? payload : null;
-  renderAdminInsights();
-  return payload;
+  
+  // Show loading state immediately
+  if (!state.admin?.insights) {
+    renderAdminInsights();
+  }
+  
+  try {
+    const response = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
+      timeoutMs: 90000, // 90s for complex queries
+      retries: 3,
+    });
+    const payload = await response.json();
+    state.admin.insights = payload && typeof payload === 'object' ? payload : null;
+    renderAdminInsights();
+    return payload;
+  } catch (error) {
+    log(`Failed to load admin insights: ${error.message}`);
+    // Keep existing data if available, otherwise show error state
+    if (!state.admin?.insights) {
+      state.admin.insights = null;
+      renderAdminInsights();
+    }
+    throw error;
+  }
 }
 
 async function refreshAdminRecoveryPlans(options = {}) {
@@ -8239,9 +8351,34 @@ function applyAdminLivePayload(payload) {
 async function refreshAdminLive(options = {}) {
   const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
   const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
-  const payload = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`);
-  applyAdminLivePayload(payload || {});
-  return payload;
+  
+  // Show loading indicator
+  if (els.adminLiveChip) {
+    els.adminLiveChip.textContent = 'Loading...';
+    els.adminLiveChip.classList.add('is-loading');
+  }
+  
+  try {
+    const response = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
+      timeoutMs: 90000, // 90s for complex live data
+      retries: 3,
+    });
+    const payload = await response.json();
+    applyAdminLivePayload(payload || {});
+    return payload;
+  } catch (error) {
+    log(`Failed to load admin live data: ${error.message}`);
+    if (els.adminLiveChip) {
+      els.adminLiveChip.textContent = 'Load Failed';
+      els.adminLiveChip.classList.remove('is-loading');
+      els.adminLiveChip.classList.add('is-error');
+    }
+    throw error;
+  } finally {
+    if (els.adminLiveChip) {
+      els.adminLiveChip.classList.remove('is-loading');
+    }
+  }
 }
 
 async function recomputeAdminRecoveryScope({ studentId = null, courseId = null, limit = 1000 } = {}) {
@@ -14750,9 +14887,30 @@ async function refreshRemedialMessages() {
     renderRemedialMessagesList();
     return;
   }
-  const rows = await api('/makeup/messages?limit=80');
-  state.remedial.messages = Array.isArray(rows) ? rows : [];
-  renderRemedialMessagesList();
+  
+  // Show loading state
+  if (els.remedialMessagesWrap) {
+    els.remedialMessagesWrap.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-text"></div>
+      </div>
+    `;
+  }
+  
+  try {
+    const response = await api('/makeup/messages?limit=80', {
+      timeoutMs: 60000,
+      retries: 2,
+    });
+    const rows = await response.json();
+    state.remedial.messages = Array.isArray(rows) ? rows : [];
+    renderRemedialMessagesList();
+  } catch (error) {
+    log(`Failed to load remedial messages: ${error.message}`);
+    state.remedial.messages = [];
+    renderRemedialMessagesList();
+  }
 }
 
 async function refreshRemedialAttendanceLedger() {
@@ -14772,9 +14930,31 @@ async function refreshStudentMessages() {
     renderStudentMessagesCenter();
     return;
   }
-  const rows = await api('/messages?limit=60');
-  state.studentMessages = Array.isArray(rows) ? rows : [];
-  renderStudentMessagesCenter();
+  
+  // Show loading state
+  if (els.messagesWrap) {
+    els.messagesWrap.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-text"></div>
+      </div>
+    `;
+  }
+  
+  try {
+    const response = await api('/messages?limit=60', {
+      timeoutMs: 60000,
+      retries: 2,
+    });
+    const rows = await response.json();
+    state.studentMessages = Array.isArray(rows) ? rows : [];
+    renderStudentMessagesCenter();
+  } catch (error) {
+    log(`Failed to load student messages: ${error.message}`);
+    state.studentMessages = [];
+    renderStudentMessagesCenter();
+  }
 }
 
 async function refreshRemedialAttendanceForClass(classId = null) {
@@ -17230,7 +17410,19 @@ async function refreshStudentKpiTimetable(options = {}) {
 }
 
 async function loadStudentTimetable(options = {}) {
-  const { forceNetwork = false, skipRepair = false } = options;
+  const { forceNetwork = false, skipRepair = false, showLoading = true } = options;
+  
+  // Show loading skeleton
+  if (showLoading && els.timetableWrap) {
+    els.timetableWrap.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-text"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+      </div>
+    `;
+  }
   if (authState.user?.role !== 'student') {
     return;
   }
@@ -19300,7 +19492,7 @@ function sleep(ms) {
   });
 }
 
-async function waitForVideoReady(videoElement, timeoutMs = 7000) {
+async function waitForVideoReady(videoElement, timeoutMs = 12000) {
   if (!videoElement) {
     throw new Error('Camera preview is unavailable.');
   }
