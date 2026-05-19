@@ -32,6 +32,9 @@ def _runtime_defaults_per_test():
         "REDIS_URL",
         "WORKER_REQUIRED",
         "WORKER_INLINE_FALLBACK_ENABLED",
+        "STUDENT_AUTH_TURNSTILE_ENABLED",
+        "STUDENT_AUTH_TURNSTILE_SITE_KEY",
+        "STUDENT_AUTH_TURNSTILE_SECRET_KEY",
     )
     backup = {key: os.environ.get(key) for key in keys}
 
@@ -47,6 +50,9 @@ def _runtime_defaults_per_test():
     os.environ["REDIS_URL"] = ""
     os.environ["WORKER_REQUIRED"] = "false"
     os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "true"
+    os.environ["STUDENT_AUTH_TURNSTILE_ENABLED"] = "true"
+    os.environ["STUDENT_AUTH_TURNSTILE_SITE_KEY"] = "1x00000000000000000000AA"
+    os.environ["STUDENT_AUTH_TURNSTILE_SECRET_KEY"] = "1x0000000000000000000000000000000AA"
     close_mongo()
 
     try:
