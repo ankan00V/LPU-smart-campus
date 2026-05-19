@@ -1651,11 +1651,13 @@ class AuthUserOut(BaseModel):
 class LoginPasswordRequest(BaseModel):
     email: str
     password: str = Field(min_length=8, max_length=128)
+    role: UserRole
     captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
 
 
 class LoginOTPRequest(BaseModel):
     email: str
+    role: UserRole
     password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
     send_to_alternate: bool = False
@@ -1675,6 +1677,7 @@ class AlternateEmailUpdateRequest(BaseModel):
 
 class VerifyOTPRequest(BaseModel):
     email: str
+    role: UserRole
     otp_code: str = Field(min_length=4, max_length=10)
     mfa_code: Optional[str] = Field(default=None, min_length=6, max_length=20)
 

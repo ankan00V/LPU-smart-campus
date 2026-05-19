@@ -525,6 +525,33 @@ def _faculty_profile_photo_data_url(db: Session, faculty: models.Faculty) -> str
     )
 
 
+def _store_profile_media_or_503(
+    db: Session,
+    *,
+    owner_table: str,
+    owner_id: int,
+    media_kind: str,
+    data_url: str,
+) -> models.MediaObject:
+    try:
+        return store_data_url_object(
+            db,
+            owner_table=owner_table,
+            owner_id=int(owner_id),
+            media_kind=media_kind,
+            data_url=data_url,
+            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
+        )
+    except HTTPException:
+        raise
+    except RuntimeError as exc:
+        logger.exception("profile_media_storage_unavailable owner_table=%s owner_id=%s", owner_table, owner_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Profile media storage is temporarily unavailable. Please retry shortly.",
+        ) from exc
+
+
 def _sync_student_to_mongo(db: Session, student: models.Student, *, source: str) -> None:
     _upsert_mongo_by_id(
         "students",
@@ -699,13 +726,12 @@ def _apply_student_profile_update(
             raise HTTPException(status_code=423, detail=PROFILE_PHOTO_LOCK_MESSAGE)
 
         previous_key = str(student.profile_photo_object_key or "").strip() or None
-        media = store_data_url_object(
+        media = _store_profile_media_or_503(
             db,
             owner_table="students",
             owner_id=int(student.id),
             media_kind="student-profile-photo",
             data_url=incoming_photo,
-            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
         )
         student.profile_photo_object_key = media.object_key
         student.profile_photo_data_url = None
@@ -848,13 +874,12 @@ def _apply_faculty_profile_update(
             raise HTTPException(status_code=423, detail=FACULTY_PHOTO_LOCK_MESSAGE)
 
         previous_key = str(faculty.profile_photo_object_key or "").strip() or None
-        media = store_data_url_object(
+        media = _store_profile_media_or_503(
             db,
             owner_table="faculty",
             owner_id=int(faculty.id),
             media_kind="faculty-profile-photo",
             data_url=incoming_photo,
-            retention_days=PROFILE_MEDIA_RETENTION_DAYS,
         )
         faculty.profile_photo_object_key = media.object_key
         faculty.profile_photo_data_url = None
@@ -2594,6 +2619,7 @@ def get_student_profile_photo(
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
+    _sync_student_to_mongo(db, student, source="student-profile-photo-read")
     return _student_photo_out(db, student)
 
 
@@ -2647,10 +2673,18 @@ def update_student_profile(
     if photo_changed:
         _rebuild_profile_face_template(db, student)
         changed = True
-    if changed:
-        db.commit()
-    else:
-        db.flush()
+    try:
+        if changed:
+            db.commit()
+        else:
+            db.flush()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("student_profile_photo_persist_failed student_id=%s", student.id)
+        raise HTTPException(
+            status_code=503,
+            detail="Profile photo could not be saved. Please retry after database storage recovers.",
+        ) from exc
 
     _sync_student_to_mongo(db, student, source="student-profile-update")
 

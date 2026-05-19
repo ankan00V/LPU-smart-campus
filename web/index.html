@@ -1255,11 +1255,7 @@ Ask about any module available to your role.</div>
                     </div>
                 </section>
                 <p class="helper-text">Click a subject card to view date-wise attendance details.</p>
-                <section class="attendance-recovery-panel">
-                    <div class="panel-head panel-head-compact">
-                        <h4>Recovery Autopilot</h4>
-                        <small>Automatic intervention plan when attendance risk builds up</small>
-                    </div>
+                <section class="attendance-recovery-panel attendance-recovery-panel-compact">
                     <div id="student-recovery-plans" class="attendance-recovery-list"></div>
                 </section>
                 <div id="student-aggregate-courses" class="list-wrap"></div>
@@ -2128,6 +2124,19 @@ Ask about any module available to your role.</div>
             <div id="attendance-details-list" class="attendance-details-list"></div>
             <div class="auth-actions">
                 <button id="attendance-details-close-btn" class="btn btn-primary" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="recovery-copilot-modal" class="camera-modal hidden">
+        <div class="camera-card glass attendance-details-card recovery-copilot-modal-card">
+            <div class="panel-head">
+                <h3>Recovery Copilot Action Plan</h3>
+                <small>Complete the guided actions to return below-threshold subjects to safe standing.</small>
+            </div>
+            <div id="recovery-copilot-modal-list" class="attendance-recovery-list recovery-copilot-modal-list"></div>
+            <div class="auth-actions">
+                <button id="recovery-copilot-modal-close-btn" class="btn btn-primary" type="button">Close</button>
             </div>
         </div>
     </section>

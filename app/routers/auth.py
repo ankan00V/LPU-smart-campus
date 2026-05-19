@@ -409,6 +409,18 @@ def _validate_role_email(email: str, role: models.UserRole) -> None:
     raise HTTPException(status_code=400, detail="Only admin, faculty, student, and owner roles are allowed")
 
 
+def _ensure_selected_login_role(actual_role: models.UserRole, selected_role: models.UserRole) -> None:
+    if actual_role == selected_role:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"This email is registered as a {actual_role.value} account, not a {selected_role.value} account. "
+            f"Select {actual_role.value} in the role dropdown or use the correct {selected_role.value} account."
+        ),
+    )
+
+
 def _upsert_mongo_by_id(db, collection: str, doc_id: int, payload: dict) -> None:
     body = dict(payload)
     body["id"] = doc_id
@@ -1588,6 +1600,7 @@ def request_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
+        _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
         candidate_password = str(payload.password or "")
@@ -1686,6 +1699,7 @@ def request_login_otp(
             "otp_hash": otp_hash,
             "otp_salt": otp_salt,
             "purpose": "login",
+            "role": role.value,
             "attempts_count": 0,
             "expires_at": expires_at,
             "used_at": None,
@@ -1786,7 +1800,16 @@ def login_student_with_password(
         user = db["auth_users"].find_one({"email": email})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        if str(user.get("role") or "").strip() != models.UserRole.STUDENT.value:
+        
+        try:
+            actual_role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid user role") from exc
+        
+        # Validate that the user selected the correct role in the dropdown
+        _ensure_selected_login_role(actual_role=actual_role, selected_role=payload.role)
+        
+        if actual_role != models.UserRole.STUDENT:
             raise HTTPException(status_code=403, detail="Student password login is only available for student accounts")
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
@@ -1900,6 +1923,7 @@ def verify_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _validate_role_email(email, role)
+        _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
         user_id = _ensure_auth_user_id(db, user, sql_db)
@@ -1929,6 +1953,9 @@ def verify_login_otp(
 
         if not otp_row:
             raise HTTPException(status_code=400, detail="No active OTP request found")
+        otp_role = str(otp_row.get("role") or role.value).strip().lower()
+        if otp_role != role.value:
+            raise HTTPException(status_code=403, detail="OTP was requested for a different account role. Request a new OTP.")
 
         expires_at = _coerce_datetime(otp_row.get("expires_at"))
         if not expires_at:
