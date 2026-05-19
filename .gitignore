@@ -22,3 +22,13 @@ lhci_reports/
 .env.local.example
 .env.production.example
 deploy/railway.env
+
+# Runtime and cache directories
+.model_cache/
+.mongita-local/
+.mongita-test/
+.mongita-test2/
+.pip-audit-cache/
+.runtime/
+.pytest_cache/
+.ruff_cache/

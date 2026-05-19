@@ -20,6 +20,8 @@ function shouldHandleEvent(eventType) {
     type.startsWith('attendance.')
     || type === 'rms.attendance.updated'
     || type === 'rms.student.updated'
+    || type === 'profile.photo.updated'
+    || type === 'profile.updated'
   );
 }
 
@@ -37,6 +39,15 @@ function scheduleRefresh(context, reason) {
     inFlight = true;
     try {
       const role = context.getUserRole();
+      
+      // Handle profile photo updates
+      if (lastReason.includes('profile')) {
+        if (typeof context.refreshProfilePhoto === 'function') {
+          await context.refreshProfilePhoto(lastReason);
+        }
+      }
+      
+      // Handle attendance updates
       if (role === 'student') {
         await context.refreshStudentAttendance(lastReason);
       } else if (role === 'faculty' || role === 'admin') {

@@ -73,6 +73,7 @@ const LIVE_DATE_TOOLTIP_FORMATTER = new Intl.DateTimeFormat(undefined, {
   second: '2-digit',
   hour12: true,
 });
+const SECTION_LOADING_MIN_DISPLAY_MS = 300;
 const LIVE_OPERATIONAL_REFRESH_MS = 10 * 1000;
 const FOOD_ORDER_STATUS_LABELS = {
   placed: 'Order being verified by',
@@ -908,6 +909,9 @@ const els = {
   attendanceDetailsModal: document.getElementById('attendance-details-modal'),
   attendanceDetailsTitle: document.getElementById('attendance-details-title'),
   attendanceDetailsMeta: document.getElementById('attendance-details-meta'),
+  recoveryCopilotModal: document.getElementById('recovery-copilot-modal'),
+  recoveryCopilotModalList: document.getElementById('recovery-copilot-modal-list'),
+  recoveryCopilotModalCloseBtn: document.getElementById('recovery-copilot-modal-close-btn'),
   dashboardTitle: document.getElementById('dashboard-title'),
   dashboardSubtitle: document.getElementById('dashboard-subtitle'),
   attendanceDetailsList: document.getElementById('attendance-details-list'),
@@ -4415,6 +4419,29 @@ function initModalFocusTrapObserver() {
   }
 }
 
+function buildLoadingStateRow({
+  message = 'Loading section...',
+  subtitle = 'Hang on, fetching data from server',
+} = {}) {
+  const row = document.createElement('div');
+  row.className = 'list-item loading-state-row';
+  row.setAttribute('role', 'status');
+  row.setAttribute('aria-live', 'polite');
+  row.innerHTML = `
+    <div class="loading-spinner-container">
+      <svg class="loading-spinner" viewBox="0 0 50 50" aria-hidden="true">
+        <circle class="loading-spinner-track" cx="25" cy="25" r="20" fill="none" stroke-width="4"></circle>
+        <circle class="loading-spinner-path" cx="25" cy="25" r="20" fill="none" stroke-width="4"></circle>
+      </svg>
+      <div class="loading-text-block">
+        <strong class="loading-message">${escapeHtml(message)}</strong>
+        <small class="loading-subtitle">${escapeHtml(subtitle)}</small>
+      </div>
+    </div>
+  `;
+  return row;
+}
+
 function buildEmptyStateRow({
   title = 'No data available.',
   description = '',
@@ -4441,6 +4468,19 @@ function buildEmptyStateRow({
     row.appendChild(action);
   }
   return row;
+}
+
+function showSectionLoading(container, message = 'Loading...', subtitle = 'Hang on, section loading') {
+  if (!container) return;
+  const loadingRow = buildLoadingStateRow({ message, subtitle });
+  container.innerHTML = '';
+  container.appendChild(loadingRow);
+}
+
+function clearSectionLoading(container) {
+  if (!container) return;
+  const loadingRows = container.querySelectorAll('.loading-state-row');
+  loadingRows.forEach((row) => row.remove());
 }
 
 function selectedAuthRole() {
@@ -4714,6 +4754,25 @@ async function refreshAdministrativeRealtime() {
   await refreshAdministrativeModule();
 }
 
+async function refreshProfilePhotoRealtime() {
+  if (!authState.user) {
+    return;
+  }
+  const role = String(authState.user.role || '').toLowerCase();
+  try {
+    if (role === 'student') {
+      await loadStudentProfilePhoto();
+    } else if (role === 'faculty') {
+      await loadFacultyProfile();
+    }
+    // Update UI elements that display profile photos
+    renderProfileStatusByRole();
+    updateAccountMenuAvatar();
+  } catch (error) {
+    log(error.message || 'Profile photo refresh failed');
+  }
+}
+
 function buildRouteModuleRuntime() {
   return {
     realtimeBus: realtimeBusController,
@@ -4728,6 +4787,7 @@ function buildRouteModuleRuntime() {
     refreshRemedialModule: async () => refreshRemedialModuleRealtime(),
     refreshRms: async () => refreshRmsRealtime(),
     refreshFood: async () => refreshFoodRealtime(),
+    refreshProfilePhoto: async () => refreshProfilePhotoRealtime(),
     refreshAdministrative: async () => refreshAdministrativeRealtime(),
     ensureFoodDeferredAssets: async () => ensureFoodCatalogLoaded({ preloadOnly: true }),
     log,
@@ -16185,8 +16245,20 @@ async function loadStudentProfilePhoto() {
   }
   state.student.registrationNumber = data.registration_number || '';
   state.student.section = (data.section || '').trim().toUpperCase().replace(/\s+/g, '');
+  const loadStartMs = Date.now();
+  
   state.student.sectionUpdatedAt = data.section_updated_at || null;
-  state.student.profilePhotoDataUrl = data.photo_data_url || '';
+  const newPhotoUrl = data.photo_data_url || '';
+  
+  // Ensure minimum display time if photo is loading
+  if (newPhotoUrl && !state.student.profilePhotoDataUrl) {
+    const elapsed = Date.now() - loadStartMs;
+    if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
+      await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
+    }
+  }
+  
+  state.student.profilePhotoDataUrl = newPhotoUrl;
   state.student.profilePhotoCanUpdateNow = Boolean(data.can_update_photo_now);
   state.student.profilePhotoLockedUntil = data.photo_locked_until || null;
   state.student.profilePhotoLockDaysRemaining = Number(data.photo_lock_days_remaining || 0);
@@ -17180,9 +17252,21 @@ async function loadStudentTimetable(options = {}) {
     }
   }
 
+  // Show loading state
+  if (els.timetableGrid && !cached) {
+    showSectionLoading(els.timetableGrid, 'Loading Timetable...', 'Fetching your weekly class schedule');
+  }
+
   let payload;
+  const loadStartMs = Date.now();
   try {
     payload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
+    
+    // Ensure minimum display time for smooth UX
+    const elapsed = Date.now() - loadStartMs;
+    if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
+      await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
+    }
   } catch (error) {
     if (cached) {
       return;
@@ -17699,17 +17783,8 @@ function buildRecoveryActionButtons(action) {
   `;
 }
 
-function renderStudentRecoveryPlans() {
-  if (!els.studentRecoveryPlans) {
-    return;
-  }
-  const plans = Array.isArray(state.student.recoveryPlans) ? state.student.recoveryPlans : [];
-  if (!plans.length) {
-    els.studentRecoveryPlans.innerHTML = '<div class="recovery-empty">No active recovery plan. If attendance risk builds up, guided interventions will appear here automatically.</div>';
-    return;
-  }
-
-  els.studentRecoveryPlans.innerHTML = plans.map((plan) => {
+function buildStudentRecoveryPlanCards(plans) {
+  return plans.map((plan) => {
     const riskTone = recoveryRiskTone(plan.risk_level);
     const visibleActions = Array.isArray(plan.actions)
       ? plan.actions.filter((action) => isVisibleRecoveryAction(action))
@@ -17785,6 +17860,71 @@ function renderStudentRecoveryPlans() {
     `;
   }).join('');
 }
+
+function renderRecoveryCopilotModal() {
+  if (!els.recoveryCopilotModalList) {
+    return;
+  }
+  const plans = Array.isArray(state.student.recoveryPlans) ? state.student.recoveryPlans : [];
+  els.recoveryCopilotModalList.innerHTML = plans.length
+    ? buildStudentRecoveryPlanCards(plans)
+    : '<div class="recovery-empty">No active recovery action plan is currently assigned.</div>';
+}
+
+function openRecoveryCopilotModal() {
+  if (!els.recoveryCopilotModal) {
+    return;
+  }
+  renderRecoveryCopilotModal();
+  els.recoveryCopilotModal.classList.remove('hidden');
+}
+
+function closeRecoveryCopilotModal() {
+  if (els.recoveryCopilotModal) {
+    els.recoveryCopilotModal.classList.add('hidden');
+  }
+}
+
+function renderStudentRecoveryPlans() {
+  if (!els.studentRecoveryPlans) {
+    return;
+  }
+  const plans = Array.isArray(state.student.recoveryPlans) ? state.student.recoveryPlans : [];
+  renderRecoveryCopilotModal();
+  if (!plans.length) {
+    els.studentRecoveryPlans.innerHTML = '<div class="recovery-empty recovery-empty-compact">No active recovery plan. If attendance risk builds up, guided interventions will appear here automatically.</div>';
+    return;
+  }
+
+  const riskRank = { watch: 1, high: 2, critical: 3 };
+  const highestRisk = plans.reduce((current, plan) => {
+    const tone = recoveryRiskTone(plan.risk_level);
+    return (riskRank[tone] || 0) > (riskRank[current] || 0) ? tone : current;
+  }, 'watch');
+  const pendingActions = plans.reduce((count, plan) => {
+    const actions = Array.isArray(plan.actions) ? plan.actions : [];
+    return count + actions.filter((action) => {
+      const role = String(action?.recipient_role || '').trim().toLowerCase();
+      const status = String(action?.status || '').trim().toLowerCase();
+      return role === 'student' && isVisibleRecoveryAction(action) && status !== 'completed';
+    }).length;
+  }, 0);
+  const subjectLabel = `${plans.length} subject${plans.length === 1 ? '' : 's'}`;
+  const actionLabel = `${pendingActions} pending student action${pendingActions === 1 ? '' : 's'}`;
+  els.studentRecoveryPlans.innerHTML = `
+    <article class="recovery-copilot-notice ${highestRisk}">
+      <div class="recovery-copilot-notice-copy">
+        <span class="recovery-plan-risk ${highestRisk}">${escapeHtml(statusLabel(highestRisk))}</span>
+        <div>
+          <strong>⚠️ Action Required: Attendance Recovery Plan Active</strong>
+          <p>You have ${escapeHtml(subjectLabel)} under recovery watch with ${escapeHtml(actionLabel)}. Review and complete your action plan immediately to improve your attendance standing and avoid academic consequences.</p>
+        </div>
+      </div>
+      <button class="btn btn-primary" type="button" data-open-recovery-copilot>View Action Plan</button>
+    </article>
+  `;
+}
+
 
 function renderFacultyRecoveryPlans() {
   if (!els.facultyRecoveryList) {
@@ -18287,6 +18427,12 @@ async function loadStudentAttendanceInsights() {
     return;
   }
 
+  // Show loading state for attendance ledger
+  if (els.studentAggregateCourses) {
+    showSectionLoading(els.studentAggregateCourses, 'Loading Attendance Ledger...', 'Fetching your attendance records');
+  }
+
+  const loadStartMs = Date.now();
   const [aggregateRes, historyRes, rectificationRes, recoveryRes] = await Promise.allSettled([
     api('/attendance/student/attendance-aggregate'),
     api('/attendance/student/attendance-history?limit=80'),
@@ -18329,6 +18475,12 @@ async function loadStudentAttendanceInsights() {
   } else {
     state.student.recoveryPlans = [];
     log(recoveryRes.reason?.message || 'Recovery plan refresh failed; attendance ledger still updated.');
+  }
+
+  // Ensure minimum display time for smooth UX
+  const elapsed = Date.now() - loadStartMs;
+  if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
+    await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
   }
 
   renderStudentAttendanceAggregate();
@@ -19835,6 +19987,8 @@ async function loginStudentWithPassword() {
   }
   const email = (els.authEmail?.value || '').trim().toLowerCase();
   const password = String(els.authPassword?.value || '');
+  const selectedRole = String(els.authLoginRoleSelect?.value || 'student').trim();
+  
   if (!email || !password) {
     throw new Error('Enter email and password first.');
   }
@@ -19843,7 +19997,7 @@ async function loginStudentWithPassword() {
   }
 
   setLoginInFlight(true);
-  setAuthMessage('Verifying student login...', false, 'loading');
+  setAuthMessage('Verifying login...', false, 'loading');
   try {
     const captchaToken = await acquireStudentCaptchaToken('student_login');
     const data = await api('/auth/student/login', {
@@ -19851,6 +20005,7 @@ async function loginStudentWithPassword() {
       body: JSON.stringify({
         email,
         password,
+        role: selectedRole,
         captcha_token: captchaToken || undefined,
       }),
       skipAuth: true,
@@ -19991,6 +20146,7 @@ async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogi
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
+        role: loginRole,
         password: studentPasswordlessLogin ? undefined : (password || undefined),
         captcha_token: captchaToken || undefined,
         send_to_alternate: false,
@@ -20159,6 +20315,9 @@ async function verifyOtpAndLogin() {
   const completingSignup = isSignupOtpVerificationPending();
   const completingPasswordlessLogin = isPasswordlessOtpLoginPending();
   const email = effectiveOtpVerificationEmail();
+  const otpRole = completingSignup
+    ? String(authState.signupVerificationRole || selectedLoginRole()).trim().toLowerCase()
+    : (completingPasswordlessLogin ? 'student' : selectedLoginRole());
   const otpCode = els.authOtp.value.trim();
   const mfaCode = String(els.authMfaCode?.value || '').trim().replace(/\s+/g, '');
 
@@ -20174,6 +20333,7 @@ async function verifyOtpAndLogin() {
       method: 'POST',
       body: JSON.stringify({
         email,
+        role: otpRole,
         otp_code: otpCode,
         mfa_code: mfaCode || undefined,
       }),
@@ -20558,21 +20718,20 @@ async function refreshAll() {
   }
 
   if (role === 'student') {
-    const studentSteps = [
-      () => loadStudentProfilePhoto(),
-      () => refreshStudentTimetableSurface({ forceNetwork: true }),
-      () => loadStudentAttendanceInsights(),
-      () => loadSaarthiStatus({ silent: true }),
-      () => refreshRemedialMessages(),
-      () => refreshSupportDeskContext({ silent: true, refreshThread: false }),
+    const studentTasks = [
+      loadStudentProfilePhoto(),
+      refreshStudentTimetableSurface({ forceNetwork: true }),
+      loadStudentAttendanceInsights(),
+      loadSaarthiStatus({ silent: true }),
+      refreshRemedialMessages(),
+      refreshSupportDeskContext({ silent: true, refreshThread: false }),
     ];
 
-    for (const step of studentSteps) {
-      try {
-        await step();
-      } catch (error) {
+    const results = await Promise.allSettled(studentTasks);
+    for (const result of results) {
+      if (result.status === 'rejected') {
         failed += 1;
-        log(error.message || 'A dashboard section failed to load');
+        log(result.reason?.message || 'A dashboard section failed to load');
       }
     }
 
@@ -22497,6 +22656,21 @@ function bindEvents() {
       if (!(target instanceof Element)) {
         return;
       }
+      const openButton = target.closest('[data-open-recovery-copilot]');
+      if (openButton instanceof HTMLButtonElement) {
+        event.preventDefault();
+        openRecoveryCopilotModal();
+        return;
+      }
+    });
+  }
+
+  if (els.recoveryCopilotModalList) {
+    els.recoveryCopilotModalList.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
       const button = target.closest('[data-recovery-action-command]');
       if (!(button instanceof HTMLButtonElement)) {
         return;
@@ -22511,11 +22685,26 @@ function bindEvents() {
       button.textContent = command === 'complete' ? 'Saving...' : 'Updating...';
       try {
         await submitStudentRecoveryAction(actionId, command);
+        renderRecoveryCopilotModal();
       } catch (error) {
         log(error.message || 'Recovery action update failed.');
       } finally {
         button.disabled = false;
         button.textContent = original;
+      }
+    });
+  }
+
+  if (els.recoveryCopilotModalCloseBtn) {
+    els.recoveryCopilotModalCloseBtn.addEventListener('click', () => {
+      closeRecoveryCopilotModal();
+    });
+  }
+
+  if (els.recoveryCopilotModal) {
+    els.recoveryCopilotModal.addEventListener('click', (event) => {
+      if (event.target === els.recoveryCopilotModal) {
+        closeRecoveryCopilotModal();
       }
     });
   }
@@ -22638,6 +22827,10 @@ function bindEvents() {
     }
     if (els.attendanceRectificationModal && !els.attendanceRectificationModal.classList.contains('hidden')) {
       closeAttendanceRectificationModal();
+      return;
+    }
+    if (els.recoveryCopilotModal && !els.recoveryCopilotModal.classList.contains('hidden')) {
+      closeRecoveryCopilotModal();
       return;
     }
     if (els.attendanceDetailsModal && !els.attendanceDetailsModal.classList.contains('hidden')) {

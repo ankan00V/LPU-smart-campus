@@ -1868,6 +1868,86 @@ body.ums-theme #executive-section .donut-core {
     background: rgba(28, 117, 82, 0.24);
 }
 
+.loading-state-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.2rem 0.88rem;
+    background: rgba(18, 53, 79, 0.38);
+    border-style: solid;
+    min-height: 120px;
+}
+
+.loading-spinner-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.loading-spinner {
+    width: 48px;
+    height: 48px;
+    animation: loading-spin 1.4s linear infinite;
+}
+
+.loading-spinner-track {
+    stroke: rgba(147, 209, 245, 0.2);
+}
+
+.loading-spinner-path {
+    stroke: #4CC9F0;
+    stroke-linecap: round;
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: 0;
+    animation: loading-dash 1.4s ease-in-out infinite;
+}
+
+.loading-text-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.3rem;
+    text-align: center;
+}
+
+.loading-message {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: #e6f4ff;
+    letter-spacing: 0.01em;
+}
+
+.loading-subtitle {
+    font-size: 0.78rem;
+    color: #bdd5ea;
+    font-weight: 400;
+}
+
+@keyframes loading-spin {
+    0% {
+        transform: rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes loading-dash {
+    0% {
+        stroke-dasharray: 1, 150;
+        stroke-dashoffset: 0;
+    }
+    50% {
+        stroke-dasharray: 90, 150;
+        stroke-dashoffset: -35;
+    }
+    100% {
+        stroke-dasharray: 90, 150;
+        stroke-dashoffset: -124;
+    }
+}
+
 .empty-state-row {
     display: grid;
     gap: 0.52rem;
@@ -2588,6 +2668,10 @@ body.ums-theme #executive-section .donut-core {
     gap: 0.55rem;
 }
 
+.attendance-recovery-panel-compact {
+    margin-top: 0.65rem;
+}
+
 .panel-head-compact {
     margin-bottom: 0;
 }
@@ -2849,6 +2933,74 @@ body.ums-theme #executive-section .donut-core {
     color: #bfd9eb;
     padding: 0.7rem 0.78rem;
     font-size: 0.82rem;
+}
+
+.recovery-empty-compact {
+    padding: 0.56rem 0.7rem;
+}
+
+.recovery-copilot-notice {
+    border-radius: 16px;
+    border: 1px solid rgba(166, 212, 245, 0.34);
+    background:
+        linear-gradient(135deg, rgba(34, 83, 122, 0.62), rgba(19, 46, 73, 0.72)),
+        rgba(23, 58, 86, 0.28);
+    box-shadow: 0 14px 32px rgba(8, 28, 48, 0.16);
+    padding: 0.72rem 0.78rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.recovery-copilot-notice.high {
+    border-color: rgba(255, 164, 135, 0.46);
+    background:
+        linear-gradient(135deg, rgba(109, 50, 37, 0.66), rgba(34, 61, 88, 0.7)),
+        rgba(23, 58, 86, 0.28);
+}
+
+.recovery-copilot-notice.critical {
+    border-color: rgba(255, 111, 111, 0.56);
+    background:
+        linear-gradient(135deg, rgba(127, 32, 44, 0.68), rgba(36, 57, 88, 0.72)),
+        rgba(23, 58, 86, 0.28);
+}
+
+.recovery-copilot-notice-copy {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.7rem;
+    min-width: 0;
+}
+
+.recovery-copilot-notice-copy strong {
+    display: block;
+    color: #f3fbff;
+    font-size: 0.92rem;
+    margin-bottom: 0.14rem;
+}
+
+.recovery-copilot-notice-copy p {
+    margin: 0;
+    color: #cde5f5;
+    line-height: 1.42;
+    font-size: 0.82rem;
+}
+
+.recovery-copilot-notice .btn {
+    flex: 0 0 auto;
+}
+
+.recovery-copilot-modal-card {
+    width: min(980px, calc(100vw - 2rem));
+    max-height: min(86vh, 900px);
+}
+
+.recovery-copilot-modal-list {
+    max-height: 64vh;
+    overflow: auto;
+    padding-right: 0.2rem;
 }
 
 .attendance-history-wrap {
@@ -11877,6 +12029,27 @@ body.ums-theme .helper-text {
     color: #5b6672;
 }
 
+body.ums-theme .loading-state-row {
+    background: rgba(241, 248, 255, 0.6);
+    border-color: rgba(96, 165, 250, 0.3);
+}
+
+body.ums-theme .loading-spinner-track {
+    stroke: rgba(96, 165, 250, 0.25);
+}
+
+body.ums-theme .loading-spinner-path {
+    stroke: #2563eb;
+}
+
+body.ums-theme .loading-message {
+    color: #1e3a5f;
+}
+
+body.ums-theme .loading-subtitle {
+    color: #475569;
+}
+
 body.ums-theme .empty-state-row {
     border-style: dashed;
     border-color: #bfd2e3;
@@ -12408,6 +12581,7 @@ body.ums-theme .course-card-hint {
 }
 
 body.ums-theme .recovery-plan-card,
+body.ums-theme .recovery-copilot-notice,
 body.ums-theme .recovery-action-row,
 body.ums-theme .recovery-metric {
     background: #ffffff;
@@ -12431,12 +12605,14 @@ body.ums-theme .recovery-plan-card.critical {
 }
 
 body.ums-theme .recovery-plan-head h4,
+body.ums-theme .recovery-copilot-notice-copy strong,
 body.ums-theme .recovery-action-title,
 body.ums-theme .recovery-metric strong {
     color: #26313d;
 }
 
 body.ums-theme .recovery-plan-head p,
+body.ums-theme .recovery-copilot-notice-copy p,
 body.ums-theme .recovery-plan-summary,
 body.ums-theme .recovery-action-description,
 body.ums-theme .recovery-metric span,

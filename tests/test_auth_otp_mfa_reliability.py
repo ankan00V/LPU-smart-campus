@@ -191,6 +191,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="faculty@gmail.com",
+                    role=models.UserRole.FACULTY,
                     password="Faculty@123",
                     captcha_token="turnstile-token-1234567890",
                 ),
@@ -311,6 +312,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="legacy.student@gmail.com",
+                    role=models.UserRole.STUDENT,
                     captcha_token="turnstile-token-1234567890",
                 ),
                 request=_request("/auth/login/request-otp"),
@@ -333,6 +335,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 auth.request_login_otp(
                     schemas.LoginOTPRequest(
                         email="missing.user@gmail.com",
+                        role=models.UserRole.STUDENT,
                         captcha_token="turnstile-token-1234567890",
                     ),
                     request=_request("/auth/login/request-otp"),
@@ -344,6 +347,42 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             ctx.exception.detail,
             "There is no account associated with this mail, kindly create one first.",
         )
+
+    def test_request_login_otp_rejects_selected_role_mismatch(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 73,
+                "email": "role.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 73,
+                "faculty_id": None,
+                "is_active": True,
+                "password_setup_required": False,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._send_login_otp_with_timeout") as send_login_otp,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.request_login_otp(
+                    schemas.LoginOTPRequest(
+                        email="role.student@gmail.com",
+                        role=models.UserRole.FACULTY,
+                        captcha_token="turnstile-token-1234567890",
+                    ),
+                    request=_request("/auth/login/request-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("registered as a student account", ctx.exception.detail)
+        send_login_otp.assert_not_called()
 
     def test_student_passwordless_login_otp_is_allowed_for_password_ready_accounts(self):
         mongo = _FakeMongo()
@@ -387,6 +426,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="ready.student@gmail.com",
+                    role=models.UserRole.STUDENT,
                     captcha_token="turnstile-token-1234567890",
                 ),
                 request=_request("/auth/login/request-otp"),
@@ -436,6 +476,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="ready.flagless.student@gmail.com",
+                    role=models.UserRole.STUDENT,
                     captcha_token="turnstile-token-1234567890",
                 ),
                 request=_request("/auth/login/request-otp"),
@@ -484,6 +525,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="legacy.faculty@gmail.com",
+                    role=models.UserRole.FACULTY,
                     captcha_token="turnstile-token-1234567890",
                 ),
                 request=_request("/auth/login/request-otp"),
@@ -520,6 +562,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 auth.request_login_otp(
                     schemas.LoginOTPRequest(
                         email="faculty.ready@gmail.com",
+                        role=models.UserRole.FACULTY,
                         password="Wrong@123",
                         captcha_token="turnstile-token-1234567890",
                     ),
@@ -557,6 +600,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 auth.request_login_otp(
                     schemas.LoginOTPRequest(
                         email="admin.ghost@gmail.com",
+                        role=models.UserRole.ADMIN,
                         captcha_token="turnstile-token-1234567890",
                     ),
                     request=_request("/auth/login/request-otp"),
@@ -615,6 +659,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             result = auth.request_login_otp(
                 schemas.LoginOTPRequest(
                     email="admin.ready@gmail.com",
+                    role=models.UserRole.ADMIN,
                     captcha_token="turnstile-token-1234567890",
                 ),
                 request=_request("/auth/login/request-otp"),
@@ -748,7 +793,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as ctx:
                 auth.verify_login_otp(
-                    schemas.VerifyOTPRequest(email="admin@gmail.com", otp_code="123456"),
+                    schemas.VerifyOTPRequest(email="admin@gmail.com", role=models.UserRole.ADMIN, otp_code="123456"),
                     response=Response(),
                     request=_request("/auth/login/verify-otp"),
                     sql_db=SimpleNamespace(),
@@ -805,7 +850,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
             ),
         ):
             result = auth.verify_login_otp(
-                schemas.VerifyOTPRequest(email="owner@gmail.com", otp_code="123 456"),
+                schemas.VerifyOTPRequest(email="owner@gmail.com", role=models.UserRole.OWNER, otp_code="123 456"),
                 response=Response(),
                 request=_request("/auth/login/verify-otp"),
                 sql_db=SimpleNamespace(),
@@ -814,6 +859,59 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertEqual(result.access_token, "access-token")
         otp_row = mongo["auth_otps"].find_one({"id": 22})
         self.assertIsNotNone(otp_row["used_at"])
+
+    def test_verify_login_otp_rejects_selected_role_mismatch_without_consuming_otp(self):
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 17,
+                "email": "role.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 17,
+                "faculty_id": None,
+                "is_active": True,
+                "mfa_enabled": False,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 29,
+                "user_id": 17,
+                "purpose": "login",
+                "role": models.UserRole.STUDENT.value,
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.verify_login_otp(
+                    schemas.VerifyOTPRequest(
+                        email="role.student@gmail.com",
+                        role=models.UserRole.FACULTY,
+                        otp_code="123456",
+                    ),
+                    response=Response(),
+                    request=_request("/auth/login/verify-otp"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("registered as a student account", ctx.exception.detail)
+        otp_row = mongo["auth_otps"].find_one({"id": 29})
+        self.assertIsNone(otp_row["used_at"])
+        self.assertEqual(otp_row["attempts_count"], 0)
 
     def test_verify_login_otp_preserves_password_bootstrap_requirement_for_legacy_student(self):
         mongo = _FakeMongo()
@@ -896,7 +994,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 ),
             ):
                 result = auth.verify_login_otp(
-                    schemas.VerifyOTPRequest(email="legacy.student@gmail.com", otp_code="123456"),
+                    schemas.VerifyOTPRequest(email="legacy.student@gmail.com", role=models.UserRole.STUDENT, otp_code="123456"),
                     response=Response(),
                     request=_request("/auth/login/verify-otp"),
                     sql_db=sql_db,
@@ -947,7 +1045,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as ctx:
                 auth.verify_login_otp(
-                    schemas.VerifyOTPRequest(email="faculty@gmail.com", otp_code="123456"),
+                    schemas.VerifyOTPRequest(email="faculty@gmail.com", role=models.UserRole.FACULTY, otp_code="123456"),
                     response=Response(),
                     request=_request("/auth/login/verify-otp"),
                     sql_db=SimpleNamespace(),
@@ -996,7 +1094,7 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as ctx:
                 auth.verify_login_otp(
-                    schemas.VerifyOTPRequest(email="expired.faculty@gmail.com", otp_code="123456"),
+                    schemas.VerifyOTPRequest(email="expired.faculty@gmail.com", role=models.UserRole.FACULTY, otp_code="123456"),
                     response=Response(),
                     request=_request("/auth/login/verify-otp"),
                     sql_db=SimpleNamespace(),
