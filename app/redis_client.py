@@ -43,6 +43,8 @@ except Exception:  # noqa: BLE001
 
 _redis_client: Redis | None = None
 _redis_error: str | None = None
+_dual_redis_enabled = False
+_dual_redis_manager = None
 logger = logging.getLogger(__name__)
 _local_rate_limit_lock = threading.Lock()
 _local_rate_limit_counters: dict[str, tuple[int, float]] = {}
@@ -115,6 +117,12 @@ def _local_rate_limit_hit(redis_key: str, *, limit: int, window_seconds: int, no
 def _redis_url() -> str:
     _load_environment_files()
     return (os.getenv("REDIS_URL") or "").strip()
+
+
+def _redis_dual_enabled() -> bool:
+    """Check if dual Redis failover is enabled"""
+    secondary_url = (os.getenv("REDIS_URL_SECONDARY") or "").strip()
+    return bool(secondary_url)
 
 
 def _redis_required() -> bool:
@@ -216,6 +224,18 @@ def _should_retry_redis_error(exc: Exception) -> bool:
 
 
 def _retry_redis_call(operation: Callable[[Redis], Any]) -> Any:
+    global _dual_redis_enabled
+    
+    # Use dual Redis failover if enabled
+    if _dual_redis_enabled:
+        try:
+            from .redis_dual_client import execute_redis_with_failover
+            return execute_redis_with_failover(operation)
+        except Exception as exc:
+            logger.warning("Dual Redis operation failed: %s", exc)
+            raise RedisError(str(exc)) from exc
+    
+    # Single Redis with retry
     client = get_redis(required=False)
     if client is None:
         raise RedisError(_redis_error or "Redis is unavailable")
@@ -243,8 +263,27 @@ def _json_default(value: Any) -> Any:
 
 
 def init_redis(force: bool = False) -> bool:
-    global _redis_client, _redis_error
+    global _redis_client, _redis_error, _dual_redis_enabled, _dual_redis_manager
 
+    # Check if dual Redis is enabled
+    if _redis_dual_enabled():
+        try:
+            from .redis_dual_client import init_dual_redis, get_dual_redis_client
+            _dual_redis_enabled = True
+            success = init_dual_redis(force=force)
+            if success:
+                _redis_client = get_dual_redis_client()
+                _redis_error = None
+                logger.info("Dual Redis failover system initialized successfully")
+                return True
+            else:
+                _redis_error = "Dual Redis initialization failed"
+                logger.warning("Dual Redis initialization failed, falling back to single Redis")
+        except Exception as exc:
+            logger.warning("Failed to initialize dual Redis: %s. Falling back to single Redis", exc)
+            _dual_redis_enabled = False
+
+    # Single Redis initialization (original logic)
     if _redis_client is not None and not force:
         return True
 
@@ -310,7 +349,17 @@ def init_redis(force: bool = False) -> bool:
 
 
 def close_redis() -> None:
-    global _redis_client
+    global _redis_client, _dual_redis_enabled
+    
+    # Close dual Redis if enabled
+    if _dual_redis_enabled:
+        try:
+            from .redis_dual_client import close_dual_redis
+            close_dual_redis()
+        except Exception:
+            pass
+    
+    # Close single Redis client
     client = _redis_client
     _redis_client = None
     if client is None:
@@ -322,6 +371,19 @@ def close_redis() -> None:
 
 
 def get_redis(required: bool = False) -> Redis | None:
+    global _dual_redis_enabled
+    
+    # Use dual Redis if enabled
+    if _dual_redis_enabled:
+        try:
+            from .redis_dual_client import get_dual_redis_client
+            client = get_dual_redis_client()
+            if client is not None:
+                return client
+        except Exception as exc:
+            logger.warning("Dual Redis get_client failed: %s", exc)
+    
+    # Fallback to single Redis
     client = _redis_client
     if client is None:
         init_redis(force=False)
@@ -332,6 +394,25 @@ def get_redis(required: bool = False) -> Redis | None:
 
 
 def redis_status() -> dict[str, Any]:
+    global _dual_redis_enabled
+    
+    # Get dual Redis status if enabled
+    if _dual_redis_enabled:
+        try:
+            from .redis_dual_client import dual_redis_status
+            dual_status = dual_redis_status()
+            return {
+                "enabled": dual_status.get("any_connected", False),
+                "required": _redis_required(),
+                "runtime_required": redis_runtime_required(),
+                "quota_degraded": _redis_quota_degraded(),
+                "dual_redis": dual_status,
+                "error": None if dual_status.get("any_connected") else "No Redis instances available",
+            }
+        except Exception as exc:
+            logger.warning("Failed to get dual Redis status: %s", exc)
+    
+    # Single Redis status
     client = get_redis(required=False)
     host = _redis_host()
     scheme = _redis_scheme()
