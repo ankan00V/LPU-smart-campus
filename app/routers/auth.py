@@ -27,6 +27,9 @@ from ..auth_utils import (
     get_refresh_token_from_request,
     hash_otp,
     hash_password,
+    password_expired,
+    password_expires_at,
+    PASSWORD_EXPIRED_DETAIL,
     revoke_access_token,
     revoke_session,
     rotate_session_tokens,
@@ -314,6 +317,8 @@ def _auth_user_out(doc: dict) -> schemas.AuthUserOut:
         alternate_email=_get_alternate_email(doc),
         primary_login_verified=bool(doc.get("primary_login_verified", False)),
         password_setup_required=_password_setup_required(doc),
+        password_expired=password_expired(doc),
+        password_expires_at=password_expires_at(doc),
         mfa_enabled=bool(doc.get("mfa_enabled", False)),
         is_active=bool(doc.get("is_active", True)),
         created_at=doc.get("created_at") or datetime.utcnow(),
@@ -1387,6 +1392,7 @@ def register_auth_user(
             faculty_id=faculty_id,
             is_active=True,
             created_at=now,
+            password_updated_at=now,
         )
         user_id = int(sql_auth_user.id)
 
@@ -1607,6 +1613,8 @@ def request_login_otp(
                 payload.captcha_token,
                 action="privileged_login_otp_request",
             )
+        if not requires_password_setup and not signup_verification_pending and password_expired(user):
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
         if role == models.UserRole.STUDENT and not _has_real_profile_for_legacy_otp_login(
@@ -1795,6 +1803,8 @@ def login_student_with_password(
         password_hash = str(user.get("password_hash") or "").strip()
         if not password_hash or not verify_password(payload.password, password_hash):
             raise HTTPException(status_code=401, detail="Invalid email or password")
+        if password_expired(user):
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
 
         user_id = _ensure_auth_user_id(db, user, sql_db)
         _ensure_role_profile_link(
@@ -1951,6 +1961,8 @@ def verify_login_otp(
                     detail="MFA code is required and must be a valid TOTP or backup code.",
                 )
             mfa_authenticated = True
+        if not _password_setup_required(user) and not _student_signup_verification_pending(user) and password_expired(user, now=now):
+            raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
 
         consume_result = db["auth_otps"].update_one(
             {"id": otp_row["id"], "used_at": None},
@@ -2126,6 +2138,7 @@ def request_password_reset_otp(
                     "is_active": bool(sql_auth_user.is_active),
                     "created_at": sql_auth_user.created_at,
                     "last_login_at": sql_auth_user.last_login_at,
+                    "password_updated_at": sql_auth_user.password_updated_at,
                 }
                 _upsert_mongo_by_id(db, "auth_users", int(sql_auth_user.id), user)
             else:
@@ -2182,8 +2195,6 @@ def request_password_reset_otp(
             role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
-        if role == models.UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Admin password reset is disabled")
         _validate_role_email(email, role)
         user_id = _ensure_auth_user_id(db, user, sql_db)
         if role == models.UserRole.STUDENT:
@@ -2370,11 +2381,9 @@ def verify_password_reset_otp(
         if not user:
             raise HTTPException(status_code=401, detail="Invalid OTP flow")
         try:
-            role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+            models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
-        if role == models.UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Admin password reset is disabled")
         user_id = _ensure_auth_user_id(db, user, sql_db)
 
         otp_row = db["auth_otps"].find_one(
@@ -2484,11 +2493,9 @@ def reset_password(
         if not user:
             raise HTTPException(status_code=401, detail="Invalid password reset request")
         try:
-            role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+            models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
-        if role == models.UserRole.ADMIN:
-            raise HTTPException(status_code=403, detail="Admin password reset is disabled")
         user_id = _ensure_auth_user_id(db, user, sql_db)
 
         _validate_password_strength(payload.new_password)
@@ -2513,11 +2520,25 @@ def reset_password(
         if not verify_otp(payload.reset_token, reset_row.get("token_hash", ""), reset_row.get("token_salt", "")):
             raise HTTPException(status_code=400, detail="Invalid reset session. Request OTP again.")
 
+        password_hash = hash_password(payload.new_password)
         db["auth_password_resets"].update_one({"id": reset_row["id"]}, {"$set": {"used_at": now}})
         db["auth_users"].update_one(
             {"id": user_id},
-            {"$set": {"password_hash": hash_password(payload.new_password), "password_updated_at": now, "password_setup_required": False}},
+            {
+                "$set": {
+                    "password_hash": password_hash,
+                    "password_updated_at": now,
+                    "password_setup_required": False,
+                }
+            },
         )
+        sql_user = sql_db.get(models.AuthUser, int(user_id))
+        if sql_user is not None:
+            sql_user.password_hash = password_hash
+            sql_user.password_updated_at = now
+            sql_db.commit()
+        else:
+            sql_db.rollback()
         db["auth_otps"].update_many(
             {"user_id": user_id, "purpose": {"$in": ["login", "password_reset"]}, "used_at": None},
             {"$set": {"used_at": now}},
@@ -2582,6 +2603,7 @@ def bootstrap_account_password(
         sql_user = sql_db.get(models.AuthUser, int(current_user.id))
         if sql_user is not None:
             sql_user.password_hash = password_hash
+            sql_user.password_updated_at = now
             sql_db.commit()
         else:
             sql_db.rollback()

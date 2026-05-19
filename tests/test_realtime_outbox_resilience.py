@@ -2,10 +2,69 @@ import os
 import unittest
 from unittest import mock
 
-from app.realtime_bus import RealtimeEventHub, _publish_backend_event, realtime_hub
+from app.realtime_bus import (
+    RealtimeEventHub,
+    _drain_pg_notifies,
+    _postgres_listener_dsn,
+    _publish_backend_event,
+    realtime_hub,
+)
 
 
 class RealtimeOutboxResilienceTests(unittest.TestCase):
+    def test_drain_pg_notifies_supports_psycopg3_method_api(self):
+        class FakeNotify:
+            payload = '{"id":"evt-pg","event_type":"attendance.marked"}'
+
+        class FakeConnection:
+            def notifies(self, *, timeout=None, stop_after=None):
+                self.timeout = timeout
+                self.stop_after = stop_after
+                yield FakeNotify()
+
+        delivered = []
+        conn = FakeConnection()
+
+        _drain_pg_notifies(conn, delivered.append)
+
+        self.assertEqual(delivered, [{"id": "evt-pg", "event_type": "attendance.marked"}])
+        self.assertEqual(conn.timeout, 0)
+        self.assertEqual(conn.stop_after, 100)
+
+    def test_postgres_listener_dsn_requires_explicit_dsn_for_pooler_url(self):
+        pooler_url = (
+            "postgresql+psycopg://smartcampus:secret@"
+            "ep-cool-rain-a1b2c3-pooler.ap-south-1.aws.neon.tech/lpu_smart"
+            "?sslmode=require"
+        )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "APP_MANAGED_SERVICES_REQUIRED": "true",
+                    "REALTIME_PG_DSN": "",
+                },
+                clear=False,
+            ),
+            mock.patch("app.database.SQLALCHEMY_DATABASE_URL", pooler_url),
+        ):
+            dsn = _postgres_listener_dsn()
+
+        self.assertIsNone(dsn)
+
+    def test_postgres_listener_dsn_uses_explicit_realtime_dsn(self):
+        explicit_dsn = (
+            "postgresql://smartcampus:secret@"
+            "ep-cool-rain-a1b2c3.ap-south-1.aws.neon.tech/lpu_smart"
+            "?sslmode=require"
+        )
+
+        with mock.patch.dict(os.environ, {"REALTIME_PG_DSN": explicit_dsn}, clear=False):
+            dsn = _postgres_listener_dsn()
+
+        self.assertEqual(dsn, explicit_dsn)
+
     def test_publish_backend_event_raises_when_all_backends_fail_even_in_non_strict_mode(self):
         with (
             mock.patch.dict(

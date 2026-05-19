@@ -18328,7 +18328,7 @@ async function loadStudentAttendanceInsights() {
     state.student.recoveryPlans = Array.isArray(recovery.plans) ? recovery.plans : [];
   } else {
     state.student.recoveryPlans = [];
-    primaryError = recoveryRes.reason || primaryError;
+    log(recoveryRes.reason?.message || 'Recovery plan refresh failed; attendance ledger still updated.');
   }
 
   renderStudentAttendanceAggregate();

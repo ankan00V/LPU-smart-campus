@@ -394,6 +394,20 @@ class StartupEventAsyncSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(mongo._mongita_fallback_enabled())
 
+    def test_managed_services_requires_primary_mongo_uri(self):
+        os.environ["APP_RUNTIME_STRICT"] = "false"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
+        os.environ["MONGO_URI"] = ""
+        os.environ["MONGODB_URI"] = ""
+        os.environ["MONGO_URI_FALLBACK"] = (
+            "mongodb://user:pass@atlas-shard-00-00.example.net:27017/"
+            "?authSource=admin&tls=true"
+        )
+
+        mongo.close_mongo()
+        self.assertFalse(mongo.init_mongo(force=True, ensure_indexes=False))
+        self.assertIn("requires MONGO_URI", mongo.mongo_status()["error"])
+
     def test_runtime_strict_contract_rejects_local_managed_services(self):
         os.environ["APP_RUNTIME_STRICT"] = "true"
         os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "true"
