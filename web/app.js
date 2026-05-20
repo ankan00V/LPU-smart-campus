@@ -4419,6 +4419,28 @@ function initModalFocusTrapObserver() {
   }
 }
 
+function initAuthFirstTabFocus() {
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab' || event.shiftKey || event.defaultPrevented) {
+      return;
+    }
+    if (authState.user || els.authOverlay?.classList.contains('hidden') || !els.authEmail) {
+      return;
+    }
+    const active = document.activeElement;
+    if (
+      active
+      && active !== document.body
+      && active !== document.documentElement
+      && active !== els.authModeLoginBtn
+    ) {
+      return;
+    }
+    event.preventDefault();
+    els.authEmail.focus();
+  });
+}
+
 function buildLoadingStateRow({
   message = 'Loading section...',
   subtitle = 'Hang on, fetching data from server',
@@ -6730,8 +6752,8 @@ async function api(path, options = {}) {
         throw error;
       }
       
-      // Success - return response
-      return response;
+      const text = await response.text();
+      return text ? JSON.parse(text) : null;
       
     } catch (err) {
       if (timeoutHandle) {
@@ -6772,8 +6794,7 @@ async function api(path, options = {}) {
 
 async function apiWithFallback(path, options = {}, fallbackValue = null) {
   try {
-    const response = await api(path, options);
-    return await response.json();
+    return await api(path, options);
   } catch (error) {
     log(`API call failed: ${error.message}. Using fallback.`);
     return fallbackValue;
@@ -6782,37 +6803,7 @@ async function apiWithFallback(path, options = {}, fallbackValue = null) {
 
 // Keep old function signature for compatibility but with better error handling
 async function apiLegacy(path, options = {}) {
-  const response = await api(path, options);
-  if (!response.ok) {
-    let detail = `Request failed: ${response.status}`;
-    try {
-      const payload = await response.json();
-      detail = payload.detail || JSON.stringify(payload);
-    } catch (_) {
-      // Ignore non-JSON error bodies.
-    }
-
-    if (!skipAuth && response.status === 401) {
-      clearSession();
-      openAuthOverlay('Session expired. Please login again.');
-    }
-    if (!skipAuth && response.status === 428 && isMfaEnrollmentRequiredMessage(detail)) {
-      void maybePromptPrivilegedMfaSetup(detail);
-    }
-    const error = new Error(detail);
-    error.status = response.status;
-    const retryAfter = response.headers.get('Retry-After');
-    if (retryAfter) {
-      const parsed = Number(retryAfter);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        error.retryAfterSeconds = parsed;
-      }
-    }
-    throw error;
-  }
-
-  const text = await response.text();
-  return text ? JSON.parse(text) : null;
+  return api(path, options);
 }
 
 async function apiWithTimeout(path, options = {}, timeoutMs = 9000, timeoutMessage = 'Request timed out') {
@@ -8272,11 +8263,10 @@ async function refreshAdminInsights(options = {}) {
   }
   
   try {
-    const response = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
+    const payload = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
       timeoutMs: 90000, // 90s for complex queries
       retries: 3,
     });
-    const payload = await response.json();
     state.admin.insights = payload && typeof payload === 'object' ? payload : null;
     renderAdminInsights();
     return payload;
@@ -8359,11 +8349,10 @@ async function refreshAdminLive(options = {}) {
   }
   
   try {
-    const response = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
+    const payload = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
       timeoutMs: 90000, // 90s for complex live data
       retries: 3,
     });
-    const payload = await response.json();
     applyAdminLivePayload(payload || {});
     return payload;
   } catch (error) {
@@ -14899,11 +14888,10 @@ async function refreshRemedialMessages() {
   }
   
   try {
-    const response = await api('/makeup/messages?limit=80', {
+    const rows = await api('/makeup/messages?limit=80', {
       timeoutMs: 60000,
       retries: 2,
     });
-    const rows = await response.json();
     state.remedial.messages = Array.isArray(rows) ? rows : [];
     renderRemedialMessagesList();
   } catch (error) {
@@ -14943,11 +14931,10 @@ async function refreshStudentMessages() {
   }
   
   try {
-    const response = await api('/messages?limit=60', {
+    const rows = await api('/messages?limit=60', {
       timeoutMs: 60000,
       retries: 2,
     });
-    const rows = await response.json();
     state.studentMessages = Array.isArray(rows) ? rows : [];
     renderStudentMessagesCenter();
   } catch (error) {
@@ -23945,6 +23932,7 @@ async function init() {
   bindSessionActivityWatchdog();
   bindEvents();
   initModalFocusTrapObserver();
+  initAuthFirstTabFocus();
   await fetchAuthPublicConfig();
   renderFoodDemoToggle();
   syncFoodOrderActionState();

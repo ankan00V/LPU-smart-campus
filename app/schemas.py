@@ -1651,7 +1651,7 @@ class AuthUserOut(BaseModel):
 class LoginPasswordRequest(BaseModel):
     email: str
     password: str = Field(min_length=8, max_length=128)
-    role: UserRole
+    role: UserRole = UserRole.STUDENT
     captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
 
 
