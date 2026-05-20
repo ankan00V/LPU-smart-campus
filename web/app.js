@@ -4499,6 +4499,27 @@ function showSectionLoading(container, message = 'Loading...', subtitle = 'Hang 
   container.appendChild(loadingRow);
 }
 
+function showSectionError(container, message = 'Section could not load.', subtitle = 'Please retry from the dashboard.') {
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'list-item empty-state-row warn';
+  row.setAttribute('role', 'alert');
+  row.innerHTML = `
+    <span class="empty-state-icon" aria-hidden="true">!</span>
+    <strong>${escapeHtml(message)}</strong>
+    ${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : ''}
+  `;
+  container.innerHTML = '';
+  container.appendChild(row);
+}
+
+async function waitForMinimumSectionLoading(loadStartMs) {
+  const elapsed = Date.now() - Number(loadStartMs || Date.now());
+  if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
+    await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
+  }
+}
+
 function clearSectionLoading(container) {
   if (!container) return;
   const loadingRows = container.querySelectorAll('.loading-state-row');
@@ -14876,28 +14897,30 @@ async function refreshRemedialMessages() {
     renderRemedialMessagesList();
     return;
   }
-  
-  // Show loading state
-  if (els.remedialMessagesWrap) {
-    els.remedialMessagesWrap.innerHTML = `
-      <div class="loading-skeleton">
-        <div class="skeleton-pulse skeleton-text"></div>
-        <div class="skeleton-pulse skeleton-text"></div>
-      </div>
-    `;
-  }
-  
+
+  const loadStartMs = Date.now();
+  showSectionLoading(
+    els.remedialMessagesList,
+    'Loading Remedial Messages...',
+    'Checking faculty remedial updates'
+  );
+
   try {
     const rows = await api('/makeup/messages?limit=80', {
       timeoutMs: 60000,
       retries: 2,
     });
     state.remedial.messages = Array.isArray(rows) ? rows : [];
+    await waitForMinimumSectionLoading(loadStartMs);
     renderRemedialMessagesList();
   } catch (error) {
     log(`Failed to load remedial messages: ${error.message}`);
     state.remedial.messages = [];
-    renderRemedialMessagesList();
+    showSectionError(
+      els.remedialMessagesList,
+      'Remedial messages could not load.',
+      error.message || 'Retry from the remedial module.'
+    );
   }
 }
 
@@ -14907,9 +14930,27 @@ async function refreshRemedialAttendanceLedger() {
     renderRemedialStudentLedgerList();
     return;
   }
-  const rows = await api('/makeup/attendance/history?limit=80');
-  state.remedial.attendanceLedger = Array.isArray(rows) ? rows : [];
-  renderRemedialStudentLedgerList();
+  const loadStartMs = Date.now();
+  showSectionLoading(
+    els.remedialStudentLedgerList,
+    'Loading Remedial Attendance Ledger...',
+    'Fetching remedial class records'
+  );
+  try {
+    const rows = await api('/makeup/attendance/history?limit=80');
+    state.remedial.attendanceLedger = Array.isArray(rows) ? rows : [];
+    await waitForMinimumSectionLoading(loadStartMs);
+    renderRemedialStudentLedgerList();
+  } catch (error) {
+    log(`Failed to load remedial attendance ledger: ${error.message}`);
+    state.remedial.attendanceLedger = [];
+    showSectionError(
+      els.remedialStudentLedgerList,
+      'Remedial attendance ledger could not load.',
+      error.message || 'Retry from the remedial module.'
+    );
+    throw error;
+  }
 }
 
 async function refreshStudentMessages() {
@@ -14918,29 +14959,30 @@ async function refreshStudentMessages() {
     renderStudentMessagesCenter();
     return;
   }
-  
-  // Show loading state
-  if (els.messagesWrap) {
-    els.messagesWrap.innerHTML = `
-      <div class="loading-skeleton">
-        <div class="skeleton-pulse skeleton-text"></div>
-        <div class="skeleton-pulse skeleton-text"></div>
-        <div class="skeleton-pulse skeleton-text"></div>
-      </div>
-    `;
-  }
-  
+
+  const loadStartMs = Date.now();
+  showSectionLoading(
+    els.studentMessagesList,
+    'Loading Messages...',
+    'Fetching faculty announcements for your section'
+  );
+
   try {
     const rows = await api('/messages?limit=60', {
       timeoutMs: 60000,
       retries: 2,
     });
     state.studentMessages = Array.isArray(rows) ? rows : [];
+    await waitForMinimumSectionLoading(loadStartMs);
     renderStudentMessagesCenter();
   } catch (error) {
     log(`Failed to load student messages: ${error.message}`);
     state.studentMessages = [];
-    renderStudentMessagesCenter();
+    showSectionError(
+      els.studentMessagesList,
+      'Messages could not load.',
+      error.message || 'Retry from the dashboard.'
+    );
   }
 }
 
@@ -18656,17 +18698,20 @@ async function loadStudentAttendanceInsights() {
     log(recoveryRes.reason?.message || 'Recovery plan refresh failed; attendance ledger still updated.');
   }
 
-  // Ensure minimum display time for smooth UX
-  const elapsed = Date.now() - loadStartMs;
-  if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
-    await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
+  await waitForMinimumSectionLoading(loadStartMs);
+
+  if (primaryError) {
+    showSectionError(
+      els.studentAggregateCourses,
+      'Attendance ledger could not load.',
+      primaryError.message || 'Retry from the dashboard.'
+    );
+    renderStudentRecoveryPlans();
+    throw primaryError;
   }
 
   renderStudentAttendanceAggregate();
   renderStudentRecoveryPlans();
-  if (primaryError) {
-    throw primaryError;
-  }
 }
 
 async function submitStudentRecoveryAction(actionId, command) {
@@ -20898,19 +20943,21 @@ async function refreshAll() {
 
   if (role === 'student') {
     const studentTasks = [
-      loadStudentProfilePhoto(),
-      refreshStudentTimetableSurface({ forceNetwork: true }),
-      loadStudentAttendanceInsights(),
-      loadSaarthiStatus({ silent: true }),
-      refreshRemedialMessages(),
-      refreshSupportDeskContext({ silent: true, refreshThread: false }),
+      { label: 'Student profile', promise: loadStudentProfilePhoto() },
+      { label: 'Timetable', promise: refreshStudentTimetableSurface({ forceNetwork: true }) },
+      { label: 'Attendance ledger', promise: loadStudentAttendanceInsights() },
+      { label: 'Saarthi', promise: loadSaarthiStatus({ silent: true }) },
+      { label: 'Messages', promise: refreshStudentMessages() },
+      { label: 'Remedial messages', promise: refreshRemedialMessages() },
+      { label: 'Message desk', promise: refreshSupportDeskContext({ silent: true, refreshThread: false }) },
     ];
 
-    const results = await Promise.allSettled(studentTasks);
-    for (const result of results) {
+    const results = await Promise.allSettled(studentTasks.map((task) => task.promise));
+    for (const [index, result] of results.entries()) {
       if (result.status === 'rejected') {
         failed += 1;
-        log(result.reason?.message || 'A dashboard section failed to load');
+        const label = studentTasks[index]?.label || 'Dashboard section';
+        log(`${label} failed to load: ${result.reason?.message || 'Unknown error'}`);
       }
     }
 

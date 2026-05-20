@@ -3134,6 +3134,7 @@ body.ums-theme #executive-section .donut-core {
 
 .skeleton-line:nth-child(3) {
     width: 72%;
+}
 
 /* Enhanced Loading Skeletons for Production */
 .loading-skeleton {
