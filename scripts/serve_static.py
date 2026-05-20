@@ -50,6 +50,16 @@ class StaticAuditHandler(SimpleHTTPRequestHandler):
 
     def _dispatch_request(self) -> None:
         request_path = self.path.split("?", 1)[0]
+        if request_path == "/auth/public-config":
+            self._serve_json(
+                {
+                    "student_auth_captcha_enabled": False,
+                    "student_auth_captcha_site_key": "",
+                    "student_auth_captcha_provider": "cloudflare-turnstile",
+                },
+                status=200,
+            )
+            return
         if request_path == "/auth/me":
             self._serve_json({"detail": "Not authenticated"}, status=401)
             return
