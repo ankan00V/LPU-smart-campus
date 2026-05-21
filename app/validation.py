@@ -9,6 +9,12 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, field_validator
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
+_EMAIL_RE = re.compile(
+    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?"
+    r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
+    re.IGNORECASE,
+)
 _BODY_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
@@ -28,6 +34,20 @@ def sanitize_text(value: str) -> str:
     return cleaned
 
 
+def validate_email_address(value: str, *, field_name: str = "email") -> str:
+    cleaned = sanitize_text(str(value or "")).lower()
+    if not cleaned or len(cleaned) > 254 or not _EMAIL_RE.fullmatch(cleaned):
+        raise ValueError(f"{field_name} must be a valid email address.")
+    return cleaned
+
+
+def _sanitize_mapping_key(key: str) -> str:
+    cleaned = sanitize_text(key)
+    if cleaned.startswith("$") or "." in cleaned:
+        raise ValueError("Object keys cannot contain MongoDB operator characters.")
+    return cleaned
+
+
 def sanitize_nested(value: Any) -> Any:
     # Preserve enum instances so model validators still receive canonical enum values.
     if isinstance(value, PyEnum):
@@ -41,7 +61,7 @@ def sanitize_nested(value: Any) -> Any:
     if isinstance(value, dict):
         sanitized: dict[Any, Any] = {}
         for key, item in value.items():
-            next_key = sanitize_text(key) if isinstance(key, str) else key
+            next_key = _sanitize_mapping_key(key) if isinstance(key, str) else key
             sanitized[next_key] = sanitize_nested(item)
         return sanitized
     return value

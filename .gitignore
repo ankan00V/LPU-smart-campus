@@ -21,7 +21,10 @@ lhci_reports/
 .env.example
 .env.local.example
 .env.production.example
+.env.backup-*
 deploy/railway.env
+deploy/secrets/*.json
+!deploy/secrets/*.example.json
 
 # Runtime and cache directories
 .model_cache/

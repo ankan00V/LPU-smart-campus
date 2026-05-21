@@ -1,3 +1,4 @@
+import base64
 from datetime import date, time, timedelta
 import unittest
 from unittest import mock
@@ -12,6 +13,10 @@ from app.routers.attendance import (
     list_faculty_rectification_requests,
     list_student_rectification_requests,
 )
+
+VALID_PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+).decode("ascii")
 
 
 class AttendanceRectificationFlowTests(unittest.TestCase):
@@ -101,7 +106,7 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
             class_date=self.class_date,
             start_time=time(11, 0),
             proof_note="I was in class and can share lab entry + notes.",
-            proof_photo_data_url="data:image/png;base64,AAAABBBB",
+            proof_photo_data_url=VALID_PNG_DATA_URL,
         )
 
         out = create_student_rectification_request(

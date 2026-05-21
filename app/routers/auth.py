@@ -61,6 +61,7 @@ from ..media_storage import mark_media_deleted, store_data_url_object
 from ..mongo import get_mongo_db, init_mongo, invalidate_mongo_connection, mirror_event, next_sequence
 from ..otp_delivery import otp_expiry_minutes
 from ..rate_limit import enforce_rate_limit
+from ..validation import validate_email_address
 from ..workers import dispatch_login_otp
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -371,7 +372,10 @@ def _next_unique_id(db, *, collection: str, sequence_name: str) -> int:
 
 
 def _normalize_email(email: str) -> str:
-    return email.strip().lower()
+    try:
+        return validate_email_address(email)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Enter a valid email address.") from exc
 
 
 def _allowed_email_suffixes() -> list[str]:
@@ -450,9 +454,7 @@ def _upsert_mongo_by_id(db, collection: str, doc_id: int, payload: dict) -> None
 
 
 def _validate_alternate_email(email: str) -> str:
-    value = email.strip().lower()
-    if not value:
-        raise HTTPException(status_code=400, detail="alternate_email cannot be empty")
+    value = _normalize_email(email)
     if not _email_suffix_allowed(value):
         suffixes = _allowed_email_suffixes()
         suffix_text = ", ".join(suffixes) if suffixes else "the configured institute domain"
