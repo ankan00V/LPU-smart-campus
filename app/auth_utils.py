@@ -507,6 +507,49 @@ def revoke_session(
     )
 
 
+def revoke_all_user_sessions(
+    db,
+    *,
+    user_id: int,
+    reason: str,
+    exclude_sid: str | None = None,
+) -> int:
+    """
+    Revoke all active sessions for a user, optionally excluding a specific session.
+    Returns the number of sessions revoked.
+
+    Args:
+        db: MongoDB database instance
+        user_id: The user ID whose sessions should be revoked
+        reason: Reason for revoking the sessions
+        exclude_sid: Optional session ID to exclude from revocation (e.g., the new session being created)
+
+    Returns:
+        Number of sessions revoked
+    """
+    now = _utc_now()
+    query = {
+        "user_id": int(user_id),
+        "revoked_at": None,
+    }
+
+    if exclude_sid:
+        query["sid"] = {"$ne": exclude_sid}
+
+    result = db["auth_sessions"].update_many(
+        query,
+        {
+            "$set": {
+                "revoked_at": now,
+                "revoked_reason": reason,
+                "last_seen_at": now,
+            }
+        },
+    )
+
+    return int(getattr(result, "modified_count", 0))
+
+
 def _refresh_token_expiry() -> datetime:
     return _utc_now() + timedelta(days=REFRESH_TOKEN_DAYS)
 
