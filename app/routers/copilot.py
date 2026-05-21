@@ -1508,20 +1508,23 @@ def _pick_target_schedule(
         chosen = open_now[0]
         return chosen, courses_by_id.get(int(chosen.course_id)), None
     if len(open_now) > 1:
-        return None, None, "Multiple attendance windows are open. Specify schedule id to continue."
+        course_list = ", ".join(sorted(set(courses_by_id.get(int(s.course_id)).code for s in open_now if courses_by_id.get(int(s.course_id)))))
+        return None, None, f"You have multiple classes with open attendance windows right now ({course_list}). Please specify which course code or schedule ID you want to mark attendance for."
 
     active_now = [row for row in schedules if _window_flags(row, now_dt, today)[1]]
     if len(active_now) == 1:
         chosen = active_now[0]
         return chosen, courses_by_id.get(int(chosen.course_id)), None
     if len(active_now) > 1:
-        return None, None, "Multiple classes are currently active. Specify schedule id to continue."
+        course_list = ", ".join(sorted(set(courses_by_id.get(int(s.course_id)).code for s in active_now if courses_by_id.get(int(s.course_id)))))
+        return None, None, f"You have multiple classes running right now ({course_list}). Please specify which course code or schedule ID you want to mark attendance for."
 
     if len(schedules) == 1:
         chosen = schedules[0]
         return chosen, courses_by_id.get(int(chosen.course_id)), None
 
-    return None, None, "More than one class matches today. Specify schedule id or course code."
+    course_list = ", ".join(sorted(set(courses_by_id.get(int(s.course_id)).code for s in schedules if courses_by_id.get(int(s.course_id)))))
+    return None, None, f"You have multiple classes scheduled today ({course_list}). Please specify which course code or schedule ID you want to mark attendance for."
 
 
 def _classes_needed_to_recover(attended: int, delivered: int) -> int:

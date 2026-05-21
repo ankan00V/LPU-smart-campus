@@ -31,6 +31,7 @@ from ..auth_utils import (
     password_expires_at,
     PASSWORD_EXPIRED_DETAIL,
     revoke_access_token,
+    revoke_all_user_sessions,
     revoke_session,
     rotate_session_tokens,
     upsert_sql_auth_user_record,
@@ -1800,15 +1801,15 @@ def login_student_with_password(
         user = db["auth_users"].find_one({"email": email})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+
         try:
             actual_role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role") from exc
-        
+
         # Validate that the user selected the correct role in the dropdown
         _ensure_selected_login_role(actual_role=actual_role, selected_role=payload.role)
-        
+
         if actual_role != models.UserRole.STUDENT:
             raise HTTPException(status_code=403, detail="Student password login is only available for student accounts")
         if not bool(user.get("is_active", True)):
@@ -1838,6 +1839,20 @@ def login_student_with_password(
             email=email,
         )
         now = datetime.utcnow()
+
+        # Revoke all existing sessions for single-session enforcement
+        revoked_count = revoke_all_user_sessions(
+            db,
+            user_id=user_id,
+            reason="new_login_single_session_enforcement",
+        )
+        if revoked_count > 0:
+            logger.info(
+                "Revoked %d existing session(s) for user_id=%d due to new login",
+                revoked_count,
+                user_id,
+            )
+
         db["auth_users"].update_one(
             {"id": user_id},
             {"$set": {"last_login_at": now, "primary_login_verified": True}},
@@ -1997,6 +2012,19 @@ def verify_login_otp(
         )
         if int(getattr(consume_result, "matched_count", 0)) != 1:
             raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
+
+        # Revoke all existing sessions for single-session enforcement
+        revoked_count = revoke_all_user_sessions(
+            db,
+            user_id=user_id,
+            reason="new_login_single_session_enforcement",
+        )
+        if revoked_count > 0:
+            logger.info(
+                "Revoked %d existing session(s) for user_id=%d due to new login",
+                revoked_count,
+                user_id,
+            )
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
         if bool(user.get("signup_verification_required", False)):

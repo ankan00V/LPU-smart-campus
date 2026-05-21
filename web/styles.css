@@ -2112,6 +2112,15 @@ body.ums-theme #executive-section .donut-core {
     overflow: hidden;
 }
 
+.saarthi-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    position: relative;
+    z-index: 2;
+}
+
 .saarthi-welcome-orb,
 .saarthi-welcome-ring,
 .saarthi-welcome-spark {
@@ -3201,7 +3210,6 @@ body.ums-theme #executive-section .donut-core {
     50% {
         opacity: 0.6;
     }
-}
 }
 
 .log-line {
@@ -9738,108 +9746,73 @@ body:not(.ums-theme) #student-saarthi-card {
         0 10px 20px rgba(24, 93, 150, 0.2);
 }
 
-body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
-body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
-body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
-    border-color: rgba(125, 184, 229, 0.5);
-    background: linear-gradient(165deg, rgba(11, 39, 63, 0.78), rgba(17, 50, 79, 0.76));
-    box-shadow:
-        inset 0 1px 0 rgba(206, 236, 255, 0.12),
-        0 14px 24px rgba(4, 17, 30, 0.36);
-}
-
-body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy h3,
-body:not(.ums-theme) #student-saarthi-card .saarthi-chip strong,
-body:not(.ums-theme) #student-saarthi-card .saarthi-message-text {
-    color: #def3ff;
-}
-
-body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy p,
-body:not(.ums-theme) #student-saarthi-card .saarthi-status-line,
-body:not(.ums-theme) #student-saarthi-card .saarthi-soft-note,
-body:not(.ums-theme) #student-saarthi-card .saarthi-message-header,
-body:not(.ums-theme) #student-saarthi-card .saarthi-chip span,
-body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field > span,
-body:not(.ums-theme) #student-saarthi-card .saarthi-actions .helper-text {
-    color: #b8daee;
-}
-
-body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea {
-    border-color: rgba(124, 180, 226, 0.54);
-    background: linear-gradient(176deg, rgba(6, 29, 50, 0.82), rgba(11, 39, 64, 0.82));
-    color: #e0f4ff;
-}
-
-body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea::placeholder {
-    color: rgba(163, 199, 224, 0.82);
-}
-
-/* Saarthi dark-mode contrast polish */
+/* Saarthi dark-mode optimized - Enhanced visual quality matching light mode */
 body:not(.ums-theme) #student-saarthi-card {
-    --saarthi-ink: #ebf7ff;
-    --saarthi-soft-ink: #c1dff4;
-    border-color: rgba(109, 181, 237, 0.62);
+    --saarthi-ink: #f5fbff;
+    --saarthi-soft-ink: #d8ecf9;
+    border-color: rgba(125, 195, 245, 0.85);
     background:
-        radial-gradient(120% 95% at 0% 0%, rgba(18, 215, 255, 0.26), transparent 48%),
-        radial-gradient(110% 92% at 100% 0%, rgba(255, 179, 106, 0.24), transparent 48%),
-        radial-gradient(82% 90% at 82% 84%, rgba(88, 125, 255, 0.2), transparent 56%),
-        linear-gradient(156deg, rgba(10, 33, 54, 0.96), rgba(11, 41, 66, 0.97) 50%, rgba(8, 30, 52, 0.98));
+        radial-gradient(125% 98% at 0% 0%, rgba(25, 220, 255, 0.22), transparent 52%),
+        radial-gradient(115% 95% at 100% 0%, rgba(255, 185, 115, 0.19), transparent 52%),
+        radial-gradient(88% 92% at 85% 88%, rgba(95, 135, 255, 0.17), transparent 60%),
+        linear-gradient(158deg, rgba(16, 45, 72, 0.99), rgba(20, 56, 88, 0.99) 52%, rgba(14, 40, 66, 1));
     box-shadow:
-        0 34px 64px rgba(2, 12, 23, 0.56),
-        0 14px 28px rgba(17, 88, 148, 0.24);
+        0 38px 72px rgba(1, 10, 20, 0.75),
+        0 16px 32px rgba(20, 95, 160, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 body:not(.ums-theme) #student-saarthi-card::before {
-    opacity: 0.8;
-    filter: blur(52px);
+    opacity: 0.72;
+    filter: blur(58px);
 }
 
 body:not(.ums-theme) #student-saarthi-card::after {
-    opacity: 0.5;
+    opacity: 0.48;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
 body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
 body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
-    border-color: rgba(115, 183, 235, 0.56);
-    background: linear-gradient(165deg, rgba(9, 39, 63, 0.9), rgba(14, 47, 75, 0.88));
+    border-color: rgba(130, 195, 245, 0.78);
+    background: linear-gradient(166deg, rgba(20, 56, 88, 0.97), rgba(24, 68, 104, 0.96));
     box-shadow:
-        inset 0 1px 0 rgba(210, 238, 255, 0.11),
-        0 16px 28px rgba(2, 12, 23, 0.42);
+        inset 0 1px 0 rgba(220, 242, 255, 0.16),
+        0 18px 32px rgba(1, 10, 20, 0.55);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-affirmation-band {
-    border-color: rgba(123, 187, 237, 0.62);
-    background: linear-gradient(110deg, rgba(20, 93, 145, 0.56), rgba(15, 56, 89, 0.78) 42%, rgba(78, 59, 122, 0.64));
+    border-color: rgba(135, 198, 245, 0.82);
+    background: linear-gradient(112deg, rgba(32, 115, 175, 0.78), rgba(26, 78, 122, 0.88) 44%, rgba(95, 78, 148, 0.82));
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-affirmation-pill {
-    border-color: rgba(125, 190, 241, 0.48);
-    background: linear-gradient(160deg, rgba(9, 48, 76, 0.9), rgba(13, 59, 92, 0.86));
-    color: #dff2ff;
-    box-shadow: 0 10px 18px rgba(3, 15, 29, 0.34);
+    border-color: rgba(138, 202, 248, 0.72);
+    background: linear-gradient(162deg, rgba(22, 68, 105, 0.97), rgba(26, 82, 125, 0.95));
+    color: #eff8ff;
+    box-shadow: 0 12px 22px rgba(2, 12, 26, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-card {
-    border-color: rgba(121, 189, 239, 0.58);
+    border-color: rgba(135, 200, 248, 0.8);
     background:
-        radial-gradient(90% 96% at 8% 8%, rgba(18, 215, 255, 0.2), transparent 56%),
-        radial-gradient(90% 96% at 96% 18%, rgba(255, 179, 106, 0.16), transparent 58%),
-        linear-gradient(155deg, rgba(9, 42, 68, 0.92), rgba(13, 56, 88, 0.9));
+        radial-gradient(92% 98% at 8% 8%, rgba(25, 220, 255, 0.18), transparent 58%),
+        radial-gradient(92% 98% at 96% 18%, rgba(255, 185, 115, 0.15), transparent 60%),
+        linear-gradient(157deg, rgba(20, 60, 94, 0.98), rgba(24, 78, 118, 0.97));
     box-shadow:
-        inset 0 1px 0 rgba(223, 244, 255, 0.08),
-        0 14px 24px rgba(2, 12, 24, 0.4);
+        inset 0 1px 0 rgba(230, 248, 255, 0.14),
+        0 16px 28px rgba(1, 10, 22, 0.55);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-icon {
     box-shadow:
-        inset 0 2px 2px rgba(255, 255, 255, 0.72),
-        0 18px 30px rgba(22, 122, 199, 0.34);
+        inset 0 2px 3px rgba(255, 255, 255, 0.78),
+        0 20px 36px rgba(28, 130, 210, 0.48);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy h3 {
-    color: #ecf8ff;
-    text-shadow: 0 2px 8px rgba(0, 10, 19, 0.44);
+    color: #f8fcff;
+    text-shadow: 0 2px 10px rgba(0, 8, 16, 0.6);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-welcome-copy p,
@@ -9848,47 +9821,47 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-actions .helper-text,
 body:not(.ums-theme) #student-saarthi-card .saarthi-message-header,
 body:not(.ums-theme) #student-saarthi-card .saarthi-chip span,
 body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field > span {
-    color: #b8daef;
+    color: #d6ecfa !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="neutral"] {
-    color: #c9e7ff !important;
+    color: #e2f4ff !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="loading"] {
-    color: #8fd9ff !important;
+    color: #b5e8ff !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="empty"] {
-    color: #b8d7ed !important;
+    color: #d5e9f8 !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="error"] {
-    color: #ffb6aa !important;
+    color: #ffd5cc !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state="success"] {
-    color: #9af0c7 !important;
+    color: #bef8dd !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-chip {
-    border-color: rgba(118, 184, 233, 0.58);
-    background: linear-gradient(160deg, rgba(8, 39, 63, 0.92), rgba(12, 51, 80, 0.88));
-    box-shadow: 0 10px 18px rgba(2, 12, 23, 0.34);
+    border-color: rgba(130, 195, 242, 0.8);
+    background: linear-gradient(162deg, rgba(22, 62, 96, 0.98), rgba(26, 75, 115, 0.96));
+    box-shadow: 0 12px 22px rgba(1, 10, 20, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-chip strong {
-    color: #e6f4ff;
+    color: #f5fbff;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-history {
-    border-color: rgba(118, 183, 233, 0.56);
+    border-color: rgba(130, 195, 242, 0.78);
     background:
-        linear-gradient(176deg, rgba(8, 37, 59, 0.92), rgba(10, 45, 72, 0.9) 58%, rgba(8, 33, 56, 0.94)),
-        radial-gradient(120% 100% at 0% 100%, rgba(18, 215, 255, 0.12), transparent 56%);
+        linear-gradient(178deg, rgba(18, 54, 84, 0.98), rgba(22, 65, 100, 0.97) 60%, rgba(16, 50, 78, 0.99)),
+        radial-gradient(125% 105% at 0% 100%, rgba(25, 220, 255, 0.12), transparent 58%);
     box-shadow:
-        inset 0 1px 0 rgba(219, 243, 255, 0.08),
-        0 16px 26px rgba(2, 12, 23, 0.36);
+        inset 0 1px 0 rgba(228, 247, 255, 0.14),
+        0 18px 30px rgba(1, 10, 20, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-history::before {
@@ -9896,87 +9869,91 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-history::before {
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message {
-    border-color: rgba(103, 175, 227, 0.58);
-    background: linear-gradient(158deg, rgba(8, 43, 69, 0.95), rgba(11, 56, 87, 0.9));
-    box-shadow: 0 14px 22px rgba(2, 12, 24, 0.34);
+    border-color: rgba(118, 188, 238, 0.8);
+    background: linear-gradient(160deg, rgba(22, 64, 100, 0.98), rgba(26, 78, 120, 0.97));
+    box-shadow: 0 16px 26px rgba(1, 10, 22, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message:hover {
-    box-shadow: 0 20px 28px rgba(1, 10, 20, 0.44);
+    box-shadow: 0 22px 34px rgba(0, 8, 18, 0.6);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message.theirs {
-    border-color: rgba(96, 194, 230, 0.62);
-    background: linear-gradient(158deg, rgba(10, 50, 77, 0.95), rgba(13, 63, 96, 0.9));
+    border-color: rgba(110, 205, 242, 0.82);
+    background: linear-gradient(160deg, rgba(24, 75, 112, 0.98), rgba(28, 90, 135, 0.97));
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message.mine {
-    border-color: rgba(121, 163, 243, 0.64);
-    background: linear-gradient(160deg, rgba(20, 55, 89, 0.94), rgba(31, 67, 105, 0.9));
+    border-color: rgba(135, 175, 250, 0.85);
+    background: linear-gradient(162deg, rgba(32, 80, 125, 0.98), rgba(42, 95, 145, 0.97));
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message-sender {
-    color: #dff3ff;
+    color: #f0f9ff;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message.mine .saarthi-message-sender {
-    color: #b9d1ff;
+    color: #d8e8ff;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-message-text {
-    color: #ecf8ff;
+    color: #f8fcff;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-typing {
-    border-color: rgba(105, 178, 229, 0.56);
-    background: linear-gradient(160deg, rgba(9, 43, 68, 0.92), rgba(13, 58, 88, 0.9));
-    box-shadow: 0 12px 20px rgba(2, 12, 24, 0.34);
-    color: #d9efff;
+    border-color: rgba(120, 190, 240, 0.78);
+    background: linear-gradient(162deg, rgba(22, 64, 100, 0.98), rgba(26, 82, 122, 0.96));
+    box-shadow: 0 14px 24px rgba(1, 10, 22, 0.5);
+    color: #ecf6ff;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-empty {
-    border-color: rgba(108, 181, 231, 0.58);
-    background: linear-gradient(160deg, rgba(7, 42, 67, 0.9), rgba(11, 55, 87, 0.88));
-    color: #d2eaff;
+    border-color: rgba(122, 192, 242, 0.8);
+    background: linear-gradient(162deg, rgba(18, 62, 96, 0.96), rgba(22, 78, 120, 0.94));
+    color: #e5f3ff !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-soft-note {
+    color: #d6ecfa !important;
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea {
-    border-color: rgba(118, 182, 232, 0.62);
-    background: linear-gradient(176deg, rgba(4, 30, 49, 0.94), rgba(8, 39, 63, 0.94));
-    color: #e6f6ff;
+    border-color: rgba(130, 195, 242, 0.82);
+    background: linear-gradient(178deg, rgba(14, 46, 74, 0.98), rgba(18, 58, 90, 0.98));
+    color: #f5fbff;
     box-shadow:
-        inset 0 1px 0 rgba(225, 246, 255, 0.08),
-        0 8px 18px rgba(2, 12, 24, 0.36);
+        inset 0 1px 0 rgba(235, 250, 255, 0.14),
+        0 10px 22px rgba(1, 10, 22, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea:focus {
-    border-color: rgba(99, 176, 238, 0.88);
+    border-color: rgba(110, 188, 248, 0.98);
     box-shadow:
-        0 0 0 4px rgba(54, 138, 205, 0.2),
-        inset 0 1px 0 rgba(233, 249, 255, 0.12);
+        0 0 0 4px rgba(60, 148, 218, 0.32),
+        inset 0 1px 0 rgba(240, 252, 255, 0.18);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea::placeholder {
-    color: rgba(170, 205, 229, 0.86);
+    color: rgba(190, 222, 245, 0.92);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-new-chat-btn {
-    border-color: rgba(108, 181, 233, 0.66);
-    background: linear-gradient(155deg, rgba(9, 47, 76, 0.94), rgba(13, 61, 95, 0.9));
-    color: #dff3ff;
-    box-shadow: 0 12px 20px rgba(2, 12, 24, 0.34);
+    border-color: rgba(122, 192, 242, 0.85);
+    background: linear-gradient(157deg, rgba(22, 68, 105, 0.98), rgba(26, 85, 130, 0.96));
+    color: #f0f9ff;
+    box-shadow: 0 14px 24px rgba(1, 10, 22, 0.5);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-new-chat-btn:hover {
-    border-color: rgba(125, 195, 243, 0.84);
-    box-shadow: 0 16px 24px rgba(2, 12, 24, 0.42);
+    border-color: rgba(138, 208, 252, 0.95);
+    box-shadow: 0 18px 30px rgba(1, 10, 22, 0.58);
 }
 
 body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
-    border-color: rgba(127, 200, 246, 0.84);
+    border-color: rgba(140, 210, 255, 0.96);
     box-shadow:
-        0 20px 32px rgba(4, 17, 32, 0.48),
-        inset 0 1px 0 rgba(255, 255, 255, 0.5);
+        0 22px 38px rgba(2, 14, 28, 0.62),
+        inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
 @keyframes saarthi-aurora-spin {
@@ -13022,6 +12999,50 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-history,
 body:not(.ums-theme) #student-saarthi-card .saarthi-message,
 body:not(.ums-theme) #student-saarthi-card .saarthi-typing {
     box-shadow: 0 14px 24px rgba(37, 94, 147, 0.2);
+}
+
+/* Dark-mode Saarthi readable surfaces */
+body:not(.ums-theme) #student-saarthi-card {
+    --saarthi-ink: #0b2d4a;
+    --saarthi-soft-ink: #214a69;
+    background:
+        radial-gradient(circle at 8% 8%, rgba(70, 191, 255, 0.34), transparent 46%),
+        radial-gradient(circle at 92% 10%, rgba(123, 132, 255, 0.22), transparent 44%),
+        radial-gradient(circle at 82% 86%, rgba(255, 165, 93, 0.18), transparent 48%),
+        linear-gradient(155deg, #dff4ff, #cfeaff 56%, #d9f0ff);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-header-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-conversation-section,
+body:not(.ums-theme) #student-saarthi-card .saarthi-input-section {
+    border-color: rgba(83, 166, 224, 0.82);
+    background: linear-gradient(164deg, rgba(223, 245, 255, 0.98), rgba(193, 229, 251, 0.98));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.74),
+        0 18px 34px rgba(6, 31, 56, 0.28);
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line,
+body:not(.ums-theme) #student-saarthi-card .saarthi-soft-note,
+body:not(.ums-theme) #student-saarthi-card .saarthi-actions .helper-text,
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field > span {
+    color: #123d5f !important;
+    text-shadow: none;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state,
+body:not(.ums-theme) #student-saarthi-card .saarthi-status-line.ui-state[data-ui-state] {
+    color: #0f466f !important;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea {
+    border-color: rgba(70, 145, 198, 0.74);
+    background: linear-gradient(178deg, rgba(18, 64, 100, 0.98), rgba(25, 82, 126, 0.98));
+    color: #f7fcff;
+}
+
+body:not(.ums-theme) #student-saarthi-card .saarthi-compose-field textarea::placeholder {
+    color: rgba(220, 240, 255, 0.9);
 }
 
 body:not(.ums-theme) #student-ledger-card .course-aggregate-item {

@@ -2979,6 +2979,7 @@ function renderVerlynQuickActions() {
   const role = String(authState.user?.role || '').trim().toLowerCase();
   const seedRegistration = getVerlynSeedRegistration();
   const remedialDefaults = getVerlynRemedialDefaults();
+  const activeModule = getSanitizedModuleKey(state.ui.activeModule);
   let markup = '';
 
   if (!authState.user) {
@@ -2988,21 +2989,79 @@ function renderVerlynQuickActions() {
       </div>
     `;
   } else if (role === 'student') {
+    // Module-aware quick actions for students
+    let quickActionsMarkup = '';
+
+    if (activeModule === 'attendance') {
+      quickActionsMarkup = `
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+          Attendance blocker
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
+          Eligibility risk
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+          Module summary
+        </button>
+      `;
+    } else if (activeModule === 'saarthi') {
+      quickActionsMarkup = `
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+          Saarthi summary
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+          Check attendance
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
+          Eligibility status
+        </button>
+      `;
+    } else if (activeModule === 'food') {
+      quickActionsMarkup = `
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+          Order summary
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})">
+          Browse menu
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+          Check attendance
+        </button>
+      `;
+    } else if (activeModule === 'remedial') {
+      quickActionsMarkup = `
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+          Remedial summary
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+          Attendance status
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
+          Eligibility risk
+        </button>
+      `;
+    } else {
+      // Default fallback for other modules
+      quickActionsMarkup = `
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
+          Attendance blocker
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
+          Eligibility risk
+        </button>
+        <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
+          Module summary
+        </button>
+      `;
+    }
+
     markup = `
       <section class="verlyn-action-card verlyn-action-card-compact">
         <div class="verlyn-action-head">
           <strong>Quick Actions</strong>
         </div>
         <div class="verlyn-chip-row">
-          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="attendance_blocker">
-            Attendance blocker
-          </button>
-          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="eligibility_risk">
-            Eligibility risk
-          </button>
-          <button class="btn verlyn-chip-btn" type="button" data-verlyn-action="student_module_summary">
-            Module summary
-          </button>
+          ${quickActionsMarkup}
         </div>
       </section>
     `;
@@ -3104,48 +3163,75 @@ function formatVerlynCopilotResponse(response = {}) {
   const lines = [];
   const title = String(response?.title || 'Campus Copilot').trim();
   const outcome = asTitleCase(String(response?.outcome || 'completed').replaceAll('_', ' '));
-  lines.push(`${title} (${outcome})`);
+
+  // Title with outcome badge
+  lines.push(`${title}`);
+  lines.push(`Status: ${outcome}`);
+  lines.push('');
 
   const explanation = Array.isArray(response?.explanation) ? response.explanation : [];
   if (explanation.length) {
-    lines.push('');
     explanation.forEach((item, index) => {
-      lines.push(`${index + 1}. ${String(item || '').trim()}`);
+      const text = String(item || '').trim();
+      if (text) {
+        lines.push(`${index + 1}. ${text}`);
+      }
     });
+    lines.push('');
   }
 
   const evidence = Array.isArray(response?.evidence) ? response.evidence : [];
   if (evidence.length) {
-    lines.push('', 'Evidence');
+    lines.push('Evidence');
+    lines.push('-'.repeat(40));
     evidence.forEach((item) => {
-      const status = String(item?.status || 'info').toUpperCase();
+      const status = String(item?.status || 'info').toLowerCase();
       const label = String(item?.label || 'Item').trim();
       const value = String(item?.value || '').trim();
-      lines.push(`- [${status}] ${label}: ${value}`);
+
+      let indicator = 'INFO';
+      if (status === 'pass') indicator = 'PASS';
+      else if (status === 'fail') indicator = 'FAIL';
+      else if (status === 'warning') indicator = 'WARN';
+
+      lines.push(`[${indicator}] ${label}: ${value}`);
     });
+    lines.push('');
   }
 
   const actions = Array.isArray(response?.actions) ? response.actions : [];
   if (actions.length) {
-    lines.push('', 'Actions');
+    lines.push('Actions Taken');
+    lines.push('-'.repeat(40));
     actions.forEach((item) => {
       const action = String(item?.action || 'action').replaceAll('_', ' ');
-      const status = String(item?.status || 'preview').toUpperCase();
+      const status = String(item?.status || 'preview').toLowerCase();
       const detail = String(item?.detail || '').trim();
-      lines.push(`- [${status}] ${action}${detail ? `: ${detail}` : ''}`);
+
+      let indicator = 'INFO';
+      if (status === 'completed') indicator = 'DONE';
+      else if (status === 'blocked' || status === 'failed') indicator = 'BLOCKED';
+
+      lines.push(`[${indicator}] ${action}${detail ? `: ${detail}` : ''}`);
     });
+    lines.push('');
   }
 
   const nextSteps = Array.isArray(response?.next_steps) ? response.next_steps : [];
   if (nextSteps.length) {
-    lines.push('', 'Next Steps');
+    lines.push('What to Do Next');
+    lines.push('-'.repeat(40));
     nextSteps.forEach((item, index) => {
-      lines.push(`${index + 1}. ${String(item || '').trim()}`);
+      const text = String(item || '').trim();
+      if (text) {
+        lines.push(`${index + 1}. ${text}`);
+      }
     });
+    lines.push('');
   }
 
   if (response?.audit_id) {
-    lines.push('', `Audit Log: #${response.audit_id}`);
+    lines.push(`Audit Log: #${response.audit_id}`);
   }
 
   return lines.join('\n');
@@ -5073,6 +5159,7 @@ function setActiveModule(moduleKey, { updateHash = true } = {}) {
   applyRoleUI();
   setTopNavActive(nextModule);
   syncFoodDemandLiveTicker();
+  syncVisibleVerlynQuickActions();
   void syncRouteCodeSplit(nextModule);
 }
 
@@ -6716,7 +6803,7 @@ async function api(path, options = {}) {
     retryDelay = 1000, // Initial retry delay in ms
     ...requestOptions
   } = options;
-  
+
   const method = String(requestOptions.method || 'GET').toUpperCase();
   const headers = {
     'Content-Type': 'application/json',
@@ -6728,7 +6815,7 @@ async function api(path, options = {}) {
   }
 
   let lastError = null;
-  
+
   // Retry logic with exponential backoff
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = requestOptions.signal ? null : new AbortController();
@@ -6746,11 +6833,11 @@ async function api(path, options = {}) {
         credentials: requestOptions.credentials || 'same-origin',
         cache: requestOptions.cache || (method === 'GET' || method === 'HEAD' ? 'no-store' : undefined),
       });
-      
+
       if (timeoutHandle) {
         window.clearTimeout(timeoutHandle);
       }
-      
+
       if (!response.ok) {
         let detail = `Request failed: ${response.status}`;
         try {
@@ -6761,7 +6848,7 @@ async function api(path, options = {}) {
         }
         const error = new Error(detail);
         error.status = response.status;
-        
+
         // Retry on 5xx errors or 408/429
         if (attempt < retries && (response.status >= 500 || response.status === 408 || response.status === 429)) {
           lastError = error;
@@ -6769,23 +6856,23 @@ async function api(path, options = {}) {
           await new Promise(resolve => window.setTimeout(resolve, delay));
           continue;
         }
-        
+
         throw error;
       }
-      
+
       const text = await response.text();
       return text ? JSON.parse(text) : null;
-      
+
     } catch (err) {
       if (timeoutHandle) {
         window.clearTimeout(timeoutHandle);
       }
-      
+
       if (err?.name === 'AbortError') {
         const seconds = Math.max(5, Math.round((Math.max(5000, Number(timeoutMs) || 60000)) / 1000));
         const timeoutError = new Error(`Request timed out after ${seconds}s. Retrying...`);
         timeoutError.status = 408;
-        
+
         // Retry on timeout
         if (attempt < retries) {
           lastError = timeoutError;
@@ -6793,10 +6880,10 @@ async function api(path, options = {}) {
           await new Promise(resolve => window.setTimeout(resolve, delay));
           continue;
         }
-        
+
         throw timeoutError;
       }
-      
+
       // Network errors - retry
       if (attempt < retries) {
         lastError = err;
@@ -6804,11 +6891,11 @@ async function api(path, options = {}) {
         await new Promise(resolve => window.setTimeout(resolve, delay));
         continue;
       }
-      
+
       throw err;
     }
   }
-  
+
   // If we exhausted all retries, throw the last error
   throw lastError || new Error('Request failed after retries');
 }
@@ -8277,12 +8364,12 @@ function renderAdminInsights() {
 async function refreshAdminInsights(options = {}) {
   const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
   const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
-  
+
   // Show loading state immediately
   if (!state.admin?.insights) {
     renderAdminInsights();
   }
-  
+
   try {
     const payload = await api(`/admin/insights?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
       timeoutMs: 90000, // 90s for complex queries
@@ -8362,13 +8449,13 @@ function applyAdminLivePayload(payload) {
 async function refreshAdminLive(options = {}) {
   const workDate = String(options?.workDate || els.workDate?.value || todayISO()).trim() || todayISO();
   const mode = String(options?.mode || 'enrollment').trim() || 'enrollment';
-  
+
   // Show loading indicator
   if (els.adminLiveChip) {
     els.adminLiveChip.textContent = 'Loading...';
     els.adminLiveChip.classList.add('is-loading');
   }
-  
+
   try {
     const payload = await api(`/admin/live?work_date=${encodeURIComponent(workDate)}&mode=${encodeURIComponent(mode)}`, {
       timeoutMs: 90000, // 90s for complex live data
@@ -16455,10 +16542,10 @@ async function loadStudentProfilePhoto() {
   state.student.registrationNumber = data.registration_number || '';
   state.student.section = (data.section || '').trim().toUpperCase().replace(/\s+/g, '');
   const loadStartMs = Date.now();
-  
+
   state.student.sectionUpdatedAt = data.section_updated_at || null;
   const newPhotoUrl = data.photo_data_url || '';
-  
+
   // Ensure minimum display time if photo is loading
   if (newPhotoUrl && !state.student.profilePhotoDataUrl) {
     const elapsed = Date.now() - loadStartMs;
@@ -16466,7 +16553,7 @@ async function loadStudentProfilePhoto() {
       await new Promise((resolve) => setTimeout(resolve, SECTION_LOADING_MIN_DISPLAY_MS - elapsed));
     }
   }
-  
+
   state.student.profilePhotoDataUrl = newPhotoUrl;
   state.student.profilePhotoCanUpdateNow = Boolean(data.can_update_photo_now);
   state.student.profilePhotoLockedUntil = data.photo_locked_until || null;
@@ -17440,7 +17527,7 @@ async function refreshStudentKpiTimetable(options = {}) {
 
 async function loadStudentTimetable(options = {}) {
   const { forceNetwork = false, skipRepair = false, showLoading = true } = options;
-  
+
   // Show loading skeleton
   if (showLoading && els.timetableWrap) {
     els.timetableWrap.innerHTML = `
@@ -17482,7 +17569,7 @@ async function loadStudentTimetable(options = {}) {
   const loadStartMs = Date.now();
   try {
     payload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
-    
+
     // Ensure minimum display time for smooth UX
     const elapsed = Date.now() - loadStartMs;
     if (elapsed < SECTION_LOADING_MIN_DISPLAY_MS) {
@@ -20212,7 +20299,7 @@ async function loginStudentWithPassword() {
   const email = (els.authEmail?.value || '').trim().toLowerCase();
   const password = String(els.authPassword?.value || '');
   const selectedRole = String(els.authLoginRoleSelect?.value || 'student').trim();
-  
+
   if (!email || !password) {
     throw new Error('Enter email and password first.');
   }
