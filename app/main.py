@@ -12,6 +12,7 @@ from typing import Any
 
 from dotenv import dotenv_values, load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import DuplicateKeyError
@@ -82,6 +83,30 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ORIGINAL_ENV = dict(os.environ)
 
 
+def _is_production_env() -> bool:
+    env = (os.getenv("APP_ENV", "development") or "development").strip().lower()
+    return env in {"prod", "production"}
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name, "true" if default else "false") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _api_docs_enabled() -> bool:
+    return _bool_env("APP_EXPOSE_API_DOCS", default=not _is_production_env())
+
+
+def _cors_allowed_origins() -> list[str]:
+    raw = (os.getenv("APP_CORS_ALLOWED_ORIGINS", "") or "").strip()
+    if not raw:
+        return []
+    origins = [part.strip() for part in raw.replace(";", ",").split(",") if part.strip()]
+    if _is_production_env() and "*" in origins:
+        raise RuntimeError("APP_CORS_ALLOWED_ORIGINS cannot include '*' in production.")
+    return origins
+
+
 def _running_under_pytest() -> bool:
     if "PYTEST_CURRENT_TEST" in os.environ:
         return True
@@ -112,7 +137,20 @@ app = FastAPI(
     description=(
         "Smart Campus backend with mandatory modules + role-based auth + OTP login."
     ),
+    docs_url="/docs" if _api_docs_enabled() else None,
+    redoc_url="/redoc" if _api_docs_enabled() else None,
+    openapi_url="/openapi.json" if _api_docs_enabled() else None,
 )
+_cors_origins = _cors_allowed_origins()
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Device-Id", "X-Food-Demo-Mode", "X-Webhook-Token"],
+        expose_headers=["X-RateLimit-IP-Limit", "X-RateLimit-IP-Remaining", "X-RateLimit-IP-Reset"],
+    )
 install_observability(app)
 ALLOW_DEMO_SEED = os.getenv("ALLOW_DEMO_SEED", "false").strip().lower() in {"1", "true", "yes"}
 _health_cache_lock = threading.Lock()
@@ -287,6 +325,36 @@ def _path_exempt_from_security(path: str) -> bool:
         if cleaned == token or cleaned.startswith(f"{token}/"):
             return True
     return False
+
+
+def _security_headers(request: Request) -> dict[str, str]:
+    headers = {
+        "Content-Security-Policy": (
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data: blob:; "
+            "font-src 'self' data:; "
+            "connect-src 'self'; "
+            "base-uri 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'"
+        ),
+        "X-Frame-Options": "DENY",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+        "Cross-Origin-Opener-Policy": "same-origin",
+    }
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").strip().lower()
+    if _is_production_env() or request.url.scheme == "https" or forwarded_proto == "https":
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+def _apply_security_headers(request: Request, response) -> None:
+    for key, value in _security_headers(request).items():
+        response.headers.setdefault(key, value)
 
 
 def _rate_limit_user_principal(request: Request) -> str | None:
@@ -684,11 +752,15 @@ async def request_latency_middleware(request: Request, call_next):
 @app.middleware("http")
 async def security_hardening_middleware(request: Request, call_next):
     if request.method.upper() == "OPTIONS":
-        return await call_next(request)
+        response = await call_next(request)
+        _apply_security_headers(request, response)
+        return response
 
     path = str(request.url.path or "/")
     if _path_exempt_from_security(path):
-        return await call_next(request)
+        response = await call_next(request)
+        _apply_security_headers(request, response)
+        return response
 
     ip_decision = None
     user_decision = None
@@ -718,10 +790,15 @@ async def security_hardening_middleware(request: Request, call_next):
     except HTTPException as exc:
         if exc.status_code == 429:
             detail = exc.detail if isinstance(exc.detail, dict) else {"error": "rate_limit_exceeded", "message": str(exc.detail)}
-            return JSONResponse(status_code=429, content=detail, headers=exc.headers or {})
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers or {})
+            response = JSONResponse(status_code=429, content=detail, headers=exc.headers or {})
+            _apply_security_headers(request, response)
+            return response
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers or {})
+        _apply_security_headers(request, response)
+        return response
 
     response = await call_next(request)
+    _apply_security_headers(request, response)
     if ip_decision is not None:
         for key, value in rate_limit_headers(ip_decision, prefix="X-RateLimit-IP").items():
             response.headers[key] = str(value)

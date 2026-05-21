@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError, VerificationError
 import jwt
 from jwt import ExpiredSignatureError, ImmatureSignatureError, InvalidTokenError
 from pymongo.errors import PyMongoError
@@ -32,9 +34,15 @@ REFRESH_COOKIE_NAME = (os.getenv("APP_REFRESH_COOKIE_NAME", "lpu_refresh_token")
 JWT_ALGORITHM = "HS256"
 REQUIRED_JWT_CLAIMS = ("sub", "role", "sid", "jti", "typ", "exp", "iat", "nbf")
 PASSWORD_EXPIRED_DETAIL = "Your password has expired. Reset it before signing in."
+ARGON2_HASH_PREFIX = "$argon2"
 
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
+_PASSWORD_HASHER = PasswordHasher(
+    time_cost=max(2, min(6, int(os.getenv("AUTH_ARGON2_TIME_COST", "3")))),
+    memory_cost=max(19_456, min(262_144, int(os.getenv("AUTH_ARGON2_MEMORY_KIB", "19456")))),
+    parallelism=max(1, min(8, int(os.getenv("AUTH_ARGON2_PARALLELISM", "2")))),
+)
 _SQL_REQUEST_SYNC_TTL_SECONDS = max(30, min(3600, int(os.getenv("AUTH_SQL_SYNC_TTL_SECONDS", "900"))))
 _SQL_REQUEST_SYNC_CACHE: dict[str, float] = {}
 _SQL_REQUEST_SYNC_IN_PROGRESS: set[str] = set()
@@ -325,13 +333,23 @@ def _hash_with_salt(secret: str, salt: str) -> str:
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    return f"{salt}${_hash_with_salt(password, salt)}"
+    return _PASSWORD_HASHER.hash(str(password or ""))
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    stored = str(stored_hash or "").strip()
+    if not stored:
+        return False
+    if stored.startswith(ARGON2_HASH_PREFIX):
+        try:
+            return bool(_PASSWORD_HASHER.verify(stored, str(password or "")))
+        except (InvalidHashError, VerifyMismatchError, VerificationError, ValueError):
+            return False
+
+    # Legacy PBKDF2 hashes remain readable so existing accounts are not locked
+    # out before password reset or a dedicated rehash migration.
     try:
-        salt, digest = stored_hash.split("$", 1)
+        salt, digest = stored.split("$", 1)
     except ValueError:
         return False
     computed = _hash_with_salt(password, salt)

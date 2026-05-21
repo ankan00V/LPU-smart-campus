@@ -27,6 +27,8 @@ MEDIA_MONGO_COLLECTION = (
 ).strip() or "media_blobs"
 MEDIA_URL_TTL_SECONDS = max(60, int(os.getenv("MEDIA_SIGNED_URL_TTL_SECONDS", "900")))
 DEFAULT_RETENTION_DAYS = max(1, int(os.getenv("MEDIA_RETENTION_DAYS", "180")))
+MAX_MEDIA_UPLOAD_BYTES = max(1024, int(os.getenv("MEDIA_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))))
+ALLOWED_IMAGE_CONTENT_TYPES = {"image/png", "image/jpeg", "image/webp"}
 
 _DATA_URL_PATTERN = re.compile(r"^data:([\w.+\-/]+);base64,(.+)$", re.IGNORECASE)
 
@@ -104,14 +106,24 @@ def _decode_data_url(data_url: str) -> tuple[str, bytes]:
         raise HTTPException(status_code=400, detail="Expected image data URL payload")
 
     content_type = str(match.group(1)).strip().lower()
+    if content_type not in ALLOWED_IMAGE_CONTENT_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported media type. Upload PNG, JPEG, or WebP images only.")
     encoded = match.group(2).strip()
     try:
-        payload = base64.b64decode(encoded, validate=False)
+        payload = base64.b64decode(encoded, validate=True)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail="Invalid base64 media payload") from exc
 
     if not payload:
         raise HTTPException(status_code=400, detail="Empty media payload")
+    if len(payload) > MAX_MEDIA_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Media payload too large. Maximum allowed is {MAX_MEDIA_UPLOAD_BYTES} bytes.")
+    if content_type == "image/png" and not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=400, detail="Invalid PNG media payload")
+    if content_type == "image/jpeg" and not payload.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=400, detail="Invalid JPEG media payload")
+    if content_type == "image/webp" and not (payload.startswith(b"RIFF") and payload[8:12] == b"WEBP"):
+        raise HTTPException(status_code=400, detail="Invalid WebP media payload")
     return content_type, payload
 
 
