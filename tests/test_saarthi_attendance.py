@@ -531,7 +531,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
             {
                 "SAARTHI_LLM_PROVIDER": "openrouter",
                 "SAARTHI_LLM_REQUIRED": "true",
-                "OPENROUTER_API_KEY": "bad-openrouter-key",
+                "OPENROUTER_API_KEY": "sk-or-v1-bad-key-for-testing",
                 "SAARTHI_OPENROUTER_API_KEY": "",
                 "GEMINI_API_KEYS_JSON": json.dumps(["gemini-key-0", "gemini-key-1"]),
                 "GEMINI_API_KEY": "",
@@ -738,14 +738,14 @@ class SaarthiAttendanceTests(unittest.TestCase):
         with mock.patch.dict(
             os.environ,
             {
-                "OPENROUTER_API_KEYS_JSON": json.dumps(["or0", "or1"]),
+                "OPENROUTER_API_KEYS_JSON": json.dumps(["sk-or-v1-test0", "sk-or-v1-test1"]),
                 "OPENROUTER_API_KEY": "",
                 "SAARTHI_OPENROUTER_API_KEYS_JSON": "",
                 "SAARTHI_OPENROUTER_API_KEY": "",
             },
             clear=False,
         ):
-            self.assertEqual(_saarthi_openrouter_api_keys(), ["or0"])
+            self.assertEqual(_saarthi_openrouter_api_keys(), ["sk-or-v1-test0"])
 
 
 if __name__ == "__main__":
