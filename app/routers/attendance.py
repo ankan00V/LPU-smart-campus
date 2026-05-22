@@ -3085,10 +3085,11 @@ def get_student_weekly_timetable(
 
     now_dt = datetime.now()
     result: list[schemas.TimetableClassOut] = []
+    student_section = _student_section_key(student)
     effective_schedules = _effective_student_schedules(
         db,
         student_id=int(current_user.student_id),
-        student_section=_student_section_key(student),
+        student_section=student_section,
         course_ids=course_ids,
     )
 
