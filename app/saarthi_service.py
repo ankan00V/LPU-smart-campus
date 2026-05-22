@@ -508,6 +508,22 @@ def _dedup_preserve_order(values: list[str]) -> list[str]:
     return out
 
 
+def _normalize_bearer_secret(value: str) -> str:
+    cleaned = str(value or "").strip().strip('"').strip("'").strip()
+    if cleaned.lower().startswith("bearer "):
+        cleaned = cleaned.split(" ", 1)[1].strip()
+    return cleaned
+
+
+def _valid_openrouter_api_keys(values: list[str]) -> list[str]:
+    valid: list[str] = []
+    for value in values:
+        cleaned = _normalize_bearer_secret(value)
+        if cleaned.startswith("sk-or-"):
+            valid.append(cleaned)
+    return _dedup_preserve_order(valid)
+
+
 def _ordered_secret_pool(
     *,
     keyring_secret_name: str,
@@ -668,12 +684,39 @@ def _saarthi_openrouter_model() -> str:
 
 
 def _saarthi_llm_timeout_seconds() -> float:
-    raw = (os.getenv("SAARTHI_LLM_TIMEOUT_SECONDS", "20") or "").strip()
+    raw = (os.getenv("SAARTHI_LLM_TIMEOUT_SECONDS", "8") or "").strip()
     try:
         value = float(raw)
     except ValueError:
-        value = 20.0
-    return max(5.0, min(60.0, value))
+        value = 8.0
+    return max(3.0, min(30.0, value))
+
+
+def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
+    providers: list[str] = []
+    has_gemini_keys = bool(_saarthi_gemini_api_keys())
+    has_openrouter_keys = bool(_saarthi_openrouter_api_keys())
+    has_any_keys = has_gemini_keys or has_openrouter_keys
+
+    def add(provider: str) -> None:
+        cleaned = str(provider or "").strip().lower()
+        if cleaned in {"gemini", "openrouter"} and cleaned not in providers:
+            providers.append(cleaned)
+
+    preferred = str(preferred_provider or "").strip().lower()
+    if preferred == "gemini" and (has_gemini_keys or not has_any_keys):
+        add("gemini")
+    elif preferred == "openrouter" and (has_openrouter_keys or not has_any_keys):
+        add("openrouter")
+    if has_gemini_keys:
+        add("gemini")
+    if has_openrouter_keys:
+        add("openrouter")
+    return providers
+
+
+def _saarthi_has_any_llm_api_key() -> bool:
+    return bool(_saarthi_gemini_api_keys() or _saarthi_openrouter_api_keys())
 
 
 def _saarthi_gemini_base_url() -> str:
@@ -711,7 +754,7 @@ def _shared_openrouter_api_keys() -> list[str]:
     single = str(resolve_secret("OPENROUTER_API_KEY", default="") or "").strip()
     if single:
         collected.append(single)
-    return _dedup_preserve_order(collected)
+    return _valid_openrouter_api_keys(collected)
 
 
 def _saarthi_dedicated_openrouter_api_keys() -> list[str]:
@@ -741,7 +784,7 @@ def _saarthi_dedicated_openrouter_api_keys() -> list[str]:
     single = str(resolve_secret("SAARTHI_OPENROUTER_API_KEY", default="") or "").strip()
     if single:
         collected.append(single)
-    return _dedup_preserve_order(collected)
+    return _valid_openrouter_api_keys(collected)
 
 
 def _saarthi_openrouter_api_keys() -> list[str]:
@@ -1660,6 +1703,9 @@ def _is_openrouter_key_rotation_error(status_code: int, detail: str) -> bool:
     if status_code not in {400, 401, 402, 403}:
         return False
     indicators = (
+        "authentication",
+        "authorization",
+        "missing authentication header",
         "invalid",
         "quota",
         "credit",
@@ -2300,19 +2346,34 @@ def generate_saarthi_reply(
     recent_rows = list(recent_messages or [])
     detected_emotion = _detect_saarthi_emotion(student_message, recent_rows)
     first_turn = _saarthi_is_first_turn(recent_rows)
-    provider_error: Exception | None = None
+    provider_errors: list[Exception] = []
 
-    if provider == "gemini":
+    if provider and provider not in {"gemini", "openrouter"}:
+        if llm_required:
+            raise RuntimeError(f"Unsupported Saarthi LLM provider: {provider}")
+
+    for candidate_provider in _saarthi_llm_provider_order(provider):
         try:
-            raw = _generate_saarthi_reply_with_gemini(
-                student_name=student_name,
-                student_message=student_message,
-                recent_messages=recent_rows,
-                current_dt=current_dt,
-                mandatory_date=mandatory_date,
-                attendance_awarded_now=attendance_awarded_now,
-                attendance_already_awarded=attendance_already_awarded,
-            )
+            if candidate_provider == "gemini":
+                raw = _generate_saarthi_reply_with_gemini(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                )
+            else:
+                raw = _generate_saarthi_reply_with_openrouter(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                )
             candidate = _finalize_saarthi_reply(
                 raw,
                 student_message=student_message,
@@ -2327,37 +2388,11 @@ def generate_saarthi_reply(
             ):
                 return candidate
         except Exception as exc:
-            provider_error = exc
-    elif provider == "openrouter":
-        try:
-            raw = _generate_saarthi_reply_with_openrouter(
-                student_name=student_name,
-                student_message=student_message,
-                recent_messages=recent_rows,
-                current_dt=current_dt,
-                mandatory_date=mandatory_date,
-                attendance_awarded_now=attendance_awarded_now,
-                attendance_already_awarded=attendance_already_awarded,
-            )
-            candidate = _finalize_saarthi_reply(
-                raw,
-                student_message=student_message,
-                detected_emotion=detected_emotion,
-                first_turn=first_turn,
-                recent_messages=recent_rows,
-            )
-            if not _looks_like_low_quality_reply(
-                candidate,
-                student_message=student_message,
-                first_turn=first_turn,
-            ):
-                return candidate
-        except Exception as exc:
-            provider_error = exc
-    elif provider and llm_required:
-        raise RuntimeError(f"Unsupported Saarthi LLM provider: {provider}")
+            provider_errors.append(exc)
+            continue
 
-    if provider_error is not None and llm_required:
+    provider_error = provider_errors[-1] if provider_errors else None
+    if provider_error is not None and llm_required and not _saarthi_has_any_llm_api_key():
         raise RuntimeError(str(provider_error)) from provider_error
 
     raw = _generate_saarthi_reply_deterministic(

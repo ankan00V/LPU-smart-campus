@@ -23,6 +23,7 @@ from app.routers.food import (
     _resolve_razorpay_keyring,
     _register_payment_webhook_event,
     _verify_razorpay_webhook_signature,
+    cancel_payment_recovery_candidate,
     food_ops_metrics,
     get_slot_demand,
     report_payment_failure,
@@ -747,6 +748,75 @@ class FoodPaymentHardeningTests(unittest.TestCase):
         self.assertEqual(payment.status, "failed")
         self.assertEqual(payment.payment_state, "failed")
         self.assertIn("insufficient_funds", str(payment.failed_reason or ""))
+
+    def test_cancel_payment_recovery_dismisses_payment_and_cancels_unpaid_orders(self):
+        self.db.add_all(
+            [
+                models.Student(
+                    id=7,
+                    name="Student Seven",
+                    email="student7@example.com",
+                    department="CSE",
+                    semester=6,
+                ),
+                models.FoodItem(id=1, name="Wrap", price=120.0, is_active=True),
+                models.BreakSlot(
+                    id=1,
+                    label="10:00 - 11:00",
+                    start_time=time(10, 0),
+                    end_time=time(11, 0),
+                    max_orders=50,
+                ),
+            ]
+        )
+        self.db.flush()
+
+        order = models.FoodOrder(
+            id=131,
+            student_id=7,
+            food_item_id=1,
+            slot_id=1,
+            order_date=date(2026, 3, 24),
+            quantity=1,
+            unit_price=120.0,
+            total_price=120.0,
+            status=models.FoodOrderStatus.PLACED,
+            payment_status="created",
+            payment_reference="PAY-LOCAL-1311",
+        )
+        payment = models.FoodPayment(
+            student_id=7,
+            amount=120.0,
+            provider="razorpay",
+            payment_reference="PAY-LOCAL-1311",
+            provider_order_id="order_rzp_1311",
+            status="created",
+            order_state="created",
+            payment_state="created",
+            order_ids_json="[131]",
+        )
+        self.db.add_all([order, payment])
+        self.db.commit()
+
+        with (
+            patch("app.routers.food._notify_order_status", return_value=None),
+            patch("app.routers.food._sync_order_document", return_value=None),
+            patch("app.routers.food._mirror_food_payment", return_value=True),
+        ):
+            response = cancel_payment_recovery_candidate(
+                payment_reference="PAY-LOCAL-1311",
+                db=self.db,
+                current_user=self._student_user(),
+            )
+
+        self.assertEqual(response.message, "Payment recovery item dismissed")
+        self.db.refresh(order)
+        self.db.refresh(payment)
+        self.assertEqual(payment.status, "dismissed")
+        self.assertEqual(payment.payment_state, "dismissed")
+        self.assertEqual(order.status, models.FoodOrderStatus.CANCELLED)
+        self.assertEqual(order.payment_status, "cancelled")
+        self.assertEqual(order.cancel_reason, "payment_dismissed_by_user")
 
     def test_notify_order_status_tolerates_notification_mirror_failure(self):
         student = models.Student(

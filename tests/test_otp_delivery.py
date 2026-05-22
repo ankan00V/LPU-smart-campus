@@ -108,6 +108,33 @@ class OTPDeliveryTests(unittest.TestCase):
         server.login.assert_called_once_with("campus@example.com", "abcdefghijklmnop")
         server.send_message.assert_called_once()
 
+    @mock.patch("app.otp_delivery.smtplib.SMTP")
+    def test_send_notification_email_sends_html_alternative_over_smtp(self, smtp_cls):
+        os.environ["OTP_DELIVERY_MODE"] = "smtp"
+        os.environ["OTP_SMTP_HOST"] = "smtp.example.com"
+        os.environ["OTP_SMTP_PORT"] = "587"
+        os.environ["OTP_SMTP_USERNAME"] = "campus@example.com"
+        os.environ["OTP_SMTP_PASSWORD"] = "abcdefghijklmnop"
+        os.environ["OTP_SMTP_STARTTLS"] = "true"
+        os.environ["OTP_SMTP_USE_SSL"] = "false"
+        os.environ["OTP_FROM_EMAIL"] = "campus@example.com"
+
+        server = smtp_cls.return_value.__enter__.return_value
+
+        payload = otp_delivery.send_notification_email(
+            "person@example.com",
+            subject="Recovery",
+            body="Plain fallback",
+            html_body="<html><body><strong>HTML</strong></body></html>",
+        )
+
+        self.assertEqual(payload["channel"], "smtp-email")
+        self.assertEqual(payload["content_type"], "multipart/alternative")
+        message = server.send_message.call_args.args[0]
+        self.assertTrue(message.is_multipart())
+        self.assertIn("text/plain", [part.get_content_type() for part in message.walk()])
+        self.assertIn("text/html", [part.get_content_type() for part in message.walk()])
+
     @mock.patch("app.otp_delivery.urlopen")
     def test_send_login_otp_uses_sendgrid_mode(self, urlopen_mock):
         os.environ["OTP_DELIVERY_MODE"] = "sendgrid"

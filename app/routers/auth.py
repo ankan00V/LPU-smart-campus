@@ -73,6 +73,23 @@ PASSWORD_POLICY_MESSAGE = (
 ACCESS_COOKIE_SECURE = (os.getenv("APP_COOKIE_SECURE", "false") or "").strip().lower() in {"1", "true", "yes", "on"}
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9/_-]+$")
 RECAPTCHA_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+DEFAULT_BLOCKED_PRIMARY_EMAIL_DOMAINS = {
+    "gmail.com",
+    "googlemail.com",
+    "outlook.com",
+    "hotmail.com",
+    "live.com",
+    "msn.com",
+    "yahoo.com",
+    "ymail.com",
+    "icloud.com",
+    "me.com",
+    "mac.com",
+    "aol.com",
+    "proton.me",
+    "protonmail.com",
+    "pm.me",
+}
 
 
 @router.get("/public-config", response_model=schemas.AuthPublicConfigOut)
@@ -322,6 +339,7 @@ def _auth_user_out(doc: dict) -> schemas.AuthUserOut:
         password_expired=password_expired(doc),
         password_expires_at=password_expires_at(doc),
         mfa_enabled=bool(doc.get("mfa_enabled", False)),
+        primary_email_update_required=_primary_email_update_required(doc),
         is_active=bool(doc.get("is_active", True)),
         created_at=doc.get("created_at") or datetime.utcnow(),
         last_login_at=doc.get("last_login_at"),
@@ -398,14 +416,103 @@ def _email_suffix_allowed(email: str) -> bool:
     return any(normalized.endswith(suffix) for suffix in suffixes)
 
 
-def _validate_role_email(email: str, role: models.UserRole) -> None:
+def _blocked_primary_email_domains() -> set[str]:
+    raw_value = os.getenv("AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS")
+    if raw_value is not None and not str(raw_value).strip():
+        return set()
+    domains = set(DEFAULT_BLOCKED_PRIMARY_EMAIL_DOMAINS)
+    raw = (raw_value or "").strip()
+    if not raw:
+        return domains
+    for token in raw.replace(";", ",").split(","):
+        domain = token.strip().lower().lstrip("@")
+        if domain:
+            domains.add(domain)
+    return domains
+
+
+def _is_blocked_primary_email(email: str) -> bool:
+    normalized = _normalize_email(email)
+    domain = normalized.rsplit("@", 1)[-1]
+    return domain in _blocked_primary_email_domains()
+
+
+def _primary_email_update_required(doc: dict[str, Any]) -> bool:
+    try:
+        role = models.UserRole(doc.get("role", models.UserRole.STUDENT.value))
+    except ValueError:
+        return False
+    if role not in {models.UserRole.STUDENT, models.UserRole.FACULTY, models.UserRole.ADMIN}:
+        return False
+    return _is_blocked_primary_email(str(doc.get("email", "") or ""))
+
+
+LEGACY_PRIMARY_EMAIL_MIGRATION_LOGIN_LIMIT = 3
+
+
+def _legacy_primary_email_migration_login_count(doc: dict[str, Any]) -> int:
+    try:
+        explicit_count = int(doc.get("primary_email_migration_login_count", 0) or 0)
+    except (TypeError, ValueError):
+        explicit_count = 0
+    if explicit_count > 0:
+        return explicit_count
+    return 1 if doc.get("primary_email_migration_started_at") else 0
+
+
+def _reject_if_legacy_primary_login_consumed(doc: dict[str, Any]) -> None:
+    if not _primary_email_update_required(doc):
+        return
+    if _legacy_primary_email_migration_login_count(doc) >= LEGACY_PRIMARY_EMAIL_MIGRATION_LOGIN_LIMIT:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This legacy primary email has used all 3 migration login attempts. "
+                "Contact support if you need the migration window reset."
+            ),
+        )
+
+
+def _mark_legacy_primary_migration_login(
+    doc: dict[str, Any],
+    *,
+    now: datetime,
+    auth_update: dict[str, Any],
+    auth_inc: dict[str, int],
+) -> None:
+    if not _primary_email_update_required(doc):
+        return
+    if not doc.get("primary_email_migration_started_at"):
+        auth_update["primary_email_migration_started_at"] = now
+    increment_by = 1
+    if doc.get("primary_email_migration_started_at") and not doc.get("primary_email_migration_login_count"):
+        increment_by = 2
+    auth_update["primary_email_migration_last_login_at"] = now
+    auth_inc["primary_email_migration_login_count"] = increment_by
+
+
+def _validate_primary_login_email(email: str, *, allow_blocked_primary: bool = False) -> str:
+    normalized = _normalize_email(email)
+    if _is_blocked_primary_email(normalized) and not allow_blocked_primary:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Use your official university or company email for primary login. "
+                "Personal mailboxes can be added later as a secondary email."
+            ),
+        )
+    return normalized
+
+
+def _validate_role_email(email: str, role: models.UserRole, *, allow_legacy_primary: bool = False) -> None:
     if role in (
         models.UserRole.ADMIN,
         models.UserRole.FACULTY,
         models.UserRole.STUDENT,
         models.UserRole.OWNER,
     ):
-        if not _email_suffix_allowed(email):
+        normalized = _validate_primary_login_email(email, allow_blocked_primary=allow_legacy_primary)
+        if not allow_legacy_primary and not _email_suffix_allowed(normalized):
             suffixes = _allowed_email_suffixes()
             suffix_text = ", ".join(suffixes) if suffixes else "the configured institute domain"
             raise HTTPException(status_code=400, detail=f"Email must end with {suffix_text}")
@@ -454,12 +561,102 @@ def _upsert_mongo_by_id(db, collection: str, doc_id: int, payload: dict) -> None
 
 
 def _validate_alternate_email(email: str) -> str:
+    return _normalize_email(email)
+
+
+def _validate_new_primary_email(email: str) -> str:
     value = _normalize_email(email)
+    _validate_primary_login_email(value)
     if not _email_suffix_allowed(value):
         suffixes = _allowed_email_suffixes()
         suffix_text = ", ".join(suffixes) if suffixes else "the configured institute domain"
-        raise HTTPException(status_code=400, detail=f"Alternate email must end with {suffix_text}")
+        raise HTTPException(status_code=400, detail=f"Primary email must end with {suffix_text}")
     return value
+
+
+def _ensure_email_available_for_primary(db, sql_db: Session, *, new_email: str, current_user_id: int) -> None:
+    existing = db["auth_users"].find_one({"email": new_email}, {"id": 1})
+    if existing and int(existing.get("id") or 0) != int(current_user_id):
+        raise HTTPException(status_code=409, detail="Primary email is already used by another account.")
+
+    alt_hash = hash_lookup_value(new_email, purpose="alternate-email")
+    conflict = db["auth_users"].find_one(
+        {
+            "id": {"$ne": int(current_user_id)},
+            "$or": [
+                {"alternate_email_hash": alt_hash},
+                {"alternate_email": new_email},
+            ],
+        },
+        {"id": 1},
+    )
+    if conflict:
+        raise HTTPException(status_code=409, detail="Primary email is already used as another account's secondary email.")
+
+    sql_query = getattr(sql_db, "query", None)
+    if callable(sql_query):
+        sql_user = (
+            sql_query(models.AuthUser)
+            .filter(func.lower(models.AuthUser.email) == new_email)
+            .first()
+        )
+        if sql_user and int(sql_user.id or 0) != int(current_user_id):
+            raise HTTPException(status_code=409, detail="Primary email is already used by another account.")
+
+
+def _write_primary_email_change(
+    db,
+    sql_db: Session,
+    *,
+    user_doc: dict[str, Any],
+    role: models.UserRole,
+    new_email: str,
+) -> dict[str, Any]:
+    user_id = int(user_doc["id"])
+    old_email = _normalize_email(str(user_doc.get("email", "")))
+    if new_email == old_email:
+        raise HTTPException(status_code=400, detail="New primary email must be different from the current primary email.")
+
+    _ensure_email_available_for_primary(db, sql_db, new_email=new_email, current_user_id=user_id)
+
+    alternate_fields = _build_alternate_email_update_fields(user_id, old_email)
+    auth_update = {
+        **alternate_fields,
+        "email": new_email,
+        "primary_login_verified": True,
+        "primary_email_updated_at": datetime.utcnow(),
+    }
+
+    sql_user = sql_db.get(models.AuthUser, user_id) if hasattr(sql_db, "get") else None
+    if sql_user:
+        sql_user.email = new_email
+    if role == models.UserRole.STUDENT:
+        student_id = user_doc.get("student_id")
+        if student_id and hasattr(sql_db, "get"):
+            student = sql_db.get(models.Student, int(student_id))
+            if student:
+                student.email = new_email
+        db["students"].update_one({"id": int(student_id)} if student_id else {"email": old_email}, {"$set": {"email": new_email}})
+    elif role == models.UserRole.FACULTY:
+        faculty_id = user_doc.get("faculty_id")
+        if faculty_id and hasattr(sql_db, "get"):
+            faculty = sql_db.get(models.Faculty, int(faculty_id))
+            if faculty:
+                faculty.email = new_email
+        db["faculty"].update_one({"id": int(faculty_id)} if faculty_id else {"email": old_email}, {"$set": {"email": new_email}})
+
+    try:
+        sql_db.flush()
+        sql_db.commit()
+    except Exception:
+        sql_db.rollback()
+        raise
+
+    db["auth_users"].update_one({"id": user_id}, {"$set": auth_update})
+    updated = db["auth_users"].find_one({"id": user_id})
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return updated
 
 
 def _privileged_mfa_required() -> bool:
@@ -1602,7 +1799,8 @@ def request_login_otp(
             role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
-        _validate_role_email(email, role)
+        _reject_if_legacy_primary_login_consumed(user)
+        _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
         _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
@@ -1809,6 +2007,8 @@ def login_student_with_password(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role") from exc
 
+        _reject_if_legacy_primary_login_consumed(user)
+        _validate_role_email(email, actual_role, allow_legacy_primary=_primary_email_update_required(user))
         # Validate that the user selected the correct role in the dropdown
         _ensure_selected_login_role(actual_role=actual_role, selected_role=payload.role)
 
@@ -1855,12 +2055,24 @@ def login_student_with_password(
                 user_id,
             )
 
+        auth_update = {"last_login_at": now, "primary_login_verified": True}
+        auth_inc: dict[str, int] = {}
+        _mark_legacy_primary_migration_login(user, now=now, auth_update=auth_update, auth_inc=auth_inc)
+        auth_write: dict[str, Any] = {"$set": auth_update}
+        if auth_inc:
+            auth_write["$inc"] = auth_inc
         db["auth_users"].update_one(
             {"id": user_id},
-            {"$set": {"last_login_at": now, "primary_login_verified": True}},
+            auth_write,
         )
         user["last_login_at"] = now
         user["primary_login_verified"] = True
+        if auth_update.get("primary_email_migration_started_at"):
+            user["primary_email_migration_started_at"] = auth_update["primary_email_migration_started_at"]
+        if auth_update.get("primary_email_migration_last_login_at"):
+            user["primary_email_migration_last_login_at"] = auth_update["primary_email_migration_last_login_at"]
+        if auth_inc.get("primary_email_migration_login_count"):
+            user["primary_email_migration_login_count"] = _legacy_primary_email_migration_login_count(user) + 1
 
         session_tokens = create_session_tokens(
             db,
@@ -1939,7 +2151,8 @@ def verify_login_otp(
             role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
-        _validate_role_email(email, role)
+        _reject_if_legacy_primary_login_consumed(user)
+        _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
         _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
@@ -2029,17 +2242,28 @@ def verify_login_otp(
             )
 
         auth_update: dict[str, Any] = {"last_login_at": now, "primary_login_verified": True}
+        auth_inc: dict[str, int] = {}
+        _mark_legacy_primary_migration_login(user, now=now, auth_update=auth_update, auth_inc=auth_inc)
         if bool(user.get("signup_verification_required", False)):
             auth_update["signup_verification_required"] = False
         if mfa_authenticated:
             auth_update["mfa_last_verified_at"] = now
 
+        auth_write: dict[str, Any] = {"$set": auth_update}
+        if auth_inc:
+            auth_write["$inc"] = auth_inc
         db["auth_users"].update_one(
             {"id": user_id},
-            {"$set": auth_update},
+            auth_write,
         )
         user["last_login_at"] = now
         user["primary_login_verified"] = True
+        if auth_update.get("primary_email_migration_started_at"):
+            user["primary_email_migration_started_at"] = auth_update["primary_email_migration_started_at"]
+        if auth_update.get("primary_email_migration_last_login_at"):
+            user["primary_email_migration_last_login_at"] = auth_update["primary_email_migration_last_login_at"]
+        if auth_inc.get("primary_email_migration_login_count"):
+            user["primary_email_migration_login_count"] = _legacy_primary_email_migration_login_count(user) + 1
         if bool(user.get("signup_verification_required", False)):
             user["signup_verification_required"] = False
         user["mfa_enabled"] = mfa_enabled
@@ -2252,7 +2476,7 @@ def request_password_reset_otp(
             role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
-        _validate_role_email(email, role)
+        _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
         user_id = _ensure_auth_user_id(db, user, sql_db)
         if role == models.UserRole.STUDENT:
             align_student_profile_id_with_sql(db, sql_db, email=email, user_doc=user)
@@ -3018,5 +3242,170 @@ def update_alternate_email(
             "alternate_email": _get_alternate_email(updated),
         },
         actor={"user_id": current_user.id, "email": updated.get("email"), "role": updated.get("role")},
+    )
+    return _auth_user_out(updated)
+
+
+@router.post("/me/primary-email/request-otp", response_model=schemas.OTPRequestResponse)
+def request_primary_email_update_otp(
+    payload: schemas.PrimaryEmailUpdateRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    sql_db: Session = Depends(get_db),
+):
+    db = _mongo_db_or_503()
+    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Invalid user session")
+    if not _primary_email_update_required(user_doc):
+        raise HTTPException(status_code=400, detail="Primary email update is not required for this account.")
+
+    new_email = _validate_new_primary_email(payload.new_email)
+    old_email = _normalize_email(str(user_doc.get("email", "")))
+    if new_email == old_email:
+        raise HTTPException(status_code=400, detail="New primary email must be different from the current primary email.")
+    _ensure_email_available_for_primary(db, sql_db, new_email=new_email, current_user_id=int(current_user.id))
+
+    enforce_rate_limit(
+        request,
+        scope="auth.primary_email.request_otp",
+        principal=f"{int(current_user.id)}:{new_email}",
+        limit=6,
+        window_seconds=300,
+    )
+    now = datetime.utcnow()
+    cooldown_seconds = _otp_resend_cooldown_seconds()
+    last_otp = db["auth_otps"].find_one(
+        {"user_id": int(current_user.id), "purpose": "primary_email_update", "used_at": None},
+        sort=[("created_at", -1)],
+    )
+    if last_otp:
+        last_created = _coerce_datetime(last_otp.get("created_at"))
+        if last_created:
+            elapsed = (now - _to_utc_naive(last_created)).total_seconds()
+            if elapsed < cooldown_seconds:
+                retry_after = max(1, int(cooldown_seconds - elapsed))
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"OTP already sent. Please wait {retry_after} seconds before requesting again.",
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+    db["auth_otps"].update_many(
+        {"user_id": int(current_user.id), "purpose": "primary_email_update", "used_at": None},
+        {"$set": {"used_at": now}},
+    )
+    otp_code = generate_otp_code()
+    otp_hash, otp_salt = hash_otp(otp_code)
+    validity_minutes = otp_expiry_minutes()
+    expires_at = now + timedelta(minutes=validity_minutes)
+    otp_doc = {
+        "id": _next_unique_id(db, collection="auth_otps", sequence_name="auth_otps"),
+        "user_id": int(current_user.id),
+        "purpose": "primary_email_update",
+        "new_email": new_email,
+        "old_email": old_email,
+        "otp_hash": otp_hash,
+        "otp_salt": otp_salt,
+        "attempts_count": 0,
+        "expires_at": expires_at,
+        "used_at": None,
+        "created_at": now,
+    }
+    db["auth_otps"].insert_one(otp_doc)
+
+    try:
+        delivery = _send_login_otp_with_timeout(new_email, otp_code)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Primary email update OTP delivery failed user_id=%s destination=%s", current_user.id, new_email)
+        db["auth_otps"].update_one({"id": otp_doc["id"]}, {"$set": {"used_at": datetime.utcnow()}})
+        raise HTTPException(
+            status_code=503,
+            detail="OTP delivery is temporarily unavailable. Please retry shortly or contact support.",
+        ) from exc
+
+    db["auth_otp_delivery"].insert_one(
+        {
+            "id": _next_unique_id(db, collection="auth_otp_delivery", sequence_name="auth_otp_delivery"),
+            "user_id": int(current_user.id),
+            "destination": new_email,
+            "channel": str(delivery["channel"]),
+            "status": "sent",
+            "purpose": "primary_email_update",
+            "created_at": datetime.utcnow(),
+        }
+    )
+    mirror_event(
+        "auth.primary_email_update_otp_requested",
+        {"user_id": int(current_user.id), "old_email": old_email, "new_email": new_email, "expires_at": expires_at},
+        actor={"user_id": int(current_user.id), "email": old_email, "role": user_doc.get("role")},
+    )
+    return schemas.OTPRequestResponse(
+        message="OTP sent to your new official email.",
+        expires_at=expires_at,
+        delivered_to=new_email,
+        cooldown_seconds=cooldown_seconds,
+        validity_minutes=validity_minutes,
+    )
+
+
+@router.post("/me/primary-email/verify", response_model=schemas.AuthUserOut)
+def verify_primary_email_update(
+    payload: schemas.PrimaryEmailVerifyRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    sql_db: Session = Depends(get_db),
+):
+    db = _mongo_db_or_503()
+    user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
+    if not user_doc:
+        raise HTTPException(status_code=401, detail="Invalid user session")
+    if not _primary_email_update_required(user_doc):
+        raise HTTPException(status_code=400, detail="Primary email update is not required for this account.")
+
+    new_email = _validate_new_primary_email(payload.new_email)
+    otp_row = db["auth_otps"].find_one(
+        {
+            "user_id": int(current_user.id),
+            "purpose": "primary_email_update",
+            "new_email": new_email,
+            "used_at": None,
+        },
+        sort=[("created_at", -1)],
+    )
+    now = datetime.utcnow()
+    if not otp_row:
+        raise HTTPException(status_code=400, detail="No active primary email OTP request found.")
+    expires_at = _coerce_datetime(otp_row.get("expires_at"))
+    if not expires_at or _to_utc_naive(expires_at) < now:
+        db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
+        raise HTTPException(status_code=400, detail="OTP expired")
+    if int(otp_row.get("attempts_count", 0)) >= 5:
+        db["auth_otps"].update_one({"id": otp_row["id"]}, {"$set": {"used_at": now}})
+        raise HTTPException(status_code=400, detail="OTP attempts exceeded")
+    otp_candidate = _normalize_otp_candidate(payload.otp_code)
+    if not verify_otp(otp_candidate, otp_row.get("otp_hash", ""), otp_row.get("otp_salt", "")):
+        db["auth_otps"].update_one({"id": otp_row["id"]}, {"$inc": {"attempts_count": 1}})
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    try:
+        role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid user role") from exc
+    consume_result = db["auth_otps"].update_one(
+        {"id": otp_row["id"], "used_at": None},
+        {"$set": {"used_at": now}},
+    )
+    if int(getattr(consume_result, "matched_count", 0)) != 1:
+        raise HTTPException(status_code=400, detail="OTP already used. Request a new OTP.")
+
+    updated = _write_primary_email_change(db, sql_db, user_doc=user_doc, role=role, new_email=new_email)
+    mirror_event(
+        "auth.primary_email_updated",
+        {
+            "user_id": int(current_user.id),
+            "old_email": _normalize_email(str(user_doc.get("email", ""))),
+            "new_email": new_email,
+        },
+        actor={"user_id": int(current_user.id), "email": new_email, "role": role.value},
     )
     return _auth_user_out(updated)

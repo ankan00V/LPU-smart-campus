@@ -88,6 +88,8 @@ class _Collection:
                 return any(_Collection._match(row, branch) for branch in expected)
             value = row.get(key)
             if isinstance(expected, dict):
+                if "$ne" in expected and value == expected["$ne"]:
+                    return False
                 if "$in" in expected and value not in expected["$in"]:
                     return False
                 if "$exists" in expected:
@@ -148,6 +150,16 @@ def _request(path: str) -> Request:
 
 
 class AuthOtpMfaReliabilityTests(unittest.TestCase):
+    def setUp(self):
+        self._primary_email_policy_env = patch.dict(
+            "os.environ",
+            {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": ""},
+        )
+        self._primary_email_policy_env.start()
+
+    def tearDown(self):
+        self._primary_email_policy_env.stop()
+
     def test_request_login_otp_allows_retry_after_failed_delivery_for_privileged_roles(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
@@ -710,6 +722,130 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertEqual(result.user.email, "student.ready@gmail.com")
         self.assertFalse(result.user.password_setup_required)
 
+    def test_student_password_login_marks_legacy_primary_email_migration_required(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 73,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 73,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+        session_tokens = {
+            "access_token": "access-token",
+            "access_expires_at": datetime.utcnow() + timedelta(minutes=30),
+            "refresh_token": "refresh-token",
+            "refresh_expires_at": datetime.utcnow() + timedelta(days=7),
+        }
+
+        with (
+            patch.dict("os.environ", {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": "gmail.com,outlook.com"}),
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=73),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.create_session_tokens", return_value=session_tokens),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.login_student_with_password(
+                schemas.LoginPasswordRequest(email="legacy.student@gmail.com", password="Student@123"),
+                response=Response(),
+                request=_request("/auth/student/login"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertTrue(result.user.primary_email_update_required)
+        updated = mongo["auth_users"].find_one({"id": 73})
+        self.assertIsNotNone(updated.get("primary_email_migration_started_at"))
+        self.assertEqual(updated.get("primary_email_migration_login_count"), 1)
+
+    def test_student_password_login_allows_three_legacy_primary_email_migration_logins(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 74,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 74,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "primary_email_migration_started_at": datetime.utcnow() - timedelta(minutes=5),
+                "primary_email_migration_login_count": 2,
+                "created_at": datetime.utcnow(),
+            }
+        )
+        session_tokens = {
+            "access_token": "access-token",
+            "access_expires_at": datetime.utcnow() + timedelta(minutes=30),
+            "refresh_token": "refresh-token",
+            "refresh_expires_at": datetime.utcnow() + timedelta(days=7),
+        }
+
+        with (
+            patch.dict("os.environ", {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": "gmail.com,outlook.com"}),
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=74),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.create_session_tokens", return_value=session_tokens),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.login_student_with_password(
+                schemas.LoginPasswordRequest(email="legacy.student@gmail.com", password="Student@123"),
+                response=Response(),
+                request=_request("/auth/student/login"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertTrue(result.user.primary_email_update_required)
+        updated = mongo["auth_users"].find_one({"id": 74})
+        self.assertEqual(updated.get("primary_email_migration_login_count"), 3)
+
+    def test_student_password_login_blocks_fourth_legacy_primary_email_migration_login(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 75,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 75,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "primary_email_migration_started_at": datetime.utcnow() - timedelta(minutes=5),
+                "primary_email_migration_login_count": 3,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch.dict("os.environ", {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": "gmail.com,outlook.com"}),
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.login_student_with_password(
+                    schemas.LoginPasswordRequest(email="legacy.student@gmail.com", password="Student@123"),
+                    response=Response(),
+                    request=_request("/auth/student/login"),
+                    sql_db=SimpleNamespace(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertIn("3 migration login attempts", str(ctx.exception.detail))
+
     def test_password_bootstrap_allows_faculty_legacy_accounts(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
@@ -1187,6 +1323,120 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 503)
         self.assertIn("temporarily unavailable", str(ctx.exception.detail))
+
+    def test_primary_email_update_moves_legacy_mail_to_secondary_after_otp(self):
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        now = datetime.utcnow()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 91,
+                "email": "legacy.student@gmail.com",
+                "password_hash": hash_password("Student@123"),
+                "role": models.UserRole.STUDENT.value,
+                "student_id": 91,
+                "faculty_id": None,
+                "alternate_email": None,
+                "alternate_email_encrypted": None,
+                "alternate_email_hash": None,
+                "primary_login_verified": True,
+                "is_active": True,
+                "created_at": now,
+            }
+        )
+        mongo["students"].insert_one(
+            {
+                "id": 91,
+                "name": "LEGACY STUDENT",
+                "email": "legacy.student@gmail.com",
+                "registration_number": "12200091",
+                "section": "K23AA",
+                "department": "CSE",
+                "semester": 4,
+                "created_at": now,
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 77,
+                "user_id": 91,
+                "purpose": "primary_email_update",
+                "new_email": "legacy.student@lpu.in",
+                "old_email": "legacy.student@gmail.com",
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": now + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": now,
+            }
+        )
+
+        engine = create_engine("sqlite:///:memory:")
+        models.Base.metadata.create_all(bind=engine)
+        SessionLocal = sessionmaker(bind=engine)
+        sql_db = SessionLocal()
+        sql_db.add(
+            models.Student(
+                id=91,
+                name="LEGACY STUDENT",
+                email="legacy.student@gmail.com",
+                registration_number="12200091",
+                section="K23AA",
+                department="CSE",
+                semester=4,
+            )
+        )
+        sql_db.add(
+            models.AuthUser(
+                id=91,
+                email="legacy.student@gmail.com",
+                password_hash=hash_password("Student@123"),
+                role=models.UserRole.STUDENT,
+                student_id=91,
+                is_active=True,
+                created_at=now,
+            )
+        )
+        sql_db.commit()
+
+        try:
+            with (
+                patch.dict("os.environ", {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": "gmail.com,outlook.com"}),
+                patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+                patch("app.routers.auth.mirror_event", return_value=None),
+            ):
+                result = auth.verify_primary_email_update(
+                    schemas.PrimaryEmailVerifyRequest(
+                        new_email="legacy.student@lpu.in",
+                        otp_code="123456",
+                    ),
+                    current_user=CurrentUser(
+                        id=91,
+                        email="legacy.student@gmail.com",
+                        role=models.UserRole.STUDENT,
+                        student_id=91,
+                        faculty_id=None,
+                        alternate_email=None,
+                        primary_login_verified=True,
+                        is_active=True,
+                    ),
+                    sql_db=sql_db,
+                )
+
+            self.assertEqual(result.email, "legacy.student@lpu.in")
+            self.assertEqual(result.alternate_email, "legacy.student@gmail.com")
+            self.assertFalse(result.primary_email_update_required)
+            self.assertEqual(sql_db.get(models.AuthUser, 91).email, "legacy.student@lpu.in")
+            self.assertEqual(sql_db.get(models.Student, 91).email, "legacy.student@lpu.in")
+            self.assertEqual(mongo["students"].find_one({"id": 91})["email"], "legacy.student@lpu.in")
+            self.assertIsNotNone(mongo["auth_otps"].find_one({"id": 77})["used_at"])
+        finally:
+            sql_db.close()
+            engine.dispose()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import json
 import unittest
+from datetime import date, datetime, time
 from unittest import mock
 
 from sqlalchemy import create_engine
@@ -51,6 +52,60 @@ class RealtimeAttendanceDemoTests(unittest.TestCase):
         frame = "data:image/jpeg;base64," + ("B" * 320)
         return schemas.RealtimeAttendanceMarkRequest(
             demo_mode=True,
+            selfie_photo_data_url=frame,
+            selfie_frames_data_urls=[frame] * 8,
+        )
+
+    def _seed_realtime_schedule_pair(self):
+        self.class_date = date(2026, 5, 22)
+        self.db.add_all(
+            [
+                models.Faculty(
+                    id=3101,
+                    name="Realtime Faculty",
+                    email="realtime.faculty@example.com",
+                    department="CSE",
+                    section="P132",
+                ),
+                models.Course(
+                    id=4101,
+                    code="PES319",
+                    title="Soft Skills-II",
+                    faculty_id=3101,
+                ),
+                models.Enrollment(
+                    id=5101,
+                    student_id=1101,
+                    course_id=4101,
+                ),
+                models.ClassSchedule(
+                    id=6101,
+                    course_id=4101,
+                    faculty_id=3101,
+                    weekday=self.class_date.weekday(),
+                    start_time=time(10, 0),
+                    end_time=time(11, 0),
+                    classroom_label="423ZK",
+                    is_active=True,
+                ),
+                models.ClassSchedule(
+                    id=6102,
+                    course_id=4101,
+                    faculty_id=3101,
+                    weekday=self.class_date.weekday(),
+                    start_time=time(11, 0),
+                    end_time=time(12, 0),
+                    classroom_label="423ZK",
+                    is_active=True,
+                ),
+            ]
+        )
+        self.db.commit()
+
+    def _build_realtime_payload(self, schedule_id: int) -> schemas.RealtimeAttendanceMarkRequest:
+        frame = "data:image/jpeg;base64," + ("C" * 320)
+        return schemas.RealtimeAttendanceMarkRequest(
+            schedule_id=schedule_id,
             selfie_photo_data_url=frame,
             selfie_frames_data_urls=[frame] * 8,
         )
@@ -185,6 +240,75 @@ class RealtimeAttendanceDemoTests(unittest.TestCase):
         self.assertEqual(response.status, models.AttendanceSubmissionStatus.REJECTED)
         self.assertIn("did not save any attendance data", response.message.lower())
         self.assertEqual(self.db.query(models.AttendanceSubmission).count(), 0)
+
+    def test_realtime_mark_only_persists_current_open_schedule_slot(self):
+        self._seed_realtime_schedule_pair()
+        payload = self._build_realtime_payload(schedule_id=6102)
+
+        face_verdict = {
+            "available": True,
+            "match": True,
+            "confidence": 0.99,
+            "engine": "opencv-embedding",
+            "reason": "face-verified",
+            "liveness": {"ok": True},
+            "required_consecutive_frames": 8,
+            "consecutive_frames_matched": 8,
+            "accepted_frames": 8,
+            "total_frames": 8,
+        }
+        with (
+            mock.patch("app.routers.attendance.date") as date_mock,
+            mock.patch("app.routers.attendance.datetime") as datetime_mock,
+            mock.patch("app.routers.attendance.verify_face_sequence_opencv", return_value=face_verdict),
+            mock.patch("app.routers.attendance.store_data_url_object") as media_patch,
+            mock.patch("app.routers.attendance._upsert_mongo_by_id"),
+            mock.patch("app.routers.attendance.publish_domain_event"),
+            mock.patch("app.routers.attendance.enqueue_face_reverification"),
+            mock.patch("app.routers.attendance.enqueue_recompute"),
+            mock.patch("app.routers.attendance.evaluate_attendance_recovery"),
+        ):
+            date_mock.today.return_value = self.class_date
+            date_mock.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
+            datetime_mock.now.return_value = datetime.combine(self.class_date, time(11, 5))
+            datetime_mock.combine.side_effect = datetime.combine
+            datetime_mock.utcnow.side_effect = datetime.utcnow
+            media_patch.return_value = type("Media", (), {"object_key": "attendance-selfie/test.jpg"})()
+
+            response = mark_realtime_attendance(payload=payload, db=self.db, current_user=self.user)
+
+        self.assertEqual(response.status, models.AttendanceSubmissionStatus.VERIFIED)
+        submissions = self.db.query(models.AttendanceSubmission).all()
+        self.assertEqual(len(submissions), 1)
+        self.assertEqual(submissions[0].schedule_id, 6102)
+        self.assertEqual(
+            self.db.query(models.AttendanceSubmission)
+            .filter(models.AttendanceSubmission.schedule_id == 6101)
+            .count(),
+            0,
+        )
+
+    def test_realtime_mark_rejects_previous_or_future_slot_even_with_valid_face(self):
+        self._seed_realtime_schedule_pair()
+        payload = self._build_realtime_payload(schedule_id=6101)
+
+        with (
+            mock.patch("app.routers.attendance.date") as date_mock,
+            mock.patch("app.routers.attendance.datetime") as datetime_mock,
+            mock.patch("app.routers.attendance.verify_face_sequence_opencv") as verify_patch,
+        ):
+            date_mock.today.return_value = self.class_date
+            date_mock.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
+            datetime_mock.now.return_value = datetime.combine(self.class_date, time(11, 5))
+            datetime_mock.combine.side_effect = datetime.combine
+            datetime_mock.utcnow.side_effect = datetime.utcnow
+            with self.assertRaises(Exception) as ctx:
+                mark_realtime_attendance(payload=payload, db=self.db, current_user=self.user)
+
+        verify_patch.assert_not_called()
+        self.assertIn("Attendance window is closed", str(ctx.exception))
+        self.assertEqual(self.db.query(models.AttendanceSubmission).count(), 0)
+        self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
 
     def test_sse_messages_use_default_event_channel_for_frontend_bus(self):
         encoded = _format_sse_message(
