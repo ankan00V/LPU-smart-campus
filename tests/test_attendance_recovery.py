@@ -572,15 +572,103 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(student_call)
         self.assertIsNotNone(faculty_call)
         student_body = str(student_call.kwargs.get("body") or "")
+        student_html = str(student_call.kwargs.get("html_body") or "")
         faculty_body = str(faculty_call.kwargs.get("body") or "")
 
         self.assertIn("overall attendance is", student_body.lower())
         self.assertIn("specific subjects need immediate attention", student_body.lower())
         self.assertIn("saarthi", student_body.lower())
         self.assertIn("campus resources", student_body.lower())
+        self.assertIn("subject-specific study links", student_body.lower())
+        self.assertIn("CSE310 - Software Engineering", student_body)
+        self.assertIn("NPTEL+CSE310+Software+Engineering+lectures", student_body)
+        self.assertIn("SWEBOK Guide", student_body)
+        self.assertNotIn("CSE320 - Distributed Systems", student_body)
+        self.assertNotIn("MIT 6.824 Distributed Systems", student_body)
+        self.assertIn("<!doctype html>", student_html.lower())
+        self.assertIn("Attendance Recovery Required", student_html)
+        self.assertIn("Recovery Copilot Alert", student_html)
+        self.assertIn("Watch NPTEL", student_html)
+        self.assertIn("Open Resources", student_html)
+        self.assertIn("https://www.youtube.com/results", student_html)
         self.assertIn("schedule targeted remedial classes", faculty_body.lower())
         self.assertIn("timely short class tests", faculty_body.lower())
         self.assertGreaterEqual(_enqueue_notification.call_count, 2)
+
+    @mock.patch("app.attendance_recovery.enqueue_notification", return_value="inline-thread")
+    @mock.patch("app.attendance_recovery._safe_send_recovery_email")
+    def test_recovery_email_keeps_resources_subject_specific_for_multiple_low_subjects(
+        self,
+        _safe_send_recovery_email,
+        _enqueue_notification,
+    ):
+        self.db.add_all(
+            [
+                models.Course(
+                    id=302,
+                    code="CSE320",
+                    title="Distributed Systems",
+                    faculty_id=201,
+                ),
+                models.Enrollment(
+                    id=405,
+                    student_id=101,
+                    course_id=302,
+                ),
+            ]
+        )
+        self.db.commit()
+
+        self._seed_attendance(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start_offset_days=5,
+        )
+        for idx, status in enumerate(
+            [
+                models.AttendanceStatus.PRESENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+                models.AttendanceStatus.ABSENT,
+            ],
+            start=1,
+        ):
+            self.db.add(
+                models.AttendanceRecord(
+                    id=3000 + idx,
+                    student_id=101,
+                    course_id=302,
+                    marked_by_faculty_id=201,
+                    attendance_date=self.today - timedelta(days=5 - idx),
+                    status=status,
+                    source="seed",
+                )
+            )
+        self.db.commit()
+
+        evaluate_attendance_recovery(self.db, student_id=101, course_id=301)
+
+        student_call = next(
+            item
+            for item in _safe_send_recovery_email.call_args_list
+            if str(item.kwargs.get("sent_to") or "").strip() == "student.one@example.com"
+        )
+        student_body = str(student_call.kwargs.get("body") or "")
+        student_html = str(student_call.kwargs.get("html_body") or "")
+        self.assertIn("CSE310 - Software Engineering", student_body)
+        self.assertIn("SWEBOK Guide", student_body)
+        self.assertIn("CSE320 - Distributed Systems", student_body)
+        self.assertIn("MIT 6.824 Distributed Systems", student_body)
+        self.assertIn("NPTEL+CSE310+Software+Engineering+lectures", student_body)
+        self.assertIn("NPTEL+CSE320+Distributed+Systems+lectures", student_body)
+        self.assertIn("CSE310 - Software Engineering", student_html)
+        self.assertIn("CSE320 - Distributed Systems", student_html)
+        self.assertIn("Watch NPTEL", student_html)
+        self.assertIn("Watch MIT OCW", student_html)
 
     @mock.patch("app.attendance_recovery._dispatch_recovery_communications")
     def test_retro_dispatch_skips_when_recent_notice_exists(self, _dispatch):
@@ -719,6 +807,7 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
                 subject="[Attendance Recovery] Action required for CSE310 (62.5%)",
                 body="Recovery mail body",
                 channel="attendance-recovery-student-email",
+                html_body="<html><body>Recovery mail body</body></html>",
             )
         self.db.commit()
 
@@ -730,7 +819,14 @@ class AttendanceRecoveryWorkflowTests(unittest.TestCase):
         )
         self.assertTrue(rows)
         self.assertEqual(rows[0].channel, "attendance-recovery-student-email")
+        self.assertIn("[html-email:true]", rows[0].message)
         self.assertIn("[delivery-backend:smtp-email]", rows[0].message)
+        _send_notification_email.assert_called_once_with(
+            "student.one@example.com",
+            subject="[Attendance Recovery] Action required for CSE310 (62.5%)",
+            body="Recovery mail body",
+            html_body="<html><body>Recovery mail body</body></html>",
+        )
         self.assertTrue(
             _recent_recovery_notice_exists_any(
                 self.db,

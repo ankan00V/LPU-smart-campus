@@ -112,6 +112,11 @@ def _request(path: str) -> Request:
 
 class AuthIdConsistencyTests(unittest.TestCase):
     def setUp(self):
+        self._primary_email_policy_env = patch.dict(
+            "os.environ",
+            {"AUTH_PRIMARY_EMAIL_BLOCKED_DOMAINS": ""},
+        )
+        self._primary_email_policy_env.start()
         self.engine = create_engine("sqlite:///:memory:")
         models.Base.metadata.create_all(bind=self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
@@ -121,6 +126,7 @@ class AuthIdConsistencyTests(unittest.TestCase):
     def tearDown(self):
         self.db.close()
         self.engine.dispose()
+        self._primary_email_policy_env.stop()
 
     def test_register_keeps_sql_and_mongo_auth_user_ids_aligned(self):
         payload = schemas.AuthRegisterRequest(

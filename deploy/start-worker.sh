@@ -15,24 +15,44 @@ try:
 except Exception:
     sys.exit(0)
 
-url = (os.getenv("CELERY_BROKER_URL") or os.getenv("REDIS_URL") or "").strip()
-if not url:
+urls = []
+for name in ("CELERY_BROKER_URL", "WORKER_BROKER_URL", "REDIS_URL", "REDIS_URL_SECONDARY"):
+    url = (os.getenv(name) or "").strip()
+    if url and url not in urls:
+        urls.append(url)
+
+if not urls:
     sys.exit(0)
 
-try:
-    client = redis.Redis.from_url(
-        url,
-        socket_timeout=1.5,
-        socket_connect_timeout=1.5,
-        health_check_interval=30,
-        decode_responses=True,
-    )
-    client.ping()
-except Exception as exc:  # noqa: BLE001
-    if "max requests limit exceeded" in str(exc or "").lower():
-        print("Redis quota exhausted; pausing Celery worker start.")
-        sys.exit(42)
-    sys.exit(0)
+quota_errors = []
+for url in urls:
+    client = None
+    try:
+        client = redis.Redis.from_url(
+            url,
+            socket_timeout=1.5,
+            socket_connect_timeout=1.5,
+            health_check_interval=30,
+            decode_responses=True,
+        )
+        client.ping()
+        sys.exit(0)
+    except Exception as exc:  # noqa: BLE001
+        message = str(exc or "")
+        if "max requests limit exceeded" in message.lower():
+            quota_errors.append(message)
+            continue
+        sys.exit(0)
+    finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:
+            pass
+
+if quota_errors:
+    print("All configured Redis transports are quota exhausted; pausing Celery worker start.")
+    sys.exit(42)
 
 sys.exit(0)
 PY

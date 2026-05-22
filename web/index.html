@@ -6,9 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260513b">
-    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
-    <script src="/web/app.js?v=20260521a" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260522c">
+    <script src="/web/app.js?v=20260522c" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -66,7 +65,7 @@
                 </label>
                 <label class="field">
                     <span>Email</span>
-                    <input id="auth-email" type="email" placeholder="you@gmail.com" autocomplete="username">
+                    <input id="auth-email" type="email" placeholder="you@university.edu" autocomplete="username">
                 </label>
                 <label class="field">
                     <span>Password</span>
@@ -106,8 +105,9 @@
                 </div>
                 <label class="field">
                     <span>Email</span>
-                    <input id="auth-signup-email" type="email" placeholder="you@gmail.com" autocomplete="email">
+                    <input id="auth-signup-email" type="email" placeholder="you@university.edu" autocomplete="email">
                 </label>
+                <p id="auth-signup-email-policy" class="auth-email-policy" aria-live="polite"></p>
                 <label class="field">
                     <span>Password</span>
                     <input id="auth-signup-password" type="password" placeholder="Create password" autocomplete="new-password">
@@ -116,7 +116,7 @@
                 <label id="auth-role-wrap" class="field">
                     <span>Role</span>
                     <select id="auth-role-select">
-                        <option value="student">student (@gmail.com)</option>
+                        <option value="student">student</option>
                         <option value="faculty">faculty</option>
                         <option value="admin">admin</option>
                         <option value="owner">vendor</option>
@@ -245,7 +245,7 @@
                 <p class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
                 <label class="field">
                     <span>Email</span>
-                    <input id="forgot-email" type="email" placeholder="you@gmail.com" autocomplete="email">
+                    <input id="forgot-email" type="email" placeholder="you@university.edu" autocomplete="email">
                 </label>
                 <label class="field">
                     <span>Registration Number</span>
@@ -296,6 +296,29 @@
                     <button id="password-bootstrap-submit-btn" class="btn btn-primary" type="button">Save Password</button>
                 </div>
                 <p id="password-bootstrap-message" class="auth-message" aria-live="polite"></p>
+            </div>
+        </div>
+
+        <div id="primary-email-migration-modal" class="auth-modal hidden" role="dialog" aria-modal="true" aria-labelledby="primary-email-migration-title">
+            <div class="auth-modal-card glass">
+                <div class="auth-modal-head">
+                    <h3 id="primary-email-migration-title">Verify Official Email</h3>
+                    <button id="primary-email-migration-logout-btn" class="btn btn-ghost" type="button">Logout</button>
+                </div>
+                <p class="auth-modal-sub">Old accounts can use the current personal mail for up to 3 migration logins. Verify your university or company email now; after verification, the official mail becomes primary and this mail moves to secondary.</p>
+                <label class="field">
+                    <span>Official Email</span>
+                    <input id="primary-email-migration-email" type="email" placeholder="you@university.edu" autocomplete="email">
+                </label>
+                <div class="auth-actions">
+                    <button id="primary-email-migration-request-btn" class="btn btn-secondary" type="button">Send OTP</button>
+                    <button id="primary-email-migration-verify-btn" class="btn btn-primary" type="button">Verify & Continue</button>
+                </div>
+                <label class="field">
+                    <span>OTP Code</span>
+                    <input id="primary-email-migration-otp" type="text" inputmode="numeric" placeholder="6-digit OTP" maxlength="6" autocomplete="one-time-code">
+                </label>
+                <p id="primary-email-migration-message" class="auth-message" aria-live="polite"></p>
             </div>
         </div>
 
@@ -2028,12 +2051,10 @@ Ask about any module available to your role.</div>
                     <input id="profile-full-name" type="text" placeholder="Enter your full name">
                 </label>
                 <label id="profile-id-field" class="field">
-                    <span id="profile-id-label">Registration Number</span>
-                    <input id="profile-registration-number" type="text" placeholder="e.g. R9P132A48">
+                    <span id="profile-id-label">registration number</span>
+                    <input id="profile-registration-number" type="text" placeholder="write_reg_no">
                 </label>
-                <p id="profile-registration-note" class="helper-text">
-                    Registration number is permanent and cannot be changed without admin permissions.
-                </p>
+                <p id="profile-registration-note" class="helper-text hidden"></p>
                 <label id="profile-section-wrap" class="field hidden">
                     <span>Section</span>
                     <input id="profile-section-input" type="text" placeholder="e.g. CSE-A1">
@@ -2129,16 +2150,17 @@ Ask about any module available to your role.</div>
         </div>
     </section>
 
-    <section id="recovery-copilot-modal" class="camera-modal hidden">
+    <section id="recovery-copilot-modal" class="camera-modal recovery-copilot-page-modal hidden" role="dialog" aria-modal="true" aria-labelledby="recovery-copilot-modal-title">
         <div class="camera-card glass attendance-details-card recovery-copilot-modal-card">
-            <div class="panel-head">
-                <h3>Recovery Copilot Action Plan</h3>
-                <small>Complete the guided actions to return below-threshold subjects to safe standing.</small>
-            </div>
-            <div id="recovery-copilot-modal-list" class="attendance-recovery-list recovery-copilot-modal-list"></div>
-            <div class="auth-actions">
+            <header class="recovery-copilot-page-header">
+                <div class="recovery-copilot-title-block">
+                    <span class="recovery-copilot-kicker">LPU Smart Campus</span>
+                    <h3 id="recovery-copilot-modal-title">Recovery Copilot Action Plan</h3>
+                    <small>Complete the guided actions to return below-threshold subjects to safe standing.</small>
+                </div>
                 <button id="recovery-copilot-modal-close-btn" class="btn btn-primary" type="button">Close</button>
-            </div>
+            </header>
+            <div id="recovery-copilot-modal-list" class="attendance-recovery-list recovery-copilot-modal-list"></div>
         </div>
     </section>
 

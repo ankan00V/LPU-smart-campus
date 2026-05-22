@@ -147,6 +147,20 @@ def _redis_socket_keepalive() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _redis_client_kwargs(url: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "decode_responses": True,
+        "socket_timeout": _redis_socket_timeout_seconds(),
+        "socket_connect_timeout": _redis_socket_timeout_seconds(),
+        "health_check_interval": 30,
+        "socket_keepalive": _redis_socket_keepalive(),
+        "retry_on_timeout": _redis_retry_on_timeout(),
+    }
+    if (_transport_status(url).get("scheme") or "").strip().lower() == "rediss":
+        kwargs["ssl_cert_reqs"] = _ssl_cert_reqs_setting()
+    return kwargs
+
+
 def _celery_transport_options() -> dict[str, Any]:
     timeout = _redis_socket_timeout_seconds()
     return {
@@ -190,6 +204,75 @@ def _worker_auto_degrade_on_redis_quota_exceeded() -> bool:
 
 def _is_redis_quota_exceeded_error(message: str | None) -> bool:
     return "max requests limit exceeded" in str(message or "").strip().lower()
+
+
+def _dedupe_urls(values: list[str]) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        url = (value or "").strip()
+        if not url or url in seen:
+            continue
+        urls.append(url)
+        seen.add(url)
+    return urls
+
+
+def _redis_transport_candidates(preferred_url: str) -> list[str]:
+    return _dedupe_urls(
+        [
+            preferred_url,
+            os.getenv("REDIS_URL") or "",
+            os.getenv("REDIS_URL_SECONDARY") or "",
+        ]
+    )
+
+
+def _redis_transport_available(url: str) -> tuple[bool, str | None]:
+    scheme = (_transport_status(url).get("scheme") or "").strip().lower()
+    if scheme not in {"redis", "rediss"}:
+        return True, None
+    if redis_pkg is None:
+        return False, "redis package is not installed"
+    if _running_under_pytest() and not _bool_env("WORKER_REDIS_FAILOVER_LIVE_PROBE_IN_TESTS", default=False):
+        return True, None
+
+    client = None
+    try:
+        client = redis_pkg.Redis.from_url(url, **_redis_client_kwargs(url))
+        client.ping()
+        probe_key = f"smartcampus:worker-redis-probe:{os.getpid()}:{int(pytime.time())}"
+        client.set(probe_key, "ok", ex=30)
+        client.delete(probe_key)
+        return True, None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+    finally:
+        try:
+            if client is not None:
+                client.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _select_worker_redis_url(preferred_url: str) -> str:
+    candidates = _redis_transport_candidates(preferred_url)
+    if not candidates:
+        return ""
+
+    last_error: str | None = None
+    for candidate in candidates:
+        available, error = _redis_transport_available(candidate)
+        if available:
+            if candidate != preferred_url:
+                logger.warning(
+                    "Worker Redis transport failed over to secondary Redis because preferred transport is unavailable."
+                )
+            return candidate
+        last_error = error
+
+    logger.warning("No worker Redis transport candidate is reachable. Last error: %s", last_error)
+    return preferred_url or candidates[0]
 
 
 def _worker_degraded_due_redis_quota() -> bool:
@@ -250,21 +333,23 @@ def _worker_redis_tls_required() -> bool:
 
 
 def _broker_url() -> str:
-    return (
+    preferred = (
         os.getenv("CELERY_BROKER_URL")
         or os.getenv("WORKER_BROKER_URL")
         or os.getenv("REDIS_URL")
         or ""
     ).strip()
+    return _select_worker_redis_url(preferred)
 
 
 def _backend_url() -> str:
-    return (
+    preferred = (
         os.getenv("CELERY_RESULT_BACKEND")
         or os.getenv("WORKER_RESULT_BACKEND")
         or os.getenv("REDIS_URL")
         or ""
     ).strip()
+    return _select_worker_redis_url(preferred)
 
 
 def _transport_url_parts(value: str | None) -> SplitResult:
@@ -302,8 +387,12 @@ def get_celery_app():
         if _transport_status(backend).get("tls_enabled") is not True:
             return None
     install_socket_dns_fallback()
+    os.environ["CELERY_BROKER_URL"] = broker
+    os.environ["CELERY_RESULT_BACKEND"] = backend
     app = Celery("smartcampus", broker=broker, backend=backend)
     app.conf.update(
+        broker_url=broker,
+        result_backend=backend,
         task_serializer="json",
         result_serializer="json",
         accept_content=["json"],
@@ -319,6 +408,18 @@ def get_celery_app():
         app.conf.redis_backend_use_ssl = dict(ssl_options)
     _celery_app = app
     return app
+
+
+def _reset_celery_app() -> None:
+    global _celery_app
+    app = _celery_app
+    _celery_app = None
+    if app is None:
+        return
+    try:
+        app.close()
+    except Exception:  # noqa: BLE001
+        return
 
 
 def worker_ready() -> bool:
@@ -416,15 +517,22 @@ def _recompute_task(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _send_task(task_name: str, kwargs: dict[str, Any]) -> bool:
-    app = get_celery_app()
-    if app is None:
-        return False
-    try:
-        app.send_task(task_name, kwargs=kwargs)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Celery enqueue failed task=%s error=%s", task_name, exc)
-        return False
+    for attempt in range(2):
+        app = get_celery_app()
+        if app is None:
+            return False
+        try:
+            app.send_task(task_name, kwargs=kwargs)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Celery enqueue failed task=%s error=%s", task_name, exc)
+            if attempt == 0 and (
+                _is_transient_redis_error(exc) or _is_redis_quota_exceeded_error(str(exc))
+            ):
+                _reset_celery_app()
+                continue
+            return False
+    return False
 
 
 def _validated_otp_delivery_payload(payload: Any) -> dict[str, Any]:
@@ -484,13 +592,25 @@ def dispatch_login_otp(
     if app is None:
         return _run_inline_fallback("OTP worker backend is unavailable.")
 
-    try:
-        result = app.send_task(
-            TASK_SEND_OTP,
-            kwargs={"destination_email": destination_email, "otp_code": otp_code},
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _run_inline_fallback(f"OTP worker enqueue failed: {exc}")
+    result = None
+    for attempt in range(2):
+        try:
+            result = app.send_task(
+                TASK_SEND_OTP,
+                kwargs={"destination_email": destination_email, "otp_code": otp_code},
+            )
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 0 and (
+                _is_transient_redis_error(exc) or _is_redis_quota_exceeded_error(str(exc))
+            ):
+                _reset_celery_app()
+                app = get_celery_app()
+                if app is not None:
+                    continue
+            return _run_inline_fallback(f"OTP worker enqueue failed: {exc}")
+    if result is None:
+        return _run_inline_fallback("OTP worker enqueue failed.")
 
     def _get_result_with_retry() -> dict[str, Any]:
         attempts = max(1, int(os.getenv("WORKER_RESULT_MAX_ATTEMPTS", "2")))

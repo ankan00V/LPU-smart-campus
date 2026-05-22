@@ -10,12 +10,14 @@ from sqlalchemy.orm import Session
 from . import models
 from .otp_delivery import send_notification_email
 from .realtime_bus import publish_domain_event
+from .recovery_email_template import render_recovery_email_html
 from .recovery_ai import (
     generate_recovery_faculty_email_body,
     generate_recovery_student_email_body,
     recovery_ai_email_enabled,
 )
 from .saarthi_service import is_saarthi_course
+from .study_resources import serialize_subject_study_resources, subject_study_resources
 from .workers import enqueue_notification
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,50 @@ AUTO_SENT_ACTIONS = {
     models.AttendanceRecoveryActionType.FACULTY_NUDGE,
     models.AttendanceRecoveryActionType.PARENT_ALERT,
 }
+
+
+def _subject_resource_payloads(low_subjects: list[dict[str, object]]) -> list[dict[str, object]]:
+    watch_threshold = recovery_watch_threshold()
+    payloads: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in low_subjects:
+        attendance_percent = float(row.get("attendance_percent") or 0.0)
+        if attendance_percent >= watch_threshold:
+            continue
+        course_code = str(row.get("course_code") or "").strip().upper()
+        course_title = str(row.get("course_title") or "").strip()
+        key = course_code or course_title.lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        resources = subject_study_resources(course_code=course_code, course_title=course_title)
+        payload = serialize_subject_study_resources(resources)
+        payload["attendance_percent"] = attendance_percent
+        payloads.append(payload)
+    return payloads
+
+
+def _subject_resource_email_lines(resource_payloads: list[dict[str, object]]) -> list[str]:
+    lines: list[str] = []
+    for item in resource_payloads:
+        course_code = str(item.get("course_code") or "").strip()
+        course_title = str(item.get("course_title") or "").strip()
+        attendance_percent = float(item.get("attendance_percent") or 0.0)
+        label = f"{course_code} - {course_title}" if course_code and course_title else course_code or course_title
+        lines.append(f"{label} ({attendance_percent:.1f}%):")
+        for resource in item.get("videos", []):
+            if not isinstance(resource, dict):
+                continue
+            lines.append(
+                f"  Video: {str(resource.get('title') or '').strip()} - {str(resource.get('url') or '').strip()}"
+            )
+        for resource in item.get("references", []):
+            if not isinstance(resource, dict):
+                continue
+            lines.append(
+                f"  Resource: {str(resource.get('title') or '').strip()} - {str(resource.get('url') or '').strip()}"
+            )
+    return lines
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -402,10 +448,13 @@ def _course_attendance_snapshot(
             submission_status = submission_by_key.get(key)
             present = False
             if submission_status is not None:
-                present = submission_status == models.AttendanceSubmissionStatus.APPROVED
+                present = submission_status in (
+                    models.AttendanceSubmissionStatus.VERIFIED,
+                    models.AttendanceSubmissionStatus.APPROVED,
+                )
             else:
                 record_statuses = records_by_date.get(class_date, [])
-                if any(status == models.AttendanceStatus.PRESENT for status in record_statuses):
+                if len(schedule_ids) == 1 and any(status == models.AttendanceStatus.PRESENT for status in record_statuses):
                     present = True
             if present:
                 attended_total += 1
@@ -423,7 +472,10 @@ def _course_attendance_snapshot(
                 continue
         delivered_slot_seen.add(key)
         delivered_total += 1
-        present = submission_status == models.AttendanceSubmissionStatus.APPROVED
+        present = submission_status in (
+            models.AttendanceSubmissionStatus.VERIFIED,
+            models.AttendanceSubmissionStatus.APPROVED,
+        )
         if present:
             attended_total += 1
             day_status[key[1]] = True
@@ -494,7 +546,7 @@ def _risk_level(
         return models.AttendanceRecoveryRiskLevel.CRITICAL
     if attendance_percent <= recovery_high_threshold() or consecutive_absences >= recovery_high_absences():
         return models.AttendanceRecoveryRiskLevel.HIGH
-    if attendance_percent <= recovery_watch_threshold() or consecutive_absences >= recovery_watch_absences():
+    if attendance_percent < recovery_watch_threshold() or consecutive_absences >= recovery_watch_absences():
         return models.AttendanceRecoveryRiskLevel.WATCH
     return None
 
@@ -698,6 +750,7 @@ def _safe_send_recovery_email(
     subject: str,
     body: str,
     channel: str,
+    html_body: str | None = None,
 ) -> bool:
     recipient = str(sent_to or "").strip()
     if not recipient:
@@ -720,9 +773,11 @@ def _safe_send_recovery_email(
         )
         return True
     try:
-        delivery = send_notification_email(recipient, subject=subject, body=body)
+        delivery = send_notification_email(recipient, subject=subject, body=body, html_body=html_body)
         delivery_channel = str(delivery.get("channel") or "").strip()
         logged_message = f"{subject}\n{body}"
+        if html_body:
+            logged_message = f"{logged_message}\n\n[html-email:true]"
         if delivery_channel and delivery_channel != normalized_channel:
             logged_message = f"{logged_message}\n\n[delivery-backend:{delivery_channel}]"
         _write_notification_log(
@@ -785,6 +840,8 @@ def _dispatch_recovery_communications(
         missed_remedials=missed_remedials,
         low_subjects=low_subjects,
     )
+    resource_payloads = _subject_resource_payloads(low_subjects)
+    resource_lines = _subject_resource_email_lines(resource_payloads)
 
     if overall_attendance_percent < watch_threshold:
         header_line = (
@@ -826,6 +883,14 @@ def _dispatch_recovery_communications(
             "- Talk to Saarthi in the app for real-time academic/wellbeing support.",
             "- Use Campus Resources in the portal to plan recovery subject-wise.",
             "",
+            "Subject-specific study links:",
+            *(
+                resource_lines
+                or [
+                    "No subject-specific external links were attached because no below-threshold subject matched the current recovery scope."
+                ]
+            ),
+            "",
             "Recovery Copilot plan for you:",
             *[f"- {line}" for line in ai_student_guidance],
             "",
@@ -843,9 +908,19 @@ def _dispatch_recovery_communications(
             missed_remedials=int(missed_remedials),
             next_slot_line=str(next_slot_line),
             office_hour_line=str(office_hour_line),
+            study_resource_lines=list(resource_lines),
         )
         if ai_body:
             student_body = ai_body
+    student_html_body = render_recovery_email_html(
+        student_name=str(student.name or "").strip(),
+        overall_attendance_percent=float(overall_attendance_percent),
+        watch_threshold=float(watch_threshold),
+        risk_level=str(risk_level.value),
+        subject_resources=resource_payloads,
+        next_slot_line=str(next_slot_line),
+        office_hour_line=str(office_hour_line),
+    )
     student_subject = (
         f"[Attendance Recovery] Action required for {course.code} "
         f"({course_attendance_percent:.1f}%)"
@@ -857,6 +932,7 @@ def _dispatch_recovery_communications(
         subject=student_subject,
         body=student_body,
         channel="attendance-recovery-student-email",
+        html_body=student_html_body,
     )
     _safe_enqueue_recovery_notification(
         {
@@ -867,6 +943,7 @@ def _dispatch_recovery_communications(
             "risk_level": risk_level.value,
             "overall_attendance_percent": float(overall_attendance_percent),
             "course_attendance_percent": float(course_attendance_percent),
+            "study_resources": resource_payloads,
         }
     )
 
@@ -1620,6 +1697,14 @@ def evaluate_attendance_recovery(
                 "makeup_class_id": int(next_makeup.id),
                 "class_mode": next_makeup.class_mode,
                 "mandatory": remedial_mandatory,
+                "study_resources": [
+                    serialize_subject_study_resources(
+                        subject_study_resources(
+                            course_code=str(course.code or "").strip().upper(),
+                            course_title=str(course.title or "").strip(),
+                        )
+                    )
+                ],
             },
         )
         keep_action_ids.add(int(remedial_action.id))
@@ -1673,6 +1758,14 @@ def evaluate_attendance_recovery(
                 "due_at": plan.recovery_due_at.isoformat() if plan.recovery_due_at else None,
                 "requires_acknowledgement": True,
                 "structured": risk_level == models.AttendanceRecoveryRiskLevel.CRITICAL,
+                "study_resources": [
+                    serialize_subject_study_resources(
+                        subject_study_resources(
+                            course_code=str(course.code or "").strip().upper(),
+                            course_title=str(course.title or "").strip(),
+                        )
+                    )
+                ],
             },
         )
         keep_action_ids.add(int(catchup_action.id))

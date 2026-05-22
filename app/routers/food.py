@@ -1508,26 +1508,34 @@ def _sync_order_document(order: models.FoodOrder, source: str) -> None:
     }
     if order.shop_id:
         event_scopes.add(f"shop:{int(order.shop_id)}")
-    publish_domain_event(
-        "food.order.updated",
-        payload={
-            "order_id": int(order.id),
-            "student_id": int(order.student_id),
-            "shop_id": int(order.shop_id) if order.shop_id else None,
-            "status": order.status.value,
-            "payment_status": str(order.payment_status or ""),
-            "payment_reference": str(order.payment_reference or "") or None,
-            "source": source,
-            "updated_at": (
-                order.last_status_updated_at.isoformat()
-                if order.last_status_updated_at is not None
-                else datetime.utcnow().isoformat()
-            ),
-        },
-        scopes=event_scopes,
-        topics={"food"},
-        source="food-router",
-    )
+    try:
+        publish_domain_event(
+            "food.order.updated",
+            payload={
+                "order_id": int(order.id),
+                "student_id": int(order.student_id),
+                "shop_id": int(order.shop_id) if order.shop_id else None,
+                "status": order.status.value,
+                "payment_status": str(order.payment_status or ""),
+                "payment_reference": str(order.payment_reference or "") or None,
+                "source": source,
+                "updated_at": (
+                    order.last_status_updated_at.isoformat()
+                    if order.last_status_updated_at is not None
+                    else datetime.utcnow().isoformat()
+                ),
+            },
+            scopes=event_scopes,
+            topics={"food"},
+            source="food-router",
+        )
+    except Exception:
+        logger.warning(
+            "Food order realtime publish deferred for order_id=%s source=%s",
+            order.id,
+            source,
+            exc_info=True,
+        )
 
 
 def _record_order_audit(
@@ -4598,6 +4606,97 @@ def list_payment_recovery_candidates(
             )
         )
     return output
+
+
+@router.post("/payments/recovery/{payment_reference}/cancel", response_model=schemas.MessageResponse)
+def cancel_payment_recovery_candidate(
+    payment_reference: str,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    if not current_user.student_id:
+        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
+
+    normalized_reference = str(payment_reference or "").strip()
+    if not normalized_reference:
+        raise HTTPException(status_code=400, detail="Payment reference is required")
+
+    payment = (
+        db.query(models.FoodPayment)
+        .filter(
+            models.FoodPayment.student_id == current_user.student_id,
+            models.FoodPayment.payment_reference == normalized_reference,
+        )
+        .first()
+    )
+    if not payment:
+        raise HTTPException(status_code=404, detail="Payment recovery item not found")
+    if _is_payment_paid(payment):
+        raise HTTPException(status_code=409, detail="Payment is already verified and cannot be dismissed")
+    if str(payment.status or "").strip().lower() not in {"failed", "attempted", "created"}:
+        raise HTTPException(status_code=409, detail="Payment recovery item cannot be dismissed in its current state")
+
+    order_ids = json.loads(payment.order_ids_json or "[]")
+    if not isinstance(order_ids, list):
+        order_ids = []
+    normalized_order_ids = [int(value) for value in order_ids if isinstance(value, int) or str(value).isdigit()]
+    orders = (
+        db.query(models.FoodOrder)
+        .filter(
+            models.FoodOrder.id.in_(normalized_order_ids),
+            models.FoodOrder.student_id == current_user.student_id,
+        )
+        .all()
+        if normalized_order_ids
+        else []
+    )
+
+    now = datetime.utcnow()
+    payment.status = "dismissed"
+    payment.order_state = "cancelled"
+    payment.payment_state = "dismissed"
+    payment.failed_reason = "dismissed_by_user"
+    payment.updated_at = now
+
+    changed_orders: list[tuple[models.FoodOrder, models.FoodOrderStatus, str]] = []
+    canonical_reference = _canonical_payment_reference(payment, normalized_reference)
+    for order in orders:
+        previous_status = order.status
+        previous_payment_status = str(order.payment_status or "")
+        if previous_payment_status.lower() in _CONFIRMED_PAYMENT_STATUSES or _is_order_final(order.status):
+            continue
+        _apply_status_transition(order, models.FoodOrderStatus.CANCELLED, note="Payment dismissed by student")
+        order.cancel_reason = "payment_dismissed_by_user"
+        order.payment_status = "cancelled"
+        order.payment_provider = payment.provider
+        order.payment_reference = canonical_reference
+        changed_orders.append((order, previous_status, previous_payment_status))
+
+    for order, previous_status, previous_payment_status in changed_orders:
+        _notify_order_status(db, order, "Payment attempt dismissed.")
+        _record_order_audit(
+            db,
+            order,
+            event_type="payment_recovery_dismissed",
+            actor=current_user,
+            from_status=previous_status.value,
+            to_status=order.status.value,
+            message="Payment recovery dismissed by student",
+            payload={
+                "payment_reference": canonical_reference,
+                "previous_payment_status": previous_payment_status,
+            },
+        )
+
+    db.commit()
+    for order, _, _ in changed_orders:
+        _sync_order_document(order, "payment-recovery-dismissed")
+    _mirror_food_payment(
+        payment,
+        source="payment-recovery-dismissed",
+        order_ids=normalized_order_ids,
+    )
+    return schemas.MessageResponse(message="Payment recovery item dismissed")
 
 
 @router.post("/payments/verify", response_model=schemas.MessageResponse)

@@ -92,6 +92,7 @@ class DualRedisManager:
         self._LOCAL_RATE_LIMIT_MAX_TRACKED = 50_000
         self._health_check_interval = 60.0  # Check every 60 seconds
         self._last_health_check = 0.0
+        self._last_create_error: str | None = None
         
     def _load_environment_files(self) -> None:
         global _ENV_LOADED
@@ -145,7 +146,12 @@ class DualRedisManager:
     
     def _create_redis_client(self, url: str) -> Redis | None:
         """Create a Redis client for the given URL"""
-        if not url or redis is None:
+        self._last_create_error = None
+        if not url:
+            self._last_create_error = "Redis URL is not configured"
+            return None
+        if redis is None:
+            self._last_create_error = "redis package is not installed"
             return None
         
         try:
@@ -193,10 +199,21 @@ class DualRedisManager:
                 **client_kwargs,
             )
             client.ping()
+            probe_key = f"smartcampus:redis-probe:{os.getpid()}:{int(time.time())}"
+            client.set(probe_key, "ok", ex=30)
+            client.delete(probe_key)
             return client
         except Exception as exc:
+            self._last_create_error = str(exc) or exc.__class__.__name__
             logger.warning("Failed to create Redis client for %s: %s", url[:30], exc)
             return None
+
+    def _mark_instance_create_failed(self, instance: RedisInstance) -> None:
+        """Preserve the connection failure reason for startup health status."""
+        message = self._last_create_error or "Failed to connect"
+        instance.error = message
+        if self._is_quota_exceeded_error(message):
+            instance.quota_exceeded = True
     
     def initialize(self) -> bool:
         """Initialize both Redis instances"""
@@ -222,7 +239,7 @@ class DualRedisManager:
                 primary.last_success = time.time()
                 logger.info("Primary Redis instance initialized successfully")
             else:
-                primary.error = "Failed to connect"
+                self._mark_instance_create_failed(primary)
                 logger.warning("Primary Redis instance failed to initialize")
             self._instances.append(primary)
             
@@ -234,7 +251,7 @@ class DualRedisManager:
                     secondary.last_success = time.time()
                     logger.info("Secondary Redis instance initialized successfully")
                 else:
-                    secondary.error = "Failed to connect"
+                    self._mark_instance_create_failed(secondary)
                     logger.warning("Secondary Redis instance failed to initialize")
                 self._instances.append(secondary)
             else:
@@ -297,6 +314,9 @@ class DualRedisManager:
                 # Try to reconnect if client is None
                 if next_instance.client is None:
                     next_instance.client = self._create_redis_client(next_instance.url)
+                    if next_instance.client is None:
+                        self._mark_instance_create_failed(next_instance)
+                        continue
                 
                 # Test the instance
                 if next_instance.client is not None:
@@ -335,6 +355,9 @@ class DualRedisManager:
                     try:
                         if instance.client is None:
                             instance.client = self._create_redis_client(instance.url)
+                            if instance.client is None:
+                                self._mark_instance_create_failed(instance)
+                                continue
                         
                         if instance.client:
                             instance.client.ping()

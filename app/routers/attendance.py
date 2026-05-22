@@ -436,6 +436,122 @@ def _count_delivered_occurrences(
     return max(0, total)
 
 
+def _student_section_key(student: models.Student | None) -> str:
+    return re.sub(r"\s+", "", str(student.section if student else "").strip().upper())
+
+
+def _effective_student_schedules(
+    db: Session,
+    *,
+    student_id: int,
+    student_section: str,
+    course_ids: list[int] | set[int] | tuple[int, ...],
+) -> list[models.ClassSchedule]:
+    normalized_course_ids = sorted({int(course_id) for course_id in course_ids if int(course_id or 0) > 0})
+    if not normalized_course_ids:
+        return []
+
+    schedules = (
+        db.query(models.ClassSchedule)
+        .filter(
+            models.ClassSchedule.is_active.is_(True),
+            models.ClassSchedule.course_id.in_(normalized_course_ids),
+        )
+        .order_by(
+            models.ClassSchedule.weekday.asc(),
+            models.ClassSchedule.start_time.asc(),
+            models.ClassSchedule.id.asc(),
+        )
+        .all()
+    )
+
+    override_filters = [
+        (
+            (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.STUDENT.value)
+            & (models.TimetableOverride.student_id == student_id)
+        ),
+    ]
+    if student_section:
+        override_filters.append(
+            (
+                (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.SECTION.value)
+                & (models.TimetableOverride.section == student_section)
+            )
+        )
+
+    applicable_overrides = (
+        db.query(models.TimetableOverride)
+        .filter(
+            models.TimetableOverride.is_active.is_(True),
+            or_(*override_filters),
+        )
+        .order_by(models.TimetableOverride.created_at.asc(), models.TimetableOverride.id.asc())
+        .all()
+        if override_filters
+        else []
+    )
+    if not applicable_overrides:
+        return schedules
+
+    override_schedule_ids = sorted({int(item.schedule_id) for item in applicable_overrides if item.schedule_id})
+    override_schedules_by_id = (
+        {
+            int(row.id): row
+            for row in db.query(models.ClassSchedule)
+            .filter(
+                models.ClassSchedule.id.in_(override_schedule_ids),
+                models.ClassSchedule.is_active.is_(True),
+            )
+            .all()
+        }
+        if override_schedule_ids
+        else {}
+    )
+
+    section_overrides = [
+        row for row in applicable_overrides
+        if row.scope_type == schemas.TimetableOverrideScope.SECTION.value
+    ]
+    student_overrides = [
+        row for row in applicable_overrides
+        if row.scope_type == schemas.TimetableOverrideScope.STUDENT.value
+    ]
+    effective_overrides_by_source: dict[tuple[int, time], tuple[models.TimetableOverride, models.ClassSchedule]] = {}
+    for bucket in (section_overrides, student_overrides):
+        for override in bucket:
+            schedule = override_schedules_by_id.get(int(override.schedule_id))
+            if not schedule:
+                continue
+            source_key = (int(override.source_weekday), override.source_start_time)
+            effective_overrides_by_source[source_key] = (override, schedule)
+
+    suppressed_regular_slots = set(effective_overrides_by_source.keys())
+    effective_override_targets: dict[tuple[int, time], models.ClassSchedule] = {}
+    for _, schedule in effective_overrides_by_source.values():
+        target_key = (int(schedule.weekday), schedule.start_time)
+        effective_override_targets[target_key] = schedule
+
+    result: list[models.ClassSchedule] = []
+    seen_schedule_ids: set[int] = set()
+    for schedule in schedules:
+        schedule_key = (int(schedule.weekday), schedule.start_time)
+        if schedule_key in suppressed_regular_slots or schedule_key in effective_override_targets:
+            continue
+        seen_schedule_ids.add(int(schedule.id))
+        result.append(schedule)
+
+    for schedule in effective_override_targets.values():
+        if int(schedule.id) in seen_schedule_ids:
+            continue
+        if int(schedule.course_id) not in normalized_course_ids:
+            continue
+        seen_schedule_ids.add(int(schedule.id))
+        result.append(schedule)
+
+    result.sort(key=lambda item: (int(item.weekday), item.start_time, int(item.id)))
+    return result
+
+
 def _window_flags(
     schedule: models.ClassSchedule,
     now_dt: datetime,
@@ -1278,17 +1394,27 @@ def _build_timetable_class_item(
     )
     attendance_status = submission.status.value if submission else None
     if not attendance_status:
-        fallback_record = (
-            db.query(models.AttendanceRecord)
+        same_course_slots = (
+            db.query(models.ClassSchedule.id)
             .filter(
-                models.AttendanceRecord.student_id == student_id,
-                models.AttendanceRecord.course_id == schedule.course_id,
-                models.AttendanceRecord.attendance_date == class_date,
+                models.ClassSchedule.is_active.is_(True),
+                models.ClassSchedule.course_id == schedule.course_id,
+                models.ClassSchedule.weekday == schedule.weekday,
             )
-            .first()
+            .all()
         )
-        if fallback_record:
-            attendance_status = fallback_record.status.value
+        if len(same_course_slots) == 1:
+            fallback_record = (
+                db.query(models.AttendanceRecord)
+                .filter(
+                    models.AttendanceRecord.student_id == student_id,
+                    models.AttendanceRecord.course_id == schedule.course_id,
+                    models.AttendanceRecord.attendance_date == class_date,
+                )
+                .first()
+            )
+            if fallback_record:
+                attendance_status = fallback_record.status.value
 
     return schemas.TimetableClassOut(
         schedule_id=schedule.id,
@@ -2956,90 +3082,17 @@ def get_student_weekly_timetable(
         .all()
     )
     course_ids = [item.course_id for item in enrollments]
-    schedules: list[models.ClassSchedule] = []
-    if course_ids:
-        schedules = (
-            db.query(models.ClassSchedule)
-            .filter(
-                models.ClassSchedule.is_active.is_(True),
-                models.ClassSchedule.course_id.in_(course_ids),
-            )
-            .order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc())
-            .all()
-        )
 
     now_dt = datetime.now()
     result: list[schemas.TimetableClassOut] = []
-    student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
-    applicable_overrides: list[models.TimetableOverride] = []
-    override_filters = [
-        (
-            (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.STUDENT.value)
-            & (models.TimetableOverride.student_id == current_user.student_id)
-        ),
-    ]
-    if student_section:
-        override_filters.append(
-            (
-                (models.TimetableOverride.scope_type == schemas.TimetableOverrideScope.SECTION.value)
-                & (models.TimetableOverride.section == student_section)
-            )
-        )
-    if override_filters:
-        applicable_overrides = (
-            db.query(models.TimetableOverride)
-            .filter(
-                models.TimetableOverride.is_active.is_(True),
-                or_(*override_filters),
-            )
-            .order_by(models.TimetableOverride.created_at.asc(), models.TimetableOverride.id.asc())
-            .all()
-        )
-
-    override_schedule_ids = sorted({int(item.schedule_id) for item in applicable_overrides if item.schedule_id})
-    override_schedules_by_id = (
-        {
-            int(row.id): row
-            for row in db.query(models.ClassSchedule)
-            .filter(models.ClassSchedule.id.in_(override_schedule_ids))
-            .all()
-        }
-        if override_schedule_ids
-        else {}
+    effective_schedules = _effective_student_schedules(
+        db,
+        student_id=int(current_user.student_id),
+        student_section=_student_section_key(student),
+        course_ids=course_ids,
     )
-    section_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.SECTION.value]
-    student_overrides = [row for row in applicable_overrides if row.scope_type == schemas.TimetableOverrideScope.STUDENT.value]
-    effective_overrides_by_source: dict[tuple[int, time], tuple[models.TimetableOverride, models.ClassSchedule]] = {}
-    for bucket in (section_overrides, student_overrides):
-        for override in bucket:
-            schedule = override_schedules_by_id.get(int(override.schedule_id))
-            if not schedule or not schedule.is_active:
-                continue
-            source_key = (int(override.source_weekday), override.source_start_time)
-            effective_overrides_by_source[source_key] = (override, schedule)
 
-    suppressed_regular_slots = set(effective_overrides_by_source.keys())
-    effective_override_targets: dict[tuple[int, time], tuple[models.TimetableOverride, models.ClassSchedule]] = {}
-    for override, schedule in effective_overrides_by_source.values():
-        target_key = (int(schedule.weekday), schedule.start_time)
-        effective_override_targets[target_key] = (override, schedule)
-
-    for schedule in schedules:
-        schedule_key = (int(schedule.weekday), schedule.start_time)
-        if schedule_key in suppressed_regular_slots or schedule_key in effective_override_targets:
-            continue
-        item = _build_timetable_class_item(
-            db,
-            student_id=current_user.student_id,
-            current_week_start=current_week_start,
-            academic_start=academic_start,
-            now_dt=now_dt,
-            schedule=schedule,
-        )
-        if item:
-            result.append(item)
-
-    for _, schedule in effective_override_targets.values():
+    for schedule in effective_schedules:
         item = _build_timetable_class_item(
             db,
             student_id=current_user.student_id,
@@ -3153,7 +3206,7 @@ def get_student_weekly_timetable(
 
 @router.get("/student/attendance-history", response_model=schemas.StudentAttendanceHistoryOut)
 def get_student_attendance_history(
-    limit: int = Query(default=40, ge=1, le=365),
+    limit: int = Query(default=1000, ge=1, le=1000),
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
@@ -3182,7 +3235,7 @@ def get_student_attendance_history(
             today=saarthi_today,
         )
         db.commit()
-    fetch_limit = min(365, max(limit * 3, 80))
+    fetch_limit = min(3000, max(limit * 3, 80))
     submissions = (
         db.query(models.AttendanceSubmission)
         .filter(
@@ -3211,11 +3264,20 @@ def get_student_attendance_history(
         .all()
     )
 
-    if not submissions and not records:
+    enrollments = (
+        db.query(models.Enrollment)
+        .filter(models.Enrollment.student_id == current_user.student_id)
+        .all()
+    )
+    enrolled_course_ids = {int(item.course_id) for item in enrollments}
+    student = db.get(models.Student, current_user.student_id)
+
+    if not submissions and not records and not enrolled_course_ids:
         return schemas.StudentAttendanceHistoryOut(records=[])
 
     course_ids = sorted(
         {
+            *enrolled_course_ids,
             *[item.course_id for item in submissions],
             *[item.course_id for item in records],
         }
@@ -3239,7 +3301,16 @@ def get_student_attendance_history(
         else {}
     )
 
-    schedule_ids = sorted({item.schedule_id for item in submissions})
+    fallback_schedules = _effective_student_schedules(
+        db,
+        student_id=int(current_user.student_id),
+        student_section=_student_section_key(student),
+        course_ids=course_ids,
+    )
+    schedule_ids = sorted({
+        *[item.schedule_id for item in submissions],
+        *[item.id for item in fallback_schedules],
+    })
     schedules_by_id = (
         {
             row.id: row
@@ -3247,14 +3318,6 @@ def get_student_attendance_history(
         }
         if schedule_ids
         else {}
-    )
-    fallback_schedules = (
-        db.query(models.ClassSchedule)
-        .filter(models.ClassSchedule.course_id.in_(course_ids))
-        .order_by(models.ClassSchedule.start_time.asc())
-        .all()
-        if course_ids
-        else []
     )
     schedules_by_course_weekday: dict[tuple[int, int], list[models.ClassSchedule]] = {}
     for schedule in fallback_schedules:
@@ -3308,24 +3371,24 @@ def get_student_attendance_history(
             or (record.attendance_date == today and now_dt.time() >= schedule.start_time)
         ]
         added_schedule_fallback = False
-        for schedule in candidate_schedules:
+        if len(candidate_schedules) == 1:
+            schedule = candidate_schedules[0]
             key = (int(record.course_id), record.attendance_date, int(schedule.id))
-            if key in submission_keys:
-                continue
-            items.append(
-                schemas.StudentAttendanceHistoryItemOut(
-                    schedule_id=schedule.id,
-                    class_date=record.attendance_date,
-                    start_time=schedule.start_time,
-                    end_time=schedule.end_time,
-                    course_code=course.code if course else f"C-{record.course_id}",
-                    course_title=course.title if course else "Unknown Course",
-                    faculty_name=faculty.name if faculty else "Faculty",
-                    status=record.status,
-                    source=record.source,
+            if key not in submission_keys:
+                items.append(
+                    schemas.StudentAttendanceHistoryItemOut(
+                        schedule_id=schedule.id,
+                        class_date=record.attendance_date,
+                        start_time=schedule.start_time,
+                        end_time=schedule.end_time,
+                        course_code=course.code if course else f"C-{record.course_id}",
+                        course_title=course.title if course else "Unknown Course",
+                        faculty_name=faculty.name if faculty else "Faculty",
+                        status=record.status,
+                        source=record.source,
+                    )
                 )
-            )
-            added_schedule_fallback = True
+                added_schedule_fallback = True
 
         if added_schedule_fallback:
             continue
@@ -3345,6 +3408,37 @@ def get_student_attendance_history(
                 source=record.source,
             )
         )
+
+    keyed_items = {
+        (int(schedules_by_id[int(row.schedule_id)].course_id), row.class_date, int(row.schedule_id))
+        for row in items
+        if row.schedule_id is not None and int(row.schedule_id) in schedules_by_id
+    }
+    for schedule in fallback_schedules:
+        course = courses.get(schedule.course_id)
+        faculty = faculties.get(schedule.faculty_id if schedule.faculty_id is not None else (course.faculty_id if course else None))
+        start_offset = (int(schedule.weekday) - int(academic_start.weekday())) % 7
+        class_date = academic_start + timedelta(days=start_offset)
+        while class_date <= today:
+            if class_date == today and now_dt.time() < schedule.start_time:
+                break
+            key = (int(schedule.course_id), class_date, int(schedule.id))
+            if key not in keyed_items:
+                items.append(
+                    schemas.StudentAttendanceHistoryItemOut(
+                        schedule_id=schedule.id,
+                        class_date=class_date,
+                        start_time=schedule.start_time,
+                        end_time=schedule.end_time,
+                        course_code=course.code if course else f"C-{schedule.course_id}",
+                        course_title=course.title if course else "Unknown Course",
+                        faculty_name=faculty.name if faculty else "Faculty",
+                        status=models.AttendanceStatus.ABSENT,
+                        source="scheduled-absence",
+                    )
+                )
+                keyed_items.add(key)
+            class_date += timedelta(days=7)
 
     items.sort(
         key=lambda row: (
@@ -3395,6 +3489,7 @@ def get_student_attendance_aggregate(
         .all()
     )
     enrolled_course_ids = {item.course_id for item in enrollments}
+    student = db.get(models.Student, current_user.student_id)
     extra_submission_course_ids = {
         int(row[0])
         for row in (
@@ -3436,13 +3531,11 @@ def get_student_attendance_aggregate(
 
     faculty_ids = sorted({course.faculty_id for course in courses.values()})
     faculties = {row.id: row for row in db.query(models.Faculty).filter(models.Faculty.id.in_(faculty_ids)).all()}
-    schedules = (
-        db.query(models.ClassSchedule)
-        .filter(
-            models.ClassSchedule.is_active.is_(True),
-            models.ClassSchedule.course_id.in_(course_ids),
-        )
-        .all()
+    schedules = _effective_student_schedules(
+        db,
+        student_id=int(current_user.student_id),
+        student_section=_student_section_key(student),
+        course_ids=course_ids,
     )
     schedules_by_course: dict[int, list[models.ClassSchedule]] = {}
     for schedule in schedules:
@@ -3528,7 +3621,9 @@ def get_student_attendance_aggregate(
         )
         delivered_schedule_ids_for_day = delivered_schedule_ids(normalized_course_id, attendance_date)
         missing_schedule_ids = delivered_schedule_ids_for_day.difference(submission_schedule_ids)
-        fallback_slots = len(missing_schedule_ids)
+        fallback_slots = 0
+        if len(delivered_schedule_ids_for_day) <= 1:
+            fallback_slots = len(missing_schedule_ids)
         if not delivered_schedule_ids_for_day and not submission_schedule_ids:
             fallback_slots = 1
 
@@ -3562,10 +3657,7 @@ def get_student_attendance_aggregate(
         delivered_by_records = len(delivered_record_dates.get(course_id, set()))
         delivered_by_record_fallback = delivered_record_fallback_counts.get(course_id, 0)
         delivered_from_evidence = delivered_by_submissions + delivered_by_record_fallback
-        if delivered_from_evidence > 0:
-            delivered = max(delivered_from_evidence, delivered_by_records)
-        else:
-            delivered = max(delivered_by_schedule, delivered_by_records)
+        delivered = max(delivered_by_schedule, delivered_from_evidence, delivered_by_records)
         if delivered <= 0:
             continue
 

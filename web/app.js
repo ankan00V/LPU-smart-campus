@@ -45,6 +45,23 @@ const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
 const MOBILE_TIMETABLE_MAX_WIDTH = 768;
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
+const PERSONAL_PRIMARY_EMAIL_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'outlook.com',
+  'hotmail.com',
+  'live.com',
+  'msn.com',
+  'yahoo.com',
+  'ymail.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'aol.com',
+  'proton.me',
+  'protonmail.com',
+  'pm.me',
+]);
 const LIVE_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   weekday: 'short',
   year: 'numeric',
@@ -455,6 +472,7 @@ const authState = {
   studentAuthCaptchaSiteKey: '',
   studentAuthCaptchaProvider: 'cloudflare-turnstile',
   captchaScriptPromise: null,
+  captchaScriptRequestedAtMs: 0,
   turnstileWidgetId: null,
   studentAuthCaptchaToken: '',
   otpCooldownUntilMs: 0,
@@ -463,6 +481,7 @@ const authState = {
   loginInFlight: false,
   registerInFlight: false,
   passwordBootstrapInFlight: false,
+  primaryEmailMigrationInFlight: false,
   signupAdminPhotoDataUrl: '',
   forgotOtpCooldownUntilMs: 0,
   forgotOtpRequestInFlight: false,
@@ -538,6 +557,7 @@ const els = {
   authOtpTitle: document.getElementById('auth-otp-title'),
   authOtpHint: document.getElementById('auth-otp-hint'),
   authSignupEmail: document.getElementById('auth-signup-email'),
+  authSignupEmailPolicy: document.getElementById('auth-signup-email-policy'),
   authSignupPassword: document.getElementById('auth-signup-password'),
   authSignupPasswordStrength: document.getElementById('auth-signup-password-strength'),
   authLoginControls: document.getElementById('auth-login-controls'),
@@ -591,6 +611,13 @@ const els = {
   passwordBootstrapSubmitBtn: document.getElementById('password-bootstrap-submit-btn'),
   passwordBootstrapLogoutBtn: document.getElementById('password-bootstrap-logout-btn'),
   passwordBootstrapMessage: document.getElementById('password-bootstrap-message'),
+  primaryEmailMigrationModal: document.getElementById('primary-email-migration-modal'),
+  primaryEmailMigrationEmail: document.getElementById('primary-email-migration-email'),
+  primaryEmailMigrationOtp: document.getElementById('primary-email-migration-otp'),
+  primaryEmailMigrationRequestBtn: document.getElementById('primary-email-migration-request-btn'),
+  primaryEmailMigrationVerifyBtn: document.getElementById('primary-email-migration-verify-btn'),
+  primaryEmailMigrationLogoutBtn: document.getElementById('primary-email-migration-logout-btn'),
+  primaryEmailMigrationMessage: document.getElementById('primary-email-migration-message'),
   mfaSetupModal: document.getElementById('mfa-setup-modal'),
   mfaEnrollBtn: document.getElementById('mfa-enroll-btn'),
   mfaSecret: document.getElementById('mfa-secret'),
@@ -1117,6 +1144,15 @@ function setPasswordBootstrapMessage(message, isError = false, state = 'neutral'
   });
 }
 
+function setPrimaryEmailMigrationMessage(message, isError = false, state = 'neutral') {
+  if (!els.primaryEmailMigrationMessage) {
+    return;
+  }
+  setUiStateMessage(els.primaryEmailMigrationMessage, message || '', {
+    state: isError ? 'error' : state,
+  });
+}
+
 function isStudentAuthCaptchaEnabled() {
   return Boolean(authState.studentAuthCaptchaEnabled && authState.studentAuthCaptchaSiteKey);
 }
@@ -1130,6 +1166,14 @@ function setStudentAuthCaptchaHint() {
   } else {
     els.authRecaptchaHint.textContent = 'Cloudflare Turnstile is not configured in this environment.';
   }
+}
+
+function setStudentTurnstileAnchorState(state = 'idle', message = '') {
+  if (!els.authTurnstileAnchor) {
+    return;
+  }
+  els.authTurnstileAnchor.dataset.state = String(state || 'idle');
+  els.authTurnstileAnchor.dataset.message = String(message || '');
 }
 
 async function fetchAuthPublicConfig() {
@@ -1147,14 +1191,20 @@ async function fetchAuthPublicConfig() {
     authState.publicConfigLoaded = true;
     setStudentAuthCaptchaHint();
     if (isStudentAuthCaptchaEnabled()) {
+      setStudentTurnstileAnchorState('loading', 'Loading Cloudflare Turnstile...');
       window.setTimeout(async () => {
         try {
           await ensureStudentCaptchaLoaded();
           renderStudentTurnstileWidget();
-        } catch (_error) {
-          // Rendering is retried on the next auth interaction.
+        } catch (error) {
+          setStudentTurnstileAnchorState(
+            'error',
+            error?.message || 'Cloudflare Turnstile could not load. Check network access and retry.',
+          );
         }
       }, 0);
+    } else {
+      setStudentTurnstileAnchorState('disabled', 'Cloudflare Turnstile is not configured in this environment.');
     }
   }
 }
@@ -1163,31 +1213,46 @@ async function ensureStudentCaptchaLoaded() {
   if (!isStudentAuthCaptchaEnabled()) {
     return false;
   }
-  if (window.turnstile?.render && window.turnstile?.execute) {
+  if (window.turnstile?.render && window.turnstile?.getResponse) {
     return true;
   }
   if (!authState.captchaScriptPromise) {
+    setStudentTurnstileAnchorState('loading', 'Loading Cloudflare Turnstile...');
     authState.captchaScriptPromise = new Promise((resolve, reject) => {
-      const existing = document.querySelector('script[data-student-turnstile="true"]');
-      if (existing) {
-        existing.addEventListener('load', () => resolve(true), { once: true });
-        existing.addEventListener('error', () => reject(new Error('Unable to load Cloudflare Turnstile.')), { once: true });
-        return;
-      }
+      const callbackName = '__lpuStudentTurnstileReady';
+      const timeout = window.setTimeout(() => {
+        reject(new Error('Cloudflare Turnstile is taking too long to load. Check network access and reload.'));
+      }, 12000);
+      window[callbackName] = () => {
+        window.clearTimeout(timeout);
+        resolve(true);
+      };
+      document
+        .querySelectorAll('script[data-student-turnstile="true"]')
+        .forEach((node) => node.remove());
       const script = document.createElement('script');
-      script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      script.src = `https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=${callbackName}`;
       script.async = true;
       script.defer = true;
       script.dataset.studentTurnstile = 'true';
-      script.addEventListener('load', () => resolve(true), { once: true });
-      script.addEventListener('error', () => reject(new Error('Unable to load Cloudflare Turnstile.')), { once: true });
+      authState.captchaScriptRequestedAtMs = Date.now();
+      script.addEventListener('error', () => {
+        window.clearTimeout(timeout);
+        reject(new Error('Unable to load Cloudflare Turnstile. Check network access and retry.'));
+      }, { once: true });
       document.head.appendChild(script);
     }).catch((error) => {
       authState.captchaScriptPromise = null;
+      authState.turnstileWidgetId = null;
+      authState.studentAuthCaptchaToken = '';
       throw error;
     });
   }
   await authState.captchaScriptPromise;
+  if (!window.turnstile?.render || !window.turnstile?.getResponse) {
+    authState.captchaScriptPromise = null;
+    throw new Error('Cloudflare Turnstile script loaded but did not initialize. Reload and retry.');
+  }
   return true;
 }
 
@@ -1199,24 +1264,54 @@ function renderStudentTurnstileWidget() {
     return;
   }
   els.authTurnstileAnchor.innerHTML = '';
-  authState.turnstileWidgetId = window.turnstile.render(els.authTurnstileAnchor, {
-    sitekey: authState.studentAuthCaptchaSiteKey,
-    appearance: 'always',
-    retry: 'never',
-    'response-field': false,
-    callback: (token) => {
-      authState.studentAuthCaptchaToken = String(token || '').trim();
-    },
-    'expired-callback': () => {
-      authState.studentAuthCaptchaToken = '';
-    },
-    'timeout-callback': () => {
-      authState.studentAuthCaptchaToken = '';
-    },
-    'error-callback': () => {
-      authState.studentAuthCaptchaToken = '';
-    },
-  });
+  setStudentTurnstileAnchorState('rendering', 'Rendering Cloudflare Turnstile...');
+  try {
+    authState.turnstileWidgetId = window.turnstile.render(els.authTurnstileAnchor, {
+      sitekey: authState.studentAuthCaptchaSiteKey,
+      appearance: 'always',
+      execution: 'render',
+      size: 'flexible',
+      theme: 'auto',
+      retry: 'auto',
+      'refresh-expired': 'auto',
+      'refresh-timeout': 'auto',
+      'response-field': false,
+      callback: (token) => {
+        authState.studentAuthCaptchaToken = String(token || '').trim();
+        setStudentTurnstileAnchorState('ready', '');
+      },
+      'expired-callback': () => {
+        authState.studentAuthCaptchaToken = '';
+        setStudentTurnstileAnchorState('ready', '');
+      },
+      'timeout-callback': () => {
+        authState.studentAuthCaptchaToken = '';
+        setStudentTurnstileAnchorState('ready', '');
+      },
+      'error-callback': () => {
+        authState.studentAuthCaptchaToken = '';
+        authState.turnstileWidgetId = null;
+        setStudentTurnstileAnchorState('error', 'Cloudflare Turnstile hit a client error. Reload or retry.');
+      },
+      'unsupported-callback': () => {
+        authState.studentAuthCaptchaToken = '';
+        authState.turnstileWidgetId = null;
+        setStudentTurnstileAnchorState('error', 'This browser does not support Cloudflare Turnstile.');
+      },
+    });
+    if (authState.turnstileWidgetId == null) {
+      throw new Error('Cloudflare Turnstile did not return a widget id.');
+    }
+    setStudentTurnstileAnchorState('ready', '');
+  } catch (error) {
+    authState.turnstileWidgetId = null;
+    authState.studentAuthCaptchaToken = '';
+    setStudentTurnstileAnchorState(
+      'error',
+      error?.message || 'Cloudflare Turnstile could not render. Reload and retry.',
+    );
+    throw error;
+  }
 }
 
 function resetStudentTurnstileWidget() {
@@ -1704,6 +1799,90 @@ function isPasswordBootstrapRequired() {
     authState.user?.password_setup_required
     && ['student', 'faculty', 'admin'].includes(String(authState.user?.role || '').trim().toLowerCase())
   );
+}
+
+function isPrimaryEmailMigrationRequired() {
+  return Boolean(
+    authState.user?.primary_email_update_required
+    && ['student', 'faculty', 'admin'].includes(String(authState.user?.role || '').trim().toLowerCase())
+  );
+}
+
+function blockIfPrimaryEmailMigrationRequired() {
+  if (!isPrimaryEmailMigrationRequired()) {
+    return false;
+  }
+  setPrimaryEmailMigrationModal(true);
+  return true;
+}
+
+function setPrimaryEmailMigrationBusyState(inFlight) {
+  authState.primaryEmailMigrationInFlight = Boolean(inFlight);
+  if (els.primaryEmailMigrationRequestBtn) {
+    els.primaryEmailMigrationRequestBtn.disabled = authState.primaryEmailMigrationInFlight;
+  }
+  if (els.primaryEmailMigrationVerifyBtn) {
+    els.primaryEmailMigrationVerifyBtn.disabled = authState.primaryEmailMigrationInFlight;
+  }
+  if (els.primaryEmailMigrationLogoutBtn) {
+    els.primaryEmailMigrationLogoutBtn.disabled = authState.primaryEmailMigrationInFlight;
+  }
+}
+
+function setPrimaryEmailMigrationModal(open) {
+  if (!els.primaryEmailMigrationModal) {
+    return;
+  }
+  const shouldOpen = Boolean(open) && isPrimaryEmailMigrationRequired();
+  if (shouldOpen) {
+    if (els.primaryEmailMigrationModal.parentElement !== document.body) {
+      document.body.appendChild(els.primaryEmailMigrationModal);
+    }
+    document.body.classList.add('primary-email-migration-open');
+    if (els.profileModal) {
+      els.profileModal.classList.add('hidden');
+    }
+    if (els.enrollmentModal) {
+      els.enrollmentModal.classList.add('hidden');
+    }
+    if (els.foodShopModal) {
+      els.foodShopModal.classList.add('hidden');
+    }
+    if (els.accountMenuDropdown) {
+      closeAccountDropdown();
+    }
+  } else {
+    document.body.classList.remove('primary-email-migration-open');
+  }
+  setHidden(els.primaryEmailMigrationModal, !shouldOpen);
+  els.primaryEmailMigrationModal.setAttribute('aria-hidden', String(!shouldOpen));
+  if (shouldOpen) {
+    const oldEmail = String(authState.user?.email || '').trim().toLowerCase();
+    const secondaryText = oldEmail ? ` ${oldEmail} will become your secondary email after verification.` : '';
+    setPrimaryEmailMigrationMessage(`Enter your official email and verify the OTP.${secondaryText}`);
+    if (els.primaryEmailMigrationEmail && !els.primaryEmailMigrationEmail.value.trim()) {
+      els.primaryEmailMigrationEmail.value = '';
+    }
+    if (els.primaryEmailMigrationOtp) {
+      els.primaryEmailMigrationOtp.value = '';
+    }
+    if (els.primaryEmailMigrationEmail) {
+      els.primaryEmailMigrationEmail.focus({ preventScroll: true });
+    }
+  } else {
+    if (els.primaryEmailMigrationEmail) {
+      els.primaryEmailMigrationEmail.value = '';
+    }
+    if (els.primaryEmailMigrationOtp) {
+      els.primaryEmailMigrationOtp.value = '';
+    }
+    setPrimaryEmailMigrationMessage('');
+  }
+  setPrimaryEmailMigrationBusyState(false);
+}
+
+function maybeRequirePrimaryEmailMigration() {
+  return blockIfPrimaryEmailMigrationRequired();
 }
 
 function maybeRequirePasswordBootstrap() {
@@ -2357,6 +2536,9 @@ function getTopModuleButtons() {
 async function handleModuleNavigation(moduleKey, { closeMobileSidebar = false } = {}) {
   if (!authState.user) {
     openAuthOverlay('Sign in to access modules.');
+    return;
+  }
+  if (blockIfPrimaryEmailMigrationRequired()) {
     return;
   }
   if (requiresRoleProfileSetup()) {
@@ -5762,6 +5944,9 @@ function openProfileModal({ required = false } = {}) {
   if (!els.profileModal) {
     return;
   }
+  if (blockIfPrimaryEmailMigrationRequired()) {
+    return;
+  }
   const role = authState.user?.role;
   if (role === 'faculty') {
     state.facultyProfile.profileSetupRequired = Boolean(required);
@@ -5784,19 +5969,7 @@ function openProfileModal({ required = false } = {}) {
     }
   }
   if (els.profileModalSubtitle) {
-    if (role === 'faculty') {
-      els.profileModalSubtitle.textContent = required
-        ? 'Enter full name, upload profile photo, and set section before using the portal. Faculty ID is assigned automatically.'
-        : 'Manage section, profile photo, and secondary email. Faculty ID is assigned automatically.';
-    } else if (role === 'admin') {
-      els.profileModalSubtitle.textContent = 'Admin identity is managed centrally. Use attendance controls for approve/disapprove and schedule actions.';
-    } else if (role === 'owner') {
-      els.profileModalSubtitle.textContent = 'Vendor identity is separate and connected to your assigned shop data.';
-    } else {
-      els.profileModalSubtitle.textContent = required
-        ? 'Enter full name, upload your profile photo, and set section before using the portal. Registration number is assigned automatically.'
-        : 'Manage profile photo, section, and secondary email. Registration number is assigned automatically.';
-    }
+    els.profileModalSubtitle.textContent = '';
   }
   if (els.profileCloseBtn) {
     els.profileCloseBtn.disabled = required;
@@ -6005,7 +6178,7 @@ function renderProfileSecurity() {
       els.profileFullName.disabled = false;
     }
     if (els.profileIdLabel) {
-      els.profileIdLabel.textContent = 'Registration Number';
+      els.profileIdLabel.textContent = 'registration number';
     }
     if (els.profileIdField) {
       setHidden(els.profileIdField, true);
@@ -6013,10 +6186,11 @@ function renderProfileSecurity() {
     if (els.profileRegistrationNumber) {
       els.profileRegistrationNumber.value = '';
       els.profileRegistrationNumber.disabled = true;
-      els.profileRegistrationNumber.placeholder = 'e.g. R9P132A48';
+      els.profileRegistrationNumber.placeholder = 'write_reg_no';
     }
     if (els.profileRegistrationNote) {
-      els.profileRegistrationNote.textContent = 'Registration number is permanent and cannot be changed without admin permissions.';
+      els.profileRegistrationNote.textContent = '';
+      setHidden(els.profileRegistrationNote, true);
     }
     if (els.profileSectionWrap) {
       setHidden(els.profileSectionWrap, true);
@@ -6085,10 +6259,10 @@ function renderProfileSecurity() {
         ? 'Admin ID'
       : isOwner
         ? 'Vendor ID'
-        : 'Registration Number';
+        : 'registration number';
   }
   if (els.profileIdField) {
-    setHidden(els.profileIdField, isStudent || isFaculty);
+    setHidden(els.profileIdField, isFaculty);
   }
   if (els.profileRegistrationNumber) {
     els.profileRegistrationNumber.value = currentIdValue;
@@ -6097,17 +6271,11 @@ function renderProfileSecurity() {
       ? 'System-assigned'
       : isOwner
         ? 'Auto-assigned from account'
-        : 'System-assigned';
+        : 'write_reg_no';
   }
   if (els.profileRegistrationNote) {
-    const visibleId = currentIdValue || 'pending assignment';
-    els.profileRegistrationNote.textContent = isFaculty
-      ? `Faculty ID: ${visibleId}. This is assigned automatically from your faculty arrival order.`
-      : isAdmin
-        ? 'Admin ID is linked to your account and managed centrally.'
-      : isOwner
-        ? 'Vendor ID is mapped from your account and connected to owned shop data.'
-        : `Registration Number: ${visibleId}. This is assigned automatically from your student arrival order.`;
+    els.profileRegistrationNote.textContent = '';
+    setHidden(els.profileRegistrationNote, true);
   }
   if (els.profileSectionWrap) {
     setHidden(els.profileSectionWrap, !isFaculty && !isStudent);
@@ -6137,13 +6305,12 @@ function renderProfileSecurity() {
         els.profileSectionNote.textContent = 'Section is set. You can update it now (next lock: 24 hours).';
       }
     } else if (isStudent) {
-      setHidden(els.profileSectionNote, false);
       if (!state.student.section) {
         els.profileSectionNote.textContent = 'Section is required. Set it once to continue. Further changes require faculty approval after 48 hours.';
-      } else if (state.student.sectionChangeRequiresFacultyApproval) {
-        els.profileSectionNote.textContent = 'Section change window is open. Ask your faculty to approve the section update.';
+        setHidden(els.profileSectionNote, false);
       } else {
-        els.profileSectionNote.textContent = `Section is set. Self-update is disabled. Faculty can approve change after ${formatLockDateTime(state.student.sectionLockedUntil)} (${formatRemainingMinutes(state.student.sectionLockMinutesRemaining)} remaining).`;
+        els.profileSectionNote.textContent = '';
+        setHidden(els.profileSectionNote, true);
       }
     } else {
       els.profileSectionNote.textContent = '';
@@ -8711,6 +8878,83 @@ function shopAliasKey(name, block) {
   return `${normalizeFoodKey(name)}|${normalizeFoodKey(block)}`;
 }
 
+const FOOD_COVER_PALETTES = {
+  unimall17: ['#174d78', '#2f8ed2', '#9bd7ff'],
+  bh1: ['#17614f', '#33a06d', '#b7f3d1'],
+  bh2to6: ['#7a4c18', '#c47b25', '#ffe3a3'],
+  block41: ['#51286f', '#9a5cd3', '#e2c5ff'],
+  block34: ['#7b2f44', '#d15d73', '#ffd0d8'],
+  campus: ['#274b6e', '#5d8ab4', '#d8ecff'],
+  fallback: ['#123a5a', '#2b6fa3', '#d5ebff'],
+};
+
+function foodCoverPalette(group = '') {
+  const key = String(group || '').trim();
+  return FOOD_COVER_PALETTES[key] || FOOD_COVER_PALETTES.fallback;
+}
+
+function foodCoverIconPath(name = '') {
+  const normalized = normalizeFoodKey(name);
+  if (normalized.includes('pizza')) {
+    return '<path d="M675 175 465 528l402-104-192-249Z" fill="#ffd166" stroke="#ffffff" stroke-width="18" stroke-linejoin="round"/><circle cx="636" cy="328" r="24" fill="#db4a39"/><circle cx="727" cy="395" r="20" fill="#db4a39"/><circle cx="572" cy="439" r="18" fill="#db4a39"/><path d="M504 498c94-28 198-56 312-84" fill="none" stroke="#f59f35" stroke-width="26" stroke-linecap="round"/>';
+  }
+  if (normalized.includes('coffee') || normalized.includes('chai')) {
+    return '<path d="M460 268h300v132c0 78-63 141-141 141h-18c-78 0-141-63-141-141V268Z" fill="#ffffff" opacity=".94"/><path d="M760 305h54c45 0 80 34 80 76s-35 76-80 76h-54" fill="none" stroke="#ffffff" stroke-width="34" stroke-linecap="round"/><path d="M500 214c-22-32 24-48 0-84M604 214c-22-32 24-48 0-84M708 214c-22-32 24-48 0-84" fill="none" stroke="#ffe8c7" stroke-width="20" stroke-linecap="round"/>';
+  }
+  if (normalized.includes('juice')) {
+    return '<path d="M500 210h250l-36 322H536L500 210Z" fill="#ffffff" opacity=".92"/><path d="M536 334h178l-18 166H556l-20-166Z" fill="#ffb84d"/><path d="M650 200 770 98" fill="none" stroke="#ffffff" stroke-width="20" stroke-linecap="round"/><circle cx="756" cy="97" r="38" fill="#9be564" stroke="#ffffff" stroke-width="14"/>';
+  }
+  if (normalized.includes('ice cream') || normalized.includes('havmor') || normalized.includes('basant')) {
+    return '<path d="M594 536 490 330h208L594 536Z" fill="#f7b267" stroke="#ffffff" stroke-width="14" stroke-linejoin="round"/><circle cx="546" cy="286" r="72" fill="#ffd6e8"/><circle cx="648" cy="286" r="72" fill="#c6f6d5"/><circle cx="598" cy="210" r="72" fill="#fff1a8"/>';
+  }
+  if (normalized.includes('momo')) {
+    return '<path d="M438 430c38-115 121-178 250-190 92 42 148 107 172 190-52 54-120 82-204 82h-14c-85 0-153-28-204-82Z" fill="#ffffff" opacity=".92"/><path d="M520 408c32 28 74 42 126 42s94-14 126-42M560 312c28 30 57 48 88 54 28-10 54-29 78-56" fill="none" stroke="#bde0fe" stroke-width="20" stroke-linecap="round"/>';
+  }
+  return '<circle cx="620" cy="350" r="148" fill="#ffffff" opacity=".93"/><circle cx="620" cy="350" r="92" fill="none" stroke="#f2b35b" stroke-width="34"/><path d="M438 210v284M806 210v284M848 210v284" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/><path d="M438 210c-46 52-46 106 0 160" fill="none" stroke="#ffffff" stroke-width="26" stroke-linecap="round"/>';
+}
+
+function buildFoodShopCoverDataUrl(shop = {}) {
+  const name = String(shop?.name || 'Food Hall').trim() || 'Food Hall';
+  const block = String(shop?.block || 'Campus').trim() || 'Campus';
+  const group = String(shop?.group || deriveFoodShopGroup(block) || 'fallback').trim();
+  const [startColor, endColor, accentColor] = foodCoverPalette(group);
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase();
+  const safeName = escapeHtml(name);
+  const safeBlock = escapeHtml(block);
+  const safeInitials = escapeHtml(initials || 'FD');
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="${safeName} food hall cover">
+      <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="${startColor}"/>
+          <stop offset="100%" stop-color="${endColor}"/>
+        </linearGradient>
+        <radialGradient id="glow" cx="78%" cy="18%" r="58%">
+          <stop offset="0%" stop-color="#ffffff" stop-opacity=".34"/>
+          <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <rect width="1200" height="675" rx="0" fill="url(#bg)"/>
+      <rect width="1200" height="675" fill="url(#glow)"/>
+      <circle cx="1050" cy="76" r="190" fill="#ffffff" opacity=".10"/>
+      <circle cx="140" cy="630" r="250" fill="#ffffff" opacity=".08"/>
+      <g transform="translate(0 4)">${foodCoverIconPath(name)}</g>
+      <rect x="68" y="72" width="142" height="142" rx="36" fill="#ffffff" opacity=".18" stroke="#ffffff" stroke-opacity=".38" stroke-width="5"/>
+      <text x="139" y="161" text-anchor="middle" fill="#ffffff" font-family="Manrope, Arial, sans-serif" font-size="48" font-weight="900">${safeInitials}</text>
+      <text x="78" y="506" fill="#ffffff" font-family="Manrope, Arial, sans-serif" font-size="52" font-weight="900">${safeName}</text>
+      <text x="78" y="568" fill="${accentColor}" font-family="Manrope, Arial, sans-serif" font-size="34" font-weight="800">${safeBlock}</text>
+      <text x="78" y="615" fill="#ffffff" opacity=".82" font-family="Manrope, Arial, sans-serif" font-size="24" font-weight="700">LPU Smart Campus Food Hall</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg.replace(/\s+/g, ' ').trim())}`;
+}
+
 function resolveShopCover(name, block) {
   const byAlias = FOOD_SHOP_COVER_BY_ALIAS.get(shopAliasKey(name, block));
   if (byAlias) {
@@ -8755,7 +8999,7 @@ function hydrateApiShops(rawShops) {
       name: shop.name,
       block: shop.block,
       group: shop.group,
-      cover: shop.cover || '',
+      cover: buildFoodShopCoverDataUrl(shop),
       fallbackCover: shop.fallbackCover || FOOD_COVER_FALLBACK_URL,
       isPopular: FOOD_POPULAR_SPOT_IDS.includes(shop.id),
       rating: 4.0,
@@ -8767,14 +9011,16 @@ function hydrateApiShops(rawShops) {
     const name = String(shop?.name || '').trim();
     const block = String(shop?.block || '').trim();
     const normalizedName = normalizeFoodKey(name);
+    const group = deriveFoodShopGroup(block);
     const fallbackCover = resolveShopFallbackCover(name, block);
+    const localCover = buildFoodShopCoverDataUrl({ name, block, group });
     return {
       id: String(shop.id),
       apiShopId: Number(shop.id),
       name,
       block,
-      group: deriveFoodShopGroup(block),
-      cover: resolveShopCover(name, block) || fallbackCover,
+      group,
+      cover: localCover,
       fallbackCover,
       isPopular: Boolean(shop?.is_popular) || popularNameSet.has(normalizedName),
       rating: Number(shop?.rating || 0),
@@ -9098,6 +9344,19 @@ function renderFoodShops() {
   if (!els.foodShopGrid) {
     return;
   }
+  
+  // Show loading skeleton if no shops loaded yet
+  if (!state.food.shops || state.food.shops.length === 0) {
+    els.foodShopGrid.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-card"></div>
+        <div class="skeleton-pulse skeleton-card"></div>
+        <div class="skeleton-pulse skeleton-card"></div>
+      </div>
+    `;
+    return;
+  }
+  
   els.foodShopGrid.innerHTML = '';
   const popularShops = state.food.shops.filter((shop) => Boolean(shop.isPopular));
   const orderGate = getFoodRuntimeOrderGate();
@@ -9141,16 +9400,19 @@ function renderFoodShops() {
       }
       const ratingValue = Number(shop?.rating || 0);
       const ratingLabel = Number.isFinite(ratingValue) ? ratingValue.toFixed(1) : '0.0';
+      const generatedCoverUrl = buildFoodShopCoverDataUrl(shop);
       const fallbackCoverUrl = String(shop?.fallbackCover || '').trim() || FOOD_COVER_FALLBACK_URL;
-      const coverUrl = String(shop?.cover || '').trim() || fallbackCoverUrl;
+      const coverUrl = String(shop?.cover || '').trim() || generatedCoverUrl;
       card.innerHTML = `
         <div class="food-shop-cover-wrap">
           <img
             class="food-shop-cover"
             src="${escapeHtml(coverUrl)}"
             alt="${escapeHtml(shop.name)} cover"
-            loading="lazy"
+            loading="eager"
+            decoding="async"
             referrerpolicy="no-referrer"
+            data-generated-src="${escapeHtml(generatedCoverUrl)}"
             data-fallback-src="${escapeHtml(fallbackCoverUrl)}"
           >
           ${shopsClosed ? '<span class="food-shop-closed-badge">Closed</span>' : ''}
@@ -9168,12 +9430,14 @@ function renderFoodShops() {
       const coverImage = card.querySelector('.food-shop-cover');
       if (coverImage instanceof HTMLImageElement) {
         coverImage.addEventListener('error', () => {
+          const generated = String(coverImage.dataset.generatedSrc || '').trim();
           const fallback = String(coverImage.dataset.fallbackSrc || FOOD_COVER_FALLBACK_URL || '').trim();
-          if (!fallback || coverImage.src.endsWith(fallback)) {
+          const nextSrc = generated && coverImage.src !== generated ? generated : fallback;
+          if (!nextSrc || coverImage.src.endsWith(nextSrc) || coverImage.src === nextSrc) {
             return;
           }
-          coverImage.src = fallback;
-        }, { once: true });
+          coverImage.src = nextSrc;
+        });
       }
       if (!shopsClosed) {
         card.addEventListener('click', () => {
@@ -11173,6 +11437,33 @@ async function retryFoodPaymentRecovery(recoveryRow) {
   }
 }
 
+async function cancelFoodPaymentRecovery(recoveryRow) {
+  const paymentRef = String(recoveryRow?.payment_reference || '').trim();
+  if (!paymentRef || state.food.recoveryBusyRefs.has(paymentRef)) {
+    return;
+  }
+  const confirmed = window.confirm('Cancel this payment recovery item? Linked unpaid orders will be cancelled and removed from this recovery list.');
+  if (!confirmed) {
+    return;
+  }
+  state.food.recoveryBusyRefs.add(paymentRef);
+  renderFoodOrders();
+  try {
+    const encodedRef = encodeURIComponent(paymentRef);
+    await api(`/food/payments/recovery/${encodedRef}/cancel`, { method: 'POST' });
+    state.food.paymentRecovery = (Array.isArray(state.food.paymentRecovery) ? state.food.paymentRecovery : [])
+      .filter((row) => String(row?.payment_reference || '').trim() !== paymentRef);
+    renderFoodOrders();
+    setFoodStatus('Payment recovery item cancelled.', false);
+    await refreshFoodModule({ forceFreshOrders: true, silentStatus: true });
+  } catch (error) {
+    setFoodStatus(error.message || 'Unable to cancel payment recovery item right now.', true);
+  } finally {
+    state.food.recoveryBusyRefs.delete(paymentRef);
+    renderFoodOrders();
+  }
+}
+
 function renderFoodPaymentRecovery() {
   if (!els.foodPaymentRecoveryList) {
     return;
@@ -11216,7 +11507,18 @@ function renderFoodPaymentRecovery() {
     actionBtn.addEventListener('click', () => {
       void retryFoodPaymentRecovery(recovery);
     });
-    row.append(info, actionBtn);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'btn btn-ghost';
+    cancelBtn.textContent = busy ? 'Cancelling...' : 'Cancel Payment';
+    cancelBtn.disabled = busy || !paymentRef;
+    cancelBtn.addEventListener('click', () => {
+      void cancelFoodPaymentRecovery(recovery);
+    });
+    const actions = document.createElement('div');
+    actions.className = 'food-recovery-actions';
+    actions.append(actionBtn, cancelBtn);
+    row.append(info, actions);
     els.foodPaymentRecoveryList.appendChild(row);
   }
 }
@@ -11348,10 +11650,24 @@ function renderFoodOrders() {
   }
   updateFoodOrdersTabUi();
   renderFoodPaymentRecovery();
-  els.foodOrdersList.innerHTML = '';
+  
+  // Show loading skeleton if orders are being fetched for the first time
   const allRows = Array.isArray(state.food.orderHistory) && state.food.orderHistory.length
     ? state.food.orderHistory
     : (Array.isArray(state.food.orders) ? state.food.orders : []);
+  
+  if (!allRows && state.food.lastOrdersSyncAtMs === 0) {
+    els.foodOrdersList.innerHTML = `
+      <div class="loading-skeleton">
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+        <div class="skeleton-pulse skeleton-bar"></div>
+      </div>
+    `;
+    return;
+  }
+  
+  els.foodOrdersList.innerHTML = '';
   const orderById = new Map();
   for (const row of allRows) {
     const id = Number(row?.id || 0);
@@ -11763,6 +12079,14 @@ async function refreshFoodModule({ forceFreshOrders = false, silentStatus = fals
   if (!authState.user) {
     return;
   }
+  
+  // Show loading state on initial load
+  const isInitialLoad = state.food.shops.length === 0 && !state.food.orders.length;
+  if (isInitialLoad) {
+    renderFoodShops(); // Will show skeleton
+    renderFoodOrders(); // Will show skeleton
+  }
+  
   await ensureFoodCatalogLoaded({ preloadOnly: false });
   if (!silentStatus) {
     setFoodStatus('Refreshing Food Hall data...', false, 'loading');
@@ -18743,7 +19067,7 @@ async function loadStudentAttendanceInsights() {
   const loadStartMs = Date.now();
   const [aggregateRes, historyRes, rectificationRes, recoveryRes] = await Promise.allSettled([
     api('/attendance/student/attendance-aggregate'),
-    api('/attendance/student/attendance-history?limit=80'),
+    api('/attendance/student/attendance-history?limit=1000'),
     api('/attendance/student/rectification-requests?limit=200'),
     api('/attendance/student/recovery-plans?limit=12'),
   ]);
@@ -20141,6 +20465,47 @@ function normalizedForgotEmailInput() {
   return (els.forgotEmail?.value || els.authEmail?.value || '').trim().toLowerCase();
 }
 
+function emailDomain(email = '') {
+  const value = String(email || '').trim().toLowerCase();
+  const atIndex = value.lastIndexOf('@');
+  return atIndex >= 0 ? value.slice(atIndex + 1) : '';
+}
+
+function signupEmailPolicyMessage(email = '') {
+  const value = String(email || '').trim().toLowerCase();
+  if (!value) {
+    return '';
+  }
+  if (PERSONAL_PRIMARY_EMAIL_DOMAINS.has(emailDomain(value))) {
+    return 'only official university or company mail allowed';
+  }
+  return '';
+}
+
+function renderSignupEmailPolicy() {
+  if (!els.authSignupEmailPolicy) {
+    return true;
+  }
+  const message = signupEmailPolicyMessage(els.authSignupEmail?.value || '');
+  els.authSignupEmailPolicy.textContent = message;
+  els.authSignupEmailPolicy.classList.toggle('error', Boolean(message));
+  if (els.authSignupEmail) {
+    els.authSignupEmail.classList.toggle('field-error', Boolean(message));
+    els.authSignupEmail.setAttribute('aria-invalid', String(Boolean(message)));
+  }
+  return !message;
+}
+
+function validatePrimaryAuthEmailOrThrow(email = '') {
+  const value = String(email || '').trim().toLowerCase();
+  if (!value) {
+    throw new Error('Enter email first.');
+  }
+  if (PERSONAL_PRIMARY_EMAIL_DOMAINS.has(emailDomain(value))) {
+    throw new Error('only official university or company mail allowed');
+  }
+}
+
 function normalizedRegistrationInput(rawValue = '') {
   return String(rawValue || '').trim().toUpperCase().replace(/\s+/g, '');
 }
@@ -20167,9 +20532,6 @@ async function requestForgotPasswordOtp() {
   const registrationNumber = normalizedRegistrationInput(els.forgotRegistrationNumber?.value || '');
   if (!email || !registrationNumber) {
     throw new Error('Enter email and registration number first.');
-  }
-  if (!email.endsWith('@gmail.com')) {
-    throw new Error('Email must end with @gmail.com');
   }
   authState.forgotResetToken = '';
   authState.forgotResetTokenExpiresAt = '';
@@ -20303,9 +20665,6 @@ async function loginStudentWithPassword() {
   if (!email || !password) {
     throw new Error('Enter email and password first.');
   }
-  if (!email.endsWith('@gmail.com')) {
-    throw new Error('Email must end with @gmail.com');
-  }
 
   setLoginInFlight(true);
   setAuthMessage('Verifying login...', false, 'loading');
@@ -20332,7 +20691,7 @@ async function loginStudentWithPassword() {
     log(`Student authenticated as ${data.user.role}`);
     renderProfileSecurity();
     const restored = await restoreSession();
-    if (restored && !authState.mfaSetupRequired) {
+    if (restored && !authState.mfaSetupRequired && !isPrimaryEmailMigrationRequired()) {
       await refreshAll();
     }
   } catch (error) {
@@ -20427,9 +20786,6 @@ async function requestOtp({ suppressStatusPopup = false, studentPasswordlessLogi
   if (!email) {
     throw new Error('Enter email first.');
   }
-  if (!email.endsWith('@gmail.com')) {
-    throw new Error('Email must end with @gmail.com');
-  }
   if (!signupOtpPending && !loginRoleNeedsOtp(loginRole) && !studentPasswordlessLogin) {
     throw new Error('Students can sign in with either password or OTP. Use Login via OTP to continue with your email.');
   }
@@ -20522,13 +20878,9 @@ async function registerAccount() {
   }
   validatePasswordStrengthOrThrow(password, 'Password');
 
-  if (!email.endsWith('@gmail.com')) {
-    throw new Error('Email must end with @gmail.com');
-  }
+  renderSignupEmailPolicy();
+  validatePrimaryAuthEmailOrThrow(email);
   if (role === 'student') {
-    if (!email.endsWith('@gmail.com')) {
-      throw new Error('Email must end with @gmail.com');
-    }
     if (!section) {
       throw new Error('Section is required for student registration.');
     }
@@ -20609,9 +20961,10 @@ async function registerAccount() {
     setSignupVerificationMessage(message, true);
     throw error;
   } finally {
-    if (els.authSignupEmail) {
-      els.authSignupEmail.value = '';
-    }
+  if (els.authSignupEmail) {
+    els.authSignupEmail.value = '';
+    renderSignupEmailPolicy();
+  }
     if (els.authSignupPassword) {
       els.authSignupPassword.value = '';
     }
@@ -20673,6 +21026,9 @@ async function verifyOtpAndLogin() {
   if (els.authMfaCode) {
     els.authMfaCode.value = '';
   }
+  if (maybeRequirePrimaryEmailMigration()) {
+    return;
+  }
   const blockedByMfaEnrollment = await maybePromptPrivilegedMfaSetup();
   if (blockedByMfaEnrollment) {
     return;
@@ -20723,9 +21079,6 @@ async function requestStudentPasswordlessOtp() {
   if (!email) {
     throw new Error('Enter email first.');
   }
-  if (!email.endsWith('@gmail.com')) {
-    throw new Error('Email must end with @gmail.com');
-  }
   if (els.authLoginRoleSelect) {
     els.authLoginRoleSelect.value = 'student';
   }
@@ -20757,6 +21110,11 @@ async function restoreSession() {
     setActiveModule(hashModule || defaultModuleForRole(user?.role), { updateHash: true });
     renderProfileSecurity();
     closeAuthOverlay();
+    if (maybeRequirePrimaryEmailMigration()) {
+      stopStudentRealtimeTicker();
+      stopModuleRealtimeTicker();
+      return true;
+    }
     maybeRequirePasswordBootstrap();
     const blockedByMfaEnrollment = await maybePromptPrivilegedMfaSetup();
     if (blockedByMfaEnrollment) {
@@ -20781,6 +21139,71 @@ async function restoreSession() {
     clearSession();
     openAuthOverlay('Complete the security check to continue.');
     return false;
+  }
+}
+
+async function requestPrimaryEmailMigrationOtp() {
+  if (!authState.user) {
+    throw new Error('Sign in first.');
+  }
+  const newEmail = String(els.primaryEmailMigrationEmail?.value || '').trim().toLowerCase();
+  validatePrimaryAuthEmailOrThrow(newEmail);
+  setPrimaryEmailMigrationBusyState(true);
+  setPrimaryEmailMigrationMessage('Sending OTP to your official email...', false, 'loading');
+  try {
+    const data = await api('/auth/me/primary-email/request-otp', {
+      method: 'POST',
+      timeoutMs: 60000,
+      body: JSON.stringify({ new_email: newEmail }),
+    });
+    const validityMinutes = Math.max(1, Number(data.validity_minutes || 10));
+    setPrimaryEmailMigrationMessage(`OTP sent. It is valid for ${validityMinutes} minutes.`, false, 'success');
+    if (els.primaryEmailMigrationOtp) {
+      els.primaryEmailMigrationOtp.focus({ preventScroll: true });
+    }
+  } finally {
+    setPrimaryEmailMigrationBusyState(false);
+  }
+}
+
+async function verifyPrimaryEmailMigrationOtp() {
+  if (!authState.user) {
+    throw new Error('Sign in first.');
+  }
+  const newEmail = String(els.primaryEmailMigrationEmail?.value || '').trim().toLowerCase();
+  const otpCode = String(els.primaryEmailMigrationOtp?.value || '').trim();
+  validatePrimaryAuthEmailOrThrow(newEmail);
+  if (!otpCode) {
+    throw new Error('Enter OTP code first.');
+  }
+  setPrimaryEmailMigrationBusyState(true);
+  setPrimaryEmailMigrationMessage('Verifying official email...', false, 'loading');
+  try {
+    const user = await api('/auth/me/primary-email/verify', {
+      method: 'POST',
+      body: JSON.stringify({
+        new_email: newEmail,
+        otp_code: otpCode,
+      }),
+    });
+    authState.user = user;
+    authState.pendingEmail = String(user?.email || newEmail || '').trim().toLowerCase();
+    setPrimaryEmailMigrationModal(false);
+    updateAuthBadges();
+    applyRoleUI();
+    renderProfileSecurity();
+    setAuthMessage('Official email verified. Continue using your new primary email.');
+    showFoodToast(
+      'Official Email Verified',
+      'Your previous login email is now saved as your secondary email.',
+      { isError: false, autoHideMs: 3600 }
+    );
+    if (maybeRequirePasswordBootstrap()) {
+      return;
+    }
+    await refreshAll();
+  } finally {
+    setPrimaryEmailMigrationBusyState(false);
   }
 }
 
@@ -21008,6 +21431,11 @@ function initSaarthiAvatarAura() {
 
 async function refreshAll() {
   if (!authState.user) {
+    return;
+  }
+  if (blockIfPrimaryEmailMigrationRequired()) {
+    stopStudentRealtimeTicker();
+    stopModuleRealtimeTicker();
     return;
   }
 
@@ -21304,6 +21732,38 @@ function bindEvents() {
     });
   }
 
+  if (els.primaryEmailMigrationRequestBtn) {
+    els.primaryEmailMigrationRequestBtn.addEventListener('click', async () => {
+      try {
+        await requestPrimaryEmailMigrationOtp();
+      } catch (error) {
+        setPrimaryEmailMigrationMessage(error.message, true);
+        log(error.message || 'Primary email OTP request failed');
+      }
+    });
+  }
+
+  if (els.primaryEmailMigrationVerifyBtn) {
+    els.primaryEmailMigrationVerifyBtn.addEventListener('click', async () => {
+      try {
+        await verifyPrimaryEmailMigrationOtp();
+      } catch (error) {
+        setPrimaryEmailMigrationMessage(error.message, true);
+        log(error.message || 'Primary email verification failed');
+      }
+    });
+  }
+
+  if (els.primaryEmailMigrationLogoutBtn) {
+    els.primaryEmailMigrationLogoutBtn.addEventListener('click', async () => {
+      try {
+        await logout('Logged out. Login again when you are ready to verify your official email.');
+      } catch (error) {
+        setPrimaryEmailMigrationMessage(error.message, true);
+      }
+    });
+  }
+
   if (els.mfaEnrollBtn) {
     els.mfaEnrollBtn.addEventListener('click', async () => {
       try {
@@ -21523,6 +21983,15 @@ function bindEvents() {
   if (els.authSignupPassword) {
     els.authSignupPassword.addEventListener('input', () => {
       renderPasswordStrengthHint(els.authSignupPasswordStrength, els.authSignupPassword.value || '');
+    });
+  }
+
+  if (els.authSignupEmail) {
+    els.authSignupEmail.addEventListener('input', () => {
+      renderSignupEmailPolicy();
+    });
+    els.authSignupEmail.addEventListener('blur', () => {
+      renderSignupEmailPolicy();
     });
   }
 
@@ -24074,6 +24543,7 @@ async function init() {
   renderMongoStatus();
   renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword?.value || '');
   renderPasswordStrengthHint(els.authSignupPasswordStrength, els.authSignupPassword?.value || '');
+  renderSignupEmailPolicy();
   renderPasswordStrengthHint(els.forgotPasswordStrength, els.forgotNewPassword?.value || '');
   renderOtpCooldown();
   renderForgotOtpCooldown();

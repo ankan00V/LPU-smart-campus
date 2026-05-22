@@ -208,7 +208,20 @@ def _ensure_sendgrid_config() -> None:
         raise RuntimeError(f"SendGrid is not configured. Missing: {', '.join(missing)}")
 
 
-def _sendgrid_mail_request(destination_email: str, subject: str, body: str) -> Request:
+def _sendgrid_mail_request(destination_email: str, subject: str, body: str, html_body: str | None = None) -> Request:
+    content = [
+        {
+            "type": "text/plain",
+            "value": body,
+        }
+    ]
+    if html_body:
+        content.append(
+            {
+                "type": "text/html",
+                "value": html_body,
+            }
+        )
     payload = {
         "personalizations": [
             {
@@ -220,12 +233,7 @@ def _sendgrid_mail_request(destination_email: str, subject: str, body: str) -> R
             "name": _sendgrid_from_name(),
         },
         "subject": subject,
-        "content": [
-            {
-                "type": "text/plain",
-                "value": body,
-            }
-        ],
+        "content": content,
     }
     request = Request(
         f"{_sendgrid_api_base_url()}/v3/mail/send",
@@ -253,9 +261,9 @@ def _send_via_sendgrid(destination_email: str, otp_code: str) -> None:
         raise RuntimeError(f"SendGrid mail send failed: {exc}") from exc
 
 
-def _send_custom_via_sendgrid(destination_email: str, subject: str, body: str) -> None:
+def _send_custom_via_sendgrid(destination_email: str, subject: str, body: str, html_body: str | None = None) -> None:
     _ensure_sendgrid_config()
-    request = _sendgrid_mail_request(destination_email, subject, body)
+    request = _sendgrid_mail_request(destination_email, subject, body, html_body=html_body)
     try:
         with urlopen(request, timeout=20) as response:
             status = int(getattr(response, "status", 0) or 0)
@@ -353,7 +361,7 @@ def _send_via_smtp(destination_email: str, otp_code: str) -> None:
         raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
 
-def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> None:
+def _send_custom_via_smtp(destination_email: str, subject: str, body: str, html_body: str | None = None) -> None:
     _ensure_smtp_config()
 
     message = EmailMessage()
@@ -361,6 +369,8 @@ def _send_custom_via_smtp(destination_email: str, subject: str, body: str) -> No
     message["To"] = destination_email
     message["Subject"] = subject
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
 
     host = _smtp_host()
     port = _smtp_port()
@@ -475,15 +485,16 @@ def _send_via_graph(destination_email: str, otp_code: str) -> None:
         raise RuntimeError(f"Graph sendMail failed: HTTP {exc.code} {raw}") from exc
 
 
-def _send_custom_via_graph(destination_email: str, subject: str, body: str) -> None:
+def _send_custom_via_graph(destination_email: str, subject: str, body: str, html_body: str | None = None) -> None:
     token = _graph_access_token()
     sender_user = quote(_graph_sender_user())
     send_url = f"https://graph.microsoft.com/v1.0/users/{sender_user}/sendMail"
+    body_content = str(html_body or body)
 
     payload = {
         "message": {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": {"contentType": "HTML" if html_body else "Text", "content": body_content},
             "toRecipients": [{"emailAddress": {"address": destination_email}}],
         },
         "saveToSentItems": False,
@@ -568,41 +579,56 @@ def send_login_otp(destination_email: str, otp_code: str) -> dict:
     raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")
 
 
-def send_notification_email(destination_email: str, *, subject: str, body: str) -> dict:
+def send_notification_email(destination_email: str, *, subject: str, body: str, html_body: str | None = None) -> dict:
     mode = otp_delivery_mode()
     subject_line = _normalize_subject_line(subject)
     message_body = str(body or "").strip()
+    html_message_body = str(html_body or "").strip()
     if not message_body:
         raise RuntimeError("Notification email body cannot be empty.")
 
     if mode == "smtp":
         try:
-            _send_custom_via_smtp(destination_email, subject_line, message_body)
+            _send_custom_via_smtp(
+                destination_email,
+                subject_line,
+                message_body,
+                html_body=html_message_body or None,
+            )
             return {
                 "channel": "smtp-email",
                 "subject": subject_line,
+                "content_type": "multipart/alternative" if html_message_body else "text/plain",
             }
         except Exception as exc:  # noqa: BLE001
             if _sendgrid_api_key():
-                _send_custom_via_sendgrid(destination_email, subject_line, message_body)
+                _send_custom_via_sendgrid(
+                    destination_email,
+                    subject_line,
+                    message_body,
+                    html_body=html_message_body or None,
+                )
                 return {
                     "channel": "sendgrid-email",
                     "subject": subject_line,
+                    "content_type": "text/html" if html_message_body else "text/plain",
                 }
             raise RuntimeError(f"OTP SMTP delivery failed: {exc}") from exc
 
     if mode == "graph":
-        _send_custom_via_graph(destination_email, subject_line, message_body)
+        _send_custom_via_graph(destination_email, subject_line, message_body, html_body=html_message_body or None)
         return {
             "channel": "graph-email",
             "subject": subject_line,
+            "content_type": "text/html" if html_message_body else "text/plain",
         }
 
     if mode == "sendgrid":
-        _send_custom_via_sendgrid(destination_email, subject_line, message_body)
+        _send_custom_via_sendgrid(destination_email, subject_line, message_body, html_body=html_message_body or None)
         return {
             "channel": "sendgrid-email",
             "subject": subject_line,
+            "content_type": "text/html" if html_message_body else "text/plain",
         }
 
     raise RuntimeError("Invalid OTP_DELIVERY_MODE. Use 'smtp', 'graph', or 'sendgrid'.")

@@ -1640,6 +1640,7 @@ class AuthUserOut(BaseModel):
     password_expired: bool = False
     password_expires_at: Optional[datetime] = None
     mfa_enabled: bool = False
+    primary_email_update_required: bool = False
     is_active: bool
     created_at: datetime
     last_login_at: Optional[datetime]
@@ -1673,6 +1674,14 @@ class OTPRequestResponse(BaseModel):
 
 class AlternateEmailUpdateRequest(BaseModel):
     alternate_email: Optional[str] = None
+
+
+class PrimaryEmailUpdateRequest(BaseModel):
+    new_email: str = Field(min_length=5, max_length=120)
+
+
+class PrimaryEmailVerifyRequest(PrimaryEmailUpdateRequest):
+    otp_code: str = Field(min_length=4, max_length=10)
 
 
 class VerifyOTPRequest(BaseModel):

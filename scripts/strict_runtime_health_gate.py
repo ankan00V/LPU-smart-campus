@@ -59,10 +59,29 @@ def _evaluate_root_payload(payload: dict) -> list[str]:
         failures.append("redis.enabled is not true")
     if managed_services_required:
         redis = payload.get("redis", {})
-        if redis.get("remote_host") is not True:
-            failures.append("redis.remote_host is not true")
-        if redis.get("tls_enabled") is not True:
-            failures.append("redis.tls_enabled is not true")
+        dual_redis = redis.get("dual_redis", {})
+        if dual_redis:
+            if dual_redis.get("any_connected") is not True:
+                failures.append("redis.dual_redis.any_connected is not true")
+            active_instance = str(dual_redis.get("active_instance") or "").strip()
+            instances = dual_redis.get("instances", [])
+            active = next(
+                (
+                    item
+                    for item in instances
+                    if isinstance(item, dict)
+                    and item.get("name") == active_instance
+                    and item.get("active") is True
+                ),
+                None,
+            )
+            if not active:
+                failures.append("redis.dual_redis.active_instance is not connected")
+        else:
+            if redis.get("remote_host") is not True:
+                failures.append("redis.remote_host is not true")
+            if redis.get("tls_enabled") is not True:
+                failures.append("redis.tls_enabled is not true")
 
     worker = payload.get("worker", {})
     if worker.get("required") is not True:
@@ -100,16 +119,16 @@ def main() -> int:
 
     last_report: dict = {}
     while time.time() <= deadline:
-        code, body = _fetch_json(f"{base_url}/")
+        code, body = _fetch_json(f"{base_url}/health")
         report = {
-            "check": "strict_runtime_root",
-            "url": f"{base_url}/",
+            "check": "strict_runtime_health",
+            "url": f"{base_url}/health",
             "code": code,
             "body": body,
             "failures": [],
         }
         if code != 200:
-            report["failures"] = [f"root endpoint returned status {code}"]
+            report["failures"] = [f"/health returned status {code}"]
             last_report = report
             time.sleep(poll_seconds)
             continue

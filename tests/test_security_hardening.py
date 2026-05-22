@@ -148,7 +148,11 @@ def test_security_headers_are_attached_to_api_responses():
 
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
-    assert "frame-ancestors 'none'" in response.headers["Content-Security-Policy"]
+    csp = response.headers["Content-Security-Policy"]
+    assert "script-src 'self' https://challenges.cloudflare.com" in csp
+    assert "connect-src 'self' https://challenges.cloudflare.com" in csp
+    assert "frame-src https://challenges.cloudflare.com" in csp
+    assert "frame-ancestors 'none'" in csp
     assert response.headers["Strict-Transport-Security"].startswith("max-age=31536000")
 
 
