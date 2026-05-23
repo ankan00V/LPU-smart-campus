@@ -7,7 +7,7 @@ import pytest
 from app.mongo import close_mongo
 
 
-_TEST_DB_PATH = Path(__file__).resolve().parent.parent / ".codex_tmp" / "pytest-collection.sqlite3"
+_TEST_DB_PATH = Path(__file__).resolve().parent.parent / ".lpu_tmp" / "pytest-collection.sqlite3"
 _TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:

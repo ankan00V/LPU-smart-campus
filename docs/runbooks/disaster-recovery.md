@@ -16,7 +16,7 @@
 ### CLI Trigger
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/disaster_recovery_backup.py --label scheduled
+PYTHONPATH=. .venv/bin/python scripts/dr_backup.py --label scheduled
 ```
 
 ## Restore Drill Execution
@@ -33,7 +33,7 @@ PYTHONPATH=. .venv/bin/python scripts/disaster_recovery_backup.py --label schedu
 ### CLI Trigger
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/disaster_recovery_restore_drill.py --backups-dir backups
+PYTHONPATH=. .venv/bin/python scripts/dr_restore_drill.py --backups-dir backups
 ```
 
 ## Offsite Replication

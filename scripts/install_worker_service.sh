@@ -20,7 +20,7 @@ STDERR_LOG="${HOME}/Library/Logs/smartcampus-celery-launchd.err.log"
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/install_celery_launchd_agent.sh [install|remove|status]
+  ./scripts/install_worker_service.sh [install|remove|status]
 
 Commands:
   install   Render plist, install LaunchAgent, and start worker (default)

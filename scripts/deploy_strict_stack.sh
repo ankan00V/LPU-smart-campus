@@ -34,7 +34,7 @@ EOF
 }
 
 run_gate() {
-  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/strict_runtime_health_gate.py" \
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/check_runtime_health.py" \
     --base-url "${BASE_URL}" \
     --timeout-seconds "${HEALTH_TIMEOUT_SECONDS}"
 }

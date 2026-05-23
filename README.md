@@ -385,7 +385,7 @@ tests/
 
 scripts/
   food_payment_end_to_end.py
-  realtime_mongo_persistence_audit.py
+  audit_realtime_mongo.py
 ```
 
 ---
@@ -459,7 +459,7 @@ Files:
 - `Dockerfile`
 - `deploy/docker-compose.strict.yml`
 - `scripts/deploy_strict_stack.sh`
-- `scripts/strict_runtime_health_gate.py`
+- `scripts/check_runtime_health.py`
 
 One-command deployment + health gate:
 
@@ -489,19 +489,19 @@ Then use `https://campus-strict.test/ui`.
 For host-based runtime on macOS (auto-start on reboot), install the Celery LaunchAgent:
 
 ```bash
-./scripts/install_celery_launchd_agent.sh install
+./scripts/install_worker_service.sh install
 ```
 
 Check status:
 
 ```bash
-./scripts/install_celery_launchd_agent.sh status
+./scripts/install_worker_service.sh status
 ```
 
 Remove agent:
 
 ```bash
-./scripts/install_celery_launchd_agent.sh remove
+./scripts/install_worker_service.sh remove
 ```
 
 The agent installs at `~/Library/LaunchAgents/com.smartcampus.celery.worker.plist`.
@@ -631,7 +631,7 @@ APP_MANAGED_SERVICES_REQUIRED=true
 ```bash
 cd "/Users/ankanghosh/Desktop/attendance project"
 source .venv/bin/activate
-PYTHONPATH=. .venv/bin/python scripts/migrate_postgres_to_postgres.py \
+PYTHONPATH=. .venv/bin/python scripts/migrate_postgres.py \
   --source-url "postgresql+psycopg://smartcampus:<local_password>@127.0.0.1:5432/lpu_smart" \
   --target-url "postgresql+psycopg://smartcampus:<neon_password>@ep-<id>.<region>.aws.neon.tech/lpu_smart?sslmode=require"
 ```
@@ -639,11 +639,11 @@ PYTHONPATH=. .venv/bin/python scripts/migrate_postgres_to_postgres.py \
 5. Restart the API and worker, then verify:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/strict_runtime_health_gate.py \
+PYTHONPATH=. .venv/bin/python scripts/check_runtime_health.py \
   --base-url http://127.0.0.1:8000 \
   --timeout-seconds 30 \
   --poll-seconds 2
-PYTHONPATH=. .venv/bin/python scripts/sync_relational_to_mongo_snapshot.py
+PYTHONPATH=. .venv/bin/python scripts/sync_mongo.py
 ```
 
 6. Connect TablePlus using the direct Neon endpoint:
