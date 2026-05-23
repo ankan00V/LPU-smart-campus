@@ -74,12 +74,85 @@ def main() -> int:
             _assert_columns(
                 conn,
                 "attendance_submissions",
-                {"selfie_photo_object_key"},
+                {
+                    "selfie_photo_object_key",
+                    "location_latitude",
+                    "location_longitude",
+                    "location_accuracy_m",
+                    "location_distance_m",
+                    "location_allowed_radius_m",
+                    "attendance_session_id",
+                    "attendance_session_code_hash",
+                    "attendance_attempt_token_hash",
+                    "browser_fingerprint_hash",
+                    "client_ip_hash",
+                    "user_agent_hash",
+                    "client_integrity_flags",
+                },
+            )
+            _assert_columns(
+                conn,
+                "class_attendance_sessions",
+                {
+                    "schedule_id",
+                    "course_id",
+                    "faculty_id",
+                    "class_date",
+                    "session_code_hash",
+                    "code_rotation_seconds",
+                    "current_code_expires_at",
+                    "generated_at",
+                    "expires_at",
+                    "opened_by_user_id",
+                    "is_active",
+                    "created_at",
+                    "updated_at",
+                },
+            )
+            _assert_columns(
+                conn,
+                "attendance_attempt_tokens",
+                {
+                    "attendance_session_id",
+                    "schedule_id",
+                    "student_id",
+                    "class_date",
+                    "token_hash",
+                    "session_code_hash",
+                    "browser_fingerprint_hash",
+                    "client_ip_hash",
+                    "user_agent_hash",
+                    "client_integrity_flags",
+                    "issued_at",
+                    "expires_at",
+                    "consumed_at",
+                    "attempt_count",
+                    "max_attempts",
+                    "last_seen_at",
+                    "last_rejection_reason",
+                    "created_at",
+                    "updated_at",
+                },
+            )
+            _assert_columns(
+                conn,
+                "class_schedules",
+                {
+                    "attendance_latitude",
+                    "attendance_longitude",
+                    "attendance_radius_m",
+                    "attendance_location_label",
+                },
             )
             _assert_columns(
                 conn,
                 "attendance_rectification_requests",
                 {"proof_photo_object_key"},
+            )
+            _assert_columns(
+                conn,
+                "copilot_audit_logs",
+                {"feedback_rating", "feedback_comment", "feedback_helpful", "feedback_at"},
             )
             _assert_columns(
                 conn,

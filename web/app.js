@@ -7,6 +7,7 @@ const RAZORPAY_SDK_LOAD_TIMEOUT_MS = 12000;
 const ENABLE_DECORATIVE_MOTION = false;
 const USE_CLIENT_AI_FACE_ASSIST = false;
 const ATTENDANCE_VERIFY_REQUEST_TIMEOUT_MS = 25000; // Increased from 12s to 25s for production reliability
+const ATTENDANCE_LOCATION_MAX_STALE_MS = 60000;
 const LIVE_VERIFICATION_MAX_ATTEMPTS = 10; // Increased from 8 to 10 attempts
 const LIVE_VERIFICATION_BURST_FRAMES = 8;
 const LIVE_VERIFICATION_BURST_INTERVAL_MS = 140;
@@ -407,10 +408,28 @@ const state = {
     attendanceRectificationTarget: null,
     attendanceRectificationProofDataUrl: '',
     kpiScheduleId: null,
+    attendanceAttempt: {
+      scheduleId: null,
+      token: '',
+      expiresAtMs: 0,
+      room: '',
+      allowedRadiusM: null,
+      validatedAtMs: 0,
+    },
+    attendanceLocation: {
+      scheduleId: null,
+      latitude: null,
+      longitude: null,
+      accuracyM: null,
+      capturedAtMs: 0,
+      checking: false,
+    },
   },
   faculty: {
     schedules: [],
     selectedScheduleId: null,
+    attendanceCodeRefreshTimer: null,
+    attendanceCodeRefreshScheduleId: null,
     classDate: '',
     dashboard: null,
     recoveryPlans: [],
@@ -456,6 +475,9 @@ const state = {
     chotuOpen: false,
     supportDeskOpen: false,
     verlynOpen: false,
+    verlynLastAuditId: null,
+    verlynFeedbackBusy: false,
+    verlynFeedbackSubmitted: false,
   },
 };
 
@@ -776,6 +798,7 @@ const els = {
   verlynToggleMeta: document.getElementById('verlyn-toggle-meta'),
   verlynQuickActions: document.getElementById('verlyn-quick-actions'),
   verlynOutput: document.getElementById('verlyn-output'),
+  verlynFeedback: document.getElementById('verlyn-feedback'),
   verlynInput: document.getElementById('verlyn-input'),
   verlynAskBtn: document.getElementById('verlyn-ask-btn'),
   foodAdminPanel: document.getElementById('food-admin-panel'),
@@ -879,6 +902,13 @@ const els = {
   selectedClassLabel: document.getElementById('selected-class-label'),
   studentAttendanceDemoBtn: document.getElementById('student-attendance-demo-btn'),
   attendanceKpiSubtitle: document.getElementById('attendance-kpi-subtitle'),
+  attendanceCodeModal: document.getElementById('attendance-code-modal'),
+  attendanceCodeClassLabel: document.getElementById('attendance-code-class-label'),
+  attendanceCodeMeta: document.getElementById('attendance-code-meta'),
+  studentAttendanceSessionCode: document.getElementById('student-attendance-session-code'),
+  attendanceCodeValidateBtn: document.getElementById('attendance-code-validate-btn'),
+  attendanceCodeCancelBtn: document.getElementById('attendance-code-cancel-btn'),
+  attendanceCodeStatus: document.getElementById('attendance-code-status'),
   takeSelfieBtn: document.getElementById('take-selfie-btn'),
   studentAttendanceResult: document.getElementById('student-attendance-result'),
   profilePhotoInput: document.getElementById('profile-photo-input'),
@@ -956,6 +986,17 @@ const els = {
 
   facultyScheduleSelect: document.getElementById('faculty-schedule-select'),
   facultyClassDate: document.getElementById('faculty-class-date'),
+  facultyScheduleLocationLatitude: document.getElementById('faculty-schedule-location-latitude'),
+  facultyScheduleLocationLongitude: document.getElementById('faculty-schedule-location-longitude'),
+  facultyScheduleLocationRadius: document.getElementById('faculty-schedule-location-radius'),
+  facultyScheduleLocationLabel: document.getElementById('faculty-schedule-location-label'),
+  facultyUseCurrentLocationBtn: document.getElementById('faculty-use-current-location-btn'),
+  facultySaveLocationBtn: document.getElementById('faculty-save-location-btn'),
+  facultyOpenAttendanceSessionBtn: document.getElementById('faculty-open-attendance-session-btn'),
+  facultyScheduleLocationStatus: document.getElementById('faculty-schedule-location-status'),
+  facultyAttendanceSessionPanel: document.getElementById('faculty-attendance-session-panel'),
+  facultyAttendanceSessionCode: document.getElementById('faculty-attendance-session-code'),
+  facultyAttendanceSessionStatus: document.getElementById('faculty-attendance-session-status'),
   facultyRefreshBtn: document.getElementById('faculty-refresh-btn'),
   facultyTotal: document.getElementById('faculty-total'),
   facultyPresent: document.getElementById('faculty-present'),
@@ -974,6 +1015,10 @@ const els = {
   adminCreateScheduleStartTime: document.getElementById('admin-create-schedule-start-time'),
   adminCreateScheduleEndTime: document.getElementById('admin-create-schedule-end-time'),
   adminCreateScheduleRoomLabel: document.getElementById('admin-create-schedule-room-label'),
+  adminCreateScheduleLatitude: document.getElementById('admin-create-schedule-latitude'),
+  adminCreateScheduleLongitude: document.getElementById('admin-create-schedule-longitude'),
+  adminCreateScheduleRadius: document.getElementById('admin-create-schedule-radius'),
+  adminCreateScheduleLocationLabel: document.getElementById('admin-create-schedule-location-label'),
   adminCreateScheduleBtn: document.getElementById('admin-create-schedule-btn'),
   adminCreateScheduleStatus: document.getElementById('admin-create-schedule-status'),
   adminTimetableOverrideScope: document.getElementById('admin-timetable-override-scope'),
@@ -987,6 +1032,10 @@ const els = {
   adminTimetableOverrideStartTime: document.getElementById('admin-timetable-override-start-time'),
   adminTimetableOverrideEndTime: document.getElementById('admin-timetable-override-end-time'),
   adminTimetableOverrideRoomLabel: document.getElementById('admin-timetable-override-room-label'),
+  adminTimetableOverrideLatitude: document.getElementById('admin-timetable-override-latitude'),
+  adminTimetableOverrideLongitude: document.getElementById('admin-timetable-override-longitude'),
+  adminTimetableOverrideRadius: document.getElementById('admin-timetable-override-radius'),
+  adminTimetableOverrideLocationLabel: document.getElementById('admin-timetable-override-location-label'),
   adminTimetableOverrideBtn: document.getElementById('admin-timetable-override-btn'),
   adminTimetableOverrideStatus: document.getElementById('admin-timetable-override-status'),
   adminUpdateStudentId: document.getElementById('admin-update-student-id'),
@@ -3098,31 +3147,32 @@ function getVerlynPromptExamples() {
   const role = String(authState.user?.role || '').trim().toLowerCase();
   if (role === 'student') {
     return [
-      'Summarize my pending tasks across attendance, food, Saarthi, and remedial.',
+      'Why is this app action blocked?',
       "Why can't I mark attendance?",
-      'What is pending in my food orders this week?',
+      'Why is checkout blocked?',
     ];
   }
   if (role === 'faculty') {
     return [
+      'Why is this workflow blocked?',
       'Show why student 22BCS777 is flagged',
       'Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00',
-      'Give me a module-wise summary for attendance, RMS, remedial, and food.',
     ];
   }
   if (role === 'admin') {
     return [
+      'What admin item needs action here?',
       'Show why student 22BCS777 is flagged',
       'Give me an administrative and RMS summary for today.',
-      'Create a remedial plan for course CSE501 section P132 on 2026-03-10 at 15:00',
     ];
   }
   if (role === 'owner') {
     return [
+      'Why is this food order action blocked?',
       'Summarize active food orders and delivery flow for my shops today.',
     ];
   }
-  return ['Login to use explainable campus actions.'];
+  return ['Login to use Campus Copilot.'];
 }
 
 function getVerlynDefaultOutput() {
@@ -3133,7 +3183,8 @@ function getVerlynDefaultOutput() {
   const lines = [
     `${roleLabel} Copilot`,
     `Scope: ${scope}`,
-    `Try: ${examples[0] || 'Ask for a module summary.'}`,
+    `Ask about the exact issue visible on this screen.`,
+    `Try: ${examples[0] || 'Why is this action blocked?'}`,
   ];
   if (examples[1]) {
     lines.push(`Next: ${examples[1]}`);
@@ -3417,6 +3468,63 @@ function formatVerlynCopilotResponse(response = {}) {
   }
 
   return lines.join('\n');
+}
+
+function renderVerlynFeedbackControls(message = '') {
+  if (!els.verlynFeedback) {
+    return;
+  }
+  const auditId = Number(state.ui.verlynLastAuditId || 0);
+  if (!auditId) {
+    els.verlynFeedback.classList.add('hidden');
+    els.verlynFeedback.innerHTML = '';
+    return;
+  }
+  const busy = Boolean(state.ui.verlynFeedbackBusy);
+  const submitted = Boolean(state.ui.verlynFeedbackSubmitted);
+  const statusText = String(message || (submitted ? 'Rating saved.' : 'Rate this response')).trim();
+  els.verlynFeedback.classList.remove('hidden');
+  els.verlynFeedback.innerHTML = `
+    <div class="verlyn-feedback-head">
+      <span>${escapeHtml(statusText)}</span>
+      <small>Audit #${auditId}</small>
+    </div>
+    <div class="verlyn-feedback-row" role="group" aria-label="Rate Campus Copilot response">
+      ${[1, 2, 3, 4, 5].map((rating) => `
+        <button class="verlyn-rating-btn" type="button" data-verlyn-rating="${rating}" ${busy || submitted ? 'disabled' : ''} aria-label="Rate ${rating} out of 5">
+          ${rating}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function submitVerlynFeedback(rating) {
+  const auditId = Number(state.ui.verlynLastAuditId || 0);
+  const normalizedRating = Math.max(1, Math.min(5, Number(rating || 0)));
+  if (!auditId || !normalizedRating || state.ui.verlynFeedbackBusy || state.ui.verlynFeedbackSubmitted) {
+    return;
+  }
+  state.ui.verlynFeedbackBusy = true;
+  renderVerlynFeedbackControls('Saving rating...');
+  try {
+    await api(`/copilot/audit/${auditId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify({
+        rating: normalizedRating,
+        helpful: normalizedRating >= 4,
+      }),
+    });
+    state.ui.verlynFeedbackSubmitted = true;
+    setVerlynStatus('Rating saved. Future Copilot answers will use this audit signal.', false, 'success');
+    renderVerlynFeedbackControls('Rating saved.');
+  } catch (error) {
+    setVerlynStatus(error?.message || 'Could not save Copilot rating.', true, 'error');
+    renderVerlynFeedbackControls('Rating failed. Try again.');
+  } finally {
+    state.ui.verlynFeedbackBusy = false;
+    renderVerlynFeedbackControls(state.ui.verlynFeedbackSubmitted ? 'Rating saved.' : 'Rate this response');
+  }
 }
 
 function buildVerlynFlagPayload() {
@@ -3959,6 +4067,9 @@ async function runVerlynCopilot(payload, { syncInput = true } = {}) {
   if (syncInput && els.verlynInput) {
     els.verlynInput.value = queryText;
   }
+  state.ui.verlynLastAuditId = null;
+  state.ui.verlynFeedbackSubmitted = false;
+  renderVerlynFeedbackControls();
   setVerlynStatus('Running...', false, 'loading');
   try {
     const response = await api('/copilot/query', {
@@ -3966,6 +4077,9 @@ async function runVerlynCopilot(payload, { syncInput = true } = {}) {
       body: JSON.stringify(requestPayload),
     });
     els.verlynOutput.textContent = formatVerlynCopilotResponse(response);
+    state.ui.verlynLastAuditId = Number(response?.audit_id || 0) || null;
+    state.ui.verlynFeedbackSubmitted = false;
+    renderVerlynFeedbackControls();
     const outcome = String(response?.outcome || '').trim().toLowerCase();
     if (outcome === 'completed') {
       setVerlynStatus('Done. Logged.', false, 'success');
@@ -6955,11 +7069,13 @@ function clearSession() {
   stopEnrollmentCameraStream();
   stopStudentRealtimeTicker();
   stopStudentTimetableStatusTicker();
+  stopFacultyAttendanceCodeRefresh();
   stopModuleRealtimeTicker();
   stopFoodDemandLiveTicker();
   stopRemedialLiveTicker();
   stopSupportDeskLiveTicker();
   stopRealtimeEventBus();
+  closeStudentAttendanceCodeModal();
 }
 
 async function api(path, options = {}) {
@@ -10747,6 +10863,164 @@ async function verifyFoodLocationGate({ forcePrompt = false, silent = false } = 
   }
 }
 
+function isStudentAttendanceLocationFresh(scheduleId) {
+  const current = state.student.attendanceLocation;
+  return Boolean(
+    Number(current.scheduleId || 0) === Number(scheduleId || 0)
+    && Number.isFinite(current.latitude)
+    && Number.isFinite(current.longitude)
+    && (Date.now() - Number(current.capturedAtMs || 0)) <= ATTENDANCE_LOCATION_MAX_STALE_MS
+  );
+}
+
+async function captureStudentAttendanceLocation(scheduleId, { forcePrompt = false } = {}) {
+  const normalizedScheduleId = Number(scheduleId || 0);
+  if (!normalizedScheduleId) {
+    throw new Error('Select an active class before checking location.');
+  }
+  if (!forcePrompt && isStudentAttendanceLocationFresh(normalizedScheduleId)) {
+    return state.student.attendanceLocation;
+  }
+  if (!navigator.geolocation) {
+    throw new Error('Location API unavailable in this browser.');
+  }
+  if (!window.isSecureContext) {
+    throw new Error('Location requires HTTPS or localhost.');
+  }
+
+  state.student.attendanceLocation.checking = true;
+  setStudentResult('Checking class GPS lock before camera starts...');
+  try {
+    const geo = await requestCurrentPositionReliable(forcePrompt);
+    const latitude = Number(geo?.coords?.latitude);
+    const longitude = Number(geo?.coords?.longitude);
+    const accuracyM = Number(geo?.coords?.accuracy || 0);
+    const timestampMs = Number(geo?.timestamp || Date.now());
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      throw new Error('Browser returned invalid GPS coordinates.');
+    }
+    state.student.attendanceLocation = {
+      scheduleId: normalizedScheduleId,
+      latitude,
+      longitude,
+      accuracyM: Number.isFinite(accuracyM) ? accuracyM : null,
+      timestampMs: Number.isFinite(timestampMs) ? timestampMs : Date.now(),
+      capturedAtMs: Date.now(),
+      checking: false,
+    };
+    return state.student.attendanceLocation;
+  } catch (error) {
+    state.student.attendanceLocation = {
+      scheduleId: normalizedScheduleId,
+      latitude: null,
+      longitude: null,
+      accuracyM: null,
+      capturedAtMs: 0,
+      checking: false,
+    };
+    throw error;
+  } finally {
+    state.student.attendanceLocation.checking = false;
+  }
+}
+
+function normalizeAttendanceSessionCode(rawValue) {
+  const compact = String(rawValue || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 12);
+  if (compact.length <= 4) {
+    return compact;
+  }
+  return `${compact.slice(0, 4)}-${compact.slice(4)}`;
+}
+
+function readStudentAttendanceSessionCode({ requireCode = true } = {}) {
+  const formatted = normalizeAttendanceSessionCode(els.studentAttendanceSessionCode?.value || '');
+  if (els.studentAttendanceSessionCode) {
+    els.studentAttendanceSessionCode.value = formatted;
+  }
+  const compact = formatted.replace(/-/g, '');
+  if (requireCode && compact.length < 6) {
+    throw new Error('Enter the class attendance code shown by the faculty.');
+  }
+  return formatted;
+}
+
+function collectAttendanceClientContext(location = null) {
+  const flags = [];
+  if (!window.isSecureContext) {
+    flags.push('insecure_context');
+  }
+  if (navigator.webdriver) {
+    flags.push('browser_automation_detected');
+  }
+  if (!navigator.cookieEnabled) {
+    flags.push('cookies_disabled');
+  }
+  const geoTimestamp = Number(location?.timestampMs || 0);
+  if (location && !geoTimestamp) {
+    flags.push('gps_timestamp_missing');
+  } else if (geoTimestamp && Math.abs(Date.now() - geoTimestamp) > ATTENDANCE_LOCATION_MAX_STALE_MS) {
+    flags.push('gps_timestamp_stale');
+  }
+  const accuracyM = Number(location?.accuracyM);
+  if (location && !Number.isFinite(accuracyM)) {
+    flags.push('gps_accuracy_missing');
+  } else if (Number.isFinite(accuracyM) && accuracyM <= 0) {
+    flags.push('gps_accuracy_zero');
+  }
+
+  const screenData = window.screen || {};
+  const fingerprintPayload = {
+    ua: navigator.userAgent || '',
+    platform: navigator.platform || '',
+    language: navigator.language || '',
+    languages: Array.isArray(navigator.languages) ? navigator.languages.slice(0, 5) : [],
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    tzOffset: new Date().getTimezoneOffset(),
+    screen: [
+      Number(screenData.width || 0),
+      Number(screenData.height || 0),
+      Number(screenData.colorDepth || 0),
+      Number(window.devicePixelRatio || 0),
+    ],
+    touch: Number(navigator.maxTouchPoints || 0),
+    cores: Number(navigator.hardwareConcurrency || 0),
+    memory: Number(navigator.deviceMemory || 0),
+    webdriver: Boolean(navigator.webdriver),
+  };
+
+  return {
+    browser_fingerprint: JSON.stringify(fingerprintPayload),
+    client_integrity_flags: Array.from(new Set(flags)).slice(0, 20),
+    client_timezone_offset_minutes: new Date().getTimezoneOffset(),
+  };
+}
+
+function clearStudentAttendanceAttempt() {
+  state.student.attendanceAttempt = {
+    scheduleId: null,
+    token: '',
+    expiresAtMs: 0,
+    room: '',
+    allowedRadiusM: null,
+    validatedAtMs: 0,
+  };
+}
+
+function getValidStudentAttendanceAttempt(scheduleId) {
+  const attempt = state.student.attendanceAttempt || {};
+  if (
+    Number(attempt.scheduleId || 0) !== Number(scheduleId || 0)
+    || !String(attempt.token || '').trim()
+    || Number(attempt.expiresAtMs || 0) <= Date.now() + 1500
+  ) {
+    return null;
+  }
+  return attempt;
+}
+
 function asTitleCase(rawText) {
   const text = String(rawText || '').trim();
   if (!text) {
@@ -13667,6 +13941,61 @@ function setAdminCreateScheduleStatus(message, isError = false, state = 'neutral
   });
 }
 
+function setFacultyScheduleLocationStatus(message, isError = false, state = 'neutral') {
+  if (!els.facultyScheduleLocationStatus) {
+    return;
+  }
+  setUiStateMessage(els.facultyScheduleLocationStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function readAttendanceLocationInputs(
+  { latitudeEl, longitudeEl, radiusEl, labelEl },
+  { requireCoordinates = false } = {},
+) {
+  const latitudeRaw = String(latitudeEl?.value || '').trim();
+  const longitudeRaw = String(longitudeEl?.value || '').trim();
+  const radiusRaw = String(radiusEl?.value || '').trim();
+  const label = String(labelEl?.value || '').trim();
+  const hasLatitude = latitudeRaw !== '';
+  const hasLongitude = longitudeRaw !== '';
+  if (hasLatitude !== hasLongitude) {
+    throw new Error('Enter both GPS latitude and longitude.');
+  }
+  if (!hasLatitude) {
+    if (requireCoordinates) {
+      throw new Error('Set GPS latitude and longitude for this class.');
+    }
+    if (radiusRaw || label) {
+      throw new Error('GPS radius and label require latitude and longitude.');
+    }
+    return { configured: false, payload: {} };
+  }
+
+  const latitude = Number(latitudeRaw);
+  const longitude = Number(longitudeRaw);
+  const radius = radiusRaw ? Number(radiusRaw) : 75;
+  if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    throw new Error('GPS latitude must be between -90 and 90.');
+  }
+  if (!Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    throw new Error('GPS longitude must be between -180 and 180.');
+  }
+  if (!Number.isFinite(radius) || radius < 10 || radius > 500) {
+    throw new Error('GPS radius must be between 10m and 500m.');
+  }
+  return {
+    configured: true,
+    payload: {
+      attendance_latitude: latitude,
+      attendance_longitude: longitude,
+      attendance_radius_m: radius,
+      attendance_location_label: label || null,
+    },
+  };
+}
+
 function setAdminTimetableOverrideStatus(message, isError = false, state = 'neutral') {
   if (!els.adminTimetableOverrideStatus) {
     return;
@@ -14230,6 +14559,12 @@ async function createAdminAttendanceSchedule() {
   const startTime = String(els.adminCreateScheduleStartTime?.value || '').trim();
   const endTime = String(els.adminCreateScheduleEndTime?.value || '').trim();
   const classroomLabel = String(els.adminCreateScheduleRoomLabel?.value || '').trim();
+  const locationInput = readAttendanceLocationInputs({
+    latitudeEl: els.adminCreateScheduleLatitude,
+    longitudeEl: els.adminCreateScheduleLongitude,
+    radiusEl: els.adminCreateScheduleRadius,
+    labelEl: els.adminCreateScheduleLocationLabel,
+  });
 
   if (!Number.isFinite(courseId) || courseId <= 0) {
     throw new Error('Enter a valid Course ID.');
@@ -14252,6 +14587,7 @@ async function createAdminAttendanceSchedule() {
     end_time: endTime,
     classroom_label: classroomLabel || null,
     is_active: true,
+    ...locationInput.payload,
   };
 
   const created = await api('/attendance/schedules', {
@@ -14260,13 +14596,23 @@ async function createAdminAttendanceSchedule() {
   });
 
   setAdminCreateScheduleStatus(
-    `Schedule created (ID ${Number(created?.id || 0)}) for course ${courseId} on ${DAY_LABELS[weekday]}.`,
+    `Schedule created (ID ${Number(created?.id || 0)}) for course ${courseId} on ${DAY_LABELS[weekday]}${locationInput.configured ? ' with GPS lock' : ''}.`,
     false,
   );
   log(`Admin created schedule ${Number(created?.id || 0)} for course ${courseId}.`);
 
   if (els.adminCreateScheduleRoomLabel) {
     els.adminCreateScheduleRoomLabel.value = '';
+  }
+  for (const input of [
+    els.adminCreateScheduleLatitude,
+    els.adminCreateScheduleLongitude,
+    els.adminCreateScheduleRadius,
+    els.adminCreateScheduleLocationLabel,
+  ]) {
+    if (input) {
+      input.value = '';
+    }
   }
 
   await loadFacultySchedules();
@@ -14291,6 +14637,12 @@ async function saveAdminTimetableOverride() {
   const startTime = String(els.adminTimetableOverrideStartTime?.value || '').trim();
   const endTime = String(els.adminTimetableOverrideEndTime?.value || '').trim();
   const classroomLabel = String(els.adminTimetableOverrideRoomLabel?.value || '').trim();
+  const locationInput = readAttendanceLocationInputs({
+    latitudeEl: els.adminTimetableOverrideLatitude,
+    longitudeEl: els.adminTimetableOverrideLongitude,
+    radiusEl: els.adminTimetableOverrideRadius,
+    labelEl: els.adminTimetableOverrideLocationLabel,
+  });
 
   if (scope !== 'student' && scope !== 'section') {
     throw new Error('Select a valid timetable scope.');
@@ -14327,6 +14679,7 @@ async function saveAdminTimetableOverride() {
     end_time: endTime,
     classroom_label: classroomLabel || null,
     is_active: true,
+    ...locationInput.payload,
   };
 
   const saved = await api('/attendance/timetable-overrides', {
@@ -14337,7 +14690,7 @@ async function saveAdminTimetableOverride() {
     ? `student ${studentId}`
     : `section ${String(saved?.section || section)}`;
   setAdminTimetableOverrideStatus(
-    `Timetable override saved for ${scopeLabel}. Replaced ${DAY_LABELS[sourceWeekday]} ${sourceStartTime} with ${DAY_LABELS[weekday]} ${startTime}-${endTime}.`,
+    `Timetable override saved for ${scopeLabel}. Replaced ${DAY_LABELS[sourceWeekday]} ${sourceStartTime} with ${DAY_LABELS[weekday]} ${startTime}-${endTime}${locationInput.configured ? ' with GPS lock' : ''}.`,
     false,
   );
   log(`Admin updated timetable for ${scopeLabel}. Override ${Number(saved?.id || 0)}.`);
@@ -16574,6 +16927,100 @@ async function openRemedialFromAttendance(kpi = null) {
   }
 }
 
+function setAttendanceCodeStatus(message, isError = false, stateName = 'neutral') {
+  if (!els.attendanceCodeStatus) {
+    return;
+  }
+  setUiStateMessage(els.attendanceCodeStatus, message, {
+    state: isError ? 'error' : stateName,
+  });
+}
+
+function closeStudentAttendanceCodeModal() {
+  if (els.attendanceCodeModal) {
+    els.attendanceCodeModal.classList.add('hidden');
+  }
+}
+
+function openStudentAttendanceCodeModal() {
+  const kpi = findAttendanceManagementState();
+  const schedule = kpi.schedule || {};
+  const scheduleId = Number(schedule.schedule_id || 0);
+  if (kpi.mode !== 'mark' || !scheduleId) {
+    throw new Error('Attendance window is closed right now. Wait for the next class.');
+  }
+  if (String(schedule.class_kind || 'regular').toLowerCase() === 'remedial') {
+    throw new Error('This is a remedial class. Open Remedial module and use the remedial faculty code.');
+  }
+  if (!schedule.attendance_location_configured) {
+    throw new Error('Class GPS lock is not configured yet. Ask the faculty or admin to set it before marking attendance.');
+  }
+  clearStudentAttendanceAttempt();
+  state.student.kpiScheduleId = scheduleId;
+  state.student.selectedScheduleId = scheduleId;
+  if (els.attendanceCodeClassLabel) {
+    els.attendanceCodeClassLabel.textContent = `${schedule.course_code || 'Class'} | ${schedule.start_time || '--'} - ${schedule.end_time || '--'}`;
+  }
+  if (els.attendanceCodeMeta) {
+    const room = schedule.attendance_location_label || schedule.classroom_label || 'Assigned classroom';
+    els.attendanceCodeMeta.textContent = `Room: ${room}. Code refreshes every 15-30 seconds and attendance closes after the first 10 minutes.`;
+  }
+  if (els.studentAttendanceSessionCode) {
+    els.studentAttendanceSessionCode.value = '';
+    els.studentAttendanceSessionCode.disabled = false;
+  }
+  setAttendanceCodeStatus('Enter the latest code shown by faculty.', false, 'warn');
+  if (els.attendanceCodeModal) {
+    els.attendanceCodeModal.classList.remove('hidden');
+  }
+  window.setTimeout(() => els.studentAttendanceSessionCode?.focus(), 50);
+}
+
+async function validateStudentAttendanceCodeAndContinue() {
+  const kpi = findAttendanceManagementState();
+  const schedule = kpi.schedule || {};
+  const scheduleId = Number(schedule.schedule_id || 0);
+  if (kpi.mode !== 'mark' || !scheduleId) {
+    throw new Error('Attendance window is closed right now. Wait for the next class.');
+  }
+  const code = readStudentAttendanceSessionCode();
+  const context = collectAttendanceClientContext();
+  if (els.attendanceCodeValidateBtn) {
+    els.attendanceCodeValidateBtn.disabled = true;
+    els.attendanceCodeValidateBtn.textContent = 'Validating...';
+  }
+  setAttendanceCodeStatus('Validating class code...', false, 'warn');
+  try {
+    const response = await api(`/attendance/schedules/${scheduleId}/session/validate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        attendance_session_code: code,
+        ...context,
+      }),
+    });
+    const token = String(response?.attendance_attempt_token || '').trim();
+    if (!token) {
+      throw new Error('Code was accepted but no attendance session token was issued.');
+    }
+    state.student.attendanceAttempt = {
+      scheduleId,
+      token,
+      expiresAtMs: response?.token_expires_at ? new Date(response.token_expires_at).getTime() : Date.now() + 60000,
+      room: String(response?.room || schedule.attendance_location_label || schedule.classroom_label || ''),
+      allowedRadiusM: Number.isFinite(Number(response?.allowed_radius_m)) ? Number(response.allowed_radius_m) : null,
+      validatedAtMs: Date.now(),
+    };
+    closeStudentAttendanceCodeModal();
+    setStudentResult(response?.message || 'Code verified. Starting secure attendance verification...');
+    await startStudentSelfieFlow();
+  } finally {
+    if (els.attendanceCodeValidateBtn) {
+      els.attendanceCodeValidateBtn.disabled = false;
+      els.attendanceCodeValidateBtn.textContent = 'Validate & Continue';
+    }
+  }
+}
+
 async function handleStudentMarkAttendanceAction() {
   const kpi = findEffectiveAttendanceManagementState();
   if (kpi.mode === 'demo') {
@@ -16584,7 +17031,7 @@ async function handleStudentMarkAttendanceAction() {
     await openRemedialFromAttendance(kpi);
     return;
   }
-  await startStudentSelfieFlow();
+  openStudentAttendanceCodeModal();
 }
 
 function renderProfilePhotoPreview(photoDataUrl) {
@@ -17230,6 +17677,7 @@ function updateSelectedClassState() {
   const scheduleId = Number(kpi.schedule?.schedule_id || 0);
   const remedialWindowOpen = isRemedialAttendanceWindow(officialKpi);
   const demoAttendanceActive = kpi.mode === 'demo';
+  const officialLocationReady = Boolean(officialKpi.schedule?.attendance_location_configured);
   state.student.kpiScheduleId = demoAttendanceActive ? null : (scheduleId || null);
   renderStudentAttendanceDemoToggle();
 
@@ -17243,6 +17691,8 @@ function updateSelectedClassState() {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Complete profile setup to enable official marking.`;
     } else if (kpi.mode === 'mark' && String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
       els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Use Remedial module with faculty code (15-minute window).`;
+    } else if (officialKpi.mode === 'mark' && !officialLocationReady) {
+      els.attendanceKpiSubtitle.textContent = `${kpi.subtitle} Class GPS lock is not configured yet.`;
     } else {
       els.attendanceKpiSubtitle.textContent = kpi.subtitle;
     }
@@ -17252,14 +17702,23 @@ function updateSelectedClassState() {
     officialKpi.mode === 'mark'
     && Number(officialKpi.schedule?.schedule_id || 0)
     && hasProfileReady
+    && officialLocationReady
     && String(officialKpi.schedule?.class_kind || 'regular').toLowerCase() !== 'remedial'
   );
   if (els.takeSelfieBtn) {
     els.takeSelfieBtn.textContent = remedialWindowOpen
       ? 'Open Remedial Module'
-      : (demoAttendanceActive ? 'Open Camera & Run Demo Attendance' : 'Open Camera & Mark Attendance');
+      : (demoAttendanceActive ? 'Open Camera & Run Demo Attendance' : 'Mark Attendance');
     const demoReady = demoAttendanceActive && hasProfileReady && !requiresStudentEnrollmentSetup();
     els.takeSelfieBtn.disabled = !(isRegularMarkable || remedialWindowOpen || demoReady);
+  }
+  if (els.studentAttendanceSessionCode) {
+    els.studentAttendanceSessionCode.disabled = !isRegularMarkable;
+    els.studentAttendanceSessionCode.placeholder = isRegularMarkable ? 'ABCD-EFGH' : 'Code opens in class';
+    if (!isRegularMarkable) {
+      els.studentAttendanceSessionCode.value = '';
+      clearStudentAttendanceAttempt();
+    }
   }
 }
 
@@ -19238,7 +19697,18 @@ async function buildAttendanceVerificationPayload(
   };
   const normalizedScheduleId = Number(selectedScheduleId || 0);
   if (!demoMode && normalizedScheduleId > 0) {
+    const attendanceAttempt = getValidStudentAttendanceAttempt(normalizedScheduleId);
+    if (!attendanceAttempt) {
+      throw new Error('Validate the latest faculty attendance code before facial attendance starts.');
+    }
     payload.schedule_id = normalizedScheduleId;
+    payload.attendance_attempt_token = attendanceAttempt.token;
+    const location = await captureStudentAttendanceLocation(normalizedScheduleId);
+    payload.location_latitude = location.latitude;
+    payload.location_longitude = location.longitude;
+    payload.location_accuracy_m = Number.isFinite(location.accuracyM) ? location.accuracyM : null;
+    payload.location_timestamp_ms = Number.isFinite(location.timestampMs) ? location.timestampMs : Date.now();
+    Object.assign(payload, collectAttendanceClientContext(location));
   }
   if (Array.isArray(selfieFrames) && selfieFrames.length) {
     payload.selfie_frames_data_urls = selfieFrames;
@@ -19314,6 +19784,12 @@ function shouldStopLiveVerification(message = '') {
     || text.includes('invalid user session')
     || text.includes('student is not enrolled')
     || text.includes('class schedule not found')
+    || text.includes('attendance location rejected')
+    || text.includes('class gps lock is not configured')
+    || text.includes('browser location is required')
+    || text.includes('location accuracy is too low')
+    || text.includes('attendance session code')
+    || text.includes('faculty attendance')
     || text.includes('unauthorized marking attempt')
     || text.includes('different person identified')
   );
@@ -19353,6 +19829,12 @@ async function startLiveAttendanceVerification(options = {}) {
     if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
       throw new Error('This is a remedial class. Open Remedial module, validate the faculty code, then mark attendance there.');
     }
+    if (!kpi.schedule?.attendance_location_configured) {
+      throw new Error('Class GPS lock is not configured yet. Ask the faculty or admin to set it before marking attendance.');
+    }
+    if (!getValidStudentAttendanceAttempt(selectedScheduleId)) {
+      throw new Error('Validate the latest faculty attendance code before facial attendance starts.');
+    }
     state.student.kpiScheduleId = selectedScheduleId;
     state.student.selectedScheduleId = selectedScheduleId;
   } else {
@@ -19378,6 +19860,10 @@ async function startLiveAttendanceVerification(options = {}) {
   setStudentResult(demoMode
     ? 'Live demo attendance verification started...'
     : 'Live attendance verification started...');
+
+  if (!demoMode) {
+    await captureStudentAttendanceLocation(selectedScheduleId, { forcePrompt: true });
+  }
 
   await openCameraModal({
     title: demoMode ? 'Live Realtime Demo Verification' : 'Live Realtime Attendance Verification',
@@ -19529,6 +20015,9 @@ async function markStudentAttendance(selfieDataUrl, selfieFrames = []) {
   if (!selectedScheduleId) {
     throw new Error('Select a class with Mark Attendance status first.');
   }
+  if (!selected?.attendance_location_configured) {
+    throw new Error('Class GPS lock is not configured yet. Ask the faculty or admin to set it before marking attendance.');
+  }
 
   if (!state.student.profilePhotoDataUrl) {
     throw new Error('Upload profile photo before marking attendance.');
@@ -19569,20 +20058,28 @@ async function loadFacultySchedules() {
   const schedules = await api('/attendance/faculty/schedules');
   state.faculty.schedules = schedules;
 
+  const previousSelectedId = Number(state.faculty.selectedScheduleId || els.facultyScheduleSelect?.value || 0);
   els.facultyScheduleSelect.innerHTML = '';
   for (const schedule of schedules) {
     const option = document.createElement('option');
     const courseName = getCourseLabel(schedule.course_id);
     option.value = String(schedule.id);
-    option.textContent = `${courseName} | ${DAY_LABELS[schedule.weekday]} ${formatTime(schedule.start_time)}`;
+    const gpsLabel = schedule.attendance_location_configured ? 'GPS set' : 'GPS missing';
+    option.textContent = `${courseName} | ${DAY_LABELS[schedule.weekday]} ${formatTime(schedule.start_time)} | ${gpsLabel}`;
     els.facultyScheduleSelect.appendChild(option);
   }
 
   if (!schedules.length) {
     state.faculty.selectedScheduleId = null;
+    syncFacultyScheduleLocationForm(null);
+    syncFacultyAttendanceSessionPanel(null, null);
     renderFacultyDashboard(null);
     els.classroomAnalysisHistory.innerHTML = '<div class="list-item">No schedules available.</div>';
     return;
+  }
+
+  if (previousSelectedId && schedules.some((item) => Number(item.id || 0) === previousSelectedId)) {
+    els.facultyScheduleSelect.value = String(previousSelectedId);
   }
 
   const selected = Number(els.facultyScheduleSelect.value);
@@ -19591,7 +20088,193 @@ async function loadFacultySchedules() {
   }
 
   state.faculty.selectedScheduleId = Number(els.facultyScheduleSelect.value);
+  syncFacultyScheduleLocationForm(getSelectedFacultySchedule());
+  syncFacultyAttendanceSessionPanel(null, getSelectedFacultySchedule());
   await refreshFacultyDashboard();
+}
+
+function getSelectedFacultySchedule() {
+  const scheduleId = Number(els.facultyScheduleSelect?.value || state.faculty.selectedScheduleId || 0);
+  if (!scheduleId) {
+    return null;
+  }
+  return (state.faculty.schedules || []).find((item) => Number(item.id || 0) === scheduleId) || null;
+}
+
+function syncFacultyScheduleLocationForm(schedule = getSelectedFacultySchedule()) {
+  if (!els.facultyScheduleLocationLatitude) {
+    return;
+  }
+  const hasSchedule = Boolean(schedule);
+  const locationConfigured = Boolean(schedule?.attendance_location_configured);
+  els.facultyScheduleLocationLatitude.value = locationConfigured ? String(schedule.attendance_latitude ?? '') : '';
+  els.facultyScheduleLocationLongitude.value = locationConfigured ? String(schedule.attendance_longitude ?? '') : '';
+  els.facultyScheduleLocationRadius.value = locationConfigured ? String(Math.round(Number(schedule.attendance_radius_m || 75))) : '75';
+  els.facultyScheduleLocationLabel.value = String(schedule?.attendance_location_label || schedule?.classroom_label || '').trim();
+  if (els.facultySaveLocationBtn) {
+    els.facultySaveLocationBtn.disabled = !hasSchedule;
+  }
+  if (els.facultyUseCurrentLocationBtn) {
+    els.facultyUseCurrentLocationBtn.disabled = !hasSchedule;
+  }
+  if (els.facultyOpenAttendanceSessionBtn) {
+    els.facultyOpenAttendanceSessionBtn.disabled = !hasSchedule || !locationConfigured;
+  }
+  if (!hasSchedule) {
+    setFacultyScheduleLocationStatus('Select a schedule to set its GPS lock.');
+  } else if (locationConfigured) {
+    setFacultyScheduleLocationStatus(
+      `GPS lock set. Radius ${Math.round(Number(schedule.attendance_radius_m || 75))}m.`,
+      false,
+      'ok',
+    );
+  } else {
+    setFacultyScheduleLocationStatus('GPS lock missing. Students cannot mark official attendance for this class until it is set.', false, 'warn');
+  }
+}
+
+function stopFacultyAttendanceCodeRefresh() {
+  if (state.faculty.attendanceCodeRefreshTimer) {
+    window.clearTimeout(state.faculty.attendanceCodeRefreshTimer);
+  }
+  state.faculty.attendanceCodeRefreshTimer = null;
+  state.faculty.attendanceCodeRefreshScheduleId = null;
+}
+
+function scheduleFacultyAttendanceCodeRefresh(session, schedule = getSelectedFacultySchedule()) {
+  stopFacultyAttendanceCodeRefresh();
+  const scheduleId = Number(schedule?.id || 0);
+  if (!session?.session_code || !scheduleId) {
+    return;
+  }
+  const codeExpiresAtMs = session.code_expires_at ? new Date(session.code_expires_at).getTime() : 0;
+  const windowExpiresAtMs = session.expires_at ? new Date(session.expires_at).getTime() : 0;
+  if (!codeExpiresAtMs || (windowExpiresAtMs && windowExpiresAtMs <= Date.now())) {
+    return;
+  }
+  const delayMs = Math.max(3000, Math.min(30000, codeExpiresAtMs - Date.now() + 250));
+  state.faculty.attendanceCodeRefreshScheduleId = scheduleId;
+  state.faculty.attendanceCodeRefreshTimer = window.setTimeout(async () => {
+    if (Number(state.faculty.selectedScheduleId || 0) !== scheduleId) {
+      stopFacultyAttendanceCodeRefresh();
+      return;
+    }
+    try {
+      await openFacultyAttendanceSession({ silent: true });
+    } catch (error) {
+      if (els.facultyAttendanceSessionStatus) {
+        els.facultyAttendanceSessionStatus.textContent = String(error?.message || 'Attendance code refresh failed.');
+      }
+      stopFacultyAttendanceCodeRefresh();
+    }
+  }, delayMs);
+}
+
+function syncFacultyAttendanceSessionPanel(session = null, schedule = getSelectedFacultySchedule()) {
+  if (!els.facultyAttendanceSessionCode || !els.facultyAttendanceSessionStatus) {
+    return;
+  }
+  if (!schedule) {
+    stopFacultyAttendanceCodeRefresh();
+    els.facultyAttendanceSessionCode.textContent = 'Code not opened.';
+    els.facultyAttendanceSessionStatus.textContent = 'Select a schedule first.';
+    if (els.facultyOpenAttendanceSessionBtn) {
+      els.facultyOpenAttendanceSessionBtn.disabled = true;
+    }
+    return;
+  }
+  if (!schedule.attendance_location_configured) {
+    stopFacultyAttendanceCodeRefresh();
+    els.facultyAttendanceSessionCode.textContent = 'Code not opened.';
+    els.facultyAttendanceSessionStatus.textContent = 'Set the GPS lock before opening attendance code.';
+    if (els.facultyOpenAttendanceSessionBtn) {
+      els.facultyOpenAttendanceSessionBtn.disabled = true;
+    }
+    return;
+  }
+  if (session?.session_code) {
+    const expiresAt = session.expires_at ? new Date(session.expires_at) : null;
+    const codeExpiresAt = session.code_expires_at ? new Date(session.code_expires_at) : null;
+    els.facultyAttendanceSessionCode.textContent = String(session.session_code || '').trim();
+    els.facultyAttendanceSessionStatus.textContent = expiresAt && codeExpiresAt
+      ? `Refreshes at ${codeExpiresAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}; window closes ${expiresAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`
+      : 'Valid for the first 10 minutes of this class.';
+    scheduleFacultyAttendanceCodeRefresh(session, schedule);
+  } else {
+    stopFacultyAttendanceCodeRefresh();
+    els.facultyAttendanceSessionCode.textContent = 'Code not opened.';
+    els.facultyAttendanceSessionStatus.textContent = 'Open it during the first 10 minutes of class.';
+  }
+  if (els.facultyOpenAttendanceSessionBtn) {
+    els.facultyOpenAttendanceSessionBtn.disabled = false;
+  }
+}
+
+async function openFacultyAttendanceSession(options = {}) {
+  const silent = Boolean(options?.silent);
+  const schedule = getSelectedFacultySchedule();
+  if (!schedule) {
+    throw new Error('Select a schedule first.');
+  }
+  if (!schedule.attendance_location_configured) {
+    throw new Error('Set the GPS lock before opening attendance code.');
+  }
+  if (!silent && els.facultyAttendanceSessionStatus) {
+    els.facultyAttendanceSessionStatus.textContent = 'Opening attendance code...';
+  }
+  const session = await api(`/attendance/schedules/${Number(schedule.id)}/session`, {
+    method: 'POST',
+  });
+  syncFacultyAttendanceSessionPanel(session, schedule);
+  if (!silent) {
+    log(`Attendance code opened for schedule ${Number(schedule.id)}.`);
+  }
+  return session;
+}
+
+async function useCurrentLocationForFacultySchedule() {
+  if (!getSelectedFacultySchedule()) {
+    throw new Error('Select a schedule first.');
+  }
+  setFacultyScheduleLocationStatus('Reading current GPS position...', false, 'warn');
+  const geo = await requestCurrentPositionReliable(true);
+  const latitude = Number(geo?.coords?.latitude);
+  const longitude = Number(geo?.coords?.longitude);
+  const accuracyM = Number(geo?.coords?.accuracy || 0);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    throw new Error('Current GPS position is invalid.');
+  }
+  els.facultyScheduleLocationLatitude.value = latitude.toFixed(6);
+  els.facultyScheduleLocationLongitude.value = longitude.toFixed(6);
+  if (!String(els.facultyScheduleLocationRadius.value || '').trim()) {
+    els.facultyScheduleLocationRadius.value = '75';
+  }
+  setFacultyScheduleLocationStatus(`Current location loaded. Browser accuracy ±${Math.round(accuracyM)}m. Save to lock this class.`, false, 'warn');
+}
+
+async function saveFacultyScheduleAttendanceLocation() {
+  const schedule = getSelectedFacultySchedule();
+  if (!schedule) {
+    throw new Error('Select a schedule first.');
+  }
+  const locationInput = readAttendanceLocationInputs({
+    latitudeEl: els.facultyScheduleLocationLatitude,
+    longitudeEl: els.facultyScheduleLocationLongitude,
+    radiusEl: els.facultyScheduleLocationRadius,
+    labelEl: els.facultyScheduleLocationLabel,
+  }, { requireCoordinates: true });
+
+  const updated = await api(`/attendance/schedules/${Number(schedule.id)}/location`, {
+    method: 'PATCH',
+    body: JSON.stringify(locationInput.payload),
+  });
+  state.faculty.schedules = (state.faculty.schedules || []).map((item) => (
+    Number(item.id || 0) === Number(updated.id || 0) ? updated : item
+  ));
+  syncFacultyScheduleLocationForm(updated);
+  syncFacultyAttendanceSessionPanel(null, updated);
+  setFacultyScheduleLocationStatus(`GPS lock saved for schedule #${Number(updated.id || 0)}.`, false, 'ok');
+  await loadFacultySchedules();
 }
 
 function renderFacultyDashboard(data) {
@@ -19600,7 +20283,7 @@ function renderFacultyDashboard(data) {
     animateNumber(els.facultyPresent, 0);
     animateNumber(els.facultyPending, 0);
     animateNumber(els.facultyAbsent, 0);
-    els.facultySubmissionsBody.innerHTML = '<tr><td colspan="6">No submission data.</td></tr>';
+    els.facultySubmissionsBody.innerHTML = '<tr><td colspan="7">No submission data.</td></tr>';
     renderFacultyRectificationQueue([]);
     return;
   }
@@ -19614,7 +20297,7 @@ function renderFacultyDashboard(data) {
   els.facultySubmissionsBody.innerHTML = '';
 
   if (!rows.length) {
-    els.facultySubmissionsBody.innerHTML = '<tr><td colspan="6">No attendance submissions yet.</td></tr>';
+    els.facultySubmissionsBody.innerHTML = '<tr><td colspan="7">No attendance submissions yet.</td></tr>';
     return;
   }
 
@@ -19622,12 +20305,18 @@ function renderFacultyDashboard(data) {
     const tr = document.createElement('tr');
     const isPending = row.status === 'pending_review';
     const checked = state.faculty.selectedSubmissionIds.has(row.id) ? 'checked' : '';
+    const locationDistance = Number(row.location_distance_m);
+    const locationAllowed = Number(row.location_allowed_radius_m);
+    const gpsText = Number.isFinite(locationDistance) && Number.isFinite(locationAllowed)
+      ? `${Math.round(locationDistance)}m / ${Math.round(locationAllowed)}m`
+      : '-';
 
     tr.innerHTML = `
       <td>${isPending ? `<input type="checkbox" class="submission-check" data-submission-id="${row.id}" ${checked}>` : ''}</td>
       <td>${escapeHtml(row.student_name)}</td>
       <td><span class="badge ${row.status}">${escapeHtml(statusLabel(row.status))}</span></td>
       <td>${Number(row.ai_confidence || 0).toFixed(2)}</td>
+      <td>${escapeHtml(gpsText)}</td>
       <td>${escapeHtml(row.ai_reason || '-')}</td>
       <td>${new Date(row.submitted_at).toLocaleTimeString()}</td>
     `;
@@ -20368,6 +21057,9 @@ async function startStudentSelfieFlow() {
   if (String(kpi.schedule?.class_kind || 'regular').toLowerCase() === 'remedial') {
     throw new Error('Remedial attendance is code-based. Open Remedial module and use faculty code within first 15 minutes.');
   }
+  if (!kpi.schedule?.attendance_location_configured) {
+    throw new Error('Class GPS lock is not configured yet. Ask the faculty or admin to set it before marking attendance.');
+  }
   state.student.kpiScheduleId = scheduleId;
   state.student.selectedScheduleId = scheduleId;
   if (!state.student.registrationNumber) {
@@ -20378,6 +21070,9 @@ async function startStudentSelfieFlow() {
   }
   if (requiresStudentEnrollmentSetup()) {
     throw new Error('Complete one-time enrollment video before marking attendance.');
+  }
+  if (!getValidStudentAttendanceAttempt(scheduleId)) {
+    throw new Error('Validate the latest faculty attendance code before facial attendance starts.');
   }
   await startLiveAttendanceVerification();
 }
@@ -22748,6 +23443,20 @@ function bindEvents() {
       }
     });
   }
+  if (els.verlynFeedback) {
+    els.verlynFeedback.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+      const ratingButton = target.closest('button[data-verlyn-rating]');
+      if (!(ratingButton instanceof HTMLButtonElement)) {
+        return;
+      }
+      event.preventDefault();
+      void submitVerlynFeedback(Number(ratingButton.dataset.verlynRating || 0));
+    });
+  }
   if (els.verlynInput) {
     els.verlynInput.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') {
@@ -23346,6 +24055,44 @@ function bindEvents() {
     }
   });
 
+  if (els.studentAttendanceSessionCode) {
+    els.studentAttendanceSessionCode.addEventListener('input', () => {
+      els.studentAttendanceSessionCode.value = normalizeAttendanceSessionCode(els.studentAttendanceSessionCode.value || '');
+    });
+    els.studentAttendanceSessionCode.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      try {
+        await validateStudentAttendanceCodeAndContinue();
+      } catch (error) {
+        const message = String(error?.message || 'Attendance code validation failed.');
+        setAttendanceCodeStatus(message, true);
+        setStudentResult(message);
+      }
+    });
+  }
+
+  if (els.attendanceCodeValidateBtn) {
+    els.attendanceCodeValidateBtn.addEventListener('click', async () => {
+      try {
+        await validateStudentAttendanceCodeAndContinue();
+      } catch (error) {
+        const message = String(error?.message || 'Attendance code validation failed.');
+        setAttendanceCodeStatus(message, true);
+        setStudentResult(message);
+      }
+    });
+  }
+
+  if (els.attendanceCodeCancelBtn) {
+    els.attendanceCodeCancelBtn.addEventListener('click', () => {
+      closeStudentAttendanceCodeModal();
+      setStudentResult('Attendance code validation cancelled.');
+    });
+  }
+
   if (els.studentAttendanceDemoBtn) {
     els.studentAttendanceDemoBtn.addEventListener('click', () => {
       state.student.demoAttendanceEnabled = !state.student.demoAttendanceEnabled;
@@ -23806,6 +24553,9 @@ function bindEvents() {
   els.facultyScheduleSelect.addEventListener('change', async () => {
     try {
       state.faculty.selectedSubmissionIds.clear();
+      state.faculty.selectedScheduleId = Number(els.facultyScheduleSelect.value || 0) || null;
+      syncFacultyScheduleLocationForm(getSelectedFacultySchedule());
+      syncFacultyAttendanceSessionPanel(null, getSelectedFacultySchedule());
       await refreshFacultyDashboard();
     } catch (error) {
       log(error.message);
@@ -23829,6 +24579,44 @@ function bindEvents() {
       log(error.message);
     }
   });
+
+  if (els.facultyUseCurrentLocationBtn) {
+    els.facultyUseCurrentLocationBtn.addEventListener('click', async () => {
+      try {
+        await useCurrentLocationForFacultySchedule();
+      } catch (error) {
+        const message = error?.code ? geolocationErrorText(error) : String(error?.message || 'Unable to read current location.');
+        setFacultyScheduleLocationStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.facultySaveLocationBtn) {
+    els.facultySaveLocationBtn.addEventListener('click', async () => {
+      try {
+        await saveFacultyScheduleAttendanceLocation();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to save GPS lock.');
+        setFacultyScheduleLocationStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.facultyOpenAttendanceSessionBtn) {
+    els.facultyOpenAttendanceSessionBtn.addEventListener('click', async () => {
+      try {
+        await openFacultyAttendanceSession();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to open attendance code.');
+        if (els.facultyAttendanceSessionStatus) {
+          els.facultyAttendanceSessionStatus.textContent = message;
+        }
+        log(message);
+      }
+    });
+  }
 
   if (els.adminCreateScheduleBtn) {
     els.adminCreateScheduleBtn.addEventListener('click', async () => {

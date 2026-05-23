@@ -415,6 +415,10 @@ def _context_date(value: Any) -> date | None:
         return None
 
 
+def _context_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def _context_time(value: Any) -> time | None:
     raw = _context_str(value)
     if not raw:
@@ -429,6 +433,317 @@ def _append_unique(items: list[str], value: str | None) -> None:
     normalized = str(value or "").strip()
     if normalized and normalized not in items:
         items.append(normalized)
+
+
+def _looks_like_app_help_query(query_text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(query_text or "").strip().lower().replace("’", "'"))
+    if not normalized:
+        return False
+    help_markers = (
+        "how do i",
+        "where do i",
+        "what should i",
+        "what do i do",
+        "guide",
+        "help",
+        "debug",
+        "issue",
+        "problem",
+        "error",
+        "stuck",
+        "not working",
+        "can't",
+        "cant",
+        "cannot",
+        "unable",
+        "failed",
+        "failing",
+        "blocked",
+    )
+    app_markers = (
+        "app",
+        "screen",
+        "module",
+        "button",
+        "login",
+        "otp",
+        "attendance",
+        "food",
+        "order",
+        "payment",
+        "saarthi",
+        "remedial",
+        "rms",
+        "profile",
+        "email",
+        "copilot",
+    )
+    return any(marker in normalized for marker in help_markers) and any(marker in normalized for marker in app_markers)
+
+
+def _recent_copilot_feedback_lessons(
+    db: Session,
+    *,
+    current_user: CurrentUser,
+    active_module: str | None,
+    limit: int = 5,
+) -> list[str]:
+    try:
+        query = (
+            db.query(models.CopilotAuditLog)
+            .filter(
+                models.CopilotAuditLog.actor_user_id == int(current_user.id),
+                models.CopilotAuditLog.actor_role == current_user.role.value,
+                models.CopilotAuditLog.feedback_rating.isnot(None),
+            )
+            .order_by(models.CopilotAuditLog.feedback_at.desc(), models.CopilotAuditLog.id.desc())
+            .limit(max(1, min(12, limit * 2)))
+        )
+        rows = query.all()
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "copilot_feedback_lessons_load_failed user_id=%s role=%s",
+            current_user.id,
+            current_user.role.value,
+        )
+        return []
+
+    lessons: list[str] = []
+    module_marker = f"modules:{active_module}" if active_module else ""
+    for row in rows:
+        rating = int(row.feedback_rating or 0)
+        helpful = bool(row.feedback_helpful) if row.feedback_helpful is not None else rating >= 4
+        scope = str(row.scope or "")
+        if module_marker and module_marker not in scope and len(lessons) >= limit:
+            continue
+        result = _safe_json_load_dict(row.result_json)
+        title = str(result.get("title") or "").strip()
+        comment = str(row.feedback_comment or "").strip()
+        if helpful:
+            lesson = f"Repeat response pattern from helpful {row.intent}: direct title '{title[:80]}'"
+            if comment:
+                lesson += f"; user liked: {comment[:140]}"
+        else:
+            lesson = f"Avoid weak response pattern from {row.intent}: rating {rating}/5"
+            if comment:
+                lesson += f"; user issue: {comment[:140]}"
+        _append_unique(lessons, lesson)
+        if len(lessons) >= limit:
+            break
+    return lessons
+
+
+def _format_context_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return re.sub(r"\s+", " ", value.strip())
+    return ""
+
+
+def _append_context_evidence(
+    evidence: list[schemas.CopilotEvidenceItem],
+    *,
+    label: str,
+    value: Any,
+    status: str = "info",
+) -> None:
+    formatted = _format_context_value(value)
+    if formatted:
+        evidence.append(_evidence(label, formatted, status))
+
+
+def _build_app_help_debug_response(
+    payload: schemas.CopilotQueryRequest,
+    *,
+    db: Session,
+    current_user: CurrentUser,
+    active_module: str | None,
+    accessible_modules: list[str],
+    denied_modules: list[str],
+) -> tuple[schemas.CopilotQueryResponse, dict[str, Any]]:
+    module_key = active_module if active_module in accessible_modules else (accessible_modules[0] if accessible_modules else None)
+    module_label = _copilot_module_label(module_key or "")
+    client_context = _context_dict(payload.client_context)
+    module_context = _context_dict(client_context.get(module_key or ""))
+    ui_context = _context_dict(client_context.get("ui"))
+    screen_summary = [
+        str(item).strip()
+        for item in _context_list(ui_context.get("screen_summary"))
+        if str(item or "").strip()
+    ]
+    evidence: list[schemas.CopilotEvidenceItem] = []
+    explanation: list[str] = []
+    next_steps: list[str] = []
+    actions = [_action("app_help_debug", "completed", f"Used live {module_label} screen context")]
+    outcome = schemas.CopilotOutcome.COMPLETED
+    entities: dict[str, Any] = {
+        "mode": "app_help_debug",
+        "active_module": module_key,
+        "accessible_modules": accessible_modules,
+        "denied_modules": denied_modules,
+        "screen_summary": screen_summary[:5],
+        "copilot_feedback_lessons": _recent_copilot_feedback_lessons(
+            db,
+            current_user=current_user,
+            active_module=module_key,
+        ),
+    }
+
+    if denied_modules:
+        explanation.append(
+            "I can only debug modules your role can access; skipped "
+            + ", ".join(_copilot_module_label(module) for module in denied_modules)
+            + "."
+        )
+
+    if screen_summary:
+        explanation.append(screen_summary[0])
+        for index, item in enumerate(screen_summary[:4], start=1):
+            evidence.append(_evidence(f"Current screen {index}", item))
+    elif module_key:
+        explanation.append(f"{module_label}: current screen context is available, but no specific blocker is visible yet.")
+    else:
+        explanation.append("Campus Copilot cannot determine the active module from the current app context.")
+        outcome = schemas.CopilotOutcome.BLOCKED
+
+    if module_key == "attendance":
+        selected_class = _context_dict(module_context.get("selected_class") or module_context.get("selected_schedule"))
+        _append_context_evidence(evidence, label="Selected schedule", value=module_context.get("selected_schedule_id"))
+        _append_context_evidence(evidence, label="Selected course", value=selected_class.get("course_code"))
+        if current_user.role == models.UserRole.STUDENT:
+            if _context_bool(module_context.get("profile_ready")) is False:
+                outcome = schemas.CopilotOutcome.BLOCKED
+                explanation.insert(0, "Attendance is blocked because your profile prerequisites are incomplete.")
+                missing = []
+                if _context_bool(module_context.get("registration_ready")) is False:
+                    missing.append("registration number")
+                if _context_bool(module_context.get("profile_photo_ready")) is False:
+                    missing.append("profile photo")
+                if _context_bool(module_context.get("enrollment_ready")) is False:
+                    missing.append("enrollment video")
+                if missing:
+                    evidence.append(_evidence("Missing attendance prerequisites", ", ".join(missing), "fail"))
+                next_steps = [
+                    "Open Profile Settings and complete the missing attendance prerequisite shown above.",
+                    "Return to Attendance and retry the same class action after the profile save succeeds.",
+                ]
+            elif selected_class:
+                next_steps = [
+                    "Stay on Attendance and retry the selected class action for the schedule shown in evidence.",
+                    "If it still fails, ask Copilot again with the exact button or error text visible on screen.",
+                ]
+        elif current_user.role == models.UserRole.FACULTY:
+            pending = _context_int(module_context.get("pending_rectifications")) or 0
+            _append_context_evidence(evidence, label="Pending rectifications", value=pending, status="warning" if pending else "pass")
+            next_steps = [
+                "Use the selected schedule in Attendance and apply the exact attendance or rectification action there.",
+                "If no schedule is selected, select the affected class first, then ask again.",
+            ]
+
+    elif module_key == "food":
+        order_gate = _context_dict(module_context.get("order_gate"))
+        slot = _context_dict(module_context.get("slot"))
+        cart = _context_dict(module_context.get("cart"))
+        location = _context_dict(module_context.get("location"))
+        can_order = _context_bool(order_gate.get("can_order_now"))
+        _append_context_evidence(evidence, label="Food gate", value=order_gate.get("message") or order_gate.get("reason"), status="fail" if can_order is False else "pass")
+        _append_context_evidence(evidence, label="Selected slot", value=slot.get("label"), status="pass" if slot.get("selected") else "warning")
+        _append_context_evidence(evidence, label="Cart items", value=cart.get("item_count"))
+        _append_context_evidence(evidence, label="Location", value=location.get("message"), status="pass" if location.get("verified") else "warning")
+        if can_order is False:
+            outcome = schemas.CopilotOutcome.BLOCKED
+            explanation.insert(0, f"Food Hall is blocked by the current order gate: {order_gate.get('message') or order_gate.get('reason')}.")
+        next_steps = [
+            "Fix the first failed Food Hall evidence item above, then retry checkout.",
+            "Keep the same slot and cart open while retrying so Copilot can verify the updated screen state.",
+        ]
+
+    elif module_key == "saarthi":
+        _append_context_evidence(evidence, label="Weekly messages", value=module_context.get("message_count"))
+        _append_context_evidence(evidence, label="Saarthi status", value=module_context.get("status_message"))
+        next_steps = [
+            "Continue the Saarthi chat from this screen if a session is already started.",
+            "If sending failed, retry once and ask again with the exact visible status message.",
+        ]
+
+    elif module_key == "remedial":
+        _append_context_evidence(evidence, label="Loaded remedial classes", value=module_context.get("class_count"))
+        selected_class = _context_dict(module_context.get("selected_class"))
+        _append_context_evidence(evidence, label="Selected remedial class", value=selected_class.get("course_code"))
+        next_steps = [
+            "Select or validate the affected remedial class shown in this module.",
+            "Retry the exact remedial action; if blocked, ask again with the visible code or class selected.",
+        ]
+
+    elif module_key == "rms":
+        _append_context_evidence(evidence, label="RMS pending", value=module_context.get("total_pending"), status="warning" if (_context_int(module_context.get("total_pending")) or 0) else "pass")
+        selected_student = _context_dict(module_context.get("selected_student"))
+        selected_thread = _context_dict(module_context.get("selected_thread"))
+        _append_context_evidence(evidence, label="Selected student", value=selected_student.get("registration_number"))
+        _append_context_evidence(evidence, label="Selected thread", value=selected_thread.get("subject"))
+        next_steps = [
+            "Use the selected RMS student or thread already loaded in this screen.",
+            "Apply the pending RMS action, then ask again if the action state does not change.",
+        ]
+
+    elif module_key == "administrative":
+        _append_context_evidence(evidence, label="Pending identity reviews", value=module_context.get("pending_identity_reviews"), status="warning" if (_context_int(module_context.get("pending_identity_reviews")) or 0) else "pass")
+        _append_context_evidence(evidence, label="Pending correction approvals", value=module_context.get("pending_correction_approvals"), status="warning" if (_context_int(module_context.get("pending_correction_approvals")) or 0) else "pass")
+        next_steps = [
+            "Open the administrative card tied to the warning evidence above.",
+            "Run the pending review or approval action, then refresh the audit timeline.",
+        ]
+
+    if not next_steps:
+        next_steps = _focused_module_assist_next_steps(module_key or "", role=current_user.role)
+
+    llm_structured = None
+    response_title = f"{module_label} Help"
+    try:
+        llm_structured = generate_structured_copilot_answer(
+            query_text=payload.query_text,
+            role=current_user.role.value,
+            module_labels=[module_label] if module_key else [],
+            denied_labels=[_copilot_module_label(module) for module in denied_modules],
+            explanation=explanation,
+            evidence=[item.model_dump() for item in evidence],
+            next_steps=next_steps,
+            entities=entities,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "copilot_app_help_llm_rewrite_failed user_id=%s role=%s module=%s",
+            current_user.id,
+            current_user.role.value,
+            module_key,
+        )
+    if isinstance(llm_structured, dict):
+        rewritten_title = str(llm_structured.get("title") or "").strip()
+        rewritten_explanation = llm_structured.get("explanation")
+        rewritten_next_steps = llm_structured.get("next_steps")
+        if rewritten_title:
+            response_title = rewritten_title
+        if isinstance(rewritten_explanation, list) and rewritten_explanation:
+            explanation = [str(item) for item in rewritten_explanation if str(item or "").strip()]
+        if isinstance(rewritten_next_steps, list):
+            next_steps = [str(item) for item in rewritten_next_steps if str(item or "").strip()]
+
+    response = schemas.CopilotQueryResponse(
+        intent=schemas.CopilotIntent.MODULE_ASSIST,
+        outcome=outcome,
+        title=response_title,
+        explanation=explanation[:4],
+        evidence=evidence[:8],
+        actions=actions,
+        next_steps=next_steps[:3],
+        entities=entities,
+    )
+    return response, {"scope": f"role:{current_user.role.value}|modules:{module_key or 'unknown'}|mode:app_help_debug"}
 
 
 def _food_context(payload: schemas.CopilotQueryRequest) -> dict[str, Any]:
@@ -1133,6 +1448,10 @@ def _serialize_audit_row(
         evidence=[schemas.CopilotEvidenceItem(**item) for item in _safe_json_load_list(row.evidence_json)],
         actions=[schemas.CopilotActionItem(**item) for item in _safe_json_load_list(row.actions_json)],
         result=_safe_json_load_dict(row.result_json),
+        feedback_rating=(int(row.feedback_rating) if row.feedback_rating else None),
+        feedback_helpful=(bool(row.feedback_helpful) if row.feedback_helpful is not None else None),
+        feedback_comment=(str(row.feedback_comment or "").strip() or None),
+        feedback_at=row.feedback_at,
         created_at=row.created_at or datetime.utcnow(),
     )
 
@@ -2405,6 +2724,19 @@ def _module_assist_response(
         return response, {"scope": f"role:{current_user.role.value}|module_access:denied"}
 
     broad_scope_requested = _is_broad_module_summary_query(payload.query_text)
+    help_module = active_module if active_module in accessible_modules else (requested_modules[0] if requested_modules else active_module)
+    if _looks_like_app_help_query(payload.query_text) and not _looks_like_food_order_blocker_query(
+        payload.query_text,
+        active_module=help_module,
+    ):
+        return _build_app_help_debug_response(
+            payload,
+            db=db,
+            current_user=current_user,
+            active_module=help_module,
+            accessible_modules=accessible_modules,
+            denied_modules=denied_modules,
+        )
     if requested_modules:
         modules_to_answer = requested_modules
     elif broad_scope_requested or len(accessible_modules) == 1:
@@ -2435,6 +2767,13 @@ def _module_assist_response(
         "active_module": active_module,
         "scope_mode": "broad" if broad_scope_requested else "focused",
     }
+    feedback_lessons = _recent_copilot_feedback_lessons(
+        db,
+        current_user=current_user,
+        active_module=active_module,
+    )
+    if feedback_lessons:
+        entities["copilot_feedback_lessons"] = feedback_lessons
     client_context = _context_dict(payload.client_context)
     ui_context = _context_dict(client_context.get("ui"))
     if ui_context:
@@ -3191,3 +3530,46 @@ def list_copilot_audit(
         _serialize_audit_row(row, actor_email=actor_email)
         for row, actor_email in rows
     ]
+
+
+@router.post("/audit/{audit_id}/feedback", response_model=schemas.CopilotFeedbackResponse)
+def rate_copilot_audit(
+    audit_id: int,
+    payload: schemas.CopilotFeedbackRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(
+        require_roles(
+            models.UserRole.ADMIN,
+            models.UserRole.FACULTY,
+            models.UserRole.STUDENT,
+            models.UserRole.OWNER,
+        )
+    ),
+):
+    row = db.get(models.CopilotAuditLog, int(audit_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Copilot audit log not found.")
+    if current_user.role != models.UserRole.ADMIN and int(row.actor_user_id) != int(current_user.id):
+        raise HTTPException(status_code=403, detail="You can rate only your own Copilot response.")
+
+    row.feedback_rating = int(payload.rating)
+    row.feedback_helpful = bool(payload.helpful)
+    row.feedback_comment = str(payload.comment or "").strip() or None
+    row.feedback_at = datetime.utcnow()
+    try:
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            "copilot_feedback_save_failed audit_id=%s actor_user_id=%s",
+            audit_id,
+            current_user.id,
+        )
+        raise HTTPException(status_code=500, detail="Unable to save Copilot rating right now.") from exc
+
+    return schemas.CopilotFeedbackResponse(
+        audit_id=int(row.id),
+        rating=int(row.feedback_rating or payload.rating),
+        helpful=bool(row.feedback_helpful),
+        message="Rating saved. Campus Copilot will use this audit signal to improve future responses.",
+    )

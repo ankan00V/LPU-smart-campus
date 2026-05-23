@@ -1,14 +1,18 @@
+import base64
+import datetime as datetime_lib
 import hashlib
+import hmac
 import json
 import logging
 import math
 import os
 import re
+import secrets
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from typing import TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pymongo.errors import DuplicateKeyError
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -28,7 +32,7 @@ from ..attendance_ledger import append_event_and_recompute, recompute_attendance
 from ..auth_utils import get_current_user, require_roles
 from ..database import get_db
 from ..default_timetable import DEFAULT_TIMETABLE_BLUEPRINT
-from ..enterprise_controls import apply_pii_encryption_policy
+from ..enterprise_controls import apply_pii_encryption_policy, resolve_secret
 from ..face_verification import (
     build_enrollment_template_from_frames,
     build_profile_face_template,
@@ -85,8 +89,96 @@ FACE_MATCH_PASS_THRESHOLD = max(
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
 PROFILE_MEDIA_RETENTION_DAYS = max(30, int(os.getenv("PROFILE_MEDIA_RETENTION_DAYS", "365")))
 ATTENDANCE_MEDIA_RETENTION_DAYS = max(7, int(os.getenv("ATTENDANCE_MEDIA_RETENTION_DAYS", "120")))
+ATTENDANCE_LOCATION_DEFAULT_RADIUS_M = max(
+    10.0,
+    min(500.0, float(os.getenv("ATTENDANCE_LOCATION_DEFAULT_RADIUS_M", "75"))),
+)
+ATTENDANCE_LOCATION_MAX_DEVICE_ACCURACY_M = max(
+    25.0,
+    min(500.0, float(os.getenv("ATTENDANCE_LOCATION_MAX_DEVICE_ACCURACY_M", "150"))),
+)
+ATTENDANCE_LOCATION_ACCURACY_BUFFER_CAP_M = max(
+    0.0,
+    min(100.0, float(os.getenv("ATTENDANCE_LOCATION_ACCURACY_BUFFER_CAP_M", "35"))),
+)
+ATTENDANCE_SESSION_CODE_LENGTH = max(
+    6,
+    min(12, int(os.getenv("ATTENDANCE_SESSION_CODE_LENGTH", "8"))),
+)
+ATTENDANCE_SESSION_CODE_ROTATION_SECONDS = max(
+    15,
+    min(30, int(os.getenv("ATTENDANCE_SESSION_CODE_ROTATION_SECONDS", "20"))),
+)
+ATTENDANCE_SESSION_CODE_GRACE_SECONDS = max(
+    0,
+    min(10, int(os.getenv("ATTENDANCE_SESSION_CODE_GRACE_SECONDS", "5"))),
+)
+ATTENDANCE_ATTEMPT_TOKEN_TTL_SECONDS = max(
+    30,
+    min(180, int(os.getenv("ATTENDANCE_ATTEMPT_TOKEN_TTL_SECONDS", "90"))),
+)
+ATTENDANCE_ATTEMPT_MAX_SUBMISSIONS = max(
+    1,
+    min(10, int(os.getenv("ATTENDANCE_ATTEMPT_MAX_SUBMISSIONS", "10"))),
+)
+ATTENDANCE_ATTEMPT_MAX_TOKENS_PER_CLASS = max(
+    1,
+    min(5, int(os.getenv("ATTENDANCE_ATTEMPT_MAX_TOKENS_PER_CLASS", "3"))),
+)
+ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS = max(
+    30,
+    min(180, int(os.getenv("ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS", "90"))),
+)
 ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
+
+
+class AttendanceLocationError(HTTPException):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        detail: str,
+        auditable: bool,
+        distance_m: float | None = None,
+        allowed_radius_m: float | None = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.auditable = bool(auditable)
+        self.distance_m = distance_m
+        self.allowed_radius_m = allowed_radius_m
+
+
+class AttendanceSessionError(HTTPException):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        detail: str,
+        auditable: bool,
+        session: models.ClassAttendanceSession | None = None,
+        submitted_code_hash: str | None = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.auditable = bool(auditable)
+        self.session = session
+        self.submitted_code_hash = submitted_code_hash
+
+
+class AttendanceAttemptTokenError(HTTPException):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        detail: str,
+        auditable: bool,
+        session: models.ClassAttendanceSession | None = None,
+        token_hash: str | None = None,
+    ) -> None:
+        super().__init__(status_code=status_code, detail=detail)
+        self.auditable = bool(auditable)
+        self.session = session
+        self.token_hash = token_hash
 
 
 def _demo_features_enabled() -> bool:
@@ -357,6 +449,929 @@ def _client_ai_verdict(payload: schemas.RealtimeAttendanceMarkRequest) -> dict |
         "engine": payload.ai_model or "ai-client",
         "reason": payload.ai_reason or "Client AI verdict",
     }
+
+
+def _attendance_session_secret() -> str:
+    secret = str(resolve_secret("ATTENDANCE_SESSION_SECRET", default="") or "").strip()
+    if not secret:
+        secret = str(resolve_secret("APP_AUTH_SECRET", default="") or "").strip()
+    if secret:
+        return secret
+    if (os.getenv("APP_ENV", "") or "").strip().lower() == "production":
+        raise RuntimeError("ATTENDANCE_SESSION_SECRET or APP_AUTH_SECRET is required in production.")
+    return "attendance-session-dev-secret"
+
+
+def _normalize_attendance_session_code(raw_value: str | None) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(raw_value or "").strip().upper())
+
+
+def _format_attendance_session_code(raw_code: str) -> str:
+    code = _normalize_attendance_session_code(raw_code)
+    if len(code) <= 4:
+        return code
+    return "-".join(code[index : index + 4] for index in range(0, len(code), 4))
+
+
+def _attendance_session_window_end(schedule: models.ClassSchedule, class_date: date) -> datetime:
+    class_start, _ = _class_datetime_bounds(schedule, class_date)
+    return class_start + timedelta(minutes=10)
+
+
+def _attendance_rotation_seconds(session: models.ClassAttendanceSession | None = None) -> int:
+    raw_value = getattr(session, "code_rotation_seconds", None)
+    try:
+        value = int(raw_value or ATTENDANCE_SESSION_CODE_ROTATION_SECONDS)
+    except (TypeError, ValueError):
+        value = ATTENDANCE_SESSION_CODE_ROTATION_SECONDS
+    return max(15, min(30, value))
+
+
+def _attendance_code_slot(now_dt: datetime, rotation_seconds: int) -> int:
+    return int(now_dt.timestamp()) // max(1, int(rotation_seconds))
+
+
+def _attendance_code_slot_start(code_slot: int, rotation_seconds: int) -> datetime:
+    return datetime_lib.datetime.fromtimestamp(int(code_slot) * max(1, int(rotation_seconds)))
+
+
+def _attendance_code_slot_end(code_slot: int, rotation_seconds: int) -> datetime:
+    return _attendance_code_slot_start(int(code_slot) + 1, rotation_seconds)
+
+
+def _attendance_code_expires_at(
+    *,
+    now_dt: datetime,
+    session_expires_at: datetime,
+    rotation_seconds: int,
+) -> datetime:
+    current_slot = _attendance_code_slot(now_dt, rotation_seconds)
+    slot_end = _attendance_code_slot_end(current_slot, rotation_seconds)
+    return min(slot_end, session_expires_at)
+
+
+def _attendance_session_code_message(
+    schedule: models.ClassSchedule,
+    class_date: date,
+    *,
+    code_slot: int,
+) -> str:
+    return "|".join(
+        [
+            "attendance-session-v1",
+            str(int(schedule.id)),
+            str(int(schedule.course_id)),
+            str(int(schedule.faculty_id)),
+            class_date.isoformat(),
+            str(schedule.start_time),
+            str(schedule.end_time),
+            str(int(code_slot)),
+        ]
+    )
+
+
+def _generate_attendance_session_code(
+    schedule: models.ClassSchedule,
+    class_date: date,
+    *,
+    now_dt: datetime | None = None,
+    code_slot: int | None = None,
+    rotation_seconds: int | None = None,
+) -> str:
+    effective_rotation = max(15, min(30, int(rotation_seconds or ATTENDANCE_SESSION_CODE_ROTATION_SECONDS)))
+    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or datetime.now(), effective_rotation)
+    digest = hmac.new(
+        _attendance_session_secret().encode("utf-8"),
+        _attendance_session_code_message(
+            schedule,
+            class_date,
+            code_slot=effective_slot,
+        ).encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    raw_code = base64.b32encode(digest).decode("ascii").replace("=", "")[:ATTENDANCE_SESSION_CODE_LENGTH]
+    return _format_attendance_session_code(raw_code)
+
+
+def _attendance_session_code_hash(
+    code: str,
+    *,
+    schedule: models.ClassSchedule,
+    class_date: date,
+    now_dt: datetime | None = None,
+    code_slot: int | None = None,
+    rotation_seconds: int | None = None,
+) -> str:
+    effective_rotation = max(15, min(30, int(rotation_seconds or ATTENDANCE_SESSION_CODE_ROTATION_SECONDS)))
+    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or datetime.now(), effective_rotation)
+    normalized = _normalize_attendance_session_code(code)
+    message = (
+        "attendance-session-code-v1|"
+        f"{_attendance_session_code_message(schedule, class_date, code_slot=effective_slot)}|{normalized}"
+    )
+    return hmac.new(
+        _attendance_session_secret().encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _candidate_attendance_code_slots(now_dt: datetime, rotation_seconds: int) -> list[int]:
+    current_slot = _attendance_code_slot(now_dt, rotation_seconds)
+    candidates = [current_slot]
+    seconds_into_slot = int(now_dt.timestamp()) - (current_slot * int(rotation_seconds))
+    if ATTENDANCE_SESSION_CODE_GRACE_SECONDS and seconds_into_slot <= ATTENDANCE_SESSION_CODE_GRACE_SECONDS:
+        candidates.append(current_slot - 1)
+    return candidates
+
+
+def _attendance_tracking_hash(value: str | None, *, purpose: str) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    message = f"attendance-tracking-v1|{purpose}|{normalized}"
+    return hmac.new(
+        _attendance_session_secret().encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _attendance_attempt_token_hash(token: str | None) -> str | None:
+    return _attendance_tracking_hash(token, purpose="attempt-token")
+
+
+def _request_client_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded = str(request.headers.get("x-forwarded-for") or "").strip()
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    real_ip = str(request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    if request.client and request.client.host:
+        return str(request.client.host)
+    return None
+
+
+def _request_user_agent(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    return str(request.headers.get("user-agent") or "").strip() or None
+
+
+def _normalize_integrity_flags(raw_flags: list[str] | None) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_flags or []:
+        token = re.sub(r"[^a-z0-9_.:-]+", "_", str(item or "").strip().lower())[:80]
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out[:20]
+
+
+def _integrity_flags_json(flags: list[str]) -> str | None:
+    normalized = _normalize_integrity_flags(flags)
+    return json.dumps(normalized) if normalized else None
+
+
+def _location_integrity_flags(payload: schemas.RealtimeAttendanceMarkRequest, now_dt: datetime) -> list[str]:
+    flags = _normalize_integrity_flags(payload.client_integrity_flags)
+    if payload.location_latitude == 0 and payload.location_longitude == 0:
+        flags.append("gps_zero_coordinates")
+    if payload.location_accuracy_m is None:
+        flags.append("gps_accuracy_missing")
+    elif float(payload.location_accuracy_m) <= 0:
+        flags.append("gps_accuracy_zero")
+    if payload.location_timestamp_ms is None:
+        flags.append("gps_timestamp_missing")
+    else:
+        try:
+            captured_at = datetime_lib.datetime.fromtimestamp(float(payload.location_timestamp_ms) / 1000.0)
+            age_seconds = abs((now_dt - captured_at).total_seconds())
+            if age_seconds > ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS:
+                flags.append("gps_timestamp_stale")
+        except (OverflowError, OSError, ValueError):
+            flags.append("gps_timestamp_invalid")
+    return _normalize_integrity_flags(flags)
+
+
+def _active_attendance_session(
+    db: Session,
+    *,
+    schedule: models.ClassSchedule,
+    class_date: date,
+    now_dt: datetime,
+) -> models.ClassAttendanceSession | None:
+    session = (
+        db.query(models.ClassAttendanceSession)
+        .filter(
+            models.ClassAttendanceSession.schedule_id == schedule.id,
+            models.ClassAttendanceSession.class_date == class_date,
+            models.ClassAttendanceSession.is_active.is_(True),
+        )
+        .first()
+    )
+    if not session or session.expires_at < now_dt:
+        return None
+    return session
+
+
+def _open_attendance_session(
+    db: Session,
+    *,
+    schedule: models.ClassSchedule,
+    class_date: date,
+    now_dt: datetime,
+    opened_by_user_id: int,
+) -> tuple[models.ClassAttendanceSession, str]:
+    rotation_seconds = ATTENDANCE_SESSION_CODE_ROTATION_SECONDS
+    code_slot = _attendance_code_slot(now_dt, rotation_seconds)
+    session_expires_at = _attendance_session_window_end(schedule, class_date)
+    code_expires_at = _attendance_code_expires_at(
+        now_dt=now_dt,
+        session_expires_at=session_expires_at,
+        rotation_seconds=rotation_seconds,
+    )
+    session_code = _generate_attendance_session_code(
+        schedule,
+        class_date,
+        code_slot=code_slot,
+        rotation_seconds=rotation_seconds,
+    )
+    session_hash = _attendance_session_code_hash(
+        session_code,
+        schedule=schedule,
+        class_date=class_date,
+        code_slot=code_slot,
+        rotation_seconds=rotation_seconds,
+    )
+    session = (
+        db.query(models.ClassAttendanceSession)
+        .filter(
+            models.ClassAttendanceSession.schedule_id == schedule.id,
+            models.ClassAttendanceSession.class_date == class_date,
+        )
+        .first()
+    )
+    if session is None:
+        savepoint = db.begin_nested()
+        session = models.ClassAttendanceSession(
+            schedule_id=int(schedule.id),
+            course_id=int(schedule.course_id),
+            faculty_id=int(schedule.faculty_id),
+            class_date=class_date,
+            session_code_hash=session_hash,
+            code_rotation_seconds=rotation_seconds,
+            current_code_expires_at=code_expires_at,
+            generated_at=now_dt,
+            expires_at=session_expires_at,
+            opened_by_user_id=int(opened_by_user_id),
+            is_active=True,
+            created_at=now_dt,
+            updated_at=now_dt,
+        )
+        db.add(session)
+        try:
+            db.flush()
+        except IntegrityError:
+            savepoint.rollback()
+            session = (
+                db.query(models.ClassAttendanceSession)
+                .filter(
+                    models.ClassAttendanceSession.schedule_id == schedule.id,
+                    models.ClassAttendanceSession.class_date == class_date,
+                )
+                .first()
+            )
+            if session is None:
+                raise
+        else:
+            savepoint.commit()
+            return session, session_code
+
+    session.course_id = int(schedule.course_id)
+    session.faculty_id = int(schedule.faculty_id)
+    session.session_code_hash = session_hash
+    session.code_rotation_seconds = rotation_seconds
+    session.current_code_expires_at = code_expires_at
+    session.generated_at = now_dt
+    session.expires_at = session_expires_at
+    session.opened_by_user_id = int(opened_by_user_id)
+    session.is_active = True
+    session.updated_at = now_dt
+    db.flush()
+    return session, session_code
+
+
+def _verify_attendance_session_code(
+    *,
+    db: Session,
+    schedule: models.ClassSchedule,
+    class_date: date,
+    now_dt: datetime,
+    attendance_session_code: str | None,
+) -> tuple[models.ClassAttendanceSession, str, datetime]:
+    session = _active_attendance_session(
+        db,
+        schedule=schedule,
+        class_date=class_date,
+        now_dt=now_dt,
+    )
+    if session is None:
+        raise AttendanceSessionError(
+            status_code=400,
+            detail=(
+                "Faculty attendance code is not open for this class. "
+                "Ask the faculty to open the attendance session during the first 10 minutes."
+            ),
+            auditable=False,
+        )
+
+    normalized_code = _normalize_attendance_session_code(attendance_session_code)
+    if not normalized_code:
+        raise AttendanceSessionError(
+            status_code=400,
+            detail="Attendance session code is required before facial attendance can start.",
+            auditable=True,
+            session=session,
+        )
+
+    rotation_seconds = _attendance_rotation_seconds(session)
+    matched_hash: str | None = None
+    matched_code_expires_at = _attendance_code_expires_at(
+        now_dt=now_dt,
+        session_expires_at=session.expires_at,
+        rotation_seconds=rotation_seconds,
+    )
+    submitted_hash = _attendance_session_code_hash(
+        normalized_code,
+        schedule=schedule,
+        class_date=class_date,
+        now_dt=now_dt,
+        rotation_seconds=rotation_seconds,
+    )
+    for candidate_slot in _candidate_attendance_code_slots(now_dt, rotation_seconds):
+        expected_code = _generate_attendance_session_code(
+            schedule,
+            class_date,
+            code_slot=candidate_slot,
+            rotation_seconds=rotation_seconds,
+        )
+        candidate_hash = _attendance_session_code_hash(
+            normalized_code,
+            schedule=schedule,
+            class_date=class_date,
+            code_slot=candidate_slot,
+            rotation_seconds=rotation_seconds,
+        )
+        if hmac.compare_digest(normalized_code, _normalize_attendance_session_code(expected_code)):
+            matched_hash = candidate_hash
+            if candidate_slot == _attendance_code_slot(now_dt, rotation_seconds):
+                matched_code_expires_at = _attendance_code_expires_at(
+                    now_dt=now_dt,
+                    session_expires_at=session.expires_at,
+                    rotation_seconds=rotation_seconds,
+                )
+            else:
+                matched_code_expires_at = min(
+                    now_dt + timedelta(seconds=ATTENDANCE_SESSION_CODE_GRACE_SECONDS),
+                    session.expires_at,
+                )
+            break
+    if matched_hash is None:
+        raise AttendanceSessionError(
+            status_code=403,
+            detail="Attendance session code rejected for this class window.",
+            auditable=True,
+            session=session,
+            submitted_code_hash=submitted_hash,
+        )
+    return session, matched_hash, matched_code_expires_at
+
+
+def _issue_attendance_attempt_token(
+    *,
+    db: Session,
+    session: models.ClassAttendanceSession,
+    schedule: models.ClassSchedule,
+    student: models.Student,
+    class_date: date,
+    now_dt: datetime,
+    code_hash: str,
+    request: Request | None,
+    browser_fingerprint: str | None,
+    client_integrity_flags: list[str] | None,
+) -> tuple[models.AttendanceAttemptToken, str]:
+    token_count = (
+        db.query(models.AttendanceAttemptToken)
+        .filter(
+            models.AttendanceAttemptToken.schedule_id == schedule.id,
+            models.AttendanceAttemptToken.student_id == student.id,
+            models.AttendanceAttemptToken.class_date == class_date,
+        )
+        .count()
+    )
+    if token_count >= ATTENDANCE_ATTEMPT_MAX_TOKENS_PER_CLASS:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attendance code validations for this class. Ask faculty to verify your attempt.",
+        )
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = _attendance_attempt_token_hash(raw_token)
+    if not token_hash:
+        raise HTTPException(status_code=500, detail="Unable to create attendance attempt token")
+    expires_at = min(
+        now_dt + timedelta(seconds=ATTENDANCE_ATTEMPT_TOKEN_TTL_SECONDS),
+        session.expires_at,
+    )
+    attempt = models.AttendanceAttemptToken(
+        attendance_session_id=int(session.id),
+        schedule_id=int(schedule.id),
+        student_id=int(student.id),
+        class_date=class_date,
+        token_hash=token_hash,
+        session_code_hash=code_hash,
+        browser_fingerprint_hash=_attendance_tracking_hash(browser_fingerprint, purpose="browser-fingerprint"),
+        client_ip_hash=_attendance_tracking_hash(_request_client_ip(request), purpose="client-ip"),
+        user_agent_hash=_attendance_tracking_hash(_request_user_agent(request), purpose="user-agent"),
+        client_integrity_flags=_integrity_flags_json(_normalize_integrity_flags(client_integrity_flags)),
+        issued_at=now_dt,
+        expires_at=expires_at,
+        attempt_count=0,
+        max_attempts=ATTENDANCE_ATTEMPT_MAX_SUBMISSIONS,
+        created_at=now_dt,
+        updated_at=now_dt,
+    )
+    db.add(attempt)
+    db.flush()
+    return attempt, raw_token
+
+
+def _verify_attendance_attempt_token(
+    *,
+    db: Session,
+    schedule: models.ClassSchedule,
+    student: models.Student,
+    class_date: date,
+    now_dt: datetime,
+    request: Request | None,
+    payload: schemas.RealtimeAttendanceMarkRequest,
+) -> tuple[models.AttendanceAttemptToken, models.ClassAttendanceSession]:
+    token_hash = _attendance_attempt_token_hash(payload.attendance_attempt_token)
+    if not token_hash:
+        raise AttendanceAttemptTokenError(
+            status_code=400,
+            detail="Validate the faculty attendance code before facial attendance can start.",
+            auditable=True,
+        )
+    attempt = (
+        db.query(models.AttendanceAttemptToken)
+        .filter(
+            models.AttendanceAttemptToken.token_hash == token_hash,
+            models.AttendanceAttemptToken.schedule_id == schedule.id,
+            models.AttendanceAttemptToken.student_id == student.id,
+            models.AttendanceAttemptToken.class_date == class_date,
+        )
+        .first()
+    )
+    if attempt is None:
+        raise AttendanceAttemptTokenError(
+            status_code=403,
+            detail="Attendance session token rejected. Re-enter the latest faculty code.",
+            auditable=True,
+            token_hash=token_hash,
+        )
+    session = db.get(models.ClassAttendanceSession, attempt.attendance_session_id)
+    if not session or not session.is_active or session.expires_at < now_dt:
+        raise AttendanceAttemptTokenError(
+            status_code=400,
+            detail="Attendance session token expired. Ask faculty to reopen the attendance code if the window is still open.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+    if attempt.expires_at < now_dt:
+        raise AttendanceAttemptTokenError(
+            status_code=400,
+            detail="Attendance session token expired. Re-enter the current faculty code.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+    if attempt.consumed_at is not None:
+        raise AttendanceAttemptTokenError(
+            status_code=409,
+            detail="Attendance is already submitted for this validated code.",
+            auditable=False,
+            session=session,
+            token_hash=token_hash,
+        )
+    if int(attempt.attempt_count or 0) >= int(attempt.max_attempts or ATTENDANCE_ATTEMPT_MAX_SUBMISSIONS):
+        raise AttendanceAttemptTokenError(
+            status_code=429,
+            detail="Too many facial verification attempts for this attendance token. Re-enter the latest faculty code.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+
+    submitted_fingerprint_hash = _attendance_tracking_hash(payload.browser_fingerprint, purpose="browser-fingerprint")
+    if attempt.browser_fingerprint_hash and submitted_fingerprint_hash != attempt.browser_fingerprint_hash:
+        raise AttendanceAttemptTokenError(
+            status_code=403,
+            detail="Browser session changed after code validation. Re-enter the faculty code from this device.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+
+    flags = _location_integrity_flags(payload, now_dt)
+    current_ip_hash = _attendance_tracking_hash(_request_client_ip(request), purpose="client-ip")
+    if attempt.client_ip_hash and current_ip_hash and current_ip_hash != attempt.client_ip_hash:
+        flags.append("client_ip_changed_after_code_validation")
+    if "browser_automation_detected" in set(flags):
+        raise AttendanceAttemptTokenError(
+            status_code=403,
+            detail="Attendance cannot be marked from an automated browser session.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+    if "gps_zero_coordinates" in set(flags):
+        raise AttendanceAttemptTokenError(
+            status_code=400,
+            detail="Browser GPS returned invalid zero coordinates. Enable real device location and retry.",
+            auditable=True,
+            session=session,
+            token_hash=token_hash,
+        )
+
+    attempt.attempt_count = int(attempt.attempt_count or 0) + 1
+    attempt.last_seen_at = now_dt
+    attempt.updated_at = now_dt
+    attempt.client_integrity_flags = _integrity_flags_json(flags) or attempt.client_integrity_flags
+    db.flush()
+    return attempt, session
+
+
+def _schedule_attendance_location_configured(schedule: models.ClassSchedule) -> bool:
+    return schedule.attendance_latitude is not None and schedule.attendance_longitude is not None
+
+
+def _schedule_attendance_radius_m(schedule: models.ClassSchedule) -> float:
+    try:
+        radius = float(schedule.attendance_radius_m or ATTENDANCE_LOCATION_DEFAULT_RADIUS_M)
+    except (TypeError, ValueError):
+        radius = ATTENDANCE_LOCATION_DEFAULT_RADIUS_M
+    return max(10.0, min(500.0, radius))
+
+
+def _haversine_distance_m(
+    origin_latitude: float,
+    origin_longitude: float,
+    target_latitude: float,
+    target_longitude: float,
+) -> float:
+    earth_radius_m = 6_371_000.0
+    origin_lat_rad = math.radians(origin_latitude)
+    target_lat_rad = math.radians(target_latitude)
+    delta_lat = math.radians(target_latitude - origin_latitude)
+    delta_lon = math.radians(target_longitude - origin_longitude)
+    a = (
+        math.sin(delta_lat / 2) ** 2
+        + math.cos(origin_lat_rad) * math.cos(target_lat_rad) * math.sin(delta_lon / 2) ** 2
+    )
+    a = max(0.0, min(1.0, a))
+    return earth_radius_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _verify_attendance_location(
+    *,
+    schedule: models.ClassSchedule,
+    payload: schemas.RealtimeAttendanceMarkRequest,
+) -> tuple[float, float]:
+    if not _schedule_attendance_location_configured(schedule):
+        raise AttendanceLocationError(
+            status_code=400,
+            detail=(
+                "Attendance location is not configured for this class. "
+                "Ask the faculty or admin to set the class GPS lock before marking attendance."
+            ),
+            auditable=False,
+        )
+    if payload.location_latitude is None or payload.location_longitude is None:
+        raise AttendanceLocationError(
+            status_code=400,
+            detail="Browser location is required before facial attendance can start.",
+            auditable=True,
+        )
+
+    accuracy_m: float | None = None
+    if payload.location_accuracy_m is not None:
+        accuracy_m = max(0.0, float(payload.location_accuracy_m))
+        if accuracy_m > ATTENDANCE_LOCATION_MAX_DEVICE_ACCURACY_M:
+            raise AttendanceLocationError(
+                status_code=400,
+                detail=(
+                    f"Location accuracy is too low (±{round(accuracy_m)}m). "
+                    "Move near the classroom, enable high-accuracy GPS, and retry."
+                ),
+                auditable=True,
+            )
+
+    distance_m = _haversine_distance_m(
+        float(schedule.attendance_latitude),
+        float(schedule.attendance_longitude),
+        float(payload.location_latitude),
+        float(payload.location_longitude),
+    )
+    base_radius_m = _schedule_attendance_radius_m(schedule)
+    gps_buffer_m = min(float(accuracy_m or 0.0), ATTENDANCE_LOCATION_ACCURACY_BUFFER_CAP_M)
+    allowed_radius_m = base_radius_m + gps_buffer_m
+    if distance_m > allowed_radius_m:
+        location_label = str(schedule.attendance_location_label or schedule.classroom_label or "the assigned classroom").strip()
+        raise AttendanceLocationError(
+            status_code=403,
+            detail=(
+                "Attendance location rejected: "
+                f"you are {round(distance_m)}m away from {location_label}. "
+                f"Allowed range is {round(allowed_radius_m)}m including GPS buffer."
+            ),
+            auditable=True,
+            distance_m=distance_m,
+            allowed_radius_m=allowed_radius_m,
+        )
+    return distance_m, allowed_radius_m
+
+
+def _clean_location_label(raw_value: str | None) -> str | None:
+    value = str(raw_value or "").strip()
+    return value or None
+
+
+def _apply_attendance_location_fields(
+    schedule: models.ClassSchedule,
+    payload: schemas.ClassScheduleCreate | schemas.TimetableOverrideUpsertRequest | schemas.ClassScheduleLocationUpdate,
+) -> bool:
+    latitude = getattr(payload, "attendance_latitude", None)
+    longitude = getattr(payload, "attendance_longitude", None)
+    if latitude is None or longitude is None:
+        return False
+
+    radius_m = getattr(payload, "attendance_radius_m", None)
+    if radius_m is None:
+        radius_m = ATTENDANCE_LOCATION_DEFAULT_RADIUS_M
+    label = _clean_location_label(getattr(payload, "attendance_location_label", None))
+    next_values = {
+        "attendance_latitude": float(latitude),
+        "attendance_longitude": float(longitude),
+        "attendance_radius_m": max(10.0, min(500.0, float(radius_m))),
+        "attendance_location_label": label,
+    }
+    changed = False
+    for field_name, next_value in next_values.items():
+        if getattr(schedule, field_name) != next_value:
+            setattr(schedule, field_name, next_value)
+            changed = True
+    return changed
+
+
+def _upsert_location_rejected_submission(
+    *,
+    db: Session,
+    schedule: models.ClassSchedule,
+    student_id: int,
+    class_date: date,
+    payload: schemas.RealtimeAttendanceMarkRequest,
+    reason: str,
+    distance_m: float | None,
+    allowed_radius_m: float | None,
+    existing_submission: models.AttendanceSubmission | None = None,
+    attendance_session: models.ClassAttendanceSession | None = None,
+    attendance_session_code_hash: str | None = None,
+    attendance_attempt_token_hash: str | None = None,
+    browser_fingerprint_hash: str | None = None,
+    client_ip_hash: str | None = None,
+    user_agent_hash: str | None = None,
+    client_integrity_flags: str | None = None,
+    ai_model: str = "gps-geofence-v1",
+) -> models.AttendanceSubmission:
+    submission = existing_submission
+    if submission is None:
+        submission = (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.schedule_id == schedule.id,
+                models.AttendanceSubmission.student_id == student_id,
+                models.AttendanceSubmission.class_date == class_date,
+            )
+            .first()
+        )
+
+    if submission is None:
+        submission = models.AttendanceSubmission(
+            schedule_id=schedule.id,
+            course_id=schedule.course_id,
+            faculty_id=schedule.faculty_id,
+            student_id=student_id,
+            class_date=class_date,
+            selfie_photo_data_url=None,
+            selfie_photo_object_key=None,
+            ai_match=False,
+            ai_confidence=0.0,
+            ai_model=ai_model,
+            ai_reason=str(reason or "Attendance location rejected")[:600],
+            location_latitude=payload.location_latitude,
+            location_longitude=payload.location_longitude,
+            location_accuracy_m=payload.location_accuracy_m,
+            location_distance_m=distance_m,
+            location_allowed_radius_m=allowed_radius_m,
+            attendance_session_id=attendance_session.id if attendance_session else None,
+            attendance_session_code_hash=attendance_session_code_hash
+            or (attendance_session.session_code_hash if attendance_session else None),
+            attendance_attempt_token_hash=attendance_attempt_token_hash,
+            browser_fingerprint_hash=browser_fingerprint_hash,
+            client_ip_hash=client_ip_hash,
+            user_agent_hash=user_agent_hash,
+            client_integrity_flags=client_integrity_flags,
+            status=models.AttendanceSubmissionStatus.REJECTED,
+            submitted_at=datetime.utcnow(),
+        )
+        db.add(submission)
+    else:
+        previous_selfie_key = str(submission.selfie_photo_object_key or "").strip() or None
+        submission.selfie_photo_data_url = None
+        submission.selfie_photo_object_key = None
+        if previous_selfie_key:
+            mark_media_deleted(db, previous_selfie_key)
+        submission.ai_match = False
+        submission.ai_confidence = 0.0
+        submission.ai_model = ai_model
+        submission.ai_reason = str(reason or "Attendance location rejected")[:600]
+        submission.location_latitude = payload.location_latitude
+        submission.location_longitude = payload.location_longitude
+        submission.location_accuracy_m = payload.location_accuracy_m
+        submission.location_distance_m = distance_m
+        submission.location_allowed_radius_m = allowed_radius_m
+        submission.attendance_session_id = attendance_session.id if attendance_session else None
+        submission.attendance_session_code_hash = attendance_session_code_hash or (
+            attendance_session.session_code_hash if attendance_session else None
+        )
+        submission.attendance_attempt_token_hash = attendance_attempt_token_hash
+        submission.browser_fingerprint_hash = browser_fingerprint_hash
+        submission.client_ip_hash = client_ip_hash
+        submission.user_agent_hash = user_agent_hash
+        submission.client_integrity_flags = client_integrity_flags
+        submission.status = models.AttendanceSubmissionStatus.REJECTED
+        submission.submitted_at = datetime.utcnow()
+        submission.reviewed_at = None
+        submission.reviewed_by_faculty_id = None
+        submission.review_note = None
+
+    db.flush()
+    return submission
+
+
+def _sync_location_rejected_submission_to_mongo(submission: models.AttendanceSubmission) -> None:
+    _upsert_mongo_by_id(
+        "attendance_submissions",
+        submission.id,
+        {
+            "schedule_id": submission.schedule_id,
+            "course_id": submission.course_id,
+            "faculty_id": submission.faculty_id,
+            "student_id": submission.student_id,
+            "class_date": submission.class_date.isoformat(),
+            "status": submission.status.value,
+            "ai_match": submission.ai_match,
+            "ai_confidence": submission.ai_confidence,
+            "ai_model": submission.ai_model,
+            "ai_reason": submission.ai_reason,
+            "location_latitude": submission.location_latitude,
+            "location_longitude": submission.location_longitude,
+            "location_accuracy_m": submission.location_accuracy_m,
+            "location_distance_m": submission.location_distance_m,
+            "location_allowed_radius_m": submission.location_allowed_radius_m,
+            "attendance_session_id": submission.attendance_session_id,
+            "attendance_session_code_hash": submission.attendance_session_code_hash,
+            "attendance_attempt_token_hash": submission.attendance_attempt_token_hash,
+            "browser_fingerprint_hash": submission.browser_fingerprint_hash,
+            "client_ip_hash": submission.client_ip_hash,
+            "user_agent_hash": submission.user_agent_hash,
+            "client_integrity_flags": submission.client_integrity_flags,
+            "selfie_photo_object_key": None,
+            "selfie_photo_fingerprint": None,
+            "submitted_at": submission.submitted_at,
+            "source": "attendance-location-gate",
+        },
+    )
+
+
+def _audit_realtime_gate_rejection(
+    *,
+    db: Session,
+    schedule: models.ClassSchedule,
+    student_id: int,
+    current_user: models.AuthUser,
+    class_date: date,
+    payload: schemas.RealtimeAttendanceMarkRequest,
+    existing_submission: models.AttendanceSubmission | None,
+    reason: str,
+    ai_model: str,
+    event_type: str,
+    distance_m: float | None = None,
+    allowed_radius_m: float | None = None,
+    attendance_session: models.ClassAttendanceSession | None = None,
+    attendance_session_code_hash: str | None = None,
+    attendance_attempt: models.AttendanceAttemptToken | None = None,
+    request: Request | None = None,
+) -> None:
+    integrity_flags = _location_integrity_flags(payload, datetime.now())
+    if attendance_attempt and attendance_attempt.client_integrity_flags:
+        try:
+            existing_flags = json.loads(attendance_attempt.client_integrity_flags)
+        except json.JSONDecodeError:
+            existing_flags = []
+        if isinstance(existing_flags, list):
+            integrity_flags = _normalize_integrity_flags([*existing_flags, *integrity_flags])
+    rejected_submission = _upsert_location_rejected_submission(
+        db=db,
+        schedule=schedule,
+        student_id=int(student_id),
+        class_date=class_date,
+        payload=payload,
+        reason=reason,
+        distance_m=distance_m,
+        allowed_radius_m=allowed_radius_m,
+        existing_submission=existing_submission,
+        attendance_session=attendance_session,
+        attendance_session_code_hash=attendance_session_code_hash,
+        attendance_attempt_token_hash=attendance_attempt.token_hash if attendance_attempt else None,
+        browser_fingerprint_hash=(
+            attendance_attempt.browser_fingerprint_hash
+            if attendance_attempt
+            else _attendance_tracking_hash(payload.browser_fingerprint, purpose="browser-fingerprint")
+        ),
+        client_ip_hash=(
+            attendance_attempt.client_ip_hash
+            if attendance_attempt
+            else _attendance_tracking_hash(_request_client_ip(request), purpose="client-ip")
+        ),
+        user_agent_hash=(
+            attendance_attempt.user_agent_hash
+            if attendance_attempt
+            else _attendance_tracking_hash(_request_user_agent(request), purpose="user-agent")
+        ),
+        client_integrity_flags=_integrity_flags_json(integrity_flags),
+        ai_model=ai_model,
+    )
+    db.commit()
+    try:
+        _sync_location_rejected_submission_to_mongo(rejected_submission)
+        publish_domain_event(
+            event_type,
+            payload={
+                "submission_id": int(rejected_submission.id),
+                "student_id": int(rejected_submission.student_id),
+                "faculty_id": int(rejected_submission.faculty_id),
+                "schedule_id": int(rejected_submission.schedule_id),
+                "course_id": int(rejected_submission.course_id),
+                "class_date": rejected_submission.class_date.isoformat(),
+                "status": rejected_submission.status.value,
+                "ai_model": rejected_submission.ai_model,
+                "location_distance_m": float(rejected_submission.location_distance_m or 0.0),
+                "location_allowed_radius_m": float(rejected_submission.location_allowed_radius_m or 0.0),
+                "attendance_session_id": rejected_submission.attendance_session_id,
+                "attendance_attempt_token_hash": rejected_submission.attendance_attempt_token_hash,
+                "client_integrity_flags": rejected_submission.client_integrity_flags,
+            },
+            scopes={
+                f"student:{int(rejected_submission.student_id)}",
+                f"faculty:{int(rejected_submission.faculty_id)}",
+                "role:admin",
+            },
+            topics={"attendance"},
+            actor={
+                "user_id": int(current_user.id),
+                "student_id": int(current_user.student_id or 0),
+                "role": current_user.role.value,
+            },
+            source="attendance",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        logger.warning(
+            "attendance_realtime_gate_rejection_audit_side_effect_failed submission_id=%s event_type=%s error=%s",
+            int(rejected_submission.id),
+            event_type,
+            audit_exc,
+        )
 
 
 def _week_start_for(target_date: date) -> date:
@@ -1185,9 +2200,41 @@ def _upsert_class_schedule_document(schedule: models.ClassSchedule, *, source: s
             "start_time": str(schedule.start_time),
             "end_time": str(schedule.end_time),
             "classroom_label": schedule.classroom_label,
+            "attendance_latitude": schedule.attendance_latitude,
+            "attendance_longitude": schedule.attendance_longitude,
+            "attendance_radius_m": schedule.attendance_radius_m,
+            "attendance_location_label": schedule.attendance_location_label,
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
             "is_active": schedule.is_active,
             "source": source,
             "created_at": schedule.created_at,
+        },
+    )
+
+
+def _upsert_class_attendance_session_document(
+    session: models.ClassAttendanceSession,
+    *,
+    source: str,
+) -> None:
+    _upsert_mongo_by_id(
+        "class_attendance_sessions",
+        session.id,
+        {
+            "schedule_id": session.schedule_id,
+            "course_id": session.course_id,
+            "faculty_id": session.faculty_id,
+            "class_date": session.class_date.isoformat(),
+            "session_code_hash": session.session_code_hash,
+            "code_rotation_seconds": session.code_rotation_seconds,
+            "current_code_expires_at": session.current_code_expires_at,
+            "generated_at": session.generated_at,
+            "expires_at": session.expires_at,
+            "opened_by_user_id": session.opened_by_user_id,
+            "is_active": session.is_active,
+            "source": source,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
         },
     )
 
@@ -1235,6 +2282,8 @@ def _resolve_or_create_timetable_schedule(
         if incoming_room and not existing_room:
             existing.classroom_label = incoming_room
             schedule_changed = True
+        if payload.attendance_latitude is not None:
+            schedule_changed = _apply_attendance_location_fields(existing, payload) or schedule_changed
         if not existing.is_active:
             existing.is_active = True
             schedule_changed = True
@@ -1295,6 +2344,10 @@ def _resolve_or_create_timetable_schedule(
         start_time=payload.start_time,
         end_time=payload.end_time,
         classroom_label=classroom_label,
+        attendance_latitude=payload.attendance_latitude,
+        attendance_longitude=payload.attendance_longitude,
+        attendance_radius_m=payload.attendance_radius_m,
+        attendance_location_label=_clean_location_label(payload.attendance_location_label),
         is_active=True,
     )
     db.add(schedule)
@@ -1326,6 +2379,9 @@ def _resolve_or_create_timetable_schedule(
             "start_time": str(schedule.start_time),
             "end_time": str(schedule.end_time),
             "classroom_label": schedule.classroom_label,
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
+            "attendance_radius_m": schedule.attendance_radius_m,
+            "attendance_location_label": schedule.attendance_location_label,
             "created_at": datetime.utcnow(),
             "source": "attendance.timetable_override",
             "actor_user_id": current_user.id,
@@ -1430,6 +2486,8 @@ def _build_timetable_class_item(
         is_active_now=is_active_now,
         is_ended_now=is_ended_now,
         attendance_status=attendance_status,
+        attendance_location_configured=_schedule_attendance_location_configured(schedule),
+        attendance_location_label=schedule.attendance_location_label,
     )
 
 
@@ -2294,26 +3352,14 @@ def create_schedule(
                 detail=f"Linking engine check failed: classroom has overlapping class (schedule {row.id})",
             )
 
-    schedule = models.ClassSchedule(**(payload.model_dump() | {"classroom_label": classroom_label}))
+    schedule_data = payload.model_dump()
+    schedule_data["attendance_location_label"] = _clean_location_label(payload.attendance_location_label)
+    schedule = models.ClassSchedule(**(schedule_data | {"classroom_label": classroom_label}))
     db.add(schedule)
     db.commit()
     db.refresh(schedule)
 
-    _upsert_mongo_by_id(
-        "class_schedules",
-        schedule.id,
-        {
-            "course_id": schedule.course_id,
-            "faculty_id": schedule.faculty_id,
-            "weekday": schedule.weekday,
-            "start_time": str(schedule.start_time),
-            "end_time": str(schedule.end_time),
-            "classroom_label": schedule.classroom_label,
-            "is_active": schedule.is_active,
-            "source": "api",
-            "created_at": schedule.created_at,
-        },
-    )
+    _upsert_class_schedule_document(schedule, source="api")
     mirror_document(
         "resource_allocations",
         {
@@ -2339,6 +3385,9 @@ def create_schedule(
             "weekday": int(schedule.weekday),
             "start_time": str(schedule.start_time),
             "end_time": str(schedule.end_time),
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
+            "attendance_radius_m": schedule.attendance_radius_m,
+            "attendance_location_label": schedule.attendance_location_label,
             "created_at": datetime.utcnow(),
             "source": "attendance.create_schedule",
             "actor_user_id": current_user.id,
@@ -2375,7 +3424,276 @@ def list_schedules(
             return []
         query = query.filter(models.ClassSchedule.course_id.in_(enrolled_course_ids))
 
-    return query.order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc()).all()
+    schedules = query.order_by(models.ClassSchedule.weekday.asc(), models.ClassSchedule.start_time.asc()).all()
+    if current_user.role == models.UserRole.STUDENT:
+        return [
+            schemas.ClassScheduleOut.model_validate(row).model_copy(
+                update={
+                    "attendance_latitude": None,
+                    "attendance_longitude": None,
+                    "attendance_radius_m": None,
+                    "attendance_location_configured": _schedule_attendance_location_configured(row),
+                }
+            )
+            for row in schedules
+        ]
+    return schedules
+
+
+@router.patch("/schedules/{schedule_id}/location", response_model=schemas.ClassScheduleOut)
+def update_schedule_attendance_location(
+    schedule_id: int,
+    payload: schemas.ClassScheduleLocationUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    schedule = db.get(models.ClassSchedule, schedule_id)
+    if not schedule or not schedule.is_active:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if current_user.role == models.UserRole.FACULTY and int(current_user.faculty_id or 0) != int(schedule.faculty_id):
+        raise HTTPException(status_code=403, detail="Faculty can only update GPS locks for their own classes")
+
+    _apply_attendance_location_fields(schedule, payload)
+    db.commit()
+    db.refresh(schedule)
+
+    _upsert_class_schedule_document(schedule, source="attendance.schedule_location_update")
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": "schedule_attendance_location_updated",
+            "schedule_id": int(schedule.id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "attendance_radius_m": float(schedule.attendance_radius_m or 0.0),
+            "attendance_location_label": schedule.attendance_location_label,
+            "updated_at": datetime.utcnow(),
+            "source": "attendance.schedule_location_update",
+            "actor_user_id": current_user.id,
+            "actor_role": current_user.role.value,
+        },
+        required=False,
+    )
+    enrolled_student_ids = _enrolled_student_ids_for_course(db, course_id=int(schedule.course_id))
+    publish_domain_event(
+        "attendance.schedule.location.updated",
+        payload={
+            "schedule_id": int(schedule.id),
+            "course_id": int(schedule.course_id),
+            "faculty_id": int(schedule.faculty_id),
+            "weekday": int(schedule.weekday),
+            "start_time": str(schedule.start_time),
+            "end_time": str(schedule.end_time),
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
+            "attendance_location_label": schedule.attendance_location_label,
+        },
+        scopes={
+            "role:admin",
+            f"faculty:{int(schedule.faculty_id)}",
+            *(f"student:{int(student_id)}" for student_id in enrolled_student_ids),
+        },
+        topics={"attendance"},
+        actor={
+            "user_id": int(current_user.id),
+            "role": current_user.role.value,
+        },
+        source="attendance",
+    )
+    return schedule
+
+
+@router.post("/schedules/{schedule_id}/session", response_model=schemas.ClassAttendanceSessionOut)
+def open_schedule_attendance_session(
+    schedule_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
+):
+    schedule = db.get(models.ClassSchedule, schedule_id)
+    if not schedule or not schedule.is_active:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    if current_user.role == models.UserRole.FACULTY and int(current_user.faculty_id or 0) != int(schedule.faculty_id):
+        raise HTTPException(status_code=403, detail="Faculty can only open attendance sessions for their own classes")
+    if not _schedule_attendance_location_configured(schedule):
+        raise HTTPException(status_code=400, detail="Set the class GPS lock before opening the attendance code.")
+
+    course = db.get(models.Course, schedule.course_id)
+    class_date = date.today()
+    if int(schedule.weekday) != int(class_date.weekday()):
+        raise HTTPException(status_code=400, detail="Attendance code can only be opened on the scheduled class day.")
+
+    now_dt = datetime.now()
+    is_open_now, _, _ = _window_flags(schedule, now_dt, class_date, course=course)
+    if not is_open_now:
+        raise HTTPException(status_code=400, detail="Attendance code can only be opened during the first 10 minutes.")
+
+    try:
+        session, session_code = _open_attendance_session(
+            db,
+            schedule=schedule,
+            class_date=class_date,
+            now_dt=now_dt,
+            opened_by_user_id=int(current_user.id),
+        )
+        db.commit()
+        db.refresh(session)
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        _upsert_class_attendance_session_document(session, source="attendance.session.opened")
+        publish_domain_event(
+            "attendance.session.opened",
+            payload={
+                "attendance_session_id": int(session.id),
+                "schedule_id": int(schedule.id),
+                "course_id": int(schedule.course_id),
+                "faculty_id": int(schedule.faculty_id),
+                "class_date": class_date.isoformat(),
+                "expires_at": session.expires_at.isoformat(),
+            },
+            scopes={
+                "role:admin",
+                f"faculty:{int(schedule.faculty_id)}",
+                *(f"student:{int(student_id)}" for student_id in _enrolled_student_ids_for_course(db, course_id=int(schedule.course_id))),
+            },
+            topics={"attendance"},
+            actor={
+                "user_id": int(current_user.id),
+                "role": current_user.role.value,
+            },
+            source="attendance",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        logger.warning(
+            "attendance_session_opened_side_effect_failed session_id=%s error=%s",
+            int(session.id),
+            audit_exc,
+        )
+
+    return schemas.ClassAttendanceSessionOut(
+        schedule_id=int(schedule.id),
+        class_date=class_date,
+        session_code=session_code,
+        generated_at=session.generated_at,
+        expires_at=session.expires_at,
+        code_expires_at=session.current_code_expires_at or session.expires_at,
+        code_rotation_seconds=_attendance_rotation_seconds(session),
+        server_time=now_dt,
+        attendance_window_open=True,
+        message="Attendance code is open and refreshes automatically for this class window.",
+    )
+
+
+@router.post("/schedules/{schedule_id}/session/validate", response_model=schemas.AttendanceCodeValidateResponse)
+def validate_schedule_attendance_session_code(
+    schedule_id: int,
+    payload: schemas.AttendanceCodeValidateRequest,
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
+):
+    student, schedule, course = _resolve_student_schedule_context(
+        db=db,
+        current_user=current_user,
+        schedule_id=int(schedule_id),
+    )
+    class_date = date.today()
+    if int(schedule.weekday) != int(class_date.weekday()):
+        raise HTTPException(status_code=400, detail="This class is not scheduled for today.")
+    now_dt = datetime.now()
+    is_open_now, _, _ = _window_flags(schedule, now_dt, class_date, course=course)
+    if not is_open_now:
+        raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes).")
+    if not _schedule_attendance_location_configured(schedule):
+        raise HTTPException(
+            status_code=400,
+            detail="Class GPS lock is not configured yet. Ask the faculty or admin to set it before marking attendance.",
+        )
+    existing_submission = (
+        db.query(models.AttendanceSubmission)
+        .filter(
+            models.AttendanceSubmission.schedule_id == schedule.id,
+            models.AttendanceSubmission.student_id == student.id,
+            models.AttendanceSubmission.class_date == class_date,
+        )
+        .first()
+    )
+    if existing_submission and existing_submission.status in (
+        models.AttendanceSubmissionStatus.VERIFIED,
+        models.AttendanceSubmissionStatus.APPROVED,
+    ):
+        raise HTTPException(status_code=409, detail="Attendance already verified for this class.")
+
+    session, code_hash, code_expires_at = _verify_attendance_session_code(
+        db=db,
+        schedule=schedule,
+        class_date=class_date,
+        now_dt=now_dt,
+        attendance_session_code=payload.attendance_session_code,
+    )
+    try:
+        attempt, raw_token = _issue_attendance_attempt_token(
+            db=db,
+            session=session,
+            schedule=schedule,
+            student=student,
+            class_date=class_date,
+            now_dt=now_dt,
+            code_hash=code_hash,
+            request=request,
+            browser_fingerprint=payload.browser_fingerprint,
+            client_integrity_flags=payload.client_integrity_flags,
+        )
+        db.commit()
+        db.refresh(attempt)
+    except HTTPException:
+        db.rollback()
+        raise
+
+    try:
+        publish_domain_event(
+            "attendance.session.code_validated",
+            payload={
+                "attendance_session_id": int(session.id),
+                "schedule_id": int(schedule.id),
+                "course_id": int(schedule.course_id),
+                "student_id": int(student.id),
+                "class_date": class_date.isoformat(),
+                "token_expires_at": attempt.expires_at.isoformat(),
+            },
+            scopes={
+                f"student:{int(student.id)}",
+                f"faculty:{int(schedule.faculty_id)}",
+                "role:admin",
+            },
+            topics={"attendance"},
+            actor={
+                "user_id": int(current_user.id),
+                "student_id": int(student.id),
+                "role": current_user.role.value,
+            },
+            source="attendance",
+        )
+    except Exception as audit_exc:  # noqa: BLE001
+        logger.warning(
+            "attendance_code_validation_side_effect_failed attempt_id=%s error=%s",
+            int(attempt.id),
+            audit_exc,
+        )
+    return schemas.AttendanceCodeValidateResponse(
+        schedule_id=int(schedule.id),
+        class_date=class_date,
+        attendance_attempt_token=raw_token,
+        token_expires_at=attempt.expires_at,
+        attendance_session_id=int(session.id),
+        code_expires_at=code_expires_at,
+        attendance_window_expires_at=session.expires_at,
+        code_rotation_seconds=_attendance_rotation_seconds(session),
+        room=schedule.attendance_location_label or schedule.classroom_label,
+        allowed_radius_m=_schedule_attendance_radius_m(schedule),
+        message="Code verified. Continue with browser GPS and facial attendance.",
+    )
 
 
 @router.post("/timetable-overrides", response_model=schemas.TimetableOverrideOut, status_code=status.HTTP_201_CREATED)
@@ -2493,6 +3811,9 @@ def upsert_timetable_override(
             "start_time": str(schedule.start_time),
             "end_time": str(schedule.end_time),
             "classroom_label": schedule.classroom_label,
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
+            "attendance_radius_m": schedule.attendance_radius_m,
+            "attendance_location_label": schedule.attendance_location_label,
             "created_at": now_dt,
             "source": "attendance.timetable_override",
             "actor_user_id": current_user.id,
@@ -2523,6 +3844,8 @@ def upsert_timetable_override(
             "start_time": str(schedule.start_time),
             "end_time": str(schedule.end_time),
             "classroom_label": schedule.classroom_label,
+            "attendance_location_configured": _schedule_attendance_location_configured(schedule),
+            "attendance_location_label": schedule.attendance_location_label,
             "affected_student_ids": affected_student_ids,
         },
         scopes=event_scopes,
@@ -4333,12 +5656,18 @@ def _public_rejection_message(reason: str, confidence: float | None = None) -> s
 @router.post("/realtime/mark", response_model=schemas.RealtimeAttendanceMarkResponse)
 def mark_realtime_attendance(
     payload: schemas.RealtimeAttendanceMarkRequest,
+    request: Request = None,
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
     if payload.demo_mode and not _demo_features_enabled():
         raise HTTPException(status_code=403, detail="Demo attendance mode is disabled in production.")
 
+    location_distance_m: float | None = None
+    location_allowed_radius_m: float | None = None
+    submission: models.AttendanceSubmission | None = None
+    attendance_session: models.ClassAttendanceSession | None = None
+    attendance_attempt: models.AttendanceAttemptToken | None = None
     if payload.demo_mode:
         student = _resolve_student_face_context(
             db=db,
@@ -4363,6 +5692,87 @@ def mark_realtime_attendance(
         is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
         if not is_open_now:
             raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
+        submission = (
+            db.query(models.AttendanceSubmission)
+            .filter(
+                models.AttendanceSubmission.schedule_id == schedule.id,
+                models.AttendanceSubmission.student_id == current_user.student_id,
+                models.AttendanceSubmission.class_date == today,
+            )
+            .first()
+        )
+        if submission and submission.status in (
+            models.AttendanceSubmissionStatus.VERIFIED,
+            models.AttendanceSubmissionStatus.APPROVED,
+        ):
+            return schemas.RealtimeAttendanceMarkResponse(
+                submission_id=submission.id,
+                status=submission.status,
+                requires_faculty_review=False,
+                message="Attendance already verified for this class",
+                demo_mode=False,
+                persistence_skipped=False,
+                verification_engine=submission.ai_model or "previous-verification",
+                verification_confidence=float(submission.ai_confidence or 0.0),
+                verification_reason=submission.ai_reason,
+                location_distance_m=submission.location_distance_m,
+                location_allowed_radius_m=submission.location_allowed_radius_m,
+            )
+        try:
+            attendance_attempt, attendance_session = _verify_attendance_attempt_token(
+                db=db,
+                schedule=schedule,
+                student=student,
+                class_date=today,
+                now_dt=now_dt,
+                request=request,
+                payload=payload,
+            )
+        except AttendanceAttemptTokenError as exc:
+            if exc.auditable:
+                _audit_realtime_gate_rejection(
+                    db=db,
+                    schedule=schedule,
+                    student_id=int(current_user.student_id or student.id),
+                    current_user=current_user,
+                    class_date=today,
+                    payload=payload,
+                    existing_submission=submission,
+                    reason=str(exc.detail or "Attendance session code rejected"),
+                    ai_model="attendance-session-token-v1",
+                    event_type="attendance.session.rejected",
+                    attendance_session=exc.session,
+                    attendance_session_code_hash=exc.session.session_code_hash if exc.session else None,
+                    request=request,
+                )
+            raise
+
+        try:
+            location_distance_m, location_allowed_radius_m = _verify_attendance_location(
+                schedule=schedule,
+                payload=payload,
+            )
+        except AttendanceLocationError as exc:
+            if exc.auditable:
+                _audit_realtime_gate_rejection(
+                    db=db,
+                    schedule=schedule,
+                    student_id=int(current_user.student_id or student.id),
+                    current_user=current_user,
+                    class_date=today,
+                    payload=payload,
+                    existing_submission=submission,
+                    reason=str(exc.detail or "Attendance location rejected"),
+                    distance_m=exc.distance_m,
+                    allowed_radius_m=exc.allowed_radius_m,
+                    attendance_session=attendance_session,
+                    attendance_session_code_hash=attendance_attempt.session_code_hash if attendance_attempt else None,
+                    attendance_attempt=attendance_attempt,
+                    request=request,
+                    ai_model="gps-geofence-v1",
+                    event_type="attendance.location.rejected",
+                )
+            raise
 
     primary_selfie, final_confidence, final_engine, status_value, final_reason = _verify_student_face_payload(
         db=db,
@@ -4388,17 +5798,9 @@ def mark_realtime_attendance(
             verification_engine=final_engine,
             verification_confidence=final_confidence,
             verification_reason=final_reason,
+            location_distance_m=None,
+            location_allowed_radius_m=None,
         )
-
-    submission = (
-        db.query(models.AttendanceSubmission)
-        .filter(
-            models.AttendanceSubmission.schedule_id == schedule.id,
-            models.AttendanceSubmission.student_id == current_user.student_id,
-            models.AttendanceSubmission.class_date == today,
-        )
-        .first()
-    )
 
     if not submission:
         selfie_media = store_data_url_object(
@@ -4421,26 +5823,24 @@ def mark_realtime_attendance(
             ai_confidence=final_confidence,
             ai_model=final_engine,
             ai_reason=final_reason,
+            location_latitude=payload.location_latitude,
+            location_longitude=payload.location_longitude,
+            location_accuracy_m=payload.location_accuracy_m,
+            location_distance_m=location_distance_m,
+            location_allowed_radius_m=location_allowed_radius_m,
+            attendance_session_id=attendance_session.id if attendance_session else None,
+            attendance_session_code_hash=attendance_attempt.session_code_hash if attendance_attempt else (
+                attendance_session.session_code_hash if attendance_session else None
+            ),
+            attendance_attempt_token_hash=attendance_attempt.token_hash if attendance_attempt else None,
+            browser_fingerprint_hash=attendance_attempt.browser_fingerprint_hash if attendance_attempt else None,
+            client_ip_hash=attendance_attempt.client_ip_hash if attendance_attempt else None,
+            user_agent_hash=attendance_attempt.user_agent_hash if attendance_attempt else None,
+            client_integrity_flags=attendance_attempt.client_integrity_flags if attendance_attempt else None,
             status=status_value,
         )
         db.add(submission)
     else:
-        if submission.status in (
-            models.AttendanceSubmissionStatus.VERIFIED,
-            models.AttendanceSubmissionStatus.APPROVED,
-        ):
-            return schemas.RealtimeAttendanceMarkResponse(
-                submission_id=submission.id,
-                status=submission.status,
-                requires_faculty_review=False,
-                message="Attendance already verified for this class",
-                demo_mode=False,
-                persistence_skipped=False,
-                verification_engine=submission.ai_model or "previous-verification",
-                verification_confidence=float(submission.ai_confidence or 0.0),
-                verification_reason=submission.ai_reason,
-            )
-
         previous_selfie_key = str(submission.selfie_photo_object_key or "").strip() or None
         selfie_media = store_data_url_object(
             db,
@@ -4458,6 +5858,20 @@ def mark_realtime_attendance(
         submission.ai_confidence = final_confidence
         submission.ai_model = final_engine
         submission.ai_reason = final_reason
+        submission.location_latitude = payload.location_latitude
+        submission.location_longitude = payload.location_longitude
+        submission.location_accuracy_m = payload.location_accuracy_m
+        submission.location_distance_m = location_distance_m
+        submission.location_allowed_radius_m = location_allowed_radius_m
+        submission.attendance_session_id = attendance_session.id if attendance_session else None
+        submission.attendance_session_code_hash = attendance_attempt.session_code_hash if attendance_attempt else (
+            attendance_session.session_code_hash if attendance_session else None
+        )
+        submission.attendance_attempt_token_hash = attendance_attempt.token_hash if attendance_attempt else None
+        submission.browser_fingerprint_hash = attendance_attempt.browser_fingerprint_hash if attendance_attempt else None
+        submission.client_ip_hash = attendance_attempt.client_ip_hash if attendance_attempt else None
+        submission.user_agent_hash = attendance_attempt.user_agent_hash if attendance_attempt else None
+        submission.client_integrity_flags = attendance_attempt.client_integrity_flags if attendance_attempt else None
         submission.status = status_value
         submission.submitted_at = datetime.utcnow()
         submission.reviewed_at = None
@@ -4467,6 +5881,9 @@ def mark_realtime_attendance(
     db.flush()
 
     if status_value == models.AttendanceSubmissionStatus.VERIFIED:
+        if attendance_attempt is not None:
+            attendance_attempt.consumed_at = datetime.utcnow()
+            attendance_attempt.updated_at = datetime.utcnow()
         _upsert_present_attendance(
             db,
             student_id=current_user.student_id,
@@ -4492,6 +5909,18 @@ def mark_realtime_attendance(
             "ai_confidence": submission.ai_confidence,
             "ai_model": submission.ai_model,
             "ai_reason": submission.ai_reason,
+            "location_latitude": submission.location_latitude,
+            "location_longitude": submission.location_longitude,
+            "location_accuracy_m": submission.location_accuracy_m,
+            "location_distance_m": submission.location_distance_m,
+            "location_allowed_radius_m": submission.location_allowed_radius_m,
+            "attendance_session_id": submission.attendance_session_id,
+            "attendance_session_code_hash": submission.attendance_session_code_hash,
+            "attendance_attempt_token_hash": submission.attendance_attempt_token_hash,
+            "browser_fingerprint_hash": submission.browser_fingerprint_hash,
+            "client_ip_hash": submission.client_ip_hash,
+            "user_agent_hash": submission.user_agent_hash,
+            "client_integrity_flags": submission.client_integrity_flags,
             "selfie_photo_object_key": submission.selfie_photo_object_key,
             "selfie_photo_fingerprint": _photo_fingerprint(
                 submission.selfie_photo_object_key or submission.selfie_photo_data_url
@@ -4511,6 +5940,8 @@ def mark_realtime_attendance(
             "class_date": submission.class_date.isoformat(),
             "status": submission.status.value,
             "ai_confidence": float(submission.ai_confidence or 0.0),
+            "location_distance_m": float(submission.location_distance_m or 0.0),
+            "location_allowed_radius_m": float(submission.location_allowed_radius_m or 0.0),
         },
         scopes={
             f"student:{int(submission.student_id)}",
@@ -4555,6 +5986,8 @@ def mark_realtime_attendance(
         verification_engine=final_engine,
         verification_confidence=final_confidence,
         verification_reason=final_reason,
+        location_distance_m=location_distance_m,
+        location_allowed_radius_m=location_allowed_radius_m,
     )
 
 
@@ -4647,6 +6080,8 @@ def get_faculty_dashboard(
                 status=item.status,
                 ai_confidence=item.ai_confidence,
                 ai_reason=item.ai_reason,
+                location_distance_m=item.location_distance_m,
+                location_allowed_radius_m=item.location_allowed_radius_m,
                 submitted_at=item.submitted_at,
             )
         )

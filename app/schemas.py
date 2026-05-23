@@ -1790,7 +1790,27 @@ class ClassScheduleCreate(BaseModel):
     start_time: time
     end_time: time
     classroom_label: Optional[str] = None
+    attendance_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    attendance_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    attendance_radius_m: Optional[float] = Field(default=None, ge=10, le=500)
+    attendance_location_label: Optional[str] = Field(default=None, max_length=120)
     is_active: bool = True
+
+    @model_validator(mode="after")
+    def validate_attendance_location(self):
+        has_latitude = self.attendance_latitude is not None
+        has_longitude = self.attendance_longitude is not None
+        if has_latitude != has_longitude:
+            raise ValueError("attendance_latitude and attendance_longitude must be provided together")
+        if not has_latitude:
+            if self.attendance_radius_m is not None:
+                raise ValueError("attendance_radius_m requires attendance_latitude and attendance_longitude")
+            if self.attendance_location_label:
+                raise ValueError("attendance_location_label requires attendance_latitude and attendance_longitude")
+            return self
+        if self.attendance_radius_m is None:
+            self.attendance_radius_m = 75.0
+        return self
 
 
 class ClassScheduleOut(BaseModel):
@@ -1801,10 +1821,22 @@ class ClassScheduleOut(BaseModel):
     start_time: time
     end_time: time
     classroom_label: Optional[str]
+    attendance_latitude: Optional[float] = None
+    attendance_longitude: Optional[float] = None
+    attendance_radius_m: Optional[float] = None
+    attendance_location_label: Optional[str] = None
+    attendance_location_configured: bool = False
     is_active: bool
 
     class Config:
         from_attributes = True
+
+
+class ClassScheduleLocationUpdate(BaseModel):
+    attendance_latitude: float = Field(ge=-90, le=90)
+    attendance_longitude: float = Field(ge=-180, le=180)
+    attendance_radius_m: float = Field(default=75.0, ge=10, le=500)
+    attendance_location_label: Optional[str] = Field(default=None, max_length=120)
 
 
 class TimetableOverrideUpsertRequest(BaseModel):
@@ -1819,6 +1851,10 @@ class TimetableOverrideUpsertRequest(BaseModel):
     start_time: time
     end_time: time
     classroom_label: Optional[str] = Field(default=None, max_length=120)
+    attendance_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    attendance_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    attendance_radius_m: Optional[float] = Field(default=None, ge=10, le=500)
+    attendance_location_label: Optional[str] = Field(default=None, max_length=120)
     is_active: bool = True
 
     @model_validator(mode="after")
@@ -1829,6 +1865,18 @@ class TimetableOverrideUpsertRequest(BaseModel):
             raise ValueError("section is required for section timetable overrides")
         if self.end_time <= self.start_time:
             raise ValueError("end_time must be later than start_time")
+        has_latitude = self.attendance_latitude is not None
+        has_longitude = self.attendance_longitude is not None
+        if has_latitude != has_longitude:
+            raise ValueError("attendance_latitude and attendance_longitude must be provided together")
+        if not has_latitude:
+            if self.attendance_radius_m is not None:
+                raise ValueError("attendance_radius_m requires attendance_latitude and attendance_longitude")
+            if self.attendance_location_label:
+                raise ValueError("attendance_location_label requires attendance_latitude and attendance_longitude")
+            return self
+        if self.attendance_radius_m is None:
+            self.attendance_radius_m = 75.0
         return self
 
 
@@ -1869,6 +1917,57 @@ class TimetableClassOut(BaseModel):
     attendance_window_minutes: int = 10
     remedial_class_id: Optional[int] = None
     remedial_code_required: bool = False
+    attendance_location_configured: bool = False
+    attendance_location_label: Optional[str] = None
+
+
+class ClassAttendanceSessionOut(BaseModel):
+    schedule_id: int
+    class_date: date
+    session_code: str
+    generated_at: datetime
+    expires_at: datetime
+    code_expires_at: datetime
+    code_rotation_seconds: int = 20
+    server_time: datetime
+    attendance_window_open: bool = True
+    message: str
+
+
+class AttendanceCodeValidateRequest(BaseModel):
+    attendance_session_code: str = Field(min_length=6, max_length=32)
+    browser_fingerprint: Optional[str] = Field(default=None, max_length=2048)
+    client_integrity_flags: Optional[list[str]] = Field(default=None, max_length=20)
+    client_timezone_offset_minutes: Optional[int] = Field(default=None, ge=-840, le=840)
+
+    @model_validator(mode="after")
+    def normalize_code_and_flags(self):
+        self.attendance_session_code = str(self.attendance_session_code or "").strip().upper()
+        if self.client_integrity_flags:
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for item in self.client_integrity_flags:
+                token = str(item or "").strip().lower().replace(" ", "_")[:80]
+                if not token or token in seen:
+                    continue
+                seen.add(token)
+                cleaned.append(token)
+            self.client_integrity_flags = cleaned[:20]
+        return self
+
+
+class AttendanceCodeValidateResponse(BaseModel):
+    schedule_id: int
+    class_date: date
+    attendance_attempt_token: str
+    token_expires_at: datetime
+    attendance_session_id: int
+    code_expires_at: datetime
+    attendance_window_expires_at: datetime
+    code_rotation_seconds: int
+    room: Optional[str] = None
+    allowed_radius_m: Optional[float] = None
+    message: str
 
 
 class WeeklyTimetableOut(BaseModel):
@@ -1896,6 +1995,15 @@ class RealtimeAttendanceMarkRequest(BaseModel):
     ai_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     ai_reason: Optional[str] = None
     ai_model: Optional[str] = "gemini-3-flash-preview"
+    location_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    location_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+    location_accuracy_m: Optional[float] = Field(default=None, ge=0, le=5000)
+    location_timestamp_ms: Optional[float] = Field(default=None, ge=0)
+    attendance_session_code: Optional[str] = Field(default=None, max_length=32)
+    attendance_attempt_token: Optional[str] = Field(default=None, max_length=256)
+    browser_fingerprint: Optional[str] = Field(default=None, max_length=2048)
+    client_integrity_flags: Optional[list[str]] = Field(default=None, max_length=20)
+    client_timezone_offset_minutes: Optional[int] = Field(default=None, ge=-840, le=840)
 
     @model_validator(mode="after")
     def validate_selfie_payload(self):
@@ -1910,6 +2018,18 @@ class RealtimeAttendanceMarkRequest(BaseModel):
             self.selfie_frames_data_urls = cleaned
             if not self.selfie_photo_data_url:
                 self.selfie_photo_data_url = cleaned[0]
+        if self.attendance_session_code is not None:
+            self.attendance_session_code = str(self.attendance_session_code or "").strip().upper()
+        if self.client_integrity_flags:
+            cleaned_flags: list[str] = []
+            seen_flags: set[str] = set()
+            for item in self.client_integrity_flags:
+                token = str(item or "").strip().lower().replace(" ", "_")[:80]
+                if not token or token in seen_flags:
+                    continue
+                seen_flags.add(token)
+                cleaned_flags.append(token)
+            self.client_integrity_flags = cleaned_flags[:20]
         return self
 
 
@@ -1923,6 +2043,8 @@ class RealtimeAttendanceMarkResponse(BaseModel):
     verification_engine: str = "ai"
     verification_confidence: float = 0.0
     verification_reason: Optional[str] = None
+    location_distance_m: Optional[float] = None
+    location_allowed_radius_m: Optional[float] = None
 
 
 class StudentAttendanceHistoryItemOut(BaseModel):
@@ -2102,6 +2224,8 @@ class AttendanceSubmissionOut(BaseModel):
     status: AttendanceSubmissionStatus
     ai_confidence: float
     ai_reason: Optional[str]
+    location_distance_m: Optional[float] = None
+    location_allowed_radius_m: Optional[float] = None
     submitted_at: datetime
 
 
@@ -2329,6 +2453,28 @@ class CopilotQueryResponse(BaseModel):
     audit_id: Optional[int] = None
 
 
+class CopilotFeedbackRequest(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    helpful: Optional[bool] = None
+    comment: Optional[str] = Field(default=None, max_length=600)
+
+    @model_validator(mode="after")
+    def normalize_feedback_fields(self):
+        if self.helpful is None:
+            self.helpful = self.rating >= 4
+        if self.comment is not None:
+            normalized = re.sub(r"\s+", " ", str(self.comment or "").strip())
+            self.comment = normalized or None
+        return self
+
+
+class CopilotFeedbackResponse(BaseModel):
+    audit_id: int
+    rating: int
+    helpful: bool
+    message: str
+
+
 class CopilotAuditLogOut(BaseModel):
     id: int
     actor_user_id: int
@@ -2345,4 +2491,8 @@ class CopilotAuditLogOut(BaseModel):
     evidence: list[CopilotEvidenceItem] = Field(default_factory=list)
     actions: list[CopilotActionItem] = Field(default_factory=list)
     result: dict[str, Any] = Field(default_factory=dict)
+    feedback_rating: Optional[int] = None
+    feedback_helpful: Optional[bool] = None
+    feedback_comment: Optional[str] = None
+    feedback_at: Optional[datetime] = None
     created_at: datetime
