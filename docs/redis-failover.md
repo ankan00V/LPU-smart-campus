@@ -96,7 +96,7 @@ Event Published → Redis (Primary) → Quota Exceeded
 
 ### Test Results
 
-**Test Script**: [`scripts/quick_redis_test.py`](scripts/quick_redis_test.py)
+**Test Script**: [`scripts/check_redis.py`](scripts/check_redis.py)
 
 **Actual Output**:
 ```
@@ -235,7 +235,7 @@ Every 60 seconds:
 
 ### Complete Guides
 1. **[Dual Redis Failover System Guide](docs/dual-redis-failover-system.md)** - Comprehensive documentation
-2. **[Quick Test Script](scripts/quick_redis_test.py)** - Verify setup
+2. **[Quick Test Script](scripts/check_redis.py)** - Verify setup
 3. **[Full Test Suite](scripts/test_dual_redis_failover.py)** - Complete testing
 4. **This Summary** - Implementation overview
 
@@ -301,7 +301,7 @@ Attendance Update Event:
 
 ### 1. Verify Setup
 ```bash
-python3 scripts/quick_redis_test.py
+python3 scripts/check_redis.py
 ```
 
 ### 2. Start Application

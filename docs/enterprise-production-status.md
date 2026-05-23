@@ -19,7 +19,7 @@ Last updated: 2026-03-04
    - Implemented:
      - Field encryption service (`app/enterprise_controls.py`) with production required-mode.
      - Rotation API (`POST /enterprise/security/encryption/rotate`) + evidence list API.
-     - Rotation automation script (`scripts/run_field_key_rotation.py`).
+     - Rotation automation script (`scripts/rotate_field_keys.py`).
      - Production startup/validation blocks dev placeholders and weak secret values.
      - Secrets provider abstraction with `file`/`aws_secrets_manager`.
      - Rotation logic hardened for canonical/legacy AAD handling and plaintext migration.
@@ -33,7 +33,7 @@ Last updated: 2026-03-04
      - Evidence package endpoint (`POST /enterprise/compliance/evidence/package`).
      - Retention execution (`POST /enterprise/compliance/retention/run`).
      - Deletion request lifecycle with dual-control and legal hold.
-     - Evidence packaging script (`scripts/package_compliance_evidence.py`).
+     - Evidence packaging script (`scripts/export_compliance_evidence.py`).
    - Remaining operational work:
      - Schedule retention/evidence jobs and archive bundles in immutable storage.
 

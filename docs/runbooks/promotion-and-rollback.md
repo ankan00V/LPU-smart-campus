@@ -16,14 +16,14 @@
   - `GET /enterprise/dr/backups?limit=1`
   - `GET /enterprise/dr/restore-drills?limit=1` (`target_met=true`, `manifest_integrity_ok=true`)
 - Release gate script passes:
-  - `PYTHONPATH=. .venv/bin/python scripts/release_readiness_check.py --base-url http://127.0.0.1:8000 --admin-token "<token>"`
+  - `PYTHONPATH=. .venv/bin/python scripts/check_release_readiness.py --base-url http://127.0.0.1:8000 --admin-token "<token>"`
 
 ## Production Promotion Checklist
 
 1. Generate deployment note with schema changes.
 2. Run backup: `POST /enterprise/dr/backup`.
 3. Run key rotation evidence step:
-   - `PYTHONPATH=. .venv/bin/python scripts/run_field_key_rotation.py --dry-run`
+   - `PYTHONPATH=. .venv/bin/python scripts/rotate_field_keys.py --dry-run`
 4. Generate evidence package for current audit window:
    - `POST /enterprise/compliance/evidence/package`
 5. Deploy application artifact.

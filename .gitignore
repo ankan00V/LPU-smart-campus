@@ -31,6 +31,7 @@ deploy/secrets/*.json
 .mongita-local/
 .mongita-test/
 .mongita-test2/
+.lpu_tmp/
 .pip-audit-cache/
 .runtime/
 .pytest_cache/

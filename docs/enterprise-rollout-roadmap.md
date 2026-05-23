@@ -28,7 +28,7 @@ Current status matrix: `docs/enterprise-production-status.md`
   - Alternate email encryption at rest + hash-based uniqueness
   - Encryption rotation endpoint (`POST /enterprise/security/encryption/rotate`)
   - Encryption rotation run evidence (`GET /enterprise/security/encryption/rotation-runs`)
-  - Scheduled key rotation utility (`scripts/run_field_key_rotation.py`)
+  - Scheduled key rotation utility (`scripts/rotate_field_keys.py`)
   - Secrets provider abstraction (env/file/AWS Secrets Manager)
   - Mongo mirror PII coverage for `students`, `faculty`, and `auth_users`
 
@@ -40,17 +40,17 @@ Current status matrix: `docs/enterprise-production-status.md`
   - Deletion request workflow (`/enterprise/compliance/deletion/requests*`)
   - Legal-hold update + dual-control approval/execution workflow
   - Evidence package endpoint (`POST /enterprise/compliance/evidence/package`)
-  - Scheduled evidence script (`scripts/package_compliance_evidence.py`)
+  - Scheduled evidence script (`scripts/export_compliance_evidence.py`)
 
 ## Phase 4: DR And Release Safety (Completed)
 
 - Completed:
   - API-level DR backup and restore drill endpoints
   - CLI backup and drill scripts:
-    - `scripts/disaster_recovery_backup.py`
-    - `scripts/disaster_recovery_restore_drill.py`
+    - `scripts/dr_backup.py`
+    - `scripts/dr_restore_drill.py`
   - Offsite replication script (`scripts/dr_replicate_offsite.py`)
-  - Release readiness gate script (`scripts/release_readiness_check.py`)
+  - Release readiness gate script (`scripts/check_release_readiness.py`)
   - CI release gate workflow (`.github/workflows/enterprise-release-gates.yml`)
 
 ## Phase 5: SLA And Capacity (Completed)
@@ -61,7 +61,7 @@ Current status matrix: `docs/enterprise-production-status.md`
   - Load test utility (`scripts/sla_load_test.py`)
   - Capacity plan endpoint (`GET /enterprise/performance/capacity-plan`)
   - Autoscale trigger recommendation from live capacity plan
-  - Capacity report script (`scripts/capacity_plan_report.py`)
+  - Capacity report script (`scripts/capacity_report.py`)
 
 ## Priority Execution Order
 

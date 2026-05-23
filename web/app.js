@@ -5110,12 +5110,12 @@ const ROUTE_SPLIT_MODULES_BY_ROUTE = {
   administrative: ['administrative'],
 };
 const ROUTE_SPLIT_IMPORTERS = {
-  attendance: () => import(`/web/routes/attendance-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
-  messages: () => import(`/web/routes/messages-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
-  rms: () => import(`/web/routes/rms-dashboard-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  attendance: () => import(`/web/routes/attendance-live.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  messages: () => import(`/web/routes/messages-live.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  rms: () => import(`/web/routes/rms-live.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
   food: () => import(`/web/routes/food.route.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
-  remedial: () => import(`/web/routes/remedial-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
-  administrative: () => import(`/web/routes/administrative-live-updates.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  remedial: () => import(`/web/routes/remedial-live.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
+  administrative: () => import(`/web/routes/admin-live.js?v=${ROUTE_SPLIT_ASSET_VERSION}`),
 };
 
 function isRealtimeBusConnected() {

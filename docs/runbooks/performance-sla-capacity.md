@@ -64,7 +64,7 @@ PYTHONPATH=. .venv/bin/python scripts/sla_load_test.py \
 ## Automated Capacity Report
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/capacity_plan_report.py \
+PYTHONPATH=. .venv/bin/python scripts/capacity_report.py \
   --window-minutes 15 \
   --growth-percent 35 \
   --safety-factor 1.4
