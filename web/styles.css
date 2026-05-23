@@ -11398,6 +11398,60 @@ body.ums-theme .nav-glyph {
     white-space: pre-wrap;
 }
 
+.verlyn-feedback {
+    margin: 0.46rem 0.82rem 0;
+    padding: 0.5rem 0.56rem;
+    border-radius: 12px;
+    border: 1px solid var(--assist-border);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 18%, var(--assist-surface-alt));
+    display: grid;
+    gap: 0.4rem;
+}
+
+.verlyn-feedback-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    color: var(--assist-text-soft);
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+.verlyn-feedback-head small {
+    color: var(--assist-text-muted);
+    font-size: 0.63rem;
+}
+
+.verlyn-feedback-row {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.32rem;
+}
+
+.verlyn-rating-btn {
+    min-width: 0;
+    min-height: 30px;
+    border-radius: 10px;
+    border: 1px solid var(--assist-field-border);
+    background: var(--assist-button-bg);
+    color: var(--assist-button-text);
+    font-size: 0.72rem;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.verlyn-rating-btn:hover:not(:disabled),
+.verlyn-rating-btn:focus-visible:not(:disabled) {
+    border-color: color-mix(in srgb, var(--copilot-accent) 70%, #ffffff);
+    background: color-mix(in srgb, var(--copilot-accent-soft) 58%, var(--assist-button-bg));
+}
+
+.verlyn-rating-btn:disabled {
+    cursor: default;
+    opacity: 0.56;
+}
+
 .verlyn-compose-field {
     margin: 0.52rem 0.82rem 0;
 }

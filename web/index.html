@@ -7,7 +7,7 @@
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
     <link rel="stylesheet" href="/web/styles.css?v=20260522c">
-    <script src="/web/app.js?v=20260522c" defer></script>
+    <script src="/web/app.js?v=20260523b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -449,14 +449,14 @@
                 <span class="verlyn-toggle-avatar" aria-hidden="true">C</span>
                 <span class="verlyn-toggle-copy">
                     <strong>Campus Copilot</strong>
-                    <small id="verlyn-toggle-meta">Audited Actions</small>
+                    <small id="verlyn-toggle-meta">App Help</small>
                 </span>
             </button>
             <div id="verlyn-panel" class="verlyn-panel" role="dialog" aria-label="Campus copilot">
                 <div class="verlyn-head">
                     <div class="verlyn-head-copy">
                         <strong>Campus Copilot</strong>
-                        <small>Get instant, accurate answers about your campus activities</small>
+                        <small>Get concise app help using the current screen context</small>
                     </div>
                     <button id="verlyn-minimize-btn" class="btn btn-ghost verlyn-minimize-btn" type="button">Close</button>
                 </div>
@@ -469,12 +469,13 @@
                 <div id="verlyn-output" class="verlyn-output">Campus Copilot is ready.
 
 Ask about any module available to your role.</div>
+                <div id="verlyn-feedback" class="verlyn-feedback hidden" aria-live="polite"></div>
                 <label class="field verlyn-compose-field">
                     <span>Ask Copilot</span>
-                    <input id="verlyn-input" type="text" placeholder="e.g. Why can't I mark attendance?">
+                    <input id="verlyn-input" type="text" placeholder="e.g. Why is checkout blocked?">
                 </label>
                 <div class="inline-controls verlyn-actions">
-                    <button id="verlyn-ask-btn" class="btn btn-primary" type="button">Run Copilot</button>
+                    <button id="verlyn-ask-btn" class="btn btn-primary" type="button">Ask</button>
                 </div>
             </div>
         </section>
@@ -1247,7 +1248,7 @@ Ask about any module available to your role.</div>
                 </div>
                 <p id="selected-class-label" class="helper-text">Upcoming Class | --:-- -- - --:-- -- | --</p>
                 <div class="inline-controls">
-                    <button id="take-selfie-btn" class="btn btn-primary" disabled>Open Camera & Mark Attendance</button>
+                    <button id="take-selfie-btn" class="btn btn-primary" disabled>Mark Attendance</button>
                 </div>
                 <div class="photo-preview-wrap">
                     <img id="selfie-preview" class="photo-preview hidden" alt="Latest selfie capture">
@@ -1387,7 +1388,31 @@ Ask about any module available to your role.</div>
                         <span>Class Date</span>
                         <input id="faculty-class-date" type="date">
                     </label>
+                    <label class="field">
+                        <span>GPS Latitude</span>
+                        <input id="faculty-schedule-location-latitude" type="number" step="0.000001" min="-90" max="90" placeholder="31.253000">
+                    </label>
+                    <label class="field">
+                        <span>GPS Longitude</span>
+                        <input id="faculty-schedule-location-longitude" type="number" step="0.000001" min="-180" max="180" placeholder="75.705000">
+                    </label>
+                    <label class="field">
+                        <span>Radius (m)</span>
+                        <input id="faculty-schedule-location-radius" type="number" min="10" max="500" step="1" placeholder="75">
+                    </label>
+                    <label class="field">
+                        <span>Location Label</span>
+                        <input id="faculty-schedule-location-label" type="text" maxlength="120" placeholder="e.g. B1-201">
+                    </label>
+                    <button id="faculty-use-current-location-btn" class="btn" type="button">Use My Location</button>
+                    <button id="faculty-save-location-btn" class="btn btn-primary" type="button">Save GPS Lock</button>
+                    <button id="faculty-open-attendance-session-btn" class="btn btn-primary" type="button">Open Attendance Code</button>
                     <button id="faculty-refresh-btn" class="btn">Refresh Class Data</button>
+                </div>
+                <p id="faculty-schedule-location-status" class="helper-text">Set GPS lock before students can mark official attendance.</p>
+                <div id="faculty-attendance-session-panel" class="ai-output compact" aria-live="polite">
+                    <strong id="faculty-attendance-session-code">Code not opened.</strong>
+                    <span id="faculty-attendance-session-status">Open it during the first 10 minutes of class.</span>
                 </div>
             </article>
 
@@ -1428,6 +1453,22 @@ Ask about any module available to your role.</div>
                     <label class="field">
                         <span>Classroom Label (optional)</span>
                         <input id="admin-create-schedule-room-label" type="text" placeholder="e.g. B1-201">
+                    </label>
+                    <label class="field">
+                        <span>GPS Latitude</span>
+                        <input id="admin-create-schedule-latitude" type="number" step="0.000001" min="-90" max="90" placeholder="31.253000">
+                    </label>
+                    <label class="field">
+                        <span>GPS Longitude</span>
+                        <input id="admin-create-schedule-longitude" type="number" step="0.000001" min="-180" max="180" placeholder="75.705000">
+                    </label>
+                    <label class="field">
+                        <span>Radius (m)</span>
+                        <input id="admin-create-schedule-radius" type="number" min="10" max="500" step="1" placeholder="75">
+                    </label>
+                    <label class="field">
+                        <span>Location Label</span>
+                        <input id="admin-create-schedule-location-label" type="text" maxlength="120" placeholder="e.g. B1-201 front row">
                     </label>
                     <button id="admin-create-schedule-btn" class="btn btn-primary" type="button">Create Schedule</button>
                 </div>
@@ -1496,6 +1537,22 @@ Ask about any module available to your role.</div>
                     <label class="field">
                         <span>Room Label (optional)</span>
                         <input id="admin-timetable-override-room-label" type="text" placeholder="e.g. B1-201">
+                    </label>
+                    <label class="field">
+                        <span>GPS Latitude</span>
+                        <input id="admin-timetable-override-latitude" type="number" step="0.000001" min="-90" max="90" placeholder="31.253000">
+                    </label>
+                    <label class="field">
+                        <span>GPS Longitude</span>
+                        <input id="admin-timetable-override-longitude" type="number" step="0.000001" min="-180" max="180" placeholder="75.705000">
+                    </label>
+                    <label class="field">
+                        <span>Radius (m)</span>
+                        <input id="admin-timetable-override-radius" type="number" min="10" max="500" step="1" placeholder="75">
+                    </label>
+                    <label class="field">
+                        <span>Location Label</span>
+                        <input id="admin-timetable-override-location-label" type="text" maxlength="120" placeholder="e.g. B1-201 front row">
                     </label>
                     <button id="admin-timetable-override-btn" class="btn btn-primary" type="button">Update Timetable</button>
                 </div>
@@ -1590,6 +1647,7 @@ Ask about any module available to your role.</div>
                                 <th>Student</th>
                                 <th>Status</th>
                                 <th>AI Confidence</th>
+                                <th>GPS</th>
                                 <th>Reason</th>
                                 <th>Submitted</th>
                             </tr>
@@ -2146,6 +2204,25 @@ Ask about any module available to your role.</div>
             <div id="attendance-details-list" class="attendance-details-list"></div>
             <div class="auth-actions">
                 <button id="attendance-details-close-btn" class="btn btn-primary" type="button">Close</button>
+            </div>
+        </div>
+    </section>
+
+    <section id="attendance-code-modal" class="camera-modal hidden" role="dialog" aria-modal="true" aria-labelledby="attendance-code-modal-title">
+        <div class="camera-card glass attendance-details-card">
+            <div class="panel-head">
+                <h3 id="attendance-code-modal-title">Enter Class Code</h3>
+                <small id="attendance-code-class-label">Validate the code shown by faculty before camera starts.</small>
+            </div>
+            <p id="attendance-code-meta" class="helper-text">Code refreshes every few seconds during the first 10 minutes.</p>
+            <label class="field">
+                <span>Class Code</span>
+                <input id="student-attendance-session-code" type="text" inputmode="text" maxlength="12" placeholder="ABCD-EFGH" autocomplete="one-time-code">
+            </label>
+            <p id="attendance-code-status" class="helper-text" aria-live="polite">Enter the latest code from faculty.</p>
+            <div class="auth-actions">
+                <button id="attendance-code-validate-btn" class="btn btn-primary" type="button">Validate & Continue</button>
+                <button id="attendance-code-cancel-btn" class="btn" type="button">Cancel</button>
             </div>
         </div>
     </section>

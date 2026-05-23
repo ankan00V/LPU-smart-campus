@@ -9,7 +9,12 @@ from sqlalchemy.orm import sessionmaker
 from app import models, schemas
 from app.auth_utils import CurrentUser
 from app.copilot_ai import _copilot_gemini_api_keys, _copilot_openrouter_api_keys, generate_structured_copilot_answer
-from app.routers.copilot import _looks_like_sensitive_data_request, copilot_query, list_copilot_audit
+from app.routers.copilot import (
+    _looks_like_sensitive_data_request,
+    copilot_query,
+    list_copilot_audit,
+    rate_copilot_audit,
+)
 
 
 class CampusCopilotTests(unittest.TestCase):
@@ -679,6 +684,90 @@ class CampusCopilotTests(unittest.TestCase):
             1801,
         )
         self.assertTrue(any("Attendance on this screen" in step for step in response.next_steps))
+
+    @patch("app.routers.copilot.generate_structured_copilot_answer", return_value=None)
+    @patch("app.routers.copilot.mirror_event", return_value=True)
+    @patch("app.routers.copilot.mirror_document", return_value=True)
+    def test_app_help_debug_uses_current_screen_context_without_extra_talk(
+        self,
+        _mirror_document,
+        _mirror_event,
+        _llm_reply,
+    ):
+        current_user = self._user(
+            1002,
+            models.UserRole.STUDENT,
+            student_id=self.risk_student_id,
+            email="risk.student@example.com",
+        )
+        response = copilot_query(
+            schemas.CopilotQueryRequest(
+                query_text="Help debug this attendance app issue",
+                active_module="attendance",
+                client_context={
+                    "ui": {
+                        "active_module": "attendance",
+                        "screen_summary": [
+                            "Attendance profile prerequisites are incomplete on the current student account.",
+                        ],
+                    },
+                    "attendance": {
+                        "selected_schedule_id": 1801,
+                        "profile_ready": False,
+                        "registration_ready": True,
+                        "profile_photo_ready": False,
+                        "enrollment_ready": False,
+                    },
+                },
+            ),
+            db=self.db,
+            current_user=current_user,
+        )
+
+        self.assertEqual(response.intent, schemas.CopilotIntent.MODULE_ASSIST)
+        self.assertEqual(response.outcome, schemas.CopilotOutcome.BLOCKED)
+        self.assertEqual(response.title, "Attendance Help")
+        joined = " ".join(response.explanation).lower()
+        self.assertIn("profile prerequisites", joined)
+        self.assertTrue(any(item.label == "Missing attendance prerequisites" for item in response.evidence))
+        self.assertEqual(response.entities.get("mode"), "app_help_debug")
+
+    @patch("app.routers.copilot.mirror_event", return_value=True)
+    @patch("app.routers.copilot.mirror_document", return_value=True)
+    def test_copilot_feedback_is_stored_and_used_as_future_response_guidance(
+        self,
+        _mirror_document,
+        _mirror_event,
+    ):
+        current_user = self._user(
+            1002,
+            models.UserRole.STUDENT,
+            student_id=self.risk_student_id,
+            email="risk.student@example.com",
+        )
+        first = copilot_query(
+            schemas.CopilotQueryRequest(query_text="Give me overall summary across modules for today"),
+            db=self.db,
+            current_user=current_user,
+        )
+        self.assertIsNotNone(first.audit_id)
+
+        feedback = rate_copilot_audit(
+            int(first.audit_id),
+            schemas.CopilotFeedbackRequest(rating=5, comment="Short and accurate"),
+            db=self.db,
+            current_user=current_user,
+        )
+        self.assertEqual(feedback.rating, 5)
+        self.assertTrue(feedback.helpful)
+
+        second = copilot_query(
+            schemas.CopilotQueryRequest(query_text="Give me overall summary across modules for today"),
+            db=self.db,
+            current_user=current_user,
+        )
+        lessons = second.entities.get("copilot_feedback_lessons") or []
+        self.assertTrue(any("Short and accurate" in item for item in lessons))
 
     @patch("app.routers.copilot.mirror_event", return_value=True)
     @patch("app.routers.copilot.mirror_document", return_value=True)

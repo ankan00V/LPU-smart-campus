@@ -1280,6 +1280,81 @@ def apply_mysql_enrollment_schema_migrations() -> None:
             connection.execute(text(f"ALTER TABLE students MODIFY COLUMN {column_name} LONGTEXT NULL"))
 
 
+def apply_attendance_location_schema_migrations() -> None:
+    inspector = sa_inspect(engine)
+    table_names = set(inspector.get_table_names())
+    target_tables = {"class_schedules", "attendance_submissions"}
+    if not target_tables.issubset(table_names):
+        return
+
+    string_type = "VARCHAR(120)"
+    short_string_type = "VARCHAR(128)"
+    medium_string_type = "VARCHAR(300)"
+    float_type = "DOUBLE PRECISION" if engine.dialect.name == "postgresql" else "FLOAT"
+    text_type = "TEXT"
+    datetime_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+    required_columns = {
+        "class_schedules": {
+            "attendance_latitude": float_type,
+            "attendance_longitude": float_type,
+            "attendance_radius_m": float_type,
+            "attendance_location_label": string_type,
+        },
+        "attendance_submissions": {
+            "location_latitude": float_type,
+            "location_longitude": float_type,
+            "location_accuracy_m": float_type,
+            "location_distance_m": float_type,
+            "location_allowed_radius_m": float_type,
+            "attendance_session_id": "INTEGER",
+            "attendance_session_code_hash": short_string_type,
+            "attendance_attempt_token_hash": short_string_type,
+            "browser_fingerprint_hash": short_string_type,
+            "client_ip_hash": short_string_type,
+            "user_agent_hash": short_string_type,
+            "client_integrity_flags": text_type,
+        },
+    }
+    if "class_attendance_sessions" in table_names:
+        required_columns["class_attendance_sessions"] = {
+            "code_rotation_seconds": "INTEGER DEFAULT 20",
+            "current_code_expires_at": datetime_type,
+        }
+    if "attendance_attempt_tokens" in table_names:
+        required_columns["attendance_attempt_tokens"] = {
+            "attendance_session_id": "INTEGER",
+            "schedule_id": "INTEGER",
+            "student_id": "INTEGER",
+            "class_date": "DATE",
+            "token_hash": short_string_type,
+            "session_code_hash": short_string_type,
+            "browser_fingerprint_hash": short_string_type,
+            "client_ip_hash": short_string_type,
+            "user_agent_hash": short_string_type,
+            "client_integrity_flags": text_type,
+            "issued_at": datetime_type,
+            "expires_at": datetime_type,
+            "consumed_at": datetime_type,
+            "attempt_count": "INTEGER DEFAULT 0",
+            "max_attempts": "INTEGER DEFAULT 10",
+            "last_seen_at": datetime_type,
+            "last_rejection_reason": medium_string_type,
+            "created_at": datetime_type,
+            "updated_at": datetime_type,
+        }
+
+    with engine.begin() as connection:
+        for table_name, columns in required_columns.items():
+            existing_columns = {
+                column["name"]
+                for column in sa_inspect(connection).get_columns(table_name)
+            }
+            for column_name, column_sql in columns.items():
+                if column_name in existing_columns:
+                    continue
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"))
+
+
 def apply_auth_user_schema_migrations() -> None:
     inspector = sa_inspect(engine)
     table_names = set(inspector.get_table_names())
@@ -1300,6 +1375,28 @@ def apply_auth_user_schema_migrations() -> None:
                 "WHERE password_updated_at IS NULL"
             )
         )
+
+
+def apply_copilot_audit_schema_migrations() -> None:
+    inspector = sa_inspect(engine)
+    table_names = set(inspector.get_table_names())
+    if "copilot_audit_logs" not in table_names:
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("copilot_audit_logs")}
+    datetime_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
+    bool_type = "BOOLEAN"
+    required_columns = {
+        "feedback_rating": "INTEGER",
+        "feedback_comment": "VARCHAR(600)",
+        "feedback_helpful": bool_type,
+        "feedback_at": datetime_type,
+    }
+    with engine.begin() as connection:
+        for column_name, column_sql in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(text(f"ALTER TABLE copilot_audit_logs ADD COLUMN {column_name} {column_sql}"))
 
 
 def _sql_startup_max_attempts() -> int:
@@ -1329,7 +1426,9 @@ def init_sql_schema() -> None:
             Base.metadata.create_all(bind=engine)
             apply_sqlite_migrations()
             apply_mysql_enrollment_schema_migrations()
+            apply_attendance_location_schema_migrations()
             apply_auth_user_schema_migrations()
+            apply_copilot_audit_schema_migrations()
             return
         except Exception as exc:  # noqa: BLE001
             last_exc = exc

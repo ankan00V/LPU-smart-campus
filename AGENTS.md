@@ -10,7 +10,7 @@ For non-trivial tasks, use the GStack-inspired loop:
 4. Review the diff for behavior, tests, security, reliability, and deployment impact.
 5. Ship only after running the most relevant local or GitHub gates.
 
-Use the repo-local skill at `.codex/skills/lpu-smart-campus-gstack/SKILL.md` whenever a task involves implementation, bug fixing, CI failures, runtime verification, deployment readiness, or GitHub publishing.
+Use the repo-local skill at `.lpu_tools/skills/lpu-smart-campus-gstack/SKILL.md` whenever a task involves implementation, bug fixing, CI failures, runtime verification, deployment readiness, or GitHub publishing.
 
 Important repo rules:
 

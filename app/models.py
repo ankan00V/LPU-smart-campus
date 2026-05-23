@@ -589,8 +589,16 @@ class ClassSchedule(Base):
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
     classroom_label = Column(String(120), nullable=True)
+    attendance_latitude = Column(Float, nullable=True)
+    attendance_longitude = Column(Float, nullable=True)
+    attendance_radius_m = Column(Float, nullable=True)
+    attendance_location_label = Column(String(120), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    @property
+    def attendance_location_configured(self) -> bool:
+        return self.attendance_latitude is not None and self.attendance_longitude is not None
 
 
 class TimetableOverride(Base):
@@ -618,6 +626,53 @@ class TimetableOverride(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
+class ClassAttendanceSession(Base):
+    __tablename__ = "class_attendance_sessions"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "class_date", name="uq_attendance_session_per_class"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(Integer, ForeignKey("class_schedules.id"), nullable=False, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=False, index=True)
+    faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=False, index=True)
+    class_date = Column(Date, nullable=False, index=True)
+    session_code_hash = Column(String(128), nullable=False, index=True)
+    code_rotation_seconds = Column(Integer, nullable=False, default=20)
+    current_code_expires_at = Column(DateTime, nullable=True, index=True)
+    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    opened_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class AttendanceAttemptToken(Base):
+    __tablename__ = "attendance_attempt_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    attendance_session_id = Column(Integer, ForeignKey("class_attendance_sessions.id"), nullable=False, index=True)
+    schedule_id = Column(Integer, ForeignKey("class_schedules.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    class_date = Column(Date, nullable=False, index=True)
+    token_hash = Column(String(128), nullable=False, unique=True, index=True)
+    session_code_hash = Column(String(128), nullable=False, index=True)
+    browser_fingerprint_hash = Column(String(128), nullable=True, index=True)
+    client_ip_hash = Column(String(128), nullable=True, index=True)
+    user_agent_hash = Column(String(128), nullable=True)
+    client_integrity_flags = Column(Text, nullable=True)
+    issued_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    consumed_at = Column(DateTime, nullable=True, index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    max_attempts = Column(Integer, nullable=False, default=10)
+    last_seen_at = Column(DateTime, nullable=True)
+    last_rejection_reason = Column(String(300), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class AttendanceSubmission(Base):
     __tablename__ = "attendance_submissions"
     __table_args__ = (
@@ -636,6 +691,18 @@ class AttendanceSubmission(Base):
     ai_confidence = Column(Float, nullable=False, default=0.0)
     ai_model = Column(String(80), nullable=True)
     ai_reason = Column(String(600), nullable=True)
+    location_latitude = Column(Float, nullable=True)
+    location_longitude = Column(Float, nullable=True)
+    location_accuracy_m = Column(Float, nullable=True)
+    location_distance_m = Column(Float, nullable=True)
+    location_allowed_radius_m = Column(Float, nullable=True)
+    attendance_session_id = Column(Integer, ForeignKey("class_attendance_sessions.id"), nullable=True, index=True)
+    attendance_session_code_hash = Column(String(128), nullable=True)
+    attendance_attempt_token_hash = Column(String(128), nullable=True, index=True)
+    browser_fingerprint_hash = Column(String(128), nullable=True, index=True)
+    client_ip_hash = Column(String(128), nullable=True, index=True)
+    user_agent_hash = Column(String(128), nullable=True)
+    client_integrity_flags = Column(Text, nullable=True)
     status = Column(Enum(AttendanceSubmissionStatus), nullable=False, index=True)
     submitted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     reviewed_by_faculty_id = Column(Integer, ForeignKey("faculty.id"), nullable=True)
@@ -964,6 +1031,10 @@ class CopilotAuditLog(Base):
     evidence_json = Column(Text, nullable=False, default="[]")
     actions_json = Column(Text, nullable=False, default="[]")
     result_json = Column(Text, nullable=False, default="{}")
+    feedback_rating = Column(Integer, nullable=True, index=True)
+    feedback_comment = Column(String(600), nullable=True)
+    feedback_helpful = Column(Boolean, nullable=True, index=True)
+    feedback_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 

@@ -525,6 +525,7 @@ def _build_prompt(
     active_module = str((entities or {}).get("active_module") or "").strip()
     active_module_context = entities.get("active_module_context") if isinstance(entities, dict) else {}
     ui_context = entities.get("ui_context") if isinstance(entities, dict) else {}
+    feedback_lessons = entities.get("copilot_feedback_lessons") if isinstance(entities, dict) else []
     system = (
         "You are Campus Copilot for the LPU Smart Campus app. "
         "Your role is to provide clear, direct, and ACCURATE answers based ONLY on the provided app context. "
@@ -556,6 +557,8 @@ def _build_prompt(
         "If the query is about one issue, keep the answer single-issue and focused on that problem. "
         "Prefer exact blockers, selected records, and current module controls over generic summaries. "
         "Only provide cross-module coverage when the user explicitly asks for a summary or overview."
+        " Use copilot_feedback_lessons only as style/quality guidance from prior rated audit logs; "
+        "do not treat feedback lessons as facts about the user's current situation."
     )
     context_payload = {
         "query": str(query_text or "").strip(),
@@ -577,6 +580,11 @@ def _build_prompt(
         "active_module_context": active_module_context if isinstance(active_module_context, dict) else {},
         "ui_context": ui_context if isinstance(ui_context, dict) else {},
         "entities": entities if isinstance(entities, dict) else {},
+        "copilot_feedback_lessons": [
+            str(item).strip()
+            for item in feedback_lessons
+            if str(item or "").strip()
+        ][:5] if isinstance(feedback_lessons, list) else [],
         "response_contract": {
             "broad_scope": broad_scope,
             "max_explanation_points": explanation_limit,
