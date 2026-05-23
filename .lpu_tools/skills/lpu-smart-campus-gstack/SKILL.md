@@ -1,6 +1,6 @@
 ---
 name: lpu-smart-campus-gstack
-description: Use for LPU Smart Campus implementation, bug fixing, CI triage, runtime verification, deployment readiness, and GitHub publishing. Applies the local GStack-style workflow from /Users/ankanghosh/Desktop/gstack with repo-specific gates for the FastAPI, Mongo/Postgres/Redis, and static frontend stack.
+description: Use for LPU Smart Campus implementation, bug fixing, CI triage, runtime verification, deployment readiness, and GitHub publishing. Applies the repo's GStack-style workflow with gates for the FastAPI, Mongo/Postgres/Redis, and static frontend stack.
 ---
 
 # LPU Smart Campus GStack Workflow
