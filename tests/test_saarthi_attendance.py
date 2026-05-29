@@ -23,12 +23,14 @@ from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
     _build_saarthi_llm_user_prompt,
+    _build_saarthi_student_context,
     _generate_saarthi_reply_deterministic,
     _saarthi_gemini_api_keys,
     _saarthi_openrouter_api_keys,
     _saarthi_openrouter_model,
     create_saarthi_turn,
     ensure_saarthi_bundle,
+    generate_saarthi_reply,
     get_or_create_saarthi_session,
     materialize_saarthi_attendance,
 )
@@ -335,6 +337,143 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertIn("Conversation memory (use only if it fits naturally and do not invent details):", prompt)
         self.assertIn("Recurring student context:", prompt)
         self.assertIn('Prior student intention to acknowledge naturally: "I will try one 20 minute focus block tonight".', prompt)
+
+    def test_saarthi_prompt_injects_live_student_context(self):
+        faculty = models.Faculty(
+            id=22,
+            name="Faculty One",
+            email="faculty.one@example.com",
+            faculty_identifier="FAC22",
+            section="P132",
+            department="CSE",
+        )
+        course = models.Course(id=31, code="CSE301", title="Data Structures", faculty_id=22)
+        self.db.add_all(
+            [
+                faculty,
+                course,
+                models.Enrollment(student_id=int(self.student.id), course_id=31),
+                models.ClassSchedule(
+                    course_id=31,
+                    faculty_id=22,
+                    weekday=6,
+                    start_time=datetime.strptime("09:00", "%H:%M").time(),
+                    end_time=datetime.strptime("10:00", "%H:%M").time(),
+                    classroom_label="B1-201",
+                    is_active=True,
+                ),
+                models.AttendanceRecord(
+                    student_id=int(self.student.id),
+                    course_id=31,
+                    marked_by_faculty_id=22,
+                    attendance_date=date(2026, 3, 1),
+                    status=models.AttendanceStatus.PRESENT,
+                    source="faculty-web",
+                ),
+                models.AttendanceRecord(
+                    student_id=int(self.student.id),
+                    course_id=31,
+                    marked_by_faculty_id=22,
+                    attendance_date=date(2026, 3, 2),
+                    status=models.AttendanceStatus.ABSENT,
+                    source="faculty-web",
+                ),
+                models.FacultyMessage(
+                    faculty_id=22,
+                    student_id=int(self.student.id),
+                    section="P132",
+                    message_type="Announcement",
+                    message="Bring your notebook for revision.",
+                ),
+            ]
+        )
+        self.db.commit()
+
+        current_dt = datetime(2026, 3, 8, 8, 0, 0)
+        context = _build_saarthi_student_context(self.db, student=self.student, current_dt=current_dt)
+        prompt = _build_saarthi_llm_user_prompt(
+            student_name="Saarthi Student",
+            student_message="How is my attendance?",
+            recent_messages=[models.SaarthiMessage(sender_role="student", message="How is my attendance?")],
+            current_dt=current_dt,
+            mandatory_date=date(2026, 3, 8),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            student_context=context,
+        )
+        reply = _generate_saarthi_reply_deterministic(
+            student_name="Saarthi Student",
+            student_message="How is my attendance?",
+            current_dt=current_dt,
+            mandatory_date=date(2026, 3, 8),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[models.SaarthiMessage(sender_role="student", message="How is my attendance?")],
+            student_context=context,
+        )
+
+        self.assertIn("Student context JSON", prompt)
+        self.assertIn("CSE301 - Data Structures", prompt)
+        self.assertIn('"percentage": 50.0', prompt)
+        self.assertIn("CSE301 - Data Structures", reply)
+        self.assertIn("50%", reply)
+        self.assertIn("For now", reply)
+
+    def test_simple_greeting_stays_short_without_unsolicited_advice_or_data(self):
+        student_context = {
+            "student_name": "Ankan Ghosh",
+            "attendance_summary": [
+                {"subject": "CSE301 - Data Structures", "attended": 4, "total": 8, "percentage": 50.0, "threshold": 75}
+            ],
+            "today_timetable": [{"subject": "CSE301 - Data Structures", "time": "09:00 - 10:00"}],
+        }
+
+        reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="hi",
+            current_dt=datetime(2026, 5, 30, 2, 5, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[],
+            student_context=student_context,
+        )
+
+        sentence_count = len([chunk for chunk in reply.replace("!", ".").replace("?", ".").split(".") if chunk.strip()])
+        blocked_phrases = (
+            "research",
+            "strong first step",
+            "growth takes time",
+            "attendance",
+            "data structures",
+            "you might try",
+            "what part would you like to explore more deeply",
+        )
+        self.assertLessEqual(sentence_count, 2)
+        self.assertIn("Hey, Ankan", reply)
+        self.assertTrue(reply.endswith("?"))
+        for phrase in blocked_phrases:
+            self.assertNotIn(phrase, reply.lower())
+
+    def test_deterministic_simple_greeting_bypasses_curiosity_template(self):
+        reply = _generate_saarthi_reply_deterministic(
+            student_name="Ankan Ghosh",
+            student_message="hello",
+            current_dt=datetime(2026, 5, 30, 2, 5, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[],
+            student_context={
+                "attendance_summary": [
+                    {"subject": "CSE301 - Data Structures", "attended": 4, "total": 8, "percentage": 50.0}
+                ]
+            },
+        )
+
+        self.assertIn("Hey, Ankan", reply)
+        self.assertNotIn("Asking this is a strong first step", reply)
+        self.assertNotIn("Data Structures", reply)
 
     def test_deterministic_reply_bridges_prior_student_context(self):
         recent_messages = [

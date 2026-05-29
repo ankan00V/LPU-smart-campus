@@ -10309,6 +10309,424 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
     grid-template-columns: repeat(4, minmax(120px, 1fr));
 }
 
+#faculty-section {
+    --faculty-blue: #4ba3f3;
+    --faculty-teal: #33d2b0;
+    --faculty-amber: #ffc56d;
+    --faculty-ink: #eaf5ff;
+    --faculty-muted: #aac7dd;
+    --faculty-panel: linear-gradient(158deg, rgba(18, 48, 73, 0.88), rgba(10, 30, 49, 0.9));
+    --faculty-panel-soft: linear-gradient(158deg, rgba(24, 58, 88, 0.72), rgba(13, 35, 56, 0.76));
+}
+
+#faculty-section .admin-submodule-picker {
+    margin-bottom: 0.8rem;
+    padding: 0.74rem 0.82rem;
+    border: 1px solid rgba(143, 202, 243, 0.34);
+    border-radius: 16px;
+    background: linear-gradient(150deg, rgba(18, 47, 73, 0.72), rgba(9, 28, 47, 0.62));
+    box-shadow: 0 12px 28px rgba(4, 17, 31, 0.16);
+}
+
+#faculty-section .admin-submodule-picker .field {
+    max-width: 360px;
+    margin: 0;
+}
+
+#faculty-section .ops-card {
+    position: relative;
+    overflow: hidden;
+    border-color: rgba(141, 198, 239, 0.38);
+    background: var(--faculty-panel);
+}
+
+#faculty-section .ops-card::before,
+#remedial-faculty-panel::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(90deg, rgba(75, 163, 243, 0.28), rgba(51, 210, 176, 0.18), transparent 64%) top left / 100% 3px no-repeat,
+        radial-gradient(circle at 8% 0%, rgba(75, 163, 243, 0.18), transparent 30%);
+}
+
+#faculty-section .panel-head {
+    position: relative;
+    z-index: 1;
+    align-items: flex-start;
+    gap: 0.7rem;
+}
+
+#faculty-section .panel-head h3,
+#faculty-section .panel-head h4 {
+    color: var(--faculty-ink);
+}
+
+#faculty-section .panel-head small {
+    color: var(--faculty-muted);
+}
+
+#faculty-dashboard-card {
+    display: grid;
+    gap: 0.78rem;
+}
+
+#faculty-dashboard-card .faculty-controls {
+    position: relative;
+    z-index: 1;
+    grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+    gap: 0.72rem;
+    align-items: end;
+}
+
+#faculty-dashboard-card .faculty-controls .field {
+    margin: 0;
+}
+
+#faculty-dashboard-card .faculty-controls .field > span,
+#faculty-section .faculty-admin-grid .field > span,
+#faculty-section .analysis-grid .field > span {
+    color: #c4dced;
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+#faculty-dashboard-card .faculty-controls input,
+#faculty-dashboard-card .faculty-controls select,
+#faculty-section .faculty-admin-grid input,
+#faculty-section .faculty-admin-grid select,
+#faculty-section .analysis-grid input {
+    min-height: 44px;
+    border-color: rgba(151, 205, 244, 0.34);
+    background: rgba(5, 20, 34, 0.34);
+}
+
+#faculty-dashboard-card .faculty-controls .btn {
+    min-height: 44px;
+    padding-inline: 0.9rem;
+    white-space: normal;
+}
+
+#faculty-schedule-location-status {
+    position: relative;
+    z-index: 1;
+    margin: 0;
+    color: #b8d5ea;
+}
+
+#faculty-attendance-session-panel {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(160px, auto) 1fr;
+    align-items: center;
+    gap: 0.72rem;
+    border: 1px solid rgba(108, 229, 184, 0.34);
+    background: linear-gradient(145deg, rgba(17, 86, 72, 0.28), rgba(18, 51, 77, 0.48));
+}
+
+#faculty-attendance-session-code {
+    display: inline-flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    padding: 0.42rem 0.72rem;
+    border: 1px solid rgba(117, 239, 196, 0.42);
+    background: rgba(5, 24, 28, 0.44);
+    color: #dcfff3;
+    font-family: var(--font-mono);
+    font-size: clamp(0.86rem, 1vw, 1rem);
+    letter-spacing: 0;
+}
+
+#faculty-attendance-session-status {
+    color: #bce0ef;
+    line-height: 1.4;
+}
+
+#faculty-section .faculty-stats-grid .metric {
+    min-height: 112px;
+    padding: 0.84rem 0.9rem;
+    border-color: rgba(141, 198, 239, 0.34);
+    background: var(--faculty-panel-soft);
+}
+
+#faculty-section .faculty-stats-grid .metric h2 {
+    color: #b8d2e8;
+    font-size: 0.78rem;
+}
+
+#faculty-section .faculty-stats-grid .metric-value {
+    color: #f3fbff;
+    font-size: clamp(1.76rem, 2.6vw, 2.44rem);
+    line-height: 1;
+}
+
+#faculty-present {
+    color: #9af1c8;
+}
+
+#faculty-pending {
+    color: #ffd694;
+}
+
+#faculty-absent {
+    color: #ffb3a6;
+}
+
+#faculty-attendance-card .review-actions {
+    padding: 0.62rem;
+    border: 1px solid rgba(143, 202, 243, 0.26);
+    border-radius: 14px;
+    background: rgba(5, 21, 36, 0.26);
+}
+
+#faculty-attendance-card .review-actions input[type="text"] {
+    min-height: 42px;
+}
+
+#faculty-section .table-wrap {
+    border-color: rgba(143, 202, 243, 0.3);
+    background: rgba(6, 22, 37, 0.26);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+#faculty-section .submissions-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: rgba(13, 36, 58, 0.96);
+    color: #c5def1;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+}
+
+#faculty-section .submissions-table td {
+    color: #dcecf8;
+    border-bottom-color: rgba(143, 202, 243, 0.13);
+}
+
+#faculty-section .submissions-table tbody tr:nth-child(even) td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+#faculty-section .submissions-table tbody tr:hover td {
+    background: rgba(75, 163, 243, 0.08);
+}
+
+#faculty-section .faculty-rectification-head {
+    margin-top: 1rem;
+    padding-top: 0.72rem;
+    border-top: 1px solid rgba(143, 202, 243, 0.22);
+}
+
+#faculty-recovery-card .faculty-recovery-list,
+#faculty-section .analysis-grid .list-wrap,
+#faculty-section #classroom-analysis-output {
+    border-color: rgba(143, 202, 243, 0.3);
+    background: rgba(6, 22, 37, 0.22);
+}
+
+#faculty-section .analysis-grid .ops-card {
+    min-height: 100%;
+}
+
+#faculty-section .analysis-grid .inline-controls {
+    align-items: end;
+}
+
+#faculty-section .photo-preview-wrap {
+    border-color: rgba(143, 202, 243, 0.28);
+    background: rgba(6, 22, 37, 0.2);
+}
+
+#remedial-faculty-panel {
+    position: relative;
+    overflow: hidden;
+    border-color: rgba(141, 198, 239, 0.38);
+    background: linear-gradient(160deg, rgba(15, 43, 69, 0.9), rgba(9, 29, 48, 0.92));
+}
+
+#remedial-faculty-panel > .panel-head,
+#remedial-faculty-panel > .remedial-faculty-layout {
+    position: relative;
+    z-index: 1;
+}
+
+#remedial-faculty-panel .remedial-faculty-card {
+    border-color: rgba(143, 202, 243, 0.32);
+    background: linear-gradient(158deg, rgba(22, 55, 84, 0.66), rgba(10, 31, 51, 0.7));
+}
+
+#remedial-faculty-panel .remedial-card-head h4 {
+    color: #eff8ff;
+}
+
+#remedial-faculty-panel .remedial-card-head p {
+    color: #aecbe0;
+}
+
+#remedial-faculty-panel .remedial-form-grid {
+    grid-template-columns: repeat(auto-fit, minmax(188px, 1fr));
+}
+
+#remedial-faculty-panel .remedial-custom-message-field {
+    grid-column: 1 / -1;
+}
+
+#remedial-faculty-panel .list-wrap {
+    border-color: rgba(143, 202, 243, 0.28);
+    background: rgba(6, 22, 37, 0.22);
+}
+
+#remedial-faculty-panel .remedial-form-actions {
+    align-items: center;
+    padding-top: 0.18rem;
+}
+
+#remedial-faculty-panel .remedial-form-actions .helper-text,
+#remedial-faculty-panel #remedial-faculty-status {
+    margin: 0;
+    color: #b5d4ea;
+}
+
+#remedial-faculty-panel .remedial-message-actions {
+    padding-top: 0.2rem;
+}
+
+body.ums-theme #faculty-section {
+    --faculty-ink: #15344f;
+    --faculty-muted: #55728a;
+    --faculty-panel: linear-gradient(165deg, #fbfdff 0%, #eef6ff 54%, #f7fbff 100%);
+    --faculty-panel-soft: linear-gradient(165deg, #ffffff 0%, #eef6ff 100%);
+}
+
+body.ums-theme #faculty-section .admin-submodule-picker {
+    border-color: #b8d1e6;
+    background: linear-gradient(160deg, #fbfdff, #eef6ff);
+    box-shadow: 0 10px 24px rgba(53, 95, 134, 0.1);
+}
+
+body.ums-theme #faculty-section .ops-card,
+body.ums-theme #remedial-faculty-panel {
+    border-color: #b8d1e6;
+    background: var(--faculty-panel);
+}
+
+body.ums-theme #faculty-section .ops-card::before,
+body.ums-theme #remedial-faculty-panel::before {
+    background:
+        linear-gradient(90deg, rgba(49, 139, 214, 0.38), rgba(57, 181, 151, 0.24), transparent 64%) top left / 100% 3px no-repeat,
+        radial-gradient(circle at 8% 0%, rgba(100, 172, 226, 0.2), transparent 30%);
+}
+
+body.ums-theme #faculty-dashboard-card .faculty-controls input,
+body.ums-theme #faculty-dashboard-card .faculty-controls select,
+body.ums-theme #faculty-section .faculty-admin-grid input,
+body.ums-theme #faculty-section .faculty-admin-grid select,
+body.ums-theme #faculty-section .analysis-grid input {
+    border-color: #c5d8e8;
+    background: #ffffff;
+}
+
+body.ums-theme #faculty-dashboard-card .faculty-controls .field > span,
+body.ums-theme #faculty-section .faculty-admin-grid .field > span,
+body.ums-theme #faculty-section .analysis-grid .field > span {
+    color: #496981;
+}
+
+body.ums-theme #faculty-schedule-location-status,
+body.ums-theme #faculty-attendance-session-status,
+body.ums-theme #remedial-faculty-panel .remedial-form-actions .helper-text,
+body.ums-theme #remedial-faculty-panel #remedial-faculty-status {
+    color: #5e778d;
+}
+
+body.ums-theme #faculty-attendance-session-panel {
+    border-color: #addbc9;
+    background: linear-gradient(145deg, #eefaf5, #edf6ff);
+}
+
+body.ums-theme #faculty-attendance-session-code {
+    border-color: #9fd8bd;
+    background: #ffffff;
+    color: #0f704a;
+}
+
+body.ums-theme #faculty-section .faculty-stats-grid .metric {
+    border-color: #bdd4e8;
+    background: var(--faculty-panel-soft);
+}
+
+body.ums-theme #faculty-section .faculty-stats-grid .metric h2 {
+    color: #536f86;
+}
+
+body.ums-theme #faculty-section .faculty-stats-grid .metric-value {
+    color: #173852;
+}
+
+body.ums-theme #faculty-present {
+    color: #17754d;
+}
+
+body.ums-theme #faculty-pending {
+    color: #9a6217;
+}
+
+body.ums-theme #faculty-absent {
+    color: #a6473b;
+}
+
+body.ums-theme #faculty-attendance-card .review-actions,
+body.ums-theme #faculty-section .table-wrap,
+body.ums-theme #faculty-recovery-card .faculty-recovery-list,
+body.ums-theme #faculty-section .analysis-grid .list-wrap,
+body.ums-theme #faculty-section #classroom-analysis-output,
+body.ums-theme #faculty-section .photo-preview-wrap {
+    border-color: #c5d8e8;
+    background: rgba(255, 255, 255, 0.66);
+}
+
+body.ums-theme #faculty-section .submissions-table th {
+    background: #eef6ff;
+    color: #48667d;
+}
+
+body.ums-theme #faculty-section .submissions-table td {
+    color: #29455d;
+    border-bottom-color: #dbe8f2;
+}
+
+body.ums-theme #faculty-section .submissions-table tbody tr:nth-child(even) td {
+    background: rgba(235, 244, 252, 0.72);
+}
+
+body.ums-theme #faculty-section .submissions-table tbody tr:hover td {
+    background: #e6f4ff;
+}
+
+body.ums-theme #remedial-faculty-panel .remedial-faculty-card {
+    border-color: #c5d9ec;
+    background: linear-gradient(160deg, #ffffff, #f1f7ff);
+}
+
+body.ums-theme #remedial-faculty-panel .remedial-card-head h4 {
+    color: #163552;
+}
+
+body.ums-theme #remedial-faculty-panel .remedial-card-head p {
+    color: #4c6985;
+}
+
+body.ums-theme #remedial-faculty-panel .list-wrap {
+    border-color: #c9dcea;
+    background: rgba(255, 255, 255, 0.72);
+}
+
 .review-actions {
     margin-top: 0.65rem;
     display: grid;
