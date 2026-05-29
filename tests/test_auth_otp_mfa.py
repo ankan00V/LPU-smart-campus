@@ -216,6 +216,101 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertIsNotNone(delivery)
         self.assertEqual(delivery["status"], "sent")
 
+    def test_faculty_can_request_login_otp_with_secondary_email(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 17,
+                "email": "faculty.primary@lpu.in",
+                "alternate_email": "faculty.personal@gmail.com",
+                "alternate_email_hash": None,
+                "password_hash": hash_password("Faculty@123"),
+                "role": models.UserRole.FACULTY.value,
+                "student_id": None,
+                "faculty_id": 17,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=17),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}) as send_otp,
+            patch("app.routers.auth._next_unique_id", side_effect=[31, 32]),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.request_login_otp(
+                schemas.LoginOTPRequest(
+                    email="faculty.personal@gmail.com",
+                    role=models.UserRole.FACULTY,
+                    password="Faculty@123",
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/login/request-otp"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertEqual(result.message, "OTP sent successfully")
+        send_otp.assert_called_once()
+        self.assertEqual(send_otp.call_args.args[0], "faculty.personal@gmail.com")
+        otp = mongo["auth_otps"].find_one({"id": 31})
+        self.assertEqual(otp["login_email"], "faculty.personal@gmail.com")
+        self.assertTrue(otp["delivered_to_alternate"])
+        delivery = mongo["auth_otp_delivery"].find_one({"id": 32})
+        self.assertEqual(delivery["destination"], "faculty.personal@gmail.com")
+
+    def test_admin_can_send_login_otp_to_secondary_from_primary_login(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 18,
+                "email": "admin.primary@lpu.in",
+                "alternate_email": "admin.personal@gmail.com",
+                "alternate_email_hash": None,
+                "password_hash": hash_password("Admin@123"),
+                "role": models.UserRole.ADMIN.value,
+                "student_id": None,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=18),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}) as send_otp,
+            patch("app.routers.auth._next_unique_id", side_effect=[33, 34]),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            result = auth.request_login_otp(
+                schemas.LoginOTPRequest(
+                    email="admin.primary@lpu.in",
+                    role=models.UserRole.ADMIN,
+                    password="Admin@123",
+                    captcha_token="turnstile-token-1234567890",
+                    send_to_alternate=True,
+                ),
+                request=_request("/auth/login/request-otp"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertEqual(result.message, "OTP sent successfully")
+        self.assertEqual(send_otp.call_args.args[0], "admin.personal@gmail.com")
+        otp = mongo["auth_otps"].find_one({"id": 33})
+        self.assertEqual(otp["login_email"], "admin.primary@lpu.in")
+        self.assertEqual(otp["delivery_destination"], "admin.personal@gmail.com")
+        self.assertTrue(otp["delivered_to_alternate"])
+
     def test_student_password_login_requires_password_setup_completion(self):
         mongo = _FakeMongo()
         mongo["auth_users"].insert_one(
@@ -1059,6 +1154,79 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertFalse(issued_user.mfa_authenticated)
         verify_mfa.assert_not_called()
         otp_row = mongo["auth_otps"].find_one({"id": 26})
+        self.assertIsNotNone(otp_row["used_at"])
+
+    def test_faculty_can_verify_login_otp_with_secondary_email(self):
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 19,
+                "email": "faculty.primary@lpu.in",
+                "alternate_email": "faculty.personal@gmail.com",
+                "alternate_email_hash": None,
+                "password_hash": hash_password("Faculty@123"),
+                "role": models.UserRole.FACULTY.value,
+                "student_id": None,
+                "faculty_id": 19,
+                "is_active": True,
+                "mfa_enabled": False,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 27,
+                "user_id": 19,
+                "purpose": "login",
+                "role": models.UserRole.FACULTY.value,
+                "login_email": "faculty.personal@gmail.com",
+                "delivery_destination": "faculty.personal@gmail.com",
+                "delivered_to_alternate": True,
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=19),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth.mirror_event", return_value=None),
+            patch("app.routers.auth._set_auth_cookies", return_value=None),
+            patch(
+                "app.routers.auth.create_session_tokens",
+                return_value={
+                    "access_token": "faculty-access-token",
+                    "access_expires_at": datetime.utcnow() + timedelta(minutes=15),
+                    "refresh_token": "faculty-refresh-token",
+                    "refresh_expires_at": datetime.utcnow() + timedelta(days=14),
+                },
+            ) as create_tokens,
+        ):
+            result = auth.verify_login_otp(
+                schemas.VerifyOTPRequest(
+                    email="faculty.personal@gmail.com",
+                    role=models.UserRole.FACULTY,
+                    otp_code="123456",
+                ),
+                response=Response(),
+                request=_request("/auth/login/verify-otp"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertEqual(result.access_token, "faculty-access-token")
+        self.assertEqual(result.user.email, "faculty.primary@lpu.in")
+        issued_user = create_tokens.call_args.args[1]
+        self.assertEqual(issued_user.email, "faculty.primary@lpu.in")
+        self.assertEqual(issued_user.alternate_email, "faculty.personal@gmail.com")
+        otp_row = mongo["auth_otps"].find_one({"id": 27})
         self.assertIsNotNone(otp_row["used_at"])
 
     def test_verify_login_otp_rejects_selected_role_mismatch_without_consuming_otp(self):
