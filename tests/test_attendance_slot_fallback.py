@@ -297,6 +297,24 @@ class StudentAttendanceSlotFallbackAlignmentTests(unittest.TestCase):
         self.assertEqual(rows[301].attendance_status, None)
         self.assertEqual(rows[302].attendance_status, "verified")
 
+    def test_timetable_open_window_uses_server_campus_clock(self):
+        campus_now = datetime.combine(self.class_date, time(10, 5))
+        with (
+            patch("app.routers.attendance._academic_start_date", return_value=self.class_date),
+            patch("app.routers.attendance._campus_now", return_value=campus_now),
+        ):
+            payload = get_student_weekly_timetable(
+                week_start=self.class_date,
+                db=self.db,
+                current_user=self._student_user(),
+            )
+
+        rows = {int(row.schedule_id): row for row in payload.classes if row.course_code == "CSE357"}
+        self.assertEqual(payload.server_time, campus_now)
+        self.assertEqual(payload.server_date, self.class_date)
+        self.assertTrue(rows[302].is_open_now)
+        self.assertFalse(rows[301].is_open_now)
+
 
 if __name__ == "__main__":
     unittest.main()

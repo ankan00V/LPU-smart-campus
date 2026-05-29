@@ -154,6 +154,16 @@ class Student(Base):
     enrollments = relationship("Enrollment", back_populates="student", cascade="all, delete-orphan")
 
 
+class AcademicTermConfig(Base):
+    __tablename__ = "academic_term_config"
+
+    key = Column(String(40), primary_key=True, default="default")
+    class_start_date = Column(Date, nullable=False)
+    class_end_date = Column(Date, nullable=False)
+    updated_by_user_id = Column(Integer, ForeignKey("auth_users.id"), nullable=True, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 class Faculty(Base):
     __tablename__ = "faculty"
 

@@ -16,6 +16,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..academic_policy import assign_student_section
 from ..auth_utils import (
     ACCESS_COOKIE_NAME,
     REFRESH_COOKIE_NAME,
@@ -670,6 +671,11 @@ def _privileged_mfa_required() -> bool:
 
 def _is_privileged_role(role: models.UserRole) -> bool:
     return role in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}
+
+
+def _requires_totp_mfa_role(role: models.UserRole) -> bool:
+    return role in {models.UserRole.ADMIN, models.UserRole.OWNER}
+
 
 def _mfa_setup_ttl_minutes() -> int:
     raw = (os.getenv("MFA_SETUP_TTL_MINUTES", "15") or "").strip()
@@ -1466,22 +1472,12 @@ def register_auth_user(
         if role == models.UserRole.STUDENT:
             if payload.semester is None:
                 raise HTTPException(status_code=400, detail="semester is required for student registration")
-            incoming_section = re.sub(r"\s+", "", str(payload.section or "").strip().upper())
-            if not incoming_section:
-                raise HTTPException(status_code=400, detail="section is required for student registration")
-            if len(incoming_section) > 80 or not STUDENT_SECTION_PATTERN.fullmatch(incoming_section):
-                raise HTTPException(
-                    status_code=400,
-                    detail="section can contain only letters, numbers, slash, hyphen, and underscore",
-                )
             student = sql_db.query(models.Student).filter(models.Student.email == email).first()
             if student:
                 student.name = payload.name
                 student.department = payload.department
                 student.semester = payload.semester
                 student.parent_email = payload.parent_email
-                student.section = incoming_section
-                student.section_updated_at = now
                 if not str(student.registration_number or "").strip():
                     student_year = _arrival_year(student.created_at, now)
                     student.registration_number = _student_registration_number_for_position(
@@ -1495,13 +1491,12 @@ def register_auth_user(
                     email=email,
                     registration_number=generated_registration,
                     parent_email=payload.parent_email,
-                    section=incoming_section,
-                    section_updated_at=now,
                     department=payload.department,
                     semester=payload.semester,
                 )
                 sql_db.add(student)
                 sql_db.flush()
+            assign_student_section(sql_db, student, now=now, force=True)
 
             student_id = student.id
             _upsert_mongo_by_id(
@@ -2208,7 +2203,7 @@ def verify_login_otp(
             )
             raise HTTPException(status_code=400, detail="Invalid OTP")
 
-        mfa_required = _privileged_mfa_required() and _is_privileged_role(role)
+        mfa_required = _privileged_mfa_required() and _requires_totp_mfa_role(role)
         mfa_enabled = bool(user.get("mfa_enabled", False))
         mfa_authenticated = False
         if mfa_required and mfa_enabled:
@@ -2920,7 +2915,7 @@ def mfa_status(current_user: CurrentUser = Depends(get_current_user)):
             role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
         except ValueError:
             role = models.UserRole.STUDENT
-        required = _privileged_mfa_required() and _is_privileged_role(role)
+        required = _privileged_mfa_required() and _requires_totp_mfa_role(role)
         setup_expires = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))
         pending_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
         return schemas.MFAStatusResponse(
@@ -2939,8 +2934,8 @@ def mfa_status(current_user: CurrentUser = Depends(get_current_user)):
 
 @router.post("/mfa/enroll", response_model=schemas.MFAEnrollResponse)
 def mfa_enroll(current_user: CurrentUser = Depends(get_current_user)):
-    if current_user.role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
-        raise HTTPException(status_code=403, detail="MFA enrollment is reserved for privileged roles.")
+    if current_user.role not in {models.UserRole.ADMIN, models.UserRole.OWNER}:
+        raise HTTPException(status_code=403, detail="MFA enrollment is reserved for admin and owner accounts.")
     db = _mongo_db_or_503()
     try:
         user_doc = db["auth_users"].find_one({"id": int(current_user.id)})
@@ -3008,8 +3003,8 @@ def mfa_activate(
             role = models.UserRole(user_doc.get("role", models.UserRole.STUDENT.value))
         except ValueError:
             role = models.UserRole.STUDENT
-        if role not in {models.UserRole.ADMIN, models.UserRole.FACULTY, models.UserRole.OWNER}:
-            raise HTTPException(status_code=403, detail="MFA activation is reserved for privileged roles.")
+        if role not in {models.UserRole.ADMIN, models.UserRole.OWNER}:
+            raise HTTPException(status_code=403, detail="MFA activation is reserved for admin and owner accounts.")
 
         setup_secret = str(user_doc.get("mfa_setup_secret") or "").strip()
         setup_expires_at = _coerce_datetime(user_doc.get("mfa_setup_expires_at"))

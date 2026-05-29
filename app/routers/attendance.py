@@ -11,6 +11,7 @@ import secrets
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
 from typing import TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pymongo.errors import DuplicateKeyError
@@ -19,6 +20,13 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
+from ..academic_policy import (
+    ACADEMIC_END_DATE_DEFAULT,
+    ACADEMIC_START_DATE_DEFAULT,
+    ACADEMIC_TERM_CONFIG_KEY,
+    academic_window,
+    sync_student_academic_term,
+)
 from ..attendance_recovery import (
     evaluate_attendance_recovery,
     get_admin_recovery_plans,
@@ -89,6 +97,7 @@ FACE_MATCH_PASS_THRESHOLD = max(
 FACE_MULTI_FRAME_MIN = max(5, int(os.getenv("FACE_MATCH_MIN_FRAMES", "6")))
 PROFILE_MEDIA_RETENTION_DAYS = max(30, int(os.getenv("PROFILE_MEDIA_RETENTION_DAYS", "365")))
 ATTENDANCE_MEDIA_RETENTION_DAYS = max(7, int(os.getenv("ATTENDANCE_MEDIA_RETENTION_DAYS", "120")))
+ATTENDANCE_TIMEZONE_DEFAULT = "Asia/Kolkata"
 ATTENDANCE_LOCATION_DEFAULT_RADIUS_M = max(
     10.0,
     min(500.0, float(os.getenv("ATTENDANCE_LOCATION_DEFAULT_RADIUS_M", "75"))),
@@ -129,7 +138,34 @@ ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS = max(
     30,
     min(180, int(os.getenv("ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS", "90"))),
 )
-ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
+
+
+def _campus_timezone_name() -> str:
+    zone_name = (os.getenv("APP_TIMEZONE", ATTENDANCE_TIMEZONE_DEFAULT) or "").strip() or ATTENDANCE_TIMEZONE_DEFAULT
+    try:
+        ZoneInfo(zone_name)
+    except ZoneInfoNotFoundError:
+        return ATTENDANCE_TIMEZONE_DEFAULT
+    return zone_name
+
+
+def _campus_zone() -> ZoneInfo:
+    return ZoneInfo(_campus_timezone_name())
+
+
+def _campus_now() -> datetime:
+    return datetime.now(_campus_zone()).replace(tzinfo=None)
+
+
+def _campus_today() -> date:
+    return _campus_now().date()
+
+
+def _campus_datetime_to_epoch_ms(value: datetime) -> float:
+    if value.tzinfo is not None:
+        return value.timestamp() * 1000.0
+    return value.replace(tzinfo=_campus_zone()).timestamp() * 1000.0
+ACADEMIC_START_DATE_ENV_FALLBACK = "2026-03-02"
 STUDENT_SECTION_PATTERN = re.compile(r"^[A-Z0-9-_/]+$")
 
 
@@ -191,11 +227,21 @@ def _demo_features_enabled() -> bool:
 
 
 def _academic_start_date() -> date:
-    raw = (os.getenv("ACADEMIC_START_DATE", ACADEMIC_START_DATE_DEFAULT) or "").strip()
+    raw = (os.getenv("ACADEMIC_START_DATE", ACADEMIC_START_DATE_ENV_FALLBACK) or "").strip()
     try:
         return date.fromisoformat(raw)
     except ValueError:
-        return date.fromisoformat(ACADEMIC_START_DATE_DEFAULT)
+        return date.fromisoformat(ACADEMIC_START_DATE_ENV_FALLBACK)
+
+
+def _academic_class_window(db: Session) -> tuple[date, date]:
+    start_date, end_date = academic_window(db)
+    if end_date < start_date:
+        return (
+            date.fromisoformat(ACADEMIC_START_DATE_DEFAULT),
+            date.fromisoformat(ACADEMIC_END_DATE_DEFAULT),
+        )
+    return start_date, end_date
 
 
 def _student_saarthi_materialization_through_date(
@@ -274,7 +320,7 @@ def _saarthi_missed_student_ids(
 ) -> set[int]:
     if attendance_date.weekday() != 6:  # Sunday
         return set()
-    if attendance_date >= datetime.now().date():
+    if attendance_date >= _campus_today():
         return set()
 
     normalized_enrolled_ids = {
@@ -539,7 +585,7 @@ def _generate_attendance_session_code(
     rotation_seconds: int | None = None,
 ) -> str:
     effective_rotation = max(15, min(30, int(rotation_seconds or ATTENDANCE_SESSION_CODE_ROTATION_SECONDS)))
-    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or datetime.now(), effective_rotation)
+    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or _campus_now(), effective_rotation)
     digest = hmac.new(
         _attendance_session_secret().encode("utf-8"),
         _attendance_session_code_message(
@@ -563,7 +609,7 @@ def _attendance_session_code_hash(
     rotation_seconds: int | None = None,
 ) -> str:
     effective_rotation = max(15, min(30, int(rotation_seconds or ATTENDANCE_SESSION_CODE_ROTATION_SECONDS)))
-    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or datetime.now(), effective_rotation)
+    effective_slot = int(code_slot) if code_slot is not None else _attendance_code_slot(now_dt or _campus_now(), effective_rotation)
     normalized = _normalize_attendance_session_code(code)
     message = (
         "attendance-session-code-v1|"
@@ -652,7 +698,10 @@ def _location_integrity_flags(payload: schemas.RealtimeAttendanceMarkRequest, no
         flags.append("gps_timestamp_missing")
     else:
         try:
-            captured_at = datetime_lib.datetime.fromtimestamp(float(payload.location_timestamp_ms) / 1000.0)
+            captured_at = datetime_lib.datetime.fromtimestamp(
+                float(payload.location_timestamp_ms) / 1000.0,
+                _campus_zone(),
+            ).replace(tzinfo=None)
             age_seconds = abs((now_dt - captured_at).total_seconds())
             if age_seconds > ATTENDANCE_LOCATION_MAX_TIMESTAMP_AGE_SECONDS:
                 flags.append("gps_timestamp_stale")
@@ -1293,7 +1342,7 @@ def _audit_realtime_gate_rejection(
     attendance_attempt: models.AttendanceAttemptToken | None = None,
     request: Request | None = None,
 ) -> None:
-    integrity_flags = _location_integrity_flags(payload, datetime.now())
+    integrity_flags = _location_integrity_flags(payload, _campus_now())
     if attendance_attempt and attendance_attempt.client_integrity_flags:
         try:
             existing_flags = json.loads(attendance_attempt.client_integrity_flags)
@@ -3245,6 +3294,64 @@ def _ensure_default_timetable_for_student(db: Session, student: models.Student) 
     return created
 
 
+def _academic_term_config_out(config: models.AcademicTermConfig | None, db: Session) -> schemas.AcademicTermConfigOut:
+    start_date, end_date = _academic_class_window(db)
+    return schemas.AcademicTermConfigOut(
+        class_start_date=config.class_start_date if config else start_date,
+        class_end_date=config.class_end_date if config else end_date,
+        updated_at=config.updated_at if config else None,
+        updated_by_user_id=config.updated_by_user_id if config else None,
+    )
+
+
+@router.get("/admin/academic-term", response_model=schemas.AcademicTermConfigOut)
+def get_academic_term_config(
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    config = db.get(models.AcademicTermConfig, ACADEMIC_TERM_CONFIG_KEY)
+    return _academic_term_config_out(config, db)
+
+
+@router.put("/admin/academic-term", response_model=schemas.AcademicTermConfigOut)
+def update_academic_term_config(
+    payload: schemas.AcademicTermConfigRequest,
+    db: Session = Depends(get_db),
+    current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.OWNER)),
+):
+    config = db.get(models.AcademicTermConfig, ACADEMIC_TERM_CONFIG_KEY)
+    if config is None:
+        config = models.AcademicTermConfig(
+            key=ACADEMIC_TERM_CONFIG_KEY,
+            class_start_date=payload.class_start_date,
+            class_end_date=payload.class_end_date,
+            updated_by_user_id=current_user.id,
+            updated_at=datetime.utcnow(),
+        )
+        db.add(config)
+    else:
+        config.class_start_date = payload.class_start_date
+        config.class_end_date = payload.class_end_date
+        config.updated_by_user_id = current_user.id
+        config.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(config)
+    mirror_document(
+        "admin_audit_logs",
+        {
+            "action": "academic_term_updated",
+            "class_start_date": payload.class_start_date.isoformat(),
+            "class_end_date": payload.class_end_date.isoformat(),
+            "updated_at": config.updated_at,
+            "source": "attendance.academic_term",
+            "actor_user_id": current_user.id,
+            "actor_role": current_user.role.value,
+        },
+        required=False,
+    )
+    return _academic_term_config_out(config, db)
+
+
 @router.post("/schedules", response_model=schemas.ClassScheduleOut, status_code=status.HTTP_201_CREATED)
 def create_schedule(
     payload: schemas.ClassScheduleCreate,
@@ -3517,11 +3624,11 @@ def open_schedule_attendance_session(
         raise HTTPException(status_code=400, detail="Set the class GPS lock before opening the attendance code.")
 
     course = db.get(models.Course, schedule.course_id)
-    class_date = date.today()
+    now_dt = _campus_now()
+    class_date = now_dt.date()
     if int(schedule.weekday) != int(class_date.weekday()):
         raise HTTPException(status_code=400, detail="Attendance code can only be opened on the scheduled class day.")
 
-    now_dt = datetime.now()
     is_open_now, _, _ = _window_flags(schedule, now_dt, class_date, course=course)
     if not is_open_now:
         raise HTTPException(status_code=400, detail="Attendance code can only be opened during the first 10 minutes.")
@@ -3598,10 +3705,10 @@ def validate_schedule_attendance_session_code(
         current_user=current_user,
         schedule_id=int(schedule_id),
     )
-    class_date = date.today()
+    now_dt = _campus_now()
+    class_date = now_dt.date()
     if int(schedule.weekday) != int(class_date.weekday()):
         raise HTTPException(status_code=400, detail="This class is not scheduled for today.")
-    now_dt = datetime.now()
     is_open_now, _, _ = _window_flags(schedule, now_dt, class_date, course=course)
     if not is_open_now:
         raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes).")
@@ -3865,40 +3972,9 @@ def load_default_student_timetable(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT)),
 ):
-    if not current_user.student_id:
-        raise HTTPException(status_code=403, detail="Student account is not linked correctly")
-
-    student = db.get(models.Student, current_user.student_id)
-    if not student:
-        raise HTTPException(status_code=404, detail="Student not found")
-
-    created = _ensure_default_timetable_for_student(db, student)
-    db.commit()
-
-    mirror_document(
-        "student_default_timetable_loads",
-        {
-            "student_id": student.id,
-            "student_email": student.email,
-            "created_faculty": created["faculty"],
-            "created_courses": created["courses"],
-            "created_classrooms": created["classrooms"],
-            "created_schedules": created["schedules"],
-            "created_enrollments": created["enrollments"],
-            "total_classes": created["total_classes"],
-            "loaded_at": datetime.utcnow(),
-            "source": "student-portal",
-        },
-    )
-
-    return schemas.DefaultTimetableLoadResponse(
-        message="Default timetable loaded",
-        created_faculty=created["faculty"],
-        created_courses=created["courses"],
-        created_classrooms=created["classrooms"],
-        created_schedules=created["schedules"],
-        created_enrollments=created["enrollments"],
-        total_classes=created["total_classes"],
+    raise HTTPException(
+        status_code=410,
+        detail="Default timetable loading is disabled. Faculty or admin must assign stream and section-specific courses.",
     )
 
 
@@ -4086,6 +4162,9 @@ def get_student_profile(
 
     _reissue_profile_identifiers_if_needed(db)
     db.refresh(student)
+    if sync_student_academic_term(db, student, now=_campus_now()):
+        db.commit()
+        db.refresh(student)
     _sync_student_to_mongo(db, student, source="student-profile-read")
     return _student_profile_out(db, student)
 
@@ -4105,6 +4184,11 @@ def update_student_profile(
 
     _reissue_profile_identifiers_if_needed(db)
     db.refresh(student)
+    if payload.section is not None:
+        raise HTTPException(status_code=400, detail="Section is system-assigned from semester, stream, and cohort capacity.")
+    if sync_student_academic_term(db, student, now=_campus_now()):
+        db.commit()
+        db.refresh(student)
 
     had_registration_number = bool((student.registration_number or "").strip())
     had_enrollment_video = bool(student.enrollment_video_template_json)
@@ -4373,31 +4457,30 @@ def get_student_weekly_timetable(
     student = db.get(models.Student, current_user.student_id)
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
+    if sync_student_academic_term(db, student, now=_campus_now()):
+        db.commit()
+        db.refresh(student)
 
-    has_existing_enrollment = (
-        db.query(models.Enrollment.id)
-        .filter(models.Enrollment.student_id == current_user.student_id)
-        .first()
-        is not None
-    )
-    if not has_existing_enrollment:
-        created = _ensure_default_timetable_for_student(db, student)
-        has_default_timetable_changes = any(
-            value for key, value in created.items() if key != "total_classes"
-        )
-        if has_default_timetable_changes:
-            db.commit()
-        else:
-            db.flush()
-    else:
-        db.flush()
+    db.flush()
 
-    today = date.today()
-    academic_start = _academic_start_date()
+    now_dt = _campus_now()
+    today = now_dt.date()
+    class_start_date, class_end_date = _academic_class_window(db)
+    academic_start = max(_academic_start_date(), class_start_date)
     min_week_start = _week_start_for(academic_start)
     requested_week_start = _week_start_for(week_start or today)
     current_week_start = max(requested_week_start, min_week_start)
     current_week_end = current_week_start + timedelta(days=6)
+    if current_week_start > class_end_date or current_week_end < class_start_date:
+        return schemas.WeeklyTimetableOut(
+            week_start=current_week_start,
+            min_navigable_date=academic_start,
+            server_time=now_dt,
+            server_epoch_ms=_campus_datetime_to_epoch_ms(now_dt),
+            server_date=today,
+            campus_timezone=_campus_timezone_name(),
+            classes=[],
+        )
 
     enrollments = (
         db.query(models.Enrollment)
@@ -4406,7 +4489,6 @@ def get_student_weekly_timetable(
     )
     course_ids = [item.course_id for item in enrollments]
 
-    now_dt = datetime.now()
     result: list[schemas.TimetableClassOut] = []
     student_section = _student_section_key(student)
     effective_schedules = _effective_student_schedules(
@@ -4425,7 +4507,7 @@ def get_student_weekly_timetable(
             now_dt=now_dt,
             schedule=schedule,
         )
-        if item:
+        if item and class_start_date <= item.class_date <= class_end_date:
             result.append(item)
 
     targeted_remedial_class_ids = {
@@ -4440,8 +4522,8 @@ def get_student_weekly_timetable(
     }
     remedial_query = db.query(models.MakeUpClass).filter(
         models.MakeUpClass.is_active.is_(True),
-        models.MakeUpClass.class_date >= current_week_start,
-        models.MakeUpClass.class_date <= current_week_end,
+        models.MakeUpClass.class_date >= max(current_week_start, class_start_date),
+        models.MakeUpClass.class_date <= min(current_week_end, class_end_date),
     )
     if targeted_remedial_class_ids:
         remedial_query = remedial_query.filter(models.MakeUpClass.id.in_(sorted(targeted_remedial_class_ids)))
@@ -4524,6 +4606,10 @@ def get_student_weekly_timetable(
     return schemas.WeeklyTimetableOut(
         week_start=current_week_start,
         min_navigable_date=academic_start,
+        server_time=now_dt,
+        server_epoch_ms=_campus_datetime_to_epoch_ms(now_dt),
+        server_date=today,
+        campus_timezone=_campus_timezone_name(),
         classes=result,
     )
 
@@ -4538,7 +4624,7 @@ def get_student_attendance_history(
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
     academic_start = _academic_start_date()
-    now_dt = datetime.now()
+    now_dt = _campus_now()
     today = now_dt.date()
     saarthi_today = _student_saarthi_materialization_through_date(
         db,
@@ -4785,7 +4871,7 @@ def get_student_attendance_aggregate(
         raise HTTPException(status_code=403, detail="Student account is not linked correctly")
 
     academic_start = _academic_start_date()
-    now_dt = datetime.now()
+    now_dt = _campus_now()
     today = now_dt.date()
     saarthi_today = _student_saarthi_materialization_through_date(
         db,
@@ -5242,7 +5328,7 @@ def create_student_rectification_request(
     if not is_enrolled:
         raise HTTPException(status_code=403, detail="Student is not enrolled in this subject")
 
-    today = date.today()
+    today = _campus_today()
     if payload.class_date > today:
         raise HTTPException(status_code=400, detail="Rectification request cannot be created for future classes")
 
@@ -5415,6 +5501,8 @@ def _resolve_student_schedule_context(
     course = db.get(models.Course, schedule.course_id)
     if not course:
         raise HTTPException(status_code=404, detail="Course not found for schedule")
+    if sync_student_academic_term(db, student, now=_campus_now()):
+        db.flush()
 
     student_section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
     override_filters = [
@@ -5674,7 +5762,7 @@ def mark_realtime_attendance(
             current_user=current_user,
         )
         schedule = None
-        today = date.today()
+        today = _campus_today()
     else:
         if not payload.schedule_id:
             raise HTTPException(status_code=400, detail="schedule_id is required")
@@ -5684,11 +5772,14 @@ def mark_realtime_attendance(
             schedule_id=int(payload.schedule_id),
         )
 
-        today = date.today()
+        now_dt = _campus_now()
+        today = now_dt.date()
         if schedule.weekday != today.weekday():
             raise HTTPException(status_code=400, detail="This class is not scheduled for today")
+        class_start_date, class_end_date = _academic_class_window(db)
+        if today < class_start_date or today > class_end_date:
+            raise HTTPException(status_code=403, detail="Attendance is outside the active academic class date window")
 
-        now_dt = datetime.now()
         is_open_now, _, _ = _window_flags(schedule, now_dt, today, course=course)
         if not is_open_now:
             raise HTTPException(status_code=400, detail="Attendance window is closed (only first 10 minutes)")
@@ -6012,7 +6103,7 @@ def get_faculty_dashboard(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
-    class_date = class_date or date.today()
+    class_date = class_date or _campus_today()
 
     schedule = db.get(models.ClassSchedule, schedule_id)
     if not schedule:
@@ -6150,7 +6241,7 @@ def list_faculty_rectification_requests(
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
-    class_date = class_date or date.today()
+    class_date = class_date or _campus_today()
 
     schedule = db.get(models.ClassSchedule, schedule_id)
     if not schedule:

@@ -891,14 +891,13 @@ def require_roles(*roles: models.UserRole) -> Callable[[CurrentUser], CurrentUse
         }
         if enforce_mfa and current_user.role in {
             models.UserRole.ADMIN,
-            models.UserRole.FACULTY,
             models.UserRole.OWNER,
         }:
             if not current_user.mfa_enabled:
                 raise HTTPException(
                     status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                     detail=(
-                        "MFA enrollment is required for admin/faculty/owner accounts. "
+                        "MFA enrollment is required for admin/owner accounts. "
                         "Complete /auth/mfa/enroll and /auth/mfa/activate first."
                     ),
                 )

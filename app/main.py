@@ -866,6 +866,19 @@ def apply_sqlite_migrations() -> None:
             connection.execute(
                 text("ALTER TABLE students ADD COLUMN section_updated_at DATETIME")
             )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS academic_term_config (
+                    key VARCHAR(40) PRIMARY KEY,
+                    class_start_date DATE NOT NULL,
+                    class_end_date DATE NOT NULL,
+                    updated_by_user_id INTEGER NULL,
+                    updated_at DATETIME NOT NULL
+                )
+                """
+            )
+        )
 
         faculty_columns = {
             row[1]

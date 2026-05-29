@@ -168,9 +168,9 @@
                         <option value="School of Vocational Studies">School of Vocational Studies</option>
                     </select>
                 </label>
-                <label id="auth-section-wrap" class="field">
-                    <span>Section (student only)</span>
-                    <input id="auth-signup-section" type="text" placeholder="e.g. P132">
+                <label id="auth-section-wrap" class="field hidden">
+                    <span>Section</span>
+                    <input id="auth-signup-section" type="text" placeholder="Assigned automatically" disabled>
                 </label>
                 <label id="auth-semester-wrap" class="field">
                     <span>Semester (student only)</span>
@@ -1557,6 +1557,19 @@ Ask about any module available to your role.</div>
                     <button id="admin-timetable-override-btn" class="btn btn-primary" type="button">Update Timetable</button>
                 </div>
                 <p id="admin-timetable-override-status" class="helper-text">Replace one slot for a single student or every student in a section.</p>
+
+                <div class="faculty-admin-grid">
+                    <label class="field">
+                        <span>Class Start Date</span>
+                        <input id="admin-academic-start-date" type="date">
+                    </label>
+                    <label class="field">
+                        <span>Class End Date</span>
+                        <input id="admin-academic-end-date" type="date">
+                    </label>
+                    <button id="admin-academic-term-btn" class="btn" type="button">Update Class Window</button>
+                </div>
+                <p id="admin-academic-term-status" class="helper-text">Controls when students can see classes and mark attendance.</p>
 
                 <div class="faculty-admin-grid">
                     <label class="field">

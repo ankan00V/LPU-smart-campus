@@ -496,5 +496,3 @@ def close_dual_redis() -> None:
 def dual_redis_status() -> dict[str, Any]:
     """Get status of the dual Redis system"""
     return _dual_redis_manager.get_status()
-
-# Made with Bob
