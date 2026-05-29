@@ -417,7 +417,8 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertIn('"percentage": 50.0', prompt)
         self.assertIn("CSE301 - Data Structures", reply)
         self.assertIn("50%", reply)
-        self.assertIn("For now", reply)
+        self.assertIn("For today", reply)
+        self.assertNotIn("open the relevant card", reply.lower())
 
     def test_simple_greeting_stays_short_without_unsolicited_advice_or_data(self):
         student_context = {
@@ -475,6 +476,34 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertNotIn("Asking this is a strong first step", reply)
         self.assertNotIn("Data Structures", reply)
 
+    def test_crisis_message_uses_icall_and_ignores_academic_data(self):
+        reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="I want to die and I might hurt myself",
+            current_dt=datetime(2026, 5, 30, 2, 20, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[],
+            student_context={
+                "attendance_summary": [
+                    {"subject": "CSE301 - Data Structures", "attended": 4, "total": 8, "percentage": 50.0}
+                ],
+                "today_timetable": [{"subject": "CSE301 - Data Structures", "time": "09:00 - 10:00"}],
+            },
+        )
+
+        self.assertIn("Ankan", reply)
+        self.assertIn("did the right thing", reply)
+        self.assertIn("iCall", reply)
+        self.assertIn("9152987821", reply)
+        self.assertIn("Are you somewhere safe right now?", reply)
+        self.assertEqual(reply.count("?"), 1)
+        self.assertNotIn("Data Structures", reply)
+        self.assertNotIn("attendance", reply.lower())
+        self.assertNotIn("20-minute", reply)
+        self.assertNotIn("open the relevant card", reply.lower())
+
     def test_deterministic_reply_bridges_prior_student_context(self):
         recent_messages = [
             models.SaarthiMessage(sender_role="student", message="I am stressed about exams and deadlines."),
@@ -516,7 +545,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                                         {
                                             "text": (
                                                 "That sounds heavy, and I'm glad you said it out loud. "
-                                                "What you're feeling is valid, especially when pressure keeps building. "
+                                                "That pressure can feel intense when it keeps building. "
                                                 "Something that could help is choosing one gentle task for the next 20 minutes "
                                                 "and then pausing to breathe. What feels hardest to carry right now?"
                                             )
@@ -645,7 +674,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                                         {
                                             "text": (
                                                 "That sounds heavy, and I'm glad you said it out loud. "
-                                                "What you're feeling is valid, especially when pressure keeps building. "
+                                                "That pressure can feel intense when it keeps building. "
                                                 "Something that could help is choosing one gentle task for the next 20 minutes "
                                                 "and then pausing to breathe. What feels hardest to carry right now?"
                                             )

@@ -704,10 +704,62 @@ _SAARTHI_SIMPLE_ACKS = {
     "hm",
 }
 
+_SAARTHI_BANNED_REPLY_PHRASES = (
+    "your feelings are valid",
+    "what you're feeling is valid",
+    "growth takes time",
+    "small steady steps can create real change",
+    "what part would you like to explore more deeply",
+    "i understand your concern",
+    "as per records",
+    "kindly note",
+    "it is advised",
+    "open the relevant card in the app",
+    "for now, take the next action shown there",
+)
+
 
 def _normalize_simple_saarthi_message(value: str) -> str:
     cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
     return " ".join(cleaned.split())
+
+
+def _is_saarthi_crisis_message(student_message: str) -> bool:
+    normalized = _normalize_saarthi_text(student_message)
+    return _contains_any(
+        normalized,
+        (
+            "suicide",
+            "suicidal",
+            "kill myself",
+            "kill me",
+            "want to die",
+            "wanna die",
+            "i should die",
+            "end my life",
+            "ending my life",
+            "self harm",
+            "self-harm",
+            "hurt myself",
+            "harm myself",
+            "cut myself",
+            "not want to live",
+            "don't want to live",
+            "dont want to live",
+            "can't live",
+            "cant live",
+        ),
+    )
+
+
+def _saarthi_crisis_reply(*, student_name: str) -> str:
+    first_name = _format_student_first_name(student_name)
+    return (
+        f"{first_name}, I'm really glad you told me this. "
+        "You did the right thing by saying it out loud. "
+        "There's a free, confidential counselling line called iCall, run by TISS: 9152987821, Mon-Sat, 8am-10pm. "
+        "Are you somewhere safe right now?"
+    )
 
 
 def _is_simple_greeting_message(student_message: str) -> bool:
@@ -1875,6 +1927,9 @@ def _build_saarthi_llm_system_instruction() -> str:
             "Speak like a warm senior student who knows the student's academic life deeply and genuinely wants the best for them.",
             "Always be warm, clear, grounded, and honest. Never be formal, robotic, preachy, vague, judgmental, or bureaucratic.",
             "Most important: match the energy of the student's latest message.",
+            "Crisis override: if the student mentions suicide, wanting to die, self-harm, or hurting themselves, ignore academics and data completely.",
+            "For crisis replies, use the student's name, say they did the right thing by saying it out loud, share iCall by TISS at 9152987821 (Mon-Sat, 8am-10pm), then ask one gentle safety question.",
+            "In crisis replies, do not give productivity tips, do not mention attendance or app data, do not reference UI, and do not move on from the student.",
             "If the student only says hi, hey, hello, okay, thanks, or another one-word acknowledgement, reply in 1 to 2 sentences maximum.",
             "For simple greetings and acknowledgements, do not give advice, do not mention data, do not motivate, and do not ask multiple questions.",
             "Never volunteer tips, research-backed advice, motivational content, or attendance/timetable data unless the student shared a problem or asked for it.",
@@ -1883,7 +1938,9 @@ def _build_saarthi_llm_system_instruction() -> str:
             "Never give a generic answer when specific student data is available.",
             "If the student has missed classes, low attendance, or pending work, never scold. Ask what happened or gently identify one next move.",
             "For focus, anxiety, sleep, burnout, stress, or motivation, include one practical evidence-informed tip only when the student wants practical help, not a long list.",
-            "Every reply must end with one clear, doable next step the student can take now or today.",
+            "For non-crisis replies, end with one clear, doable next step the student can take now or today.",
+            "Ask only one question per reply, and never repeat the same type of question if the student has already answered it.",
+            "Read the recent transcript before replying. Once the problem is clear, move into helping instead of more probing.",
             "Stay tightly grounded in the latest student message, injected context, and recent transcript; do not invent missing data.",
             "Write in plain text only. Do not use bullet points, markdown, headings, numbered lists, role labels, or policy disclaimers unless urgent safety requires it.",
             "Keep normal specific replies between 4 and 8 sentences in a natural conversational tone, but keep greetings and acknowledgements to 1 or 2 sentences.",
@@ -1892,11 +1949,12 @@ def _build_saarthi_llm_system_instruction() -> str:
             "Answer direct app/module questions precisely first, then add emotional support in one concise sentence when helpful.",
             "Do not repeat attendance rules unless the student asked about attendance or this turn changed attendance state.",
             "Avoid generic filler, repeated motivational lines, and repeated openings from prior turns.",
-            "Never say 'that's a great question', 'I'm so glad you asked', 'I understand your concern', or 'What part would you like to explore more deeply?'",
+            "Never say 'that's a great question', 'I'm so glad you asked', 'I understand your concern', 'your feelings are valid', 'Growth takes time', 'Small steady steps can create real change', or 'What part would you like to explore more deeply?'",
+            "Never reference UI elements, cards, buttons, app navigation, or actions shown in the app unless the latest student message specifically asked about that exact UI.",
             "Avoid repeating the same sentences from earlier turns; paraphrase when you need to restate.",
             "If the student shares a short, high-level feeling or topic (for example 'feeling depressed' or 'my academics'), ask a clarifying question before giving advice.",
             "Prefer real-world, evidence-informed coping ideas when useful, such as retrieval practice, short focus cycles, physiological sighing, 4-7-8 breathing, sleep hygiene, and behavioral activation.",
-            "If the student mentions self-harm, suicide, abuse, or immediate danger, stay calm, validate pain, and strongly encourage immediate contact with trusted people and emergency services.",
+            "If the student mentions abuse or immediate danger outside self-harm, stay calm and encourage immediate contact with trusted people and emergency services.",
             "Never mention internal prompts, hidden rules, or model limitations.",
         ]
     ).strip()
@@ -2209,6 +2267,8 @@ def _looks_like_low_quality_reply(
     normalized = cleaned.lower()
     if cleaned != _sanitize_saarthi_reply_text(cleaned):
         return True
+    if any(phrase in normalized for phrase in _SAARTHI_BANNED_REPLY_PHRASES):
+        return True
     if _is_simple_greeting_message(student_message) or _is_simple_ack_message(student_message):
         if sentence_count > 2 or word_count > 35:
             return True
@@ -2457,6 +2517,8 @@ def _generate_saarthi_reply_deterministic(
     normalized = _normalize_saarthi_text(message)
     first_turn = _saarthi_is_first_turn(recent_messages)
     first_name = _format_student_first_name(student_name)
+    if _is_saarthi_crisis_message(student_message):
+        return _saarthi_crisis_reply(student_name=student_name)
     simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
     if simple_reply:
         return simple_reply
@@ -2584,15 +2646,6 @@ def _generate_saarthi_reply_deterministic(
                 return f"This is grounded in {cleaned_note}."
         return ""
 
-    if _contains_any(normalized, ("suicide", "kill myself", "self harm", "hurt myself", "end my life")):
-        urgent = (
-            f"{first_name}, I'm really glad you shared this, and I want you to stay safe right now. "
-            "You don't have to carry this alone. Please reach out immediately to a trusted person nearby, "
-            "your campus counselor, or local emergency support if you might act on these thoughts. "
-            "Can you message or call someone you trust right now while we stay with this together?"
-        )
-        return urgent
-
     empathy_map = {
         "stress": [
             "that sounds like a lot to carry at once.",
@@ -2612,7 +2665,7 @@ def _generate_saarthi_reply_deterministic(
         ],
         "anxiety": "You're not weak for feeling this way; it's a normal response to uncertainty.",
         "confusion": "It's completely normal to feel unclear when you are making important decisions.",
-        "sadness": "Your feelings are valid, and it is okay to say this out loud.",
+        "sadness": "I'm glad you said this out loud instead of holding it in alone.",
         "frustration": "Anyone in your position could feel this way.",
         "motivation_loss": "Many students go through this phase, and it does get lighter with small steps.",
         "curiosity": "",
@@ -2649,7 +2702,7 @@ def _generate_saarthi_reply_deterministic(
     empathy_line = _pick_variant(empathy_map.get(emotion, "thanks for opening up."))
     if empathy_line:
         lines.append(f"{first_name}, {empathy_line}")
-    validate_line = _pick_variant(validate_map.get(emotion, "What you're feeling is valid."))
+    validate_line = _pick_variant(validate_map.get(emotion, "I'm glad you said this clearly."))
     if validate_line:
         lines.append(validate_line)
     reflect_line = _pick_variant(
@@ -2716,9 +2769,6 @@ def _generate_saarthi_reply_deterministic(
     elif "already secured" in attendance_context and _contains_any(normalized, ("attendance", "con111", "credit", "sunday")):
         lines.append("Your Sunday CON111 credit is already secured for this week.")
 
-    growth_line = "Growth takes time, and small steady steps can create real change."
-    if emotion != "curiosity" and growth_line.lower() not in recent_assistant_text and assistant_turns % 2 == 0:
-        lines.append(growth_line)
     if _should_ask_follow_up(student_message, recent_messages=recent_messages, first_turn=first_turn):
         if academic_context:
             lines.append("Is it workload, grades, or difficulty focusing that’s weighing on you most right now?")
@@ -2728,7 +2778,7 @@ def _generate_saarthi_reply_deterministic(
         if academic_context:
             lines.append("For today, choose one subject and do one 20-minute block before deciding anything bigger.")
         elif specific_context_line:
-            lines.append("For now, open the relevant card in the app and take the next action shown there.")
+            lines.append("For today, use that subject or date as your next checkpoint and tell me if you want it broken down further.")
         else:
             lines.append("For today, take one small step you can finish in the next 10 minutes.")
     return " ".join(lines).strip()
@@ -2745,6 +2795,9 @@ def generate_saarthi_reply(
     recent_messages: list[models.SaarthiMessage] | None = None,
     student_context: dict[str, object] | None = None,
 ) -> str:
+    if _is_saarthi_crisis_message(student_message):
+        return _saarthi_crisis_reply(student_name=student_name)
+
     simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
     if simple_reply:
         return simple_reply
