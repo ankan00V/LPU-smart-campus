@@ -743,6 +743,41 @@ def _get_alternate_email(user_doc: dict) -> str | None:
     return plain or None
 
 
+def _alternate_login_roles() -> set[models.UserRole]:
+    return {models.UserRole.ADMIN, models.UserRole.FACULTY}
+
+
+def _find_auth_user_for_login_email(db, email: str) -> tuple[dict[str, Any] | None, bool]:
+    normalized = _normalize_email(email)
+    user = db["auth_users"].find_one({"email": normalized})
+    if user:
+        return user, False
+
+    alt_hash = hash_lookup_value(normalized, purpose="alternate-email")
+    user = db["auth_users"].find_one(
+        {
+            "$or": [
+                {"alternate_email_hash": alt_hash},
+                {"alternate_email": normalized},
+            ]
+        }
+    )
+    if not user:
+        return None, False
+
+    try:
+        role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+    except ValueError:
+        return user, True
+    if role not in _alternate_login_roles():
+        return None, False
+
+    alternate_email = _get_alternate_email(user)
+    if alternate_email != normalized:
+        return None, False
+    return user, True
+
+
 def _build_alternate_email_update_fields(user_id: int, alternate_email: str | None) -> dict[str, Any]:
     if not alternate_email:
         return {
@@ -1780,7 +1815,7 @@ def request_login_otp(
             limit=10,
             window_seconds=300,
         )
-        user = db["auth_users"].find_one({"email": email})
+        user, login_via_alternate = _find_auth_user_for_login_email(db, email)
         if not user:
             raise HTTPException(
                 status_code=404,
@@ -1795,7 +1830,10 @@ def request_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _reject_if_legacy_primary_login_consumed(user)
-        _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
+        primary_email = _normalize_email(user.get("email"))
+        if login_via_alternate and role not in _alternate_login_roles():
+            raise HTTPException(status_code=403, detail="Secondary email OTP login is only available for faculty and admin accounts.")
+        _validate_role_email(primary_email, role, allow_legacy_primary=_primary_email_update_required(user))
         _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         requires_password_setup = _password_setup_required(user)
         signup_verification_pending = _student_signup_verification_pending(user)
@@ -1825,13 +1863,13 @@ def request_login_otp(
         if not requires_password_setup and not signup_verification_pending and password_expired(user):
             raise HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=PASSWORD_EXPIRED_DETAIL)
         user_id = _ensure_auth_user_id(db, user, sql_db)
-        _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
+        _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=primary_email)
         if role == models.UserRole.STUDENT and not _has_real_profile_for_legacy_otp_login(
             db,
             sql_db,
             role=role,
             user_doc=user,
-            email=email,
+            email=primary_email,
         ):
             raise HTTPException(
                 status_code=404,
@@ -1843,19 +1881,26 @@ def request_login_otp(
             sql_db,
             role=role,
             user_doc=user,
-            email=email,
+            email=primary_email,
         ):
             raise HTTPException(
                 status_code=404,
                 detail="There is no account associated with this mail, kindly create one first.",
             )
 
-        destination_email = user["email"]
+        destination_email = primary_email
         if payload.send_to_alternate:
-            raise HTTPException(
-                status_code=400,
-                detail="OTP delivery is restricted to the primary login email.",
-            )
+            if role not in _alternate_login_roles():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Secondary email OTP delivery is only available for faculty and admin accounts.",
+                )
+            alternate_email = _get_alternate_email(user)
+            if not alternate_email:
+                raise HTTPException(status_code=400, detail="No secondary email is configured for this account.")
+            destination_email = alternate_email
+        elif login_via_alternate:
+            destination_email = email
 
         now = datetime.utcnow()
         cooldown_seconds = _otp_resend_cooldown_seconds()
@@ -1896,6 +1941,9 @@ def request_login_otp(
             "otp_salt": otp_salt,
             "purpose": "login",
             "role": role.value,
+            "login_email": email,
+            "delivery_destination": destination_email,
+            "delivered_to_alternate": destination_email != primary_email,
             "attempts_count": 0,
             "expires_at": expires_at,
             "used_at": None,
@@ -1906,7 +1954,7 @@ def request_login_otp(
         try:
             delivery = _send_login_otp_with_timeout(destination_email, otp_code)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Login OTP delivery failed for email=%s destination=%s", email, destination_email)
+            logger.exception("Login OTP delivery failed for email=%s destination=%s", primary_email, destination_email)
             db["auth_otps"].update_one({"id": otp_doc["id"]}, {"$set": {"used_at": datetime.utcnow()}})
             db["auth_otp_delivery"].insert_one(
                 {
@@ -1939,11 +1987,12 @@ def request_login_otp(
             "auth.otp_requested",
             {
                 "user_id": user_id,
-                "email": user["email"],
+                "email": primary_email,
+                "login_email": email,
                 "delivery_destination": destination_email,
                 "expires_at": expires_at,
             },
-            actor={"user_id": user_id, "email": user["email"], "role": user["role"]},
+            actor={"user_id": user_id, "email": primary_email, "role": user["role"]},
         )
 
         return schemas.OTPRequestResponse(
@@ -2138,7 +2187,7 @@ def verify_login_otp(
             limit=25,
             window_seconds=300,
         )
-        user = db["auth_users"].find_one({"email": email})
+        user, login_via_alternate = _find_auth_user_for_login_email(db, email)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid OTP flow")
 
@@ -2147,18 +2196,21 @@ def verify_login_otp(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for OTP login") from exc
         _reject_if_legacy_primary_login_consumed(user)
-        _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
+        primary_email = _normalize_email(user.get("email"))
+        if login_via_alternate and role not in _alternate_login_roles():
+            raise HTTPException(status_code=403, detail="Secondary email OTP login is only available for faculty and admin accounts.")
+        _validate_role_email(primary_email, role, allow_legacy_primary=_primary_email_update_required(user))
         _ensure_selected_login_role(actual_role=role, selected_role=payload.role)
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
         user_id = _ensure_auth_user_id(db, user, sql_db)
-        _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=email)
+        _ensure_role_profile_link(db, sql_db, user_doc=user, role=role, email=primary_email)
         if _password_setup_required(user) and not _has_real_profile_for_legacy_otp_login(
             db,
             sql_db,
             role=role,
             user_doc=user,
-            email=email,
+            email=primary_email,
         ):
             raise HTTPException(
                 status_code=404,
