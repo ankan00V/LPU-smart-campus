@@ -504,6 +504,65 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertNotIn("20-minute", reply)
         self.assertNotIn("open the relevant card", reply.lower())
 
+    def test_crisis_mode_stays_active_for_not_safe_and_lost_followups(self):
+        first_reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="im feeling suicidal",
+            current_dt=datetime(2026, 5, 30, 2, 47, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[],
+        )
+
+        not_safe_reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="no",
+            current_dt=datetime(2026, 5, 30, 2, 47, 30),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[
+                models.SaarthiMessage(sender_role="student", message="im feeling suicidal"),
+                models.SaarthiMessage(sender_role="assistant", message=first_reply),
+            ],
+            student_context={
+                "attendance_summary": [
+                    {"subject": "CSE301 - Data Structures", "attended": 4, "total": 8, "percentage": 50.0}
+                ]
+            },
+        )
+
+        self.assertIn("Ankan", not_safe_reply)
+        self.assertIn("9152987821", not_safe_reply)
+        self.assertIn("near you", not_safe_reply.lower())
+        self.assertEqual(not_safe_reply.count("?"), 1)
+        self.assertNotIn("what would help most", not_safe_reply.lower())
+        self.assertNotIn("Data Structures", not_safe_reply)
+        self.assertNotIn("attendance", not_safe_reply.lower())
+
+        lost_reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="I don't know",
+            current_dt=datetime(2026, 5, 30, 2, 48, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[
+                models.SaarthiMessage(sender_role="student", message="im feeling suicidal"),
+                models.SaarthiMessage(sender_role="assistant", message=first_reply),
+                models.SaarthiMessage(sender_role="student", message="no"),
+                models.SaarthiMessage(sender_role="assistant", message=not_safe_reply),
+            ],
+        )
+
+        self.assertIn("don't need to know right now", lost_reply)
+        self.assertIn("where are you", lost_reply.lower())
+        self.assertEqual(lost_reply.count("?"), 1)
+        self.assertNotIn("choices", lost_reply.lower())
+        self.assertNotIn("decision", lost_reply.lower())
+        self.assertNotIn("20-minute", lost_reply)
+
     def test_deterministic_reply_bridges_prior_student_context(self):
         recent_messages = [
             models.SaarthiMessage(sender_role="student", message="I am stressed about exams and deadlines."),

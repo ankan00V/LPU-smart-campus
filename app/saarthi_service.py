@@ -709,6 +709,8 @@ _SAARTHI_BANNED_REPLY_PHRASES = (
     "what you're feeling is valid",
     "growth takes time",
     "small steady steps can create real change",
+    "it's completely normal to feel unclear when you are making important decisions",
+    "what would help most right now",
     "what part would you like to explore more deeply",
     "i understand your concern",
     "as per records",
@@ -752,6 +754,91 @@ def _is_saarthi_crisis_message(student_message: str) -> bool:
     )
 
 
+def _saarthi_recent_crisis_context(recent_messages: list[models.SaarthiMessage] | None = None) -> bool:
+    for row in recent_messages or []:
+        role = str(getattr(row, "sender_role", "") or "").strip().lower()
+        message = str(getattr(row, "message", "") or "")
+        normalized = _normalize_saarthi_text(message)
+        if role == "student" and _is_saarthi_crisis_message(message):
+            return True
+        if role == "assistant" and "9152987821" in message and "safe" in normalized:
+            return True
+    return False
+
+
+def _saarthi_student_indicates_not_safe(student_message: str) -> bool:
+    normalized = _normalize_simple_saarthi_message(student_message)
+    if normalized in {
+        "no",
+        "nope",
+        "nah",
+        "not safe",
+        "not really",
+        "i am not safe",
+        "i m not safe",
+        "im not safe",
+        "i am not",
+        "im not",
+        "i m not",
+        "not now",
+    }:
+        return True
+    return _contains_any(
+        _normalize_saarthi_text(student_message),
+        (
+            "not safe",
+            "unsafe",
+            "not somewhere safe",
+            "not in a safe place",
+            "i might do it",
+            "i may do it",
+            "i will do it",
+            "i'm alone",
+            "im alone",
+            "i am alone",
+        ),
+    )
+
+
+def _saarthi_student_indicates_lost(student_message: str) -> bool:
+    normalized = _normalize_simple_saarthi_message(student_message)
+    return normalized in {
+        "i dont know",
+        "i don t know",
+        "i don't know",
+        "dont know",
+        "don t know",
+        "don't know",
+        "idk",
+        "no idea",
+        "not sure",
+        "i am not sure",
+        "im not sure",
+        "i m not sure",
+        "i dont know what to do",
+        "i don t know what to do",
+        "i don't know what to do",
+        "dont know what to do",
+        "don t know what to do",
+    }
+
+
+def _saarthi_student_indicates_safe(student_message: str) -> bool:
+    normalized = _normalize_simple_saarthi_message(student_message)
+    return normalized in {
+        "yes",
+        "yeah",
+        "yep",
+        "safe",
+        "i am safe",
+        "im safe",
+        "i m safe",
+        "yes i am",
+        "yes im safe",
+        "yes i am safe",
+    }
+
+
 def _saarthi_crisis_reply(*, student_name: str) -> str:
     first_name = _format_student_first_name(student_name)
     return (
@@ -759,6 +846,41 @@ def _saarthi_crisis_reply(*, student_name: str) -> str:
         "You did the right thing by saying it out loud. "
         "There's a free, confidential counselling line called iCall, run by TISS: 9152987821, Mon-Sat, 8am-10pm. "
         "Are you somewhere safe right now?"
+    )
+
+
+def _saarthi_crisis_mode_reply(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage] | None = None,
+) -> str:
+    first_name = _format_student_first_name(student_name)
+    crisis_context = _saarthi_recent_crisis_context(recent_messages)
+    if _is_saarthi_crisis_message(student_message) and not crisis_context:
+        return _saarthi_crisis_reply(student_name=student_name)
+    if not crisis_context:
+        return ""
+    if _saarthi_student_indicates_not_safe(student_message):
+        return (
+            f"{first_name}, this is urgent: please move away from anything you could use to hurt yourself and call 112 now "
+            "if you might act on this. If you can call iCall, the number is 9152987821. "
+            "Is there anyone near you - a roommate, friend, hostel staff, or anyone nearby - you can go to right now?"
+        )
+    if _saarthi_student_indicates_lost(student_message):
+        return (
+            f"That's okay, {first_name}. You don't need to know right now. "
+            "I'm right here with you. Can you tell me one thing: where are you at this moment - in your room, "
+            "at home, or somewhere on campus?"
+        )
+    if _saarthi_student_indicates_safe(student_message):
+        return (
+            f"Okay, {first_name}. Please stay near someone and keep distance from anything you could use to hurt yourself. "
+            "Can you call iCall at 9152987821 now, or ask someone beside you to call with you?"
+        )
+    return (
+        f"{first_name}, I'm staying with you here. That sounds really painful to carry right now, and we do not need to solve it all in this moment. "
+        "Please stay near another person while we talk. What's been hurting the most?"
     )
 
 
@@ -1928,7 +2050,11 @@ def _build_saarthi_llm_system_instruction() -> str:
             "Always be warm, clear, grounded, and honest. Never be formal, robotic, preachy, vague, judgmental, or bureaucratic.",
             "Most important: match the energy of the student's latest message.",
             "Crisis override: if the student mentions suicide, wanting to die, self-harm, or hurting themselves, ignore academics and data completely.",
-            "For crisis replies, use the student's name, say they did the right thing by saying it out loud, share iCall by TISS at 9152987821 (Mon-Sat, 8am-10pm), then ask one gentle safety question.",
+            "Once crisis appears anywhere in the recent transcript, stay in crisis mode for the rest of the conversation.",
+            "For the first crisis reply, use the student's name, say they did the right thing by saying it out loud, share iCall by TISS at 9152987821 (Mon-Sat, 8am-10pm), then ask one gentle safety question.",
+            "If the student says no, not safe, or anything indicating immediate danger after a crisis message, do not ask what would help; give one immediate action: call emergency help or iCall, and move near a trusted person.",
+            "If the student says I don't know, idk, or seems lost after a crisis message, do not problem-solve; tell them they do not need to know right now, stay with them, and ask where they are.",
+            "If the student starts explaining what is wrong during crisis mode, reflect what they said and ask one gentle question; do not give study tips, productivity advice, or decision frameworks.",
             "In crisis replies, do not give productivity tips, do not mention attendance or app data, do not reference UI, and do not move on from the student.",
             "If the student only says hi, hey, hello, okay, thanks, or another one-word acknowledgement, reply in 1 to 2 sentences maximum.",
             "For simple greetings and acknowledgements, do not give advice, do not mention data, do not motivate, and do not ask multiple questions.",
@@ -2664,7 +2790,7 @@ def _generate_saarthi_reply_deterministic(
             "You're not overreacting, this kind of pressure can feel intense for anyone.",
         ],
         "anxiety": "You're not weak for feeling this way; it's a normal response to uncertainty.",
-        "confusion": "It's completely normal to feel unclear when you are making important decisions.",
+        "confusion": "It is okay if the next step feels unclear right now.",
         "sadness": "I'm glad you said this out loud instead of holding it in alone.",
         "frustration": "Anyone in your position could feel this way.",
         "motivation_loss": "Many students go through this phase, and it does get lighter with small steps.",
@@ -2676,7 +2802,7 @@ def _generate_saarthi_reply_deterministic(
             "Something that could help is choosing one subject for a short 20-minute deep-focus block, then taking a 5-minute break before deciding the next step.",
         ],
         "anxiety": "Something that could help is a short grounding reset: slow breathing for one minute, then write one action you can control today.",
-        "confusion": "You might try breaking this into two choices only, then asking what evidence supports each one before deciding.",
+        "confusion": "For now, you can keep this to one small fact at a time instead of forcing a decision.",
         "sadness": "A gentle step could be reaching out to one trusted person today and letting them know you've been feeling low.",
         "frustration": "You might try pausing for a few minutes, then choosing one action that moves you forward instead of trying to solve everything at once.",
         "motivation_loss": "One small step you could consider is a 20-minute focus block with no distractions, followed by a short break.",
@@ -2795,8 +2921,14 @@ def generate_saarthi_reply(
     recent_messages: list[models.SaarthiMessage] | None = None,
     student_context: dict[str, object] | None = None,
 ) -> str:
-    if _is_saarthi_crisis_message(student_message):
-        return _saarthi_crisis_reply(student_name=student_name)
+    recent_rows = list(recent_messages or [])
+    crisis_reply = _saarthi_crisis_mode_reply(
+        student_name=student_name,
+        student_message=student_message,
+        recent_messages=recent_rows,
+    )
+    if crisis_reply:
+        return crisis_reply
 
     simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
     if simple_reply:
@@ -2804,7 +2936,6 @@ def generate_saarthi_reply(
 
     provider = _saarthi_llm_provider()
     llm_required = _saarthi_llm_required()
-    recent_rows = list(recent_messages or [])
     detected_emotion = _detect_saarthi_emotion(student_message, recent_rows)
     first_turn = _saarthi_is_first_turn(recent_rows)
     provider_errors: list[Exception] = []
