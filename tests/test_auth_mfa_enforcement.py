@@ -35,7 +35,7 @@ class AuthMFAEnforcementTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             dep(user)
         self.assertEqual(ctx.exception.status_code, 428)
-        self.assertIn("admin/faculty/owner", str(ctx.exception.detail))
+        self.assertIn("admin/owner", str(ctx.exception.detail))
 
     def test_admin_with_mfa_passes(self):
         dep = require_roles(models.UserRole.ADMIN)
@@ -71,7 +71,24 @@ class AuthMFAEnforcementTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             dep(user)
         self.assertEqual(ctx.exception.status_code, 428)
-        self.assertIn("admin/faculty/owner", str(ctx.exception.detail))
+        self.assertIn("admin/owner", str(ctx.exception.detail))
+
+    def test_faculty_without_mfa_passes(self):
+        dep = require_roles(models.UserRole.FACULTY)
+        user = CurrentUser(
+            id=4,
+            email="faculty@gmail.com",
+            role=models.UserRole.FACULTY,
+            student_id=None,
+            faculty_id=4,
+            alternate_email=None,
+            primary_login_verified=True,
+            is_active=True,
+            mfa_enabled=False,
+            mfa_authenticated=False,
+        )
+        resolved = dep(user)
+        self.assertEqual(resolved.id, 4)
 
 
 if __name__ == "__main__":

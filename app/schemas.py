@@ -1618,6 +1618,24 @@ class AuthRegisterRequest(BaseModel):
         return self
 
 
+class AcademicTermConfigRequest(BaseModel):
+    class_start_date: date
+    class_end_date: date
+
+    @model_validator(mode="after")
+    def validate_date_order(self):
+        if self.class_end_date < self.class_start_date:
+            raise ValueError("class_end_date must be on or after class_start_date")
+        return self
+
+
+class AcademicTermConfigOut(BaseModel):
+    class_start_date: date
+    class_end_date: date
+    updated_at: Optional[datetime] = None
+    updated_by_user_id: Optional[int] = None
+
+
 class AuthUserCreate(BaseModel):
     email: str
     password: str = Field(min_length=8, max_length=128)
@@ -1973,6 +1991,10 @@ class AttendanceCodeValidateResponse(BaseModel):
 class WeeklyTimetableOut(BaseModel):
     week_start: date
     min_navigable_date: Optional[date] = None
+    server_time: Optional[datetime] = None
+    server_epoch_ms: Optional[float] = None
+    server_date: Optional[date] = None
+    campus_timezone: str = "Asia/Kolkata"
     classes: list[TimetableClassOut]
 
 

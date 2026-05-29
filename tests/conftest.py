@@ -14,6 +14,10 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 os.environ["APP_RUNTIME_STRICT"] = "false"
 os.environ["SQLALCHEMY_DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
+os.environ["REALTIME_BACKEND"] = "redis"
+os.environ["REALTIME_BACKENDS"] = "redis"
+os.environ["REALTIME_BACKENDS_REQUIRED"] = "false"
+os.environ["SQL_OUTBOX_ENABLED"] = "false"
 os.environ.pop("POSTGRES_ADMIN_DATABASE_URL", None)
 
 
@@ -30,6 +34,10 @@ def _runtime_defaults_per_test():
         "MONGO_MONGITA_FALLBACK",
         "REDIS_REQUIRED",
         "REDIS_URL",
+        "REALTIME_BACKEND",
+        "REALTIME_BACKENDS",
+        "REALTIME_BACKENDS_REQUIRED",
+        "SQL_OUTBOX_ENABLED",
         "WORKER_REQUIRED",
         "WORKER_INLINE_FALLBACK_ENABLED",
         "STUDENT_AUTH_TURNSTILE_ENABLED",
@@ -48,6 +56,10 @@ def _runtime_defaults_per_test():
     os.environ["MONGO_MONGITA_FALLBACK"] = "false"
     os.environ["REDIS_REQUIRED"] = "false"
     os.environ["REDIS_URL"] = ""
+    os.environ["REALTIME_BACKEND"] = "redis"
+    os.environ["REALTIME_BACKENDS"] = "redis"
+    os.environ["REALTIME_BACKENDS_REQUIRED"] = "false"
+    os.environ["SQL_OUTBOX_ENABLED"] = "false"
     os.environ["WORKER_REQUIRED"] = "false"
     os.environ["WORKER_INLINE_FALLBACK_ENABLED"] = "true"
     os.environ["STUDENT_AUTH_TURNSTILE_ENABLED"] = "true"

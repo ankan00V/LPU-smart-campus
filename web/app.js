@@ -44,6 +44,7 @@ const REMEDIAL_REJECT_WINDOW_MS = 30 * 60 * 1000;
 const REMEDIAL_DEFAULT_ONLINE_LINK = 'https://myclass.lpu.in/';
 const STUDENT_TIMETABLE_START_DATE = '2026-03-02';
 const MOBILE_TIMETABLE_MAX_WIDTH = 768;
+const DEFAULT_CAMPUS_TIMEZONE = 'Asia/Kolkata';
 const SESSION_IDLE_LOGOUT_MS = 15 * 60 * 1000;
 const SESSION_MAX_LOGOUT_MS = 30 * 60 * 1000;
 const PERSONAL_PRIMARY_EMAIL_DOMAINS = new Set([
@@ -363,6 +364,10 @@ const state = {
     timetableRequestToken: 0,
     timetableRepairInFlight: false,
     kpiRefreshInFlight: false,
+    campusServerNowMs: 0,
+    campusServerPerfMs: 0,
+    campusTodayIso: '',
+    campusTimezone: DEFAULT_CAMPUS_TIMEZONE,
     selectedScheduleId: null,
     name: '',
     registrationNumber: '',
@@ -1038,6 +1043,10 @@ const els = {
   adminTimetableOverrideLocationLabel: document.getElementById('admin-timetable-override-location-label'),
   adminTimetableOverrideBtn: document.getElementById('admin-timetable-override-btn'),
   adminTimetableOverrideStatus: document.getElementById('admin-timetable-override-status'),
+  adminAcademicStartDate: document.getElementById('admin-academic-start-date'),
+  adminAcademicEndDate: document.getElementById('admin-academic-end-date'),
+  adminAcademicTermBtn: document.getElementById('admin-academic-term-btn'),
+  adminAcademicTermStatus: document.getElementById('admin-academic-term-status'),
   adminUpdateStudentId: document.getElementById('admin-update-student-id'),
   adminUpdateStudentSection: document.getElementById('admin-update-student-section'),
   adminUpdateStudentSectionBtn: document.getElementById('admin-update-student-section-btn'),
@@ -1404,7 +1413,7 @@ async function acquireStudentCaptchaToken(_action) {
 
 function isPrivilegedMfaRole(role) {
   const value = String(role || '').trim().toLowerCase();
-  return value === 'admin' || value === 'faculty' || value === 'owner';
+  return value === 'admin' || value === 'owner';
 }
 
 function isMfaEnrollmentRequiredMessage(message = '') {
@@ -1631,7 +1640,7 @@ function openMfaSetupModalForStatus(status = null, triggerMessage = 'MFA enrollm
   openAuthOverlay(triggerMessage);
   authState.mfaSetupRequired = true;
   setAuthMfaInputVisible(false);
-  setAuthMessage('MFA enrollment is required for admin/faculty accounts. Complete setup below to continue.', true);
+  setAuthMessage('MFA enrollment is required for admin/owner accounts. Complete setup below to continue.', true);
   resetMfaSetupUiState();
   if (status?.setup_pending && status?.setup_expires_at && els.mfaSetupExpires) {
     const expiresAt = new Date(String(status.setup_expires_at));
@@ -5088,7 +5097,7 @@ function syncAuthRoleForm() {
   setHidden(els.authRoleWrap, false);
   setHidden(els.authSignupRegistrationWrap, true);
   setHidden(els.authSignupFacultyIdWrap, true);
-  setHidden(els.authSectionWrap, role !== 'student');
+  setHidden(els.authSectionWrap, true);
   setHidden(els.authSemesterWrap, role !== 'student');
   setHidden(els.authParentEmailWrap, role !== 'student');
   setHidden(els.authSignupAdminPhotoWrap, role !== 'admin');
@@ -6396,13 +6405,12 @@ function renderProfileSecurity() {
   }
   if (els.profileSectionInput) {
     const facultyHasSection = Boolean(state.facultyProfile.section);
-    const studentHasSection = Boolean(state.student.section);
     if (isFaculty) {
       els.profileSectionInput.value = state.facultyProfile.section || '';
       els.profileSectionInput.disabled = facultyHasSection && !state.facultyProfile.sectionCanUpdateNow;
     } else if (isStudent) {
       els.profileSectionInput.value = state.student.section || '';
-      els.profileSectionInput.disabled = studentHasSection;
+      els.profileSectionInput.disabled = true;
     } else {
       els.profileSectionInput.value = '';
       els.profileSectionInput.disabled = true;
@@ -6420,11 +6428,11 @@ function renderProfileSecurity() {
       }
     } else if (isStudent) {
       if (!state.student.section) {
-        els.profileSectionNote.textContent = 'Section is required. Set it once to continue. Further changes require faculty approval after 48 hours.';
+        els.profileSectionNote.textContent = 'Section is assigned automatically from semester, stream, and cohort capacity.';
         setHidden(els.profileSectionNote, false);
       } else {
-        els.profileSectionNote.textContent = '';
-        setHidden(els.profileSectionNote, true);
+        els.profileSectionNote.textContent = 'Section is system-assigned and updates automatically each term.';
+        setHidden(els.profileSectionNote, false);
       }
     } else {
       els.profileSectionNote.textContent = '';
@@ -7252,6 +7260,120 @@ function shiftISODate(inputDate, deltaDays) {
 
 function todayISO() {
   return toISODateLocal(new Date());
+}
+
+const campusDateTimeFormatters = new Map();
+
+function getCampusDateTimeFormatter(timeZoneRaw = state.student?.campusTimezone) {
+  const preferredTimeZone = String(timeZoneRaw || DEFAULT_CAMPUS_TIMEZONE).trim() || DEFAULT_CAMPUS_TIMEZONE;
+  const cacheKey = preferredTimeZone || DEFAULT_CAMPUS_TIMEZONE;
+  if (campusDateTimeFormatters.has(cacheKey)) {
+    return campusDateTimeFormatters.get(cacheKey);
+  }
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: preferredTimeZone,
+      calendar: 'gregory',
+      numberingSystem: 'latn',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    campusDateTimeFormatters.set(cacheKey, formatter);
+    return formatter;
+  } catch (_) {
+    if (cacheKey !== DEFAULT_CAMPUS_TIMEZONE) {
+      return getCampusDateTimeFormatter(DEFAULT_CAMPUS_TIMEZONE);
+    }
+    return null;
+  }
+}
+
+function campusDateTimePartsFromEpochMs(epochMs) {
+  const normalizedEpochMs = Number(epochMs);
+  if (!Number.isFinite(normalizedEpochMs) || normalizedEpochMs <= 0) {
+    return null;
+  }
+  const formatter = getCampusDateTimeFormatter();
+  if (!formatter) {
+    return null;
+  }
+  const parts = Object.fromEntries(
+    formatter.formatToParts(new Date(normalizedEpochMs))
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  const parsed = {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second || 0),
+  };
+  if (Object.values(parsed).some((value) => !Number.isFinite(value))) {
+    return null;
+  }
+  parsed.hour = parsed.hour === 24 ? 0 : parsed.hour;
+  return parsed;
+}
+
+function campusWallDateFromEpochMs(epochMs) {
+  const parts = campusDateTimePartsFromEpochMs(epochMs);
+  if (!parts) {
+    return null;
+  }
+  const parsed = new Date(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+    0,
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function campusISODateFromEpochMs(epochMs) {
+  const parts = campusDateTimePartsFromEpochMs(epochMs);
+  if (!parts) {
+    return '';
+  }
+  return `${String(parts.year).padStart(4, '0')}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+}
+
+function studentCampusEpochMs() {
+  if (Number.isFinite(state.student.campusServerNowMs) && state.student.campusServerNowMs > 0) {
+    const elapsedMs = (window.performance?.now ? window.performance.now() : Date.now())
+      - Number(state.student.campusServerPerfMs || 0);
+    return state.student.campusServerNowMs + Math.max(0, elapsedMs);
+  }
+  return 0;
+}
+
+function studentCampusNow() {
+  const epochMs = studentCampusEpochMs();
+  if (epochMs > 0) {
+    return campusWallDateFromEpochMs(epochMs) || new Date(epochMs);
+  }
+  return new Date();
+}
+
+function studentCampusTodayISO() {
+  const epochMs = studentCampusEpochMs();
+  if (epochMs > 0) {
+    return campusISODateFromEpochMs(epochMs) || String(state.student?.campusTodayIso || '').trim() || todayISO();
+  }
+  return String(state.student?.campusTodayIso || '').trim() || todayISO();
+}
+
+function studentCurrentWeekStartISO() {
+  return weekStartISO(studentCampusTodayISO());
 }
 
 function weekStartISO(inputDate = new Date()) {
@@ -13920,6 +14042,7 @@ async function refreshAdministrativeModule() {
     refreshAdminInsights({ workDate, mode: 'enrollment' }),
     refreshAdminRecoveryPlans({ silent: true }),
     refreshAdminIdentityCases({ silent: true }),
+    loadAdminAcademicTerm(),
     refreshDemand(workDate),
     refreshAttendanceData(),
   ]);
@@ -14001,6 +14124,15 @@ function setAdminTimetableOverrideStatus(message, isError = false, state = 'neut
     return;
   }
   setUiStateMessage(els.adminTimetableOverrideStatus, message, {
+    state: isError ? 'error' : state,
+  });
+}
+
+function setAdminAcademicTermStatus(message, isError = false, state = 'neutral') {
+  if (!els.adminAcademicTermStatus) {
+    return;
+  }
+  setUiStateMessage(els.adminAcademicTermStatus, message, {
     state: isError ? 'error' : state,
   });
 }
@@ -14694,6 +14826,51 @@ async function saveAdminTimetableOverride() {
     false,
   );
   log(`Admin updated timetable for ${scopeLabel}. Override ${Number(saved?.id || 0)}.`);
+}
+
+function applyAdminAcademicTermPayload(payload = {}) {
+  const startDate = String(payload.class_start_date || '').trim();
+  const endDate = String(payload.class_end_date || '').trim();
+  if (els.adminAcademicStartDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+    els.adminAcademicStartDate.value = startDate;
+  }
+  if (els.adminAcademicEndDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    els.adminAcademicEndDate.value = endDate;
+  }
+  if (startDate && endDate) {
+    setAdminAcademicTermStatus(`Class attendance window: ${startDate} to ${endDate}.`, false, 'success');
+  }
+}
+
+async function loadAdminAcademicTerm() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    return;
+  }
+  const payload = await api('/attendance/admin/academic-term');
+  applyAdminAcademicTermPayload(payload);
+}
+
+async function saveAdminAcademicTerm() {
+  if (!authState.user || authState.user.role !== 'admin') {
+    throw new Error('Only admin can update the class attendance window.');
+  }
+  const classStartDate = String(els.adminAcademicStartDate?.value || '').trim();
+  const classEndDate = String(els.adminAcademicEndDate?.value || '').trim();
+  if (!classStartDate || !classEndDate) {
+    throw new Error('Select both class start and class end dates.');
+  }
+  if (classEndDate < classStartDate) {
+    throw new Error('Class end date cannot be before class start date.');
+  }
+  const payload = await api('/attendance/admin/academic-term', {
+    method: 'PUT',
+    body: JSON.stringify({
+      class_start_date: classStartDate,
+      class_end_date: classEndDate,
+    }),
+  });
+  applyAdminAcademicTermPayload(payload);
+  log(`Admin updated class attendance window ${classStartDate} -> ${classEndDate}.`);
 }
 
 async function approveAdminStudentSectionUpdate() {
@@ -16612,7 +16789,7 @@ function isMobileTimetableViewport() {
   return window.matchMedia(`(max-width: ${MOBILE_TIMETABLE_MAX_WIDTH}px)`).matches;
 }
 
-function weekdayFromWeekStart(weekStartRaw) {
+function weekdayFromWeekStart(weekStartRaw, todayRaw = todayISO()) {
   if (!weekStartRaw) {
     return null;
   }
@@ -16622,7 +16799,7 @@ function weekdayFromWeekStart(weekStartRaw) {
   }
   const [year, month, day] = parts;
   const weekStart = new Date(year, month - 1, day);
-  const today = new Date();
+  const today = parseISODateLocal(todayRaw);
   const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const diffDays = Math.floor((todayMidnight.getTime() - weekStart.getTime()) / 86400000);
   if (diffDays < 0 || diffDays > 6) {
@@ -16675,6 +16852,29 @@ function parseClassDateTimeLocal(classDateRaw, rawTime) {
   return new Date(year, month - 1, day, hour, minute, 0, 0);
 }
 
+function syncStudentCampusClock(payload = {}) {
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
+  const timezone = String(payload.campus_timezone || '').trim();
+  if (timezone) {
+    state.student.campusTimezone = timezone;
+  }
+  const serverNowMs = Number(payload.server_epoch_ms);
+  if (!payload.cached_at && Number.isFinite(serverNowMs) && serverNowMs > 0) {
+    state.student.campusServerNowMs = serverNowMs;
+    state.student.campusServerPerfMs = window.performance?.now ? window.performance.now() : Date.now();
+  }
+  const serverDate = String(payload.server_date || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(serverDate)) {
+    state.student.campusTodayIso = serverDate;
+  }
+}
+
+function hasServerAttendanceWindowState(item) {
+  return ['is_open_now', 'is_active_now', 'is_ended_now'].some((key) => typeof item?.[key] === 'boolean');
+}
+
 function getAttendanceWindowMinutes(item) {
   const raw = Number(item?.attendance_window_minutes || 0);
   if (Number.isFinite(raw) && raw > 0) {
@@ -16709,7 +16909,7 @@ function isStudentAttendanceDemoEnabled() {
   return Boolean(CLIENT_DEMO_FEATURES_ENABLED && authState.user?.role === 'student' && state.student.demoAttendanceEnabled);
 }
 
-function findStudentDemoAttendanceState(nowArg = new Date()) {
+function findStudentDemoAttendanceState(nowArg = studentCampusNow()) {
   if (!isStudentAttendanceDemoEnabled()) {
     return null;
   }
@@ -16721,7 +16921,7 @@ function findStudentDemoAttendanceState(nowArg = new Date()) {
   };
 }
 
-function findEffectiveAttendanceManagementState(nowArg = new Date()) {
+function findEffectiveAttendanceManagementState(nowArg = studentCampusNow()) {
   return findStudentDemoAttendanceState(nowArg) || findAttendanceManagementState(nowArg);
 }
 
@@ -16739,12 +16939,34 @@ function getSlotClass(item) {
   return 'slot-upcoming';
 }
 
-function resolveTimetableKpi(item, nowArg = new Date()) {
-  const now = nowArg instanceof Date ? nowArg : new Date();
+function resolveTimetableKpi(item, nowArg = studentCampusNow()) {
+  const now = nowArg instanceof Date ? nowArg : studentCampusNow();
   const raw = String(item.attendance_status || '').toLowerCase();
   const markedPresent = ['verified', 'approved', 'present', 'pending_review'].includes(raw);
+  const isRemedial = String(item.class_kind || 'regular').toLowerCase() === 'remedial';
   const classStart = parseClassDateTimeLocal(item.class_date, item.start_time);
   const classEnd = parseClassDateTimeLocal(item.class_date, item.end_time);
+  if (
+    hasServerAttendanceWindowState(item)
+    && Number.isFinite(state.student.campusServerNowMs)
+    && state.student.campusServerNowMs > 0
+    && classStart
+    && classEnd
+    && !Number.isNaN(classStart.getTime())
+    && !Number.isNaN(classEnd.getTime())
+  ) {
+    const windowEnd = new Date(classStart.getTime() + (getAttendanceWindowMinutes(item) * 60 * 1000));
+    if (now < classStart) {
+      return { key: 'upcoming', label: 'Upcoming' };
+    }
+    if (markedPresent) {
+      return { key: 'present', label: 'Present' };
+    }
+    if (now <= windowEnd) {
+      return { key: 'mark', label: isRemedial ? 'Use Remedial Code' : 'Mark Attendance' };
+    }
+    return { key: 'absent', label: 'Absent' };
+  }
 
   if (!classStart || !classEnd || Number.isNaN(classStart.getTime()) || Number.isNaN(classEnd.getTime())) {
     if (markedPresent) {
@@ -16771,7 +16993,7 @@ function resolveTimetableKpi(item, nowArg = new Date()) {
   }
 
   if (now <= windowEnd) {
-    if (String(item.class_kind || 'regular').toLowerCase() === 'remedial') {
+    if (isRemedial) {
       return { key: 'mark', label: 'Use Remedial Code' };
     }
     return { key: 'mark', label: 'Mark Attendance' };
@@ -16787,8 +17009,8 @@ function getKpiSourceTimetable() {
   return Array.isArray(state.student.timetable) ? state.student.timetable : [];
 }
 
-function findAttendanceManagementState(nowArg = new Date()) {
-  const now = nowArg instanceof Date ? nowArg : new Date();
+function findAttendanceManagementState(nowArg = studentCampusNow()) {
+  const now = nowArg instanceof Date ? nowArg : studentCampusNow();
   const source = getKpiSourceTimetable();
   if (!source.length) {
     return {
@@ -16809,7 +17031,7 @@ function findAttendanceManagementState(nowArg = new Date()) {
     };
   }
 
-  const openNow = timeline.find((slot) => now >= slot.start && now <= slot.windowEnd);
+  const openNow = timeline.find((slot) => resolveTimetableKpi(slot.item, now).key === 'mark');
   if (openNow) {
     const selected = openNow.item;
     const isRemedial = String(selected.class_kind || 'regular').toLowerCase() === 'remedial';
@@ -17068,12 +17290,9 @@ function updateProfileSaveState() {
     const draftName = normalizeProfileName(els.profileFullName?.value || '');
     const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
     const hasName = hasValidProfileName(existingName || draftName);
-    const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
-    const existingSection = state.student.section || '';
-    const hasSection = Boolean(existingSection || draftSection);
+    const hasSection = Boolean(state.student.section);
     const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
     const hasNewName = hasValidProfileName(draftName) && draftName !== existingName;
-    const hasNewSection = Boolean(draftSection) && draftSection !== existingSection;
     const hasNewPhoto = Boolean(state.student.pendingProfilePhotoDataUrl)
       && state.student.pendingProfilePhotoDataUrl !== (state.student.profilePhotoDataUrl || '');
     const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
@@ -17083,12 +17302,7 @@ function updateProfileSaveState() {
       return;
     }
 
-    if (existingSection && hasNewSection) {
-      els.saveProfilePhotoBtn.disabled = true;
-      return;
-    }
-
-    els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewPhoto || (!existingSection && hasNewSection));
+    els.saveProfilePhotoBtn.disabled = !(hasNewName || hasNewPhoto);
     return;
   }
 
@@ -17124,14 +17338,13 @@ function renderStudentProfileStatus() {
 
   const draftName = normalizeProfileName(els.profileFullName?.value || '');
   const hasName = hasValidProfileName(state.student.name || authState.user?.name || draftName);
-  const draftSection = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const existingSection = state.student.section || '';
-  const hasSection = Boolean(existingSection || draftSection);
+  const hasSection = Boolean(existingSection);
   const hasPhoto = Boolean(state.student.profilePhotoDataUrl || state.student.pendingProfilePhotoDataUrl);
-  const sectionEditAttempt = Boolean(existingSection) && Boolean(draftSection) && draftSection !== existingSection;
+  const sectionEditAttempt = false;
 
   if (!hasName && !hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Full name, section, and profile photo are required before continuing. Registration number is assigned automatically.';
+    els.profileStatus.textContent = 'Full name and profile photo are required before continuing. Registration number and section are assigned automatically.';
     updateProfileSaveState();
     return;
   }
@@ -17141,12 +17354,12 @@ function renderStudentProfileStatus() {
     return;
   }
   if (!hasSection && !hasPhoto) {
-    els.profileStatus.textContent = 'Section and profile photo are required before continuing. Registration number is assigned automatically.';
+    els.profileStatus.textContent = 'Profile photo is required before continuing. Registration number and section are assigned automatically.';
     updateProfileSaveState();
     return;
   }
   if (!hasSection) {
-    els.profileStatus.textContent = 'Section is required before continuing.';
+    els.profileStatus.textContent = 'Section is assigned automatically. Refresh profile if it has not appeared yet.';
     updateProfileSaveState();
     return;
   }
@@ -17510,15 +17723,13 @@ async function saveFacultyProfile() {
 async function saveStudentProfilePhoto() {
   const profileName = normalizeProfileName(els.profileFullName?.value || '');
   const existingName = normalizeProfileName(state.student.name || authState.user?.name || '');
-  const section = (els.profileSectionInput?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const existingSection = state.student.section || '';
-  const hasNewSection = Boolean(section) && section !== existingSection;
   const nextPhotoDataUrl = state.student.pendingProfilePhotoDataUrl || '';
   const hasNewPhoto = Boolean(nextPhotoDataUrl) && nextPhotoDataUrl !== state.student.profilePhotoDataUrl;
   const hasNewName = hasValidProfileName(profileName) && profileName !== existingName;
   const setupRequired = state.student.profileSetupRequired || requiresStudentProfileSetup();
   const hasNameAfterSave = hasValidProfileName(existingName || profileName);
-  const hasSectionAfterSave = Boolean(existingSection || section);
+  const hasSectionAfterSave = Boolean(existingSection);
   const hasPhotoAfterSave = Boolean(state.student.profilePhotoDataUrl || nextPhotoDataUrl);
 
   if (setupRequired) {
@@ -17526,28 +17737,16 @@ async function saveStudentProfilePhoto() {
       throw new Error('Enter your full name before saving profile.');
     }
     if (!hasSectionAfterSave) {
-      throw new Error('Enter your section before saving profile.');
+      throw new Error('Your section is still being assigned. Refresh profile and try again.');
     }
     if (!hasPhotoAfterSave) {
       throw new Error('Upload profile photo before saving profile.');
     }
   }
 
-  if (hasNewSection && existingSection) {
-    if (state.student.sectionChangeRequiresFacultyApproval) {
-      throw new Error('Section change requires faculty approval. Ask your faculty to approve the update.');
-    }
-    throw new Error(
-      `Section change is locked until ${formatLockDateTime(state.student.sectionLockedUntil)} (${formatRemainingMinutes(state.student.sectionLockMinutesRemaining)} remaining).`
-    );
-  }
-
   const payload = {};
   if (hasNewName || (!existingName && hasValidProfileName(profileName))) {
     payload.name = profileName;
-  }
-  if (hasNewSection || (!existingSection && section)) {
-    payload.section = section;
   }
   if (hasNewPhoto || (!state.student.profilePhotoDataUrl && nextPhotoDataUrl)) {
     payload.photo_data_url = nextPhotoDataUrl;
@@ -17566,7 +17765,7 @@ async function saveStudentProfilePhoto() {
 
   if (!Object.keys(payload).length) {
     if (setupRequired) {
-      throw new Error('Add section and profile photo before continuing. Registration number is assigned automatically.');
+      throw new Error('Add profile photo before continuing. Registration number and section are assigned automatically.');
     }
     throw new Error('No profile changes to save.');
   }
@@ -17910,7 +18109,7 @@ function renderStudentTimetable() {
     updateSelectedClassState();
     return;
   }
-  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart);
+  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart, studentCampusTodayISO());
   const mobileLayout = isMobileTimetableViewport();
   state.ui.studentTimetableMobileViewport = mobileLayout;
 
@@ -18033,10 +18232,10 @@ function renderStudentTimetable() {
   }
 
   if (Number.isInteger(currentDayIndex) && currentDayIndex >= 0 && currentDayIndex <= 6) {
-    const now = new Date();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const campusNow = studentCampusNow();
+    const nowMinutes = campusNow.getHours() * 60 + campusNow.getMinutes();
     const maxMinute = startMinute + rows * 60;
-    if (nowMinutes >= startMinute && nowMinutes <= maxMinute) {
+    if (Number.isFinite(nowMinutes) && nowMinutes >= startMinute && nowMinutes <= maxMinute) {
       const nowLine = document.createElement('div');
       nowLine.className = 'calendar-now-line';
       const rowProgress = Math.max(0, Math.min(rows, (nowMinutes - startMinute) / 60));
@@ -18076,15 +18275,15 @@ function focusTimetableContext({ smooth = true } = {}) {
     return;
   }
 
-  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart);
+  const currentDayIndex = weekdayFromWeekStart(state.student.weekStart, studentCampusTodayISO());
   if (currentDayIndex === null) {
     return;
   }
 
-  const now = new Date();
-  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const campusNow = studentCampusNow();
+  const nowMinutes = campusNow.getHours() * 60 + campusNow.getMinutes();
   const labels = [...container.querySelectorAll('.calendar-time-label[data-minute]')];
-  if (!labels.length) {
+  if (!labels.length || !Number.isFinite(nowMinutes)) {
     return;
   }
   let best = labels[0];
@@ -18171,6 +18370,11 @@ function cacheTimetableWeekPayload(weekStart, payload) {
   }
   state.student.timetableCache[weekStart] = {
     week_start: payload.week_start || weekStart,
+    min_navigable_date: payload.min_navigable_date || null,
+    server_time: payload.server_time || null,
+    server_epoch_ms: payload.server_epoch_ms || null,
+    server_date: payload.server_date || null,
+    campus_timezone: payload.campus_timezone || state.student.campusTimezone || DEFAULT_CAMPUS_TIMEZONE,
     classes: payload.classes || [],
     cached_at: Date.now(),
   };
@@ -18206,13 +18410,14 @@ async function fetchStudentTimetableWeek(weekStart, options = {}) {
 }
 
 function applyStudentTimetablePayload(payload) {
+  syncStudentCampusClock(payload);
   if (payload?.min_navigable_date) {
     state.student.minTimetableDate = String(payload.min_navigable_date);
   }
   state.student.weekStart = payload.week_start;
   state.student.timetable = payload.classes || [];
-  const payloadWeekStart = weekStartISO(payload.week_start || todayISO());
-  const currentWeekStart = weekStartISO(todayISO());
+  const payloadWeekStart = weekStartISO(payload.week_start || studentCampusTodayISO());
+  const currentWeekStart = studentCurrentWeekStartISO();
   if (payloadWeekStart === currentWeekStart) {
     state.student.kpiTimetable = payload.classes || [];
   }
@@ -18278,14 +18483,14 @@ async function refreshStudentKpiTimetable(options = {}) {
     return;
   }
 
-  const currentWeekStart = weekStartISO(todayISO());
+  const currentWeekStart = studentCurrentWeekStartISO();
   const cached = state.student.timetableCache[currentWeekStart];
   if (cached && !forceNetwork) {
     state.student.kpiTimetable = cached.classes || [];
     return;
   }
 
-  const viewWeekStart = weekStartISO(els.weekStartDate?.value || state.student.viewDate || todayISO());
+  const viewWeekStart = weekStartISO(els.weekStartDate?.value || state.student.viewDate || studentCampusTodayISO());
   if (!forceNetwork && viewWeekStart === currentWeekStart && Array.isArray(state.student.timetable)) {
     state.student.kpiTimetable = state.student.timetable;
     return;
@@ -18326,12 +18531,12 @@ async function loadStudentTimetable(options = {}) {
     return;
   }
 
-  const rawViewDate = els.weekStartDate.value || state.student.viewDate || todayISO();
+  const rawViewDate = els.weekStartDate.value || state.student.viewDate || studentCampusTodayISO();
   const viewDate = clampStudentViewDate(rawViewDate);
   els.weekStartDate.value = viewDate;
   state.student.viewDate = viewDate;
   const weekStart = weekStartISO(viewDate);
-  const currentWeekStart = weekStartISO(todayISO());
+  const currentWeekStart = studentCurrentWeekStartISO();
   const requestToken = ++state.student.timetableRequestToken;
   const cached = state.student.timetableCache[weekStart];
 
@@ -18371,27 +18576,6 @@ async function loadStudentTimetable(options = {}) {
     return;
   }
 
-  if (!skipRepair && (!payload.classes || payload.classes.length === 0) && !state.student.timetableRepairInFlight) {
-    state.student.timetableRepairInFlight = true;
-    try {
-      await api('/attendance/student/default-timetable', { method: 'POST' });
-      const repairedPayload = await fetchStudentTimetableWeek(weekStart, { forceNetwork: true });
-      if (requestToken !== state.student.timetableRequestToken) {
-        return;
-      }
-      applyStudentTimetablePayload(repairedPayload);
-      prefetchAdjacentStudentWeeks(state.student.weekStart || weekStart);
-      return;
-    } catch (repairError) {
-      log(`Timetable auto-repair failed: ${repairError.message || 'unknown error'}`);
-      renderTimetableLoadError(repairError.message || 'Timetable could not be loaded.');
-      setStudentResult(repairError.message || 'Timetable could not be loaded.');
-      throw repairError;
-    } finally {
-      state.student.timetableRepairInFlight = false;
-    }
-  }
-
   applyStudentTimetablePayload(payload);
   prefetchAdjacentStudentWeeks(state.student.weekStart || weekStart);
   if (weekStart !== currentWeekStart) {
@@ -18404,8 +18588,8 @@ async function loadStudentTimetable(options = {}) {
 async function refreshStudentTimetableSurface(options = {}) {
   const { forceNetwork = true } = options;
   await loadStudentTimetable({ forceNetwork });
-  const currentWeekStart = weekStartISO(todayISO());
-  const activeWeekStart = weekStartISO(state.student.weekStart || state.student.viewDate || todayISO());
+  const currentWeekStart = studentCurrentWeekStartISO();
+  const activeWeekStart = weekStartISO(state.student.weekStart || state.student.viewDate || studentCampusTodayISO());
   if (activeWeekStart !== currentWeekStart) {
     await refreshStudentKpiTimetable({ forceNetwork });
   } else {
@@ -21563,7 +21747,6 @@ async function registerAccount() {
   const password = els.authSignupPassword?.value || '';
   const name = normalizedAuthUppercaseInput(els.authName?.value || '');
   const department = (els.authDepartment?.value || '').trim();
-  const section = (els.authSignupSection?.value || '').trim().toUpperCase().replace(/\s+/g, '');
   const semesterValue = els.authSemester.value.trim();
   const parentEmail = els.authParentEmail.value.trim();
   const adminPhotoDataUrl = authState.signupAdminPhotoDataUrl || '';
@@ -21576,9 +21759,6 @@ async function registerAccount() {
   renderSignupEmailPolicy();
   validatePrimaryAuthEmailOrThrow(email);
   if (role === 'student') {
-    if (!section) {
-      throw new Error('Section is required for student registration.');
-    }
     if (!semesterValue) {
       throw new Error('Semester is required for student registration.');
     }
@@ -21596,7 +21776,7 @@ async function registerAccount() {
     profile_photo_data_url: role === 'admin' ? adminPhotoDataUrl : null,
     registration_number: null,
     faculty_identifier: null,
-    section: role === 'student' ? section : null,
+    section: null,
     semester: role === 'student' ? Number(semesterValue) : null,
     parent_email: role === 'student' ? (parentEmail || null) : null,
   };
@@ -24653,6 +24833,18 @@ function bindEvents() {
     els.adminUpdateStudentSection.addEventListener('input', () => {
       const raw = String(els.adminUpdateStudentSection.value || '');
       els.adminUpdateStudentSection.value = raw.toUpperCase().replace(/\s+/g, '');
+    });
+  }
+
+  if (els.adminAcademicTermBtn) {
+    els.adminAcademicTermBtn.addEventListener('click', async () => {
+      try {
+        await saveAdminAcademicTerm();
+      } catch (error) {
+        const message = String(error?.message || 'Failed to update class attendance window.');
+        setAdminAcademicTermStatus(message, true);
+        log(message);
+      }
     });
   }
 

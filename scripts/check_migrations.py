@@ -31,10 +31,11 @@ def main() -> int:
         db_path = Path(tmp_dir) / "ci-migration.db"
 
         os.environ["SQLALCHEMY_DATABASE_URL"] = f"sqlite:///{db_path}"
+        os.environ["APP_MANAGED_SERVICES_REQUIRED"] = "false"
+        os.environ["APP_RUNTIME_STRICT"] = "false"
         os.environ.setdefault("MONGO_PERSISTENCE_REQUIRED", "false")
         os.environ.setdefault("REDIS_REQUIRED", "false")
         os.environ.setdefault("WORKER_REQUIRED", "false")
-        os.environ.setdefault("APP_RUNTIME_STRICT", "false")
 
         # Import only after env injection so SQLAlchemy engine points to temp DB.
         from app.main import init_sql_schema  # noqa: PLC0415
@@ -54,6 +55,7 @@ def main() -> int:
                     "auth_token_revocations",
                     "media_objects",
                     "outbox_events",
+                    "academic_term_config",
                 },
             )
             _assert_columns(

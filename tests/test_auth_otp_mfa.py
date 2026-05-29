@@ -996,6 +996,71 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         otp_row = mongo["auth_otps"].find_one({"id": 22})
         self.assertIsNotNone(otp_row["used_at"])
 
+    def test_faculty_login_otp_does_not_require_totp_when_mfa_enabled(self):
+        mongo = _FakeMongo()
+        otp_hash, otp_salt = hash_otp("123456")
+        mongo["auth_users"].insert_one(
+            {
+                "id": 16,
+                "email": "faculty.mfa@gmail.com",
+                "password_hash": hash_password("Faculty@123"),
+                "role": models.UserRole.FACULTY.value,
+                "student_id": None,
+                "faculty_id": 16,
+                "is_active": True,
+                "mfa_enabled": True,
+                "mfa_totp_secret": "JBSWY3DPEHPK3PXP",
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_otps"].insert_one(
+            {
+                "id": 26,
+                "user_id": 16,
+                "purpose": "login",
+                "role": models.UserRole.FACULTY.value,
+                "otp_hash": otp_hash,
+                "otp_salt": otp_salt,
+                "attempts_count": 0,
+                "expires_at": datetime.utcnow() + timedelta(minutes=10),
+                "used_at": None,
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=16),
+            patch("app.routers.auth._ensure_role_profile_link", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth.mirror_event", return_value=None),
+            patch("app.routers.auth._set_auth_cookies", return_value=None),
+            patch("app.routers.auth._verify_and_consume_mfa_code") as verify_mfa,
+            patch(
+                "app.routers.auth.create_session_tokens",
+                return_value={
+                    "access_token": "faculty-access-token",
+                    "access_expires_at": datetime.utcnow() + timedelta(minutes=15),
+                    "refresh_token": "faculty-refresh-token",
+                    "refresh_expires_at": datetime.utcnow() + timedelta(days=14),
+                },
+            ) as create_tokens,
+        ):
+            result = auth.verify_login_otp(
+                schemas.VerifyOTPRequest(email="faculty.mfa@gmail.com", role=models.UserRole.FACULTY, otp_code="123456"),
+                response=Response(),
+                request=_request("/auth/login/verify-otp"),
+                sql_db=SimpleNamespace(),
+            )
+
+        self.assertEqual(result.access_token, "faculty-access-token")
+        issued_user = create_tokens.call_args.args[1]
+        self.assertFalse(issued_user.mfa_authenticated)
+        verify_mfa.assert_not_called()
+        otp_row = mongo["auth_otps"].find_one({"id": 26})
+        self.assertIsNotNone(otp_row["used_at"])
+
     def test_verify_login_otp_rejects_selected_role_mismatch_without_consuming_otp(self):
         mongo = _FakeMongo()
         otp_hash, otp_salt = hash_otp("123456")

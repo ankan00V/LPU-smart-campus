@@ -10,6 +10,7 @@ from app import models, schemas
 from app.routers.attendance import (
     _attendance_attempt_token_hash,
     _attendance_session_code_hash,
+    _campus_datetime_to_epoch_ms,
     _generate_attendance_session_code,
     mark_realtime_attendance,
     open_schedule_attendance_session,
@@ -183,7 +184,7 @@ class RealtimeAttendanceDemoTests(unittest.TestCase):
             location_latitude=latitude,
             location_longitude=longitude,
             location_accuracy_m=accuracy_m,
-            location_timestamp_ms=datetime.combine(self.class_date, time(11, 5)).timestamp() * 1000,
+            location_timestamp_ms=_campus_datetime_to_epoch_ms(datetime.combine(self.class_date, time(11, 5))),
             attendance_session_code=(
                 attendance_session_code
                 if attendance_session_code is not None

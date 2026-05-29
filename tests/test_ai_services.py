@@ -77,5 +77,3 @@ if __name__ == "__main__":
     print(f"  Copilot: {'✓' if copilot_ok else '✗'}")
     print(f"  Saarthi: {'✓' if saarthi_ok else '✗'}")
     print("=" * 50)
-
-# Made with Bob

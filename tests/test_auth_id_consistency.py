@@ -232,10 +232,47 @@ class AuthIdConsistencyTests(unittest.TestCase):
         self.assertEqual(result.name, "CASE STUDENT")
         self.assertEqual(sql_student.name, "CASE STUDENT")
         self.assertEqual(sql_student.department, "CSE AI")
-        self.assertEqual(sql_student.section, "K23AA")
+        self.assertEqual(sql_student.section, "426CSE")
         self.assertEqual(sql_student.registration_number, "12600001")
         self.assertEqual(sql_student.parent_email, "parent@example.com")
         self.assertEqual(mongo_user["name"], "CASE STUDENT")
+
+    def test_register_assigns_student_section_by_semester_year_stream_and_capacity(self):
+        for idx in range(60):
+            self.db.add(
+                models.Student(
+                    name=f"EXISTING {idx}",
+                    email=f"existing{idx}@gmail.com",
+                    registration_number=f"1269{idx:04d}",
+                    section="426CSE",
+                    department="SCHOOL OF COMPUTER SCIENCE ENGINEERING",
+                    semester=4,
+                    created_at=datetime(2026, 5, 1, 9, 0, 0),
+                )
+            )
+        self.db.commit()
+        payload = schemas.AuthRegisterRequest(
+            email="bucket.student@gmail.com",
+            password="Student@123",
+            role=models.UserRole.STUDENT,
+            name="Bucket Student",
+            department="School of Computer Science Engineering",
+            semester=4,
+            section="student-typed-section",
+            parent_email="parent@example.com",
+        )
+
+        with (
+            patch("app.routers.auth.datetime", _FixedDatetime),
+            patch("app.routers.auth._mongo_db_or_503", return_value=self.mongo),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+            patch("app.routers.auth.assess_applicant_risk", return_value=None),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            register_auth_user(payload, request=_request("/auth/register"), sql_db=self.db)
+
+        sql_student = self.db.query(models.Student).filter(models.Student.email == "bucket.student@gmail.com").one()
+        self.assertEqual(sql_student.section, "426CSE2")
 
     def test_register_generates_faculty_identifier_from_reversed_year_and_arrival_position(self):
         payload = schemas.AuthRegisterRequest(
