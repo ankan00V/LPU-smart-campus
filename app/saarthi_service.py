@@ -346,6 +346,283 @@ def _format_student_first_name(student_name: str | None) -> str:
     return first
 
 
+def _json_safe_value(value: object) -> object:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if hasattr(value, "value"):
+        return str(getattr(value, "value"))
+    return value
+
+
+def _safe_json_loads_list(value: str | None) -> list[object]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _course_label(course: models.Course | None) -> str:
+    if course is None:
+        return "Unknown subject"
+    code = str(course.code or "").strip()
+    title = str(course.title or "").strip()
+    if code and title:
+        return f"{code} - {title}"
+    return code or title or "Unknown subject"
+
+
+def _format_schedule_time(value: object) -> str:
+    formatter = getattr(value, "strftime", None)
+    if callable(formatter):
+        return formatter("%H:%M")
+    return str(value or "").strip()
+
+
+def _build_saarthi_student_context(
+    db: Session,
+    *,
+    student: models.Student,
+    current_dt: datetime,
+) -> dict[str, object]:
+    student_id = int(student.id)
+    course_rows = (
+        db.query(models.Course)
+        .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+        .filter(models.Enrollment.student_id == student_id)
+        .all()
+    )
+    courses_by_id = {int(course.id): course for course in course_rows}
+    course_ids = sorted(courses_by_id)
+
+    attendance_summary: list[dict[str, object]] = []
+    if course_ids:
+        records = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == student_id,
+                models.AttendanceRecord.course_id.in_(course_ids),
+            )
+            .all()
+        )
+        by_course: dict[int, list[models.AttendanceRecord]] = {course_id: [] for course_id in course_ids}
+        for record in records:
+            by_course.setdefault(int(record.course_id), []).append(record)
+        for course_id in course_ids:
+            course_records = by_course.get(course_id, [])
+            attended = sum(1 for row in course_records if row.status == models.AttendanceStatus.PRESENT)
+            total = len(course_records)
+            percentage = round((attended / total) * 100, 2) if total else 0.0
+            attendance_summary.append(
+                {
+                    "subject": _course_label(courses_by_id.get(course_id)),
+                    "attended": attended,
+                    "total": total,
+                    "percentage": percentage,
+                    "threshold": 75,
+                }
+            )
+
+    today_weekday = current_dt.date().weekday()
+    today_timetable: list[dict[str, object]] = []
+    if course_ids:
+        schedules = (
+            db.query(models.ClassSchedule)
+            .filter(
+                models.ClassSchedule.course_id.in_(course_ids),
+                models.ClassSchedule.weekday == today_weekday,
+                models.ClassSchedule.is_active.is_(True),
+            )
+            .order_by(models.ClassSchedule.start_time.asc())
+            .limit(12)
+            .all()
+        )
+        for schedule in schedules:
+            today_timetable.append(
+                {
+                    "subject": _course_label(courses_by_id.get(int(schedule.course_id))),
+                    "start_time": _format_schedule_time(schedule.start_time),
+                    "end_time": _format_schedule_time(schedule.end_time),
+                    "room": str(schedule.classroom_label or schedule.attendance_location_label or "").strip(),
+                }
+            )
+
+    missed_classes: list[dict[str, object]] = []
+    if course_ids:
+        missed_rows = (
+            db.query(models.AttendanceRecord)
+            .filter(
+                models.AttendanceRecord.student_id == student_id,
+                models.AttendanceRecord.course_id.in_(course_ids),
+                models.AttendanceRecord.status == models.AttendanceStatus.ABSENT,
+            )
+            .order_by(models.AttendanceRecord.attendance_date.desc())
+            .limit(8)
+            .all()
+        )
+        for row in missed_rows:
+            missed_classes.append(
+                {
+                    "subject": _course_label(courses_by_id.get(int(row.course_id))),
+                    "date": row.attendance_date,
+                    "source": row.source,
+                }
+            )
+
+    section = str(student.section or "").strip()
+    remedial_slots_available: list[dict[str, object]] = []
+    if course_ids:
+        upcoming_makeups = (
+            db.query(models.MakeUpClass)
+            .filter(
+                models.MakeUpClass.course_id.in_(course_ids),
+                models.MakeUpClass.class_date >= current_dt.date(),
+                models.MakeUpClass.is_active.is_(True),
+            )
+            .order_by(models.MakeUpClass.class_date.asc(), models.MakeUpClass.start_time.asc())
+            .limit(20)
+            .all()
+        )
+        for makeup in upcoming_makeups:
+            sections = [str(item).strip() for item in _safe_json_loads_list(makeup.sections_json)]
+            if section and sections and section not in sections and "ALL" not in {item.upper() for item in sections}:
+                continue
+            remedial_slots_available.append(
+                {
+                    "subject": _course_label(courses_by_id.get(int(makeup.course_id))),
+                    "date": makeup.class_date,
+                    "start_time": _format_schedule_time(makeup.start_time),
+                    "end_time": _format_schedule_time(makeup.end_time),
+                    "topic": makeup.topic,
+                    "mode": makeup.class_mode,
+                }
+            )
+            if len(remedial_slots_available) >= 6:
+                break
+
+    pending_rectifications = []
+    rectification_rows = (
+        db.query(models.AttendanceRectificationRequest)
+        .filter(
+            models.AttendanceRectificationRequest.student_id == student_id,
+            models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING,
+        )
+        .order_by(models.AttendanceRectificationRequest.requested_at.desc())
+        .limit(6)
+        .all()
+    )
+    for row in rectification_rows:
+        pending_rectifications.append(
+            {
+                "subject": _course_label(courses_by_id.get(int(row.course_id))),
+                "class_date": row.class_date,
+                "requested_at": row.requested_at,
+                "status": row.status,
+            }
+        )
+
+    recent_faculty_messages = []
+    message_rows = (
+        db.query(models.FacultyMessage)
+        .filter(models.FacultyMessage.student_id == student_id)
+        .order_by(models.FacultyMessage.created_at.desc())
+        .limit(6)
+        .all()
+    )
+    for row in message_rows:
+        recent_faculty_messages.append(
+            {
+                "type": row.message_type,
+                "message": row.message,
+                "created_at": row.created_at,
+            }
+        )
+
+    food_orders = []
+    order_rows = (
+        db.query(models.FoodOrder)
+        .filter(models.FoodOrder.student_id == student_id)
+        .order_by(models.FoodOrder.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    for row in order_rows:
+        food_orders.append(
+            {
+                "order_id": int(row.id),
+                "date": row.order_date,
+                "status": row.status,
+                "shop": row.shop_name,
+                "total_price": row.total_price,
+            }
+        )
+
+    year = ""
+    try:
+        semester = int(student.semester or 0)
+        if semester > 0:
+            year = str((semester + 1) // 2)
+    except (TypeError, ValueError):
+        year = ""
+
+    return {
+        "student_name": str(student.name or "").strip(),
+        "year": year,
+        "branch": str(student.department or "").strip(),
+        "section": section,
+        "today_timetable": today_timetable,
+        "attendance_summary": attendance_summary,
+        "missed_classes": missed_classes,
+        "remedial_slots_available": remedial_slots_available,
+        "pending_rectifications": pending_rectifications,
+        "recent_faculty_messages": recent_faculty_messages,
+        "upcoming_exams_or_deadlines": [],
+        "food_orders": food_orders,
+    }
+
+
+def _saarthi_student_context_json(student_context: dict[str, object] | None) -> str:
+    return json.dumps(student_context or {}, default=_json_safe_value, ensure_ascii=True, sort_keys=True)
+
+
+def _saarthi_specific_context_line(student_context: dict[str, object] | None) -> str:
+    if not student_context:
+        return ""
+    summary = student_context.get("attendance_summary")
+    if isinstance(summary, list):
+        low_subjects = [
+            row
+            for row in summary
+            if isinstance(row, dict)
+            and float(row.get("total") or 0) > 0
+            and float(row.get("percentage") or 0) < float(row.get("threshold") or 75)
+        ]
+        if low_subjects:
+            row = sorted(low_subjects, key=lambda item: float(item.get("percentage") or 0))[0]
+            return (
+                f"Your lowest attendance right now is {_course_label_from_context(row.get('subject'))} at "
+                f"{float(row.get('percentage') or 0):.0f}% ({int(row.get('attended') or 0)}/"
+                f"{int(row.get('total') or 0)} classes)."
+            )
+    timetable = student_context.get("today_timetable")
+    if isinstance(timetable, list) and timetable:
+        first = timetable[0]
+        if isinstance(first, dict):
+            return (
+                f"Your next class listed today is {_course_label_from_context(first.get('subject'))} "
+                f"from {first.get('start_time') or '--'} to {first.get('end_time') or '--'}."
+            )
+    return ""
+
+
+def _course_label_from_context(value: object) -> str:
+    cleaned = str(value or "").strip()
+    return cleaned or "one subject"
+
+
 def _student_indicates_topic_shift(normalized_message: str) -> bool:
     return _contains_any(
         normalized_message,
@@ -392,6 +669,120 @@ def _student_reports_improvement(normalized_message: str) -> bool:
 
 def _is_short_student_message(normalized_message: str, *, max_tokens: int = 4) -> bool:
     return len(normalized_message.split()) <= max_tokens
+
+
+_SAARTHI_SIMPLE_GREETINGS = {
+    "hi",
+    "hii",
+    "hiii",
+    "hey",
+    "heyy",
+    "hello",
+    "hello there",
+    "hey there",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "yo",
+    "sup",
+}
+
+_SAARTHI_SIMPLE_ACKS = {
+    "ok",
+    "okay",
+    "k",
+    "kk",
+    "alright",
+    "fine",
+    "cool",
+    "done",
+    "got it",
+    "thanks",
+    "thank you",
+    "ty",
+    "hmm",
+    "hm",
+}
+
+_SAARTHI_BANNED_REPLY_PHRASES = (
+    "your feelings are valid",
+    "what you're feeling is valid",
+    "growth takes time",
+    "small steady steps can create real change",
+    "what part would you like to explore more deeply",
+    "i understand your concern",
+    "as per records",
+    "kindly note",
+    "it is advised",
+    "open the relevant card in the app",
+    "for now, take the next action shown there",
+)
+
+
+def _normalize_simple_saarthi_message(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+    return " ".join(cleaned.split())
+
+
+def _is_saarthi_crisis_message(student_message: str) -> bool:
+    normalized = _normalize_saarthi_text(student_message)
+    return _contains_any(
+        normalized,
+        (
+            "suicide",
+            "suicidal",
+            "kill myself",
+            "kill me",
+            "want to die",
+            "wanna die",
+            "i should die",
+            "end my life",
+            "ending my life",
+            "self harm",
+            "self-harm",
+            "hurt myself",
+            "harm myself",
+            "cut myself",
+            "not want to live",
+            "don't want to live",
+            "dont want to live",
+            "can't live",
+            "cant live",
+        ),
+    )
+
+
+def _saarthi_crisis_reply(*, student_name: str) -> str:
+    first_name = _format_student_first_name(student_name)
+    return (
+        f"{first_name}, I'm really glad you told me this. "
+        "You did the right thing by saying it out loud. "
+        "There's a free, confidential counselling line called iCall, run by TISS: 9152987821, Mon-Sat, 8am-10pm. "
+        "Are you somewhere safe right now?"
+    )
+
+
+def _is_simple_greeting_message(student_message: str) -> bool:
+    normalized = _normalize_simple_saarthi_message(student_message)
+    if normalized in _SAARTHI_SIMPLE_GREETINGS:
+        return True
+    tokens = normalized.split()
+    return len(tokens) <= 2 and bool(set(tokens).intersection({"hi", "hii", "hey", "hello"}))
+
+
+def _is_simple_ack_message(student_message: str) -> bool:
+    normalized = _normalize_simple_saarthi_message(student_message)
+    return normalized in _SAARTHI_SIMPLE_ACKS
+
+
+def _saarthi_simple_message_reply(*, student_name: str, student_message: str) -> str:
+    first_name = _format_student_first_name(student_name)
+    name_suffix = "" if first_name == "there" else f", {first_name}"
+    if _is_simple_greeting_message(student_message):
+        return f"Hey{name_suffix}, good to see you. Anything on your mind, or want me to check how your week's looking?"
+    if _is_simple_ack_message(student_message):
+        return f"Got it{name_suffix}. I'm here if you want to talk or check what's next today."
+    return ""
 
 
 def _recent_student_topics(
@@ -977,7 +1368,7 @@ def _saarthi_tone_guidance(emotion: str) -> str:
         "sadness": "Be especially warm and reassuring, and avoid sounding rushed or solution-heavy.",
         "frustration": "Stay calm, non-judgmental, and help turn the feeling into one useful next step.",
         "motivation_loss": "Be encouraging without shaming, and suggest tiny actions that feel possible right now.",
-        "curiosity": "Stay warm and clear, answer simply, and still end by inviting reflection.",
+        "curiosity": "Stay warm and clear, answer simply, and avoid advice unless the student asked for it.",
     }
     return guidance.get(emotion, "Stay warm, thoughtful, and emotionally present before moving into advice.")
 
@@ -1039,9 +1430,9 @@ def _saarthi_follow_up_question_variant(
             "What is one tiny step that feels realistic right now?",
         ],
         "curiosity": [
-            "What part would you like to explore more deeply?",
-            "What outcome are you hoping for if this improves?",
-            "Which area should we break down first together?",
+            "What would help most right now?",
+            "Want me to check how your week is looking?",
+            "What's on your mind today?",
         ],
     }
     options = list(bank.get(emotion) or ["What part of this would help to talk through next?"])
@@ -1531,22 +1922,39 @@ def _saarthi_context_bridge_line(
 def _build_saarthi_llm_system_instruction() -> str:
     return "\n".join(
         [
-            "You are Saarthi, an empathetic, calm, thoughtful, patient, non-judgmental, and encouraging student counsellor and mentor.",
-            "Speak like a wise, understanding senior who genuinely cares, not like a clinical therapist or robotic chatbot.",
-            "Your first job is emotional presence: make the student feel heard, understood, and less alone.",
-            "Stay tightly grounded in the latest student message and recent transcript context; do not drift into unrelated topics.",
+            "You are Saarthi, the student's personal AI mentor and companion at this university campus.",
+            "Saarthi is not a chatbot, help desk, warning system, or teacher issuing instructions.",
+            "Speak like a warm senior student who knows the student's academic life deeply and genuinely wants the best for them.",
+            "Always be warm, clear, grounded, and honest. Never be formal, robotic, preachy, vague, judgmental, or bureaucratic.",
+            "Most important: match the energy of the student's latest message.",
+            "Crisis override: if the student mentions suicide, wanting to die, self-harm, or hurting themselves, ignore academics and data completely.",
+            "For crisis replies, use the student's name, say they did the right thing by saying it out loud, share iCall by TISS at 9152987821 (Mon-Sat, 8am-10pm), then ask one gentle safety question.",
+            "In crisis replies, do not give productivity tips, do not mention attendance or app data, do not reference UI, and do not move on from the student.",
+            "If the student only says hi, hey, hello, okay, thanks, or another one-word acknowledgement, reply in 1 to 2 sentences maximum.",
+            "For simple greetings and acknowledgements, do not give advice, do not mention data, do not motivate, and do not ask multiple questions.",
+            "Never volunteer tips, research-backed advice, motivational content, or attendance/timetable data unless the student shared a problem or asked for it.",
+            "Lead with empathy before data, especially when the student sounds tired, anxious, frustrated, ashamed, or overwhelmed.",
+            "Use the injected student context only when it is relevant: name subjects, dates, attendance counts, timetable items, rectifications, messages, remedial slots, and food orders when available.",
+            "Never give a generic answer when specific student data is available.",
+            "If the student has missed classes, low attendance, or pending work, never scold. Ask what happened or gently identify one next move.",
+            "For focus, anxiety, sleep, burnout, stress, or motivation, include one practical evidence-informed tip only when the student wants practical help, not a long list.",
+            "For non-crisis replies, end with one clear, doable next step the student can take now or today.",
+            "Ask only one question per reply, and never repeat the same type of question if the student has already answered it.",
+            "Read the recent transcript before replying. Once the problem is clear, move into helping instead of more probing.",
+            "Stay tightly grounded in the latest student message, injected context, and recent transcript; do not invent missing data.",
             "Write in plain text only. Do not use bullet points, markdown, headings, numbered lists, role labels, or policy disclaimers unless urgent safety requires it.",
-            "Keep each reply between 4 and 8 sentences in a natural conversational tone.",
-            "Follow this flow: empathy first, validate the experience, reflect what was shared, offer one or two gentle micro-steps, then end with a thoughtful follow-up question only when the student hasn't shared enough detail or seems unsure.",
+            "Keep normal specific replies between 4 and 8 sentences in a natural conversational tone, but keep greetings and acknowledgements to 1 or 2 sentences.",
+            "Follow this flow: empathy first, specific context when useful, one gentle micro-step, then one clear next step.",
             "Use optional language like 'you might try', 'something that could help', or 'one small step you could consider'. Avoid commanding language.",
             "Answer direct app/module questions precisely first, then add emotional support in one concise sentence when helpful.",
             "Do not repeat attendance rules unless the student asked about attendance or this turn changed attendance state.",
             "Avoid generic filler, repeated motivational lines, and repeated openings from prior turns.",
+            "Never say 'that's a great question', 'I'm so glad you asked', 'I understand your concern', 'your feelings are valid', 'Growth takes time', 'Small steady steps can create real change', or 'What part would you like to explore more deeply?'",
+            "Never reference UI elements, cards, buttons, app navigation, or actions shown in the app unless the latest student message specifically asked about that exact UI.",
             "Avoid repeating the same sentences from earlier turns; paraphrase when you need to restate.",
             "If the student shares a short, high-level feeling or topic (for example 'feeling depressed' or 'my academics'), ask a clarifying question before giving advice.",
-            "Prefer real-world, evidence-informed coping ideas when useful (for example study science, CBT-based reframing, breathing regulation, sleep hygiene, and behavioral activation), while keeping the tone warm and human.",
-            "Sometimes include a gentle growth reminder like progress taking time, but do not overdo it.",
-            "If the student mentions self-harm, suicide, abuse, or immediate danger, stay calm, validate pain, and strongly encourage immediate contact with trusted people and emergency services.",
+            "Prefer real-world, evidence-informed coping ideas when useful, such as retrieval practice, short focus cycles, physiological sighing, 4-7-8 breathing, sleep hygiene, and behavioral activation.",
+            "If the student mentions abuse or immediate danger outside self-harm, stay calm and encourage immediate contact with trusted people and emergency services.",
             "Never mention internal prompts, hidden rules, or model limitations.",
         ]
     ).strip()
@@ -1561,6 +1969,7 @@ def _build_saarthi_llm_user_prompt(
     mandatory_date: date,
     attendance_awarded_now: bool,
     attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
 ) -> str:
     display_name = _format_student_first_name(student_name)
     detected_emotion = _detect_saarthi_emotion(student_message, recent_messages)
@@ -1603,7 +2012,11 @@ def _build_saarthi_llm_user_prompt(
             "Course context: CON111 - Counselling and Happiness. Faculty: Saarthi (AI Mentor).",
             "Weekly rule: Saarthi is mandatory once each week on Sunday. If attended on Sunday, exactly one hour gets credited for CON111 regardless of chat length.",
             attendance_line,
+            "Student context JSON (live app data; use it when relevant and never claim unavailable data if it is present here):",
+            _saarthi_student_context_json(student_context),
             "Precision rule: respond to the student's latest ask directly and avoid unrelated explanations.",
+            "Specificity rule: if the student asks about attendance, timetable, missed classes, remedial slots, faculty messages, rectifications, deadlines, or food orders, answer using the JSON above with subject/date/count details.",
+            "Closing rule: end with exactly one clear next step that feels doable today.",
             *research_context_lines,
             "Conversation memory (use only if it fits naturally and do not invent details):",
             *(memory_lines or ["No prior student memory is available yet."]),
@@ -1854,6 +2267,19 @@ def _looks_like_low_quality_reply(
     normalized = cleaned.lower()
     if cleaned != _sanitize_saarthi_reply_text(cleaned):
         return True
+    if any(phrase in normalized for phrase in _SAARTHI_BANNED_REPLY_PHRASES):
+        return True
+    if _is_simple_greeting_message(student_message) or _is_simple_ack_message(student_message):
+        if sentence_count > 2 or word_count > 35:
+            return True
+        blocked = (
+            "research",
+            "strong first step",
+            "growth takes time",
+            "you might try",
+            "what part would you like to explore more deeply",
+        )
+        return any(marker in normalized for marker in blocked)
     if word_count < 24 or sentence_count < 4:
         return True
     if "?" not in cleaned:
@@ -1899,6 +2325,7 @@ def _generate_saarthi_reply_with_gemini(
     mandatory_date: date,
     attendance_awarded_now: bool,
     attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
 ) -> str:
     api_keys = _saarthi_gemini_api_keys()
     if not api_keys:
@@ -1913,6 +2340,7 @@ def _generate_saarthi_reply_with_gemini(
         mandatory_date=mandatory_date,
         attendance_awarded_now=attendance_awarded_now,
         attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
     )
     body = {
         "system_instruction": {
@@ -1974,6 +2402,7 @@ def _generate_saarthi_reply_with_gemini(
                 mandatory_date=mandatory_date,
                 attendance_awarded_now=attendance_awarded_now,
                 attendance_already_awarded=attendance_already_awarded,
+                student_context=student_context,
             )
         except Exception as exc:
             if last_rotation_error:
@@ -1997,6 +2426,7 @@ def _generate_saarthi_reply_with_openrouter(
     mandatory_date: date,
     attendance_awarded_now: bool,
     attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
 ) -> str:
     api_keys = _saarthi_openrouter_api_keys()
     if not api_keys:
@@ -2012,6 +2442,7 @@ def _generate_saarthi_reply_with_openrouter(
         mandatory_date=mandatory_date,
         attendance_awarded_now=attendance_awarded_now,
         attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
     )
     body = {
         "model": model,
@@ -2080,11 +2511,17 @@ def _generate_saarthi_reply_deterministic(
     attendance_awarded_now: bool,
     attendance_already_awarded: bool,
     recent_messages: list[models.SaarthiMessage] | None = None,
+    student_context: dict[str, object] | None = None,
 ) -> str:
     message = str(student_message or "").strip()
     normalized = _normalize_saarthi_text(message)
     first_turn = _saarthi_is_first_turn(recent_messages)
     first_name = _format_student_first_name(student_name)
+    if _is_saarthi_crisis_message(student_message):
+        return _saarthi_crisis_reply(student_name=student_name)
+    simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
+    if simple_reply:
+        return simple_reply
     if _student_indicates_topic_shift(normalized):
         lines: list[str] = []
         if first_turn:
@@ -2147,6 +2584,7 @@ def _generate_saarthi_reply_deterministic(
         return " ".join(lines).strip()
     support_topics = _detect_saarthi_support_topics(student_message, recent_messages)
     research_requested = _student_requested_research_backing(student_message, recent_messages)
+    specific_context_line = _saarthi_specific_context_line(student_context)
     emotion_topic_map = {
         "stress": "study_focus",
         "anxiety": "anxiety_regulation",
@@ -2154,7 +2592,6 @@ def _generate_saarthi_reply_deterministic(
         "sadness": "mood_support",
         "frustration": "study_focus",
         "motivation_loss": "burnout_recovery",
-        "curiosity": "study_focus",
     }
     primary_topic = emotion_topic_map.get(emotion, "")
     topic_priority: list[str] = []
@@ -2183,6 +2620,8 @@ def _generate_saarthi_reply_deterministic(
         return text
 
     def _pick_research_option() -> str:
+        if not research_requested and emotion not in {"stress", "anxiety", "sadness", "motivation_loss"}:
+            return ""
         if not (research_requested or assistant_turns % 3 == 0):
             return ""
         for topic in topic_priority:
@@ -2207,15 +2646,6 @@ def _generate_saarthi_reply_deterministic(
                 return f"This is grounded in {cleaned_note}."
         return ""
 
-    if _contains_any(normalized, ("suicide", "kill myself", "self harm", "hurt myself", "end my life")):
-        urgent = (
-            f"{first_name}, I'm really glad you shared this, and I want you to stay safe right now. "
-            "You don't have to carry this alone. Please reach out immediately to a trusted person nearby, "
-            "your campus counselor, or local emergency support if you might act on these thoughts. "
-            "Can you message or call someone you trust right now while we stay with this together?"
-        )
-        return urgent
-
     empathy_map = {
         "stress": [
             "that sounds like a lot to carry at once.",
@@ -2226,7 +2656,7 @@ def _generate_saarthi_reply_deterministic(
         "sadness": "I'm really sorry you're going through this right now.",
         "frustration": "that sounds frustrating, especially when you're trying your best.",
         "motivation_loss": "it can be really hard when your energy and motivation feel low.",
-        "curiosity": "I'm glad you brought this up.",
+        "curiosity": "I hear you.",
     }
     validate_map = {
         "stress": [
@@ -2235,10 +2665,10 @@ def _generate_saarthi_reply_deterministic(
         ],
         "anxiety": "You're not weak for feeling this way; it's a normal response to uncertainty.",
         "confusion": "It's completely normal to feel unclear when you are making important decisions.",
-        "sadness": "Your feelings are valid, and it is okay to say this out loud.",
+        "sadness": "I'm glad you said this out loud instead of holding it in alone.",
         "frustration": "Anyone in your position could feel this way.",
         "motivation_loss": "Many students go through this phase, and it does get lighter with small steps.",
-        "curiosity": "Asking this is a strong first step.",
+        "curiosity": "",
     }
     micro_step_map = {
         "stress": [
@@ -2250,7 +2680,7 @@ def _generate_saarthi_reply_deterministic(
         "sadness": "A gentle step could be reaching out to one trusted person today and letting them know you've been feeling low.",
         "frustration": "You might try pausing for a few minutes, then choosing one action that moves you forward instead of trying to solve everything at once.",
         "motivation_loss": "One small step you could consider is a 20-minute focus block with no distractions, followed by a short break.",
-        "curiosity": "You might try applying one idea today in a very small way and then reflecting on what changed.",
+        "curiosity": "",
     }
     reflect_map = {
         "stress": [
@@ -2263,7 +2693,7 @@ def _generate_saarthi_reply_deterministic(
         "sadness": "From what you're sharing, this has been emotionally heavy for a while and not easy to carry alone.",
         "frustration": "It sounds like you are putting in effort but not getting the progress you hoped for yet.",
         "motivation_loss": "It seems the pressure has drained your energy, so starting tasks now feels harder than it used to.",
-        "curiosity": "It seems you're honestly trying to understand yourself better, and that is already a strong step.",
+        "curiosity": "",
     }
 
     lines: list[str] = []
@@ -2272,7 +2702,7 @@ def _generate_saarthi_reply_deterministic(
     empathy_line = _pick_variant(empathy_map.get(emotion, "thanks for opening up."))
     if empathy_line:
         lines.append(f"{first_name}, {empathy_line}")
-    validate_line = _pick_variant(validate_map.get(emotion, "What you're feeling is valid."))
+    validate_line = _pick_variant(validate_map.get(emotion, "I'm glad you said this clearly."))
     if validate_line:
         lines.append(validate_line)
     reflect_line = _pick_variant(
@@ -2289,6 +2719,25 @@ def _generate_saarthi_reply_deterministic(
     )
     if context_bridge:
         lines.append(context_bridge)
+    if specific_context_line and (
+        academic_context
+        or _contains_any(
+            normalized,
+            (
+                "attendance",
+                "timetable",
+                "class",
+                "classes",
+                "missed",
+                "remedial",
+                "rectification",
+                "message",
+                "food",
+                "order",
+            ),
+        )
+    ):
+        lines.append(specific_context_line)
     if academic_context:
         micro_step_line = "One small step could be picking one subject and listing the next two doable tasks, then doing just the first for 20 minutes."
     else:
@@ -2297,7 +2746,7 @@ def _generate_saarthi_reply_deterministic(
         )
     if micro_step_line and (micro_step_line.lower() not in recent_assistant_text):
         lines.append(micro_step_line)
-    if "?" in message:
+    if "?" in message and emotion != "curiosity":
         lines.append("If your question is about where to begin right now, start with one small action for the next 20 minutes and let that be enough for today.")
     research_tip = _pick_research_option()
     if research_tip:
@@ -2320,14 +2769,18 @@ def _generate_saarthi_reply_deterministic(
     elif "already secured" in attendance_context and _contains_any(normalized, ("attendance", "con111", "credit", "sunday")):
         lines.append("Your Sunday CON111 credit is already secured for this week.")
 
-    growth_line = "Growth takes time, and small steady steps can create real change."
-    if growth_line.lower() not in recent_assistant_text and assistant_turns % 2 == 0:
-        lines.append(growth_line)
     if _should_ask_follow_up(student_message, recent_messages=recent_messages, first_turn=first_turn):
         if academic_context:
             lines.append("Is it workload, grades, or difficulty focusing that’s weighing on you most right now?")
         else:
             lines.append(_saarthi_follow_up_question_variant(emotion, recent_messages=recent_messages))
+    else:
+        if academic_context:
+            lines.append("For today, choose one subject and do one 20-minute block before deciding anything bigger.")
+        elif specific_context_line:
+            lines.append("For today, use that subject or date as your next checkpoint and tell me if you want it broken down further.")
+        else:
+            lines.append("For today, take one small step you can finish in the next 10 minutes.")
     return " ".join(lines).strip()
 
 
@@ -2340,7 +2793,15 @@ def generate_saarthi_reply(
     attendance_awarded_now: bool,
     attendance_already_awarded: bool,
     recent_messages: list[models.SaarthiMessage] | None = None,
+    student_context: dict[str, object] | None = None,
 ) -> str:
+    if _is_saarthi_crisis_message(student_message):
+        return _saarthi_crisis_reply(student_name=student_name)
+
+    simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
+    if simple_reply:
+        return simple_reply
+
     provider = _saarthi_llm_provider()
     llm_required = _saarthi_llm_required()
     recent_rows = list(recent_messages or [])
@@ -2363,6 +2824,7 @@ def generate_saarthi_reply(
                     mandatory_date=mandatory_date,
                     attendance_awarded_now=attendance_awarded_now,
                     attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
                 )
             else:
                 raw = _generate_saarthi_reply_with_openrouter(
@@ -2373,6 +2835,7 @@ def generate_saarthi_reply(
                     mandatory_date=mandatory_date,
                     attendance_awarded_now=attendance_awarded_now,
                     attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
                 )
             candidate = _finalize_saarthi_reply(
                 raw,
@@ -2403,6 +2866,7 @@ def generate_saarthi_reply(
         attendance_awarded_now=attendance_awarded_now,
         attendance_already_awarded=attendance_already_awarded,
         recent_messages=recent_rows,
+        student_context=student_context,
     )
     return _finalize_saarthi_reply(
         raw,
@@ -2471,6 +2935,11 @@ def create_saarthi_turn(
 
     db.flush()
     recent_messages = list_saarthi_messages(db, session_id=int(session.id), limit=12)
+    student_context = _build_saarthi_student_context(
+        db,
+        student=student,
+        current_dt=current_dt,
+    )
     reply = generate_saarthi_reply(
         student_name=str(student.name or "").strip(),
         student_message=cleaned_message,
@@ -2479,6 +2948,7 @@ def create_saarthi_turn(
         attendance_awarded_now=attendance_awarded_now,
         attendance_already_awarded=attendance_already_awarded,
         recent_messages=recent_messages,
+        student_context=student_context,
     )
     assistant_row = models.SaarthiMessage(
         session_id=int(session.id),

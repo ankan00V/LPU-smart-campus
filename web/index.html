@@ -93,7 +93,7 @@
                     <input id="auth-otp" type="text" inputmode="numeric" placeholder="6-digit OTP" maxlength="6">
                 </label>
                 <label id="auth-mfa-wrap" class="field hidden">
-                    <span>Authenticator Code (admin/faculty after MFA setup)</span>
+                    <span>Authenticator Code (admin after MFA setup)</span>
                     <input id="auth-mfa-code" type="text" inputmode="numeric" placeholder="6-digit TOTP or backup code" maxlength="20">
                 </label>
                 <p id="auth-mfa-help" class="password-strength hidden">Enter authenticator app code (or backup code) for privileged accounts with MFA enabled.</p>
@@ -328,7 +328,7 @@
                     <h3 id="mfa-setup-title">MFA Enrollment Required</h3>
                     <button id="mfa-logout-btn" class="btn btn-ghost" type="button">Logout</button>
                 </div>
-                <p class="auth-modal-sub">Admin and faculty actions require MFA. Start enrollment, save backup codes, then activate using a TOTP code.</p>
+                <p class="auth-modal-sub">Admin actions require MFA. Start enrollment, save backup codes, then activate using a TOTP code.</p>
                 <div class="auth-actions mfa-help-actions">
                     <button id="mfa-enroll-btn" class="btn btn-primary" type="button">Start MFA Enrollment</button>
                     <button id="mfa-help-open-btn" class="btn btn-ghost" type="button">What is TOTP?</button>
