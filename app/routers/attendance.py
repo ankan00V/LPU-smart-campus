@@ -2531,7 +2531,7 @@ def _build_timetable_class_item(
         weekday=schedule.weekday,
         start_time=schedule.start_time,
         end_time=schedule.end_time,
-        classroom_label=schedule.classroom_label,
+        classroom_label=student_section or schedule.classroom_label,
         section=student_section or None,
         class_date=class_date,
         is_open_now=is_open_now,
