@@ -1267,7 +1267,7 @@ def _saarthi_nvidia_model() -> str:
     shared_model = _saarthi_llm_model().strip()
     if shared_model and not shared_model.startswith("us.anthropic."):
         return shared_model
-    return "meta/llama-3.3-70b-instruct"
+    return "meta/llama-3.1-8b-instruct"
 
 
 def _saarthi_llm_timeout_seconds() -> float:
@@ -1277,6 +1277,15 @@ def _saarthi_llm_timeout_seconds() -> float:
     except ValueError:
         value = 8.0
     return max(3.0, min(30.0, value))
+
+
+def _saarthi_llm_max_tokens() -> int:
+    raw = (os.getenv("SAARTHI_LLM_MAX_TOKENS", "220") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 220
+    return max(96, min(360, value))
 
 
 def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
@@ -2237,6 +2246,27 @@ def _build_saarthi_llm_system_instruction() -> str:
     ).strip()
 
 
+def _build_saarthi_fast_system_instruction() -> str:
+    return "\n".join(
+        [
+            "You are Saarthi, a warm senior-student style mentor for this campus platform.",
+            "Match the student's latest message: short greeting gets a short reply; specific question gets a specific answer.",
+            "Use provided student data when relevant. Name exact subjects, counts, percentages, dates, and next steps.",
+            "If the student asks what to focus on and no timetable is loaded, use the lowest-attendance subject from attendance_summary.",
+            "Do not over-praise risky academic data; be warm but clear when a percentage is below threshold.",
+            "Never invent exams, deadlines, timetable entries, faculty messages, remedial slots, or class dates.",
+            "If a JSON list is empty, treat that information as not loaded or not available instead of filling it in.",
+            "Never scold, lecture, sound formal, or use bureaucratic wording.",
+            "Do not claim what other students experience unless it is in the provided data.",
+            "Do not use bullets, headings, markdown, role labels, or app navigation guesses.",
+            "Keep normal replies to 2-5 concise sentences. Avoid introducing yourself unless the student only greeted you.",
+            "If the student is stressed, acknowledge first, then ask one gentle question or give one practical next step.",
+            "If suicide, self-harm, or wanting to die appears, stay in crisis mode, share iCall 9152987821, and ask if they are somewhere safe.",
+            "End with one clear next step or one gentle question, not both.",
+        ]
+    ).strip()
+
+
 def _build_saarthi_llm_user_prompt(
     *,
     student_name: str,
@@ -2266,7 +2296,7 @@ def _build_saarthi_llm_user_prompt(
     research_context_lines = _saarthi_research_prompt_context_lines(student_message, recent_messages)
 
     transcript_lines: list[str] = []
-    for row in recent_messages[-12:]:
+    for row in recent_messages[-8:]:
         role = "Student" if str(row.sender_role or "").strip().lower() == "student" else "Saarthi"
         content = " ".join(str(row.message or "").strip().split())
         if not content:
@@ -2276,6 +2306,9 @@ def _build_saarthi_llm_user_prompt(
     if latest_message:
         transcript_lines.append(f"Student: {latest_message}")
     transcript = "\n".join(transcript_lines)
+    include_identity_intro = _saarthi_is_first_turn(recent_messages) and (
+        _is_simple_greeting_message(student_message) or _is_simple_ack_message(student_message)
+    )
 
     return "\n".join(
         [
@@ -2288,7 +2321,11 @@ def _build_saarthi_llm_user_prompt(
                 if _saarthi_is_first_turn(recent_messages)
                 else "Conversation stage: ongoing interaction, continue naturally from existing context."
             ),
-            f"Identity intro (first reply only): {SAARTHI_IDENTITY_INTRO}",
+            (
+                f"Identity intro allowed because this is a simple greeting: {SAARTHI_IDENTITY_INTRO}"
+                if include_identity_intro
+                else "Do not introduce yourself in this reply; answer the latest student message directly."
+            ),
             "Course context: CON111 - Counselling and Happiness. Faculty: Saarthi (AI Mentor).",
             "Weekly rule: Saarthi is mandatory once each week on Sunday. If attended on Sunday, exactly one hour gets credited for CON111 regardless of chat length.",
             attendance_line,
@@ -2303,6 +2340,90 @@ def _build_saarthi_llm_user_prompt(
             "Conversation transcript:",
             transcript,
             "Now respond to the latest student message as Saarthi.",
+        ]
+    ).strip()
+
+
+def _build_saarthi_fast_user_prompt(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    display_name = _format_student_first_name(student_name)
+    transcript_lines: list[str] = []
+    for row in recent_messages[-6:]:
+        role = "Student" if str(row.sender_role or "").strip().lower() == "student" else "Saarthi"
+        content = " ".join(str(row.message or "").strip().split())
+        if content:
+            transcript_lines.append(f"{role}: {content}")
+    latest_message = " ".join(str(student_message or "").strip().split())
+    if latest_message:
+        transcript_lines.append(f"Student: {latest_message}")
+
+    context_notes: list[str] = []
+    attendance_line = _saarthi_attendance_context_line(
+        student_message=student_message,
+        student_name=student_name,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+    )
+    if attendance_awarded_now or attendance_already_awarded or _contains_any(
+        _normalize_saarthi_text(student_message), ("con111", "saarthi", "sunday", "credit")
+    ):
+        context_notes.append(attendance_line)
+
+    attendance_facts: list[str] = []
+    attendance_rows = []
+    if isinstance(student_context, dict):
+        raw_attendance = student_context.get("attendance_summary")
+        if isinstance(raw_attendance, list):
+            attendance_rows = [row for row in raw_attendance if isinstance(row, dict)]
+    lowest_subject = ""
+    lowest_percentage: float | None = None
+    for row in attendance_rows[:8]:
+        subject = str(row.get("subject") or "").strip()
+        if not subject:
+            continue
+        attended = row.get("attended")
+        total = row.get("total")
+        percentage = row.get("percentage")
+        threshold = row.get("threshold")
+        attendance_facts.append(
+            f"{subject}: {attended} attended / {total} total, {percentage}% attendance, threshold {threshold}%."
+        )
+        try:
+            numeric_percentage = float(percentage)
+        except (TypeError, ValueError):
+            continue
+        if lowest_percentage is None or numeric_percentage < lowest_percentage:
+            lowest_percentage = numeric_percentage
+            lowest_subject = subject
+    if lowest_subject:
+        attendance_facts.append(f"Lowest attendance subject: {lowest_subject}.")
+
+    return "\n".join(
+        [
+            f"Student name: {display_name or 'Student'}",
+            f"Current time: {current_dt.isoformat()}",
+            "Attendance facts, if relevant:",
+            *(attendance_facts or ["No attendance summary loaded."]),
+            "Use attendance facts exactly: do not confuse percentage with attended/total counts.",
+            "Student data JSON:",
+            _saarthi_student_context_json(student_context),
+            "Data rule: do not mention exams, deadlines, timetable items, faculty messages, remedial slots, or class dates unless they appear in the JSON.",
+            *(context_notes or []),
+            "Recent transcript:",
+            "\n".join(transcript_lines),
+            "Reply to the latest student message now.",
         ]
     ).strip()
 
@@ -2492,6 +2613,7 @@ def _finalize_saarthi_reply(
         cleaned = "I'm here with you."
     if (
         first_turn
+        and (_is_simple_greeting_message(student_message or "") or _is_simple_ack_message(student_message or ""))
         and not _reply_self_introduces_as_saarthi(cleaned)
         and SAARTHI_IDENTITY_INTRO.lower() not in cleaned.lower()
     ):
@@ -2563,10 +2685,9 @@ def _looks_like_low_quality_reply(
             "what part would you like to explore more deeply",
         )
         return any(marker in normalized for marker in blocked)
-    if word_count < 24 or sentence_count < 4:
-        return True
+    normalized_student_message = _normalize_saarthi_text(student_message)
     data_or_planning_question = _contains_any(
-        _normalize_saarthi_text(student_message),
+        normalized_student_message,
         (
             "attendance",
             "timetable",
@@ -2585,6 +2706,29 @@ def _looks_like_low_quality_reply(
             "next",
         ),
     )
+    emotional_or_struggle_message = _contains_any(
+        normalized_student_message,
+        (
+            "stress",
+            "stressed",
+            "anxious",
+            "overwhelmed",
+            "depressed",
+            "low",
+            "off",
+            "confused",
+            "focus",
+            "sleep",
+            "burnout",
+            "tired",
+            "scared",
+            "worried",
+        ),
+    )
+    minimum_word_count = 12 if emotional_or_struggle_message else 24
+    minimum_sentence_count = 2 if emotional_or_struggle_message else (3 if data_or_planning_question else 4)
+    if word_count < minimum_word_count or sentence_count < minimum_sentence_count:
+        return True
     if "?" not in cleaned and not data_or_planning_question:
         return True
     if re.search(r"\b[A-Za-z]\.\s*$", cleaned):
@@ -2602,7 +2746,7 @@ def _looks_like_low_quality_reply(
     if len(student_tokens) >= 2:
         overlap = len(student_tokens.intersection(set(_tokenize_saarthi_text(cleaned))))
         overlap_ratio = overlap / max(1, len(student_tokens))
-        if overlap_ratio >= 0.8 and word_count < 55:
+        if overlap_ratio >= 0.8 and word_count < 55 and not (data_or_planning_question or emotional_or_struggle_message):
             return True
 
     guidance_markers = (
@@ -2617,10 +2761,33 @@ def _looks_like_low_quality_reply(
         "could consider",
         "helpful",
         "plan",
+        "tell me",
+        "let's break",
+        "break it down",
+        "focus on",
+        "review",
+        "prioritize",
+        "use the extra time",
     )
+    if emotional_or_struggle_message and "?" in cleaned:
+        return False
+    if data_or_planning_question and re.search(r"\d|%", cleaned):
+        return False
     if not any(marker in normalized for marker in guidance_markers):
         return True
     return False
+
+
+def _is_usable_nvidia_reply(reply: str) -> bool:
+    cleaned = " ".join(str(reply or "").split()).strip()
+    if not cleaned:
+        return False
+    normalized = cleaned.lower()
+    if cleaned != _sanitize_saarthi_reply_text(cleaned):
+        return False
+    if any(phrase in normalized for phrase in _SAARTHI_BANNED_REPLY_PHRASES):
+        return False
+    return len(_tokenize_saarthi_text(cleaned)) >= 10
 
 
 def _extract_bedrock_text(payload: dict[str, Any]) -> str:
@@ -2679,7 +2846,7 @@ def _generate_saarthi_reply_with_bedrock(
         "inferenceConfig": {
             "temperature": SAARTHI_LLM_TEMPERATURE,
             "topP": SAARTHI_LLM_TOP_P,
-            "maxTokens": 360,
+            "maxTokens": _saarthi_llm_max_tokens(),
         },
     }
     last_rotation_error = ""
@@ -2735,8 +2902,8 @@ def _generate_saarthi_reply_with_nvidia(
     if not api_keys:
         raise RuntimeError("SAARTHI_NVIDIA_API_KEY or NVIDIA_API_KEY is required when SAARTHI_LLM_PROVIDER=nvidia.")
 
-    system_instruction = _build_saarthi_llm_system_instruction()
-    user_prompt = _build_saarthi_llm_user_prompt(
+    system_instruction = _build_saarthi_fast_system_instruction()
+    user_prompt = _build_saarthi_fast_user_prompt(
         student_name=student_name,
         student_message=student_message,
         recent_messages=recent_messages,
@@ -2756,7 +2923,7 @@ def _generate_saarthi_reply_with_nvidia(
         "top_p": SAARTHI_LLM_TOP_P,
         "presence_penalty": SAARTHI_LLM_PRESENCE_PENALTY,
         "frequency_penalty": SAARTHI_LLM_FREQUENCY_PENALTY,
-        "max_tokens": 360,
+        "max_tokens": _saarthi_llm_max_tokens(),
         "stream": False,
     }
     last_rotation_error = ""
@@ -2837,7 +3004,7 @@ def _generate_saarthi_reply_with_gemini(
         "generationConfig": {
             "temperature": SAARTHI_LLM_TEMPERATURE,
             "topP": SAARTHI_LLM_TOP_P,
-            "maxOutputTokens": 360,
+            "maxOutputTokens": _saarthi_llm_max_tokens(),
         },
     }
     last_rotation_error = ""
@@ -2936,7 +3103,7 @@ def _generate_saarthi_reply_with_openrouter(
         "top_p": SAARTHI_LLM_TOP_P,
         "presence_penalty": SAARTHI_LLM_PRESENCE_PENALTY,
         "frequency_penalty": SAARTHI_LLM_FREQUENCY_PENALTY,
-        "max_tokens": 360,
+        "max_tokens": _saarthi_llm_max_tokens(),
     }
     last_rotation_error = ""
     for api_key in api_keys:
@@ -3359,6 +3526,8 @@ def generate_saarthi_reply(
                 student_message=student_message,
                 first_turn=first_turn,
             ):
+                return candidate
+            if candidate_provider == "nvidia" and _is_usable_nvidia_reply(candidate):
                 return candidate
             rejected_replies.append(f"{candidate_provider} returned a low-quality Saarthi reply.")
         except Exception as exc:

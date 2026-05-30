@@ -22,10 +22,13 @@ from app.routers.saarthi import SAARTHI_UNAVAILABLE_MESSAGE, get_saarthi_status,
 from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
+    SAARTHI_IDENTITY_INTRO,
     _build_saarthi_llm_user_prompt,
     _build_saarthi_student_context,
+    _finalize_saarthi_reply,
     _generate_saarthi_reply_deterministic,
     _is_gemini_key_rotation_error,
+    _is_usable_nvidia_reply,
     _looks_like_low_quality_reply,
     _saarthi_bedrock_api_keys,
     _saarthi_bedrock_model_id,
@@ -720,7 +723,6 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 academic_start=date(2026, 3, 2),
             )
 
-        self.assertTrue(out["reply"].startswith("Hi, I'm Saarthi."))
         self.assertIn("That sounds heavy, and I'm glad you said it out loud.", out["reply"])
         self.assertIn("Something that could help is choosing one gentle task", out["reply"])
         self.assertIn("What feels hardest to carry right now?", out["reply"])
@@ -1062,6 +1064,62 @@ class SaarthiAttendanceTests(unittest.TestCase):
             )
         )
 
+    def test_saarthi_quality_gate_accepts_specific_attendance_answer_with_question(self):
+        reply = (
+            "Hi Ankan, let's take a look at your attendance summary. "
+            "You attended 17 out of 25 classes in Digital Electronics, which is 68%. "
+            "Your percentage is below the threshold of 75. "
+            "How do you feel about attending the next two Digital Electronics classes?"
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="can you explain my attendance situation and what should i do next",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_quality_gate_accepts_short_emotional_question(self):
+        reply = (
+            "Hey Ankan, sorry to hear that you're feeling stressed about your attendance. "
+            "How many classes have you been missing in Digital Electronics?"
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="im feeling stressed about my attendance",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_quality_gate_accepts_concrete_planning_reply(self):
+        reply = (
+            "Hey Ankan, since you have no classes scheduled today, you could use the extra time to review your notes for "
+            "Digital Electronics. You've attended 68% of its sessions so far, so prioritizing it today makes sense. "
+            "Start with one topic from the last lecture."
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="what classes should i focus on today",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_first_turn_intro_is_limited_to_greetings(self):
+        reply = _finalize_saarthi_reply(
+            "Ankan, your Digital Electronics attendance is 68%, with 17 attended out of 25 total classes.",
+            student_message="can you explain my attendance situation and what should i do next",
+            detected_emotion="curiosity",
+            first_turn=True,
+            recent_messages=[],
+        )
+
+        self.assertNotIn(SAARTHI_IDENTITY_INTRO, reply)
+
     def test_saarthi_bedrock_provider_uses_aws_bearer_token_first(self):
         with mock.patch.dict(
             os.environ,
@@ -1154,6 +1212,56 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertIn("This week feels heavy", reply)
         request = mocked_urlopen.call_args.args[0]
         self.assertIn("integrate.api.nvidia.com", request.full_url)
+
+    def test_nvidia_usable_reply_returns_even_when_quality_gate_is_strict(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": (
+                                        "Ankan, your Digital Electronics attendance is at 68%, with 17 attended out of 25 classes. "
+                                        "That is below the 75% threshold, so focus on protecting the next few classes."
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-key",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()):
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="can you explain my attendance situation and what should i do next",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        self.assertIn("Digital Electronics attendance is at 68%", reply)
+        self.assertTrue(_is_usable_nvidia_reply(reply))
 
     def test_required_bedrock_reply_is_used_without_deterministic_fallback(self):
         class DummyResponse:
