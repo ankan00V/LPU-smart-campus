@@ -855,6 +855,32 @@ def _saarthi_crisis_reply(*, student_name: str) -> str:
     )
 
 
+def _saarthi_prior_messages_for_current_turn(
+    recent_messages: list[models.SaarthiMessage] | None,
+    *,
+    current_student_message: str,
+) -> list[models.SaarthiMessage]:
+    rows = list(recent_messages or [])
+    current_normalized = _normalize_saarthi_text(current_student_message)
+    if not current_normalized:
+        return rows
+
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        role = str(getattr(row, "sender_role", "") or "").strip().lower()
+        message = _normalize_saarthi_text(str(getattr(row, "message", "") or ""))
+        if role == "student" and message == current_normalized:
+            return rows[:index] + rows[index + 1 :]
+    return rows
+
+
+def _last_saarthi_assistant_message(recent_messages: list[models.SaarthiMessage] | None) -> str:
+    for row in reversed(list(recent_messages or [])):
+        if str(getattr(row, "sender_role", "") or "").strip().lower() == "assistant":
+            return _normalize_saarthi_text(str(getattr(row, "message", "") or ""))
+    return ""
+
+
 def _saarthi_crisis_mode_reply(
     *,
     student_name: str,
@@ -862,35 +888,58 @@ def _saarthi_crisis_mode_reply(
     recent_messages: list[models.SaarthiMessage] | None = None,
 ) -> str:
     first_name = _format_student_first_name(student_name)
-    prior_crisis_context = _saarthi_recent_crisis_context(recent_messages, current_student_message="")
-    if _is_saarthi_crisis_message(student_message) and not prior_crisis_context:
-        return _saarthi_crisis_reply(student_name=student_name)
-    crisis_context = _saarthi_recent_crisis_context(
+    current_is_crisis = _is_saarthi_crisis_message(student_message)
+    prior_messages = _saarthi_prior_messages_for_current_turn(
         recent_messages,
         current_student_message=student_message,
     )
-    if not crisis_context:
+    prior_crisis_context = _saarthi_recent_crisis_context(prior_messages, current_student_message="")
+
+    if current_is_crisis and not prior_crisis_context:
+        return _saarthi_crisis_reply(student_name=student_name)
+
+    if not current_is_crisis and not prior_crisis_context:
         return ""
+
+    if current_is_crisis and prior_crisis_context:
+        return (
+            f"{first_name}, I hear you. I'm still right here. "
+            "Please call iCall at 9152987821 - they are there for exactly this. "
+            "Is there anyone physically near you right now?"
+        )
+
     if _saarthi_student_indicates_not_safe(student_message):
         return (
-            f"{first_name}, this is urgent: please move away from anything you could use to hurt yourself and call 112 now "
-            "if you might act on this. If you can call iCall, the number is 9152987821. "
-            "Is there anyone near you - a roommate, friend, hostel staff, or anyone nearby - you can go to right now?"
+            f"{first_name}, this is urgent - please call 112 right now if you might act on this, "
+            "or call iCall at 9152987821. "
+            "Is there anyone near you - a roommate, friend, hostel warden, anyone - "
+            "you can go to without explaining anything?"
         )
     if _saarthi_student_indicates_lost(student_message):
         return (
             f"That's okay, {first_name}. You don't need to know right now. "
-            "I'm right here with you. Can you tell me one thing: where are you at this moment - in your room, "
-            "at home, or somewhere on campus?"
+            "I'm right here with you. "
+            "Where are you right now - in your room, at home, or somewhere on campus?"
         )
     if _saarthi_student_indicates_safe(student_message):
         return (
-            f"Okay, {first_name}. Please stay near someone and keep distance from anything you could use to hurt yourself. "
-            "Can you call iCall at 9152987821 now, or ask someone beside you to call with you?"
+            f"Okay, {first_name}, I'm glad you're somewhere safe. Please stay near someone. "
+            "Can you call iCall right now at 9152987821, or ask the person next to you to call with you?"
         )
+
+    last_assistant = _last_saarthi_assistant_message(recent_messages)
+    if "what's been hurting the most" in last_assistant or "what s been hurting the most" in last_assistant:
+        return (
+            f"{first_name}, that's okay - you don't have to explain it right now. "
+            "I'm not going anywhere. "
+            "Can you just tell me where you are right now, and whether there's someone nearby you trust?"
+        )
+
     return (
-        f"{first_name}, I'm staying with you here. That sounds really painful to carry right now, and we do not need to solve it all in this moment. "
-        "Please stay near another person while we talk. What's been hurting the most?"
+        f"{first_name}, I'm staying right here with you. "
+        "That sounds really painful to carry and you don't have to sort it all out right now. "
+        "Please stay near another person while we talk. "
+        "What's been weighing on you the most?"
     )
 
 
@@ -2943,14 +2992,6 @@ def generate_saarthi_reply(
     simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
     if simple_reply:
         return simple_reply
-    if _saarthi_recent_crisis_context(recent_rows, current_student_message=student_message):
-        first_name = _format_student_first_name(student_name)
-        return (
-            f"{first_name}, I'm still right here with you. "
-            "You don't have to have the words right now. "
-            "Please stay near someone, and call iCall at 9152987821 when you can. "
-            "What's going through your mind?"
-        )
 
     provider = _saarthi_llm_provider()
     llm_required = _saarthi_llm_required()

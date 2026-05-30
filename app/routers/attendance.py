@@ -4544,7 +4544,7 @@ def get_student_weekly_timetable(
 
     for remedial in remedial_classes:
         sections = set(_parse_remedial_sections(remedial.sections_json))
-        if sections:
+        if sections and int(remedial.id) not in targeted_remedial_class_ids:
             if not student_section:
                 continue
             if student_section not in sections:
