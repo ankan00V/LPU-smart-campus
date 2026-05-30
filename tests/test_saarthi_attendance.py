@@ -802,7 +802,36 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceEvent).count(), 0)
 
-    def test_explicit_openrouter_provider_does_not_fall_back_to_gemini(self):
+    def test_explicit_openrouter_provider_falls_back_to_configured_gemini(self):
+        class DummyGeminiResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "content": {
+                                    "parts": [
+                                        {
+                                            "text": (
+                                                "That sounds heavy, and I'm glad you said it out loud. "
+                                                "That pressure can feel intense when it keeps building. "
+                                                "Something that could help is choosing one gentle task for the next 20 minutes "
+                                                "and then pausing to breathe. What feels hardest to carry right now?"
+                                            )
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
         openrouter_error = urllib_error.HTTPError(
             url="https://openrouter.ai/api/v1/chat/completions",
             code=401,
@@ -824,21 +853,22 @@ class SaarthiAttendanceTests(unittest.TestCase):
             clear=False,
         ), mock.patch(
             "app.saarthi_service.urllib_request.urlopen",
-            side_effect=openrouter_error,
+            side_effect=[openrouter_error, DummyGeminiResponse()],
         ) as mocked_urlopen:
-            with self.assertRaises(RuntimeError):
-                generate_saarthi_reply(
-                    student_name="Ankan Ghosh",
-                    student_message="hi im feeling too low",
-                    current_dt=datetime(2026, 3, 8, 9, 0, 0),
-                    mandatory_date=date(2026, 3, 8),
-                    attendance_awarded_now=False,
-                    attendance_already_awarded=False,
-                    recent_messages=[],
-                )
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="hi im feeling too low",
+                current_dt=datetime(2026, 3, 8, 9, 0, 0),
+                mandatory_date=date(2026, 3, 8),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
 
-        self.assertEqual(mocked_urlopen.call_count, 1)
-        self.assertIn("openrouter.ai", mocked_urlopen.call_args.args[0].full_url)
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertIn("openrouter.ai", mocked_urlopen.call_args_list[0].args[0].full_url)
+        self.assertIn("generativelanguage.googleapis.com", mocked_urlopen.call_args_list[1].args[0].full_url)
+        self.assertIn("That sounds heavy", reply)
 
     def test_router_uses_local_saarthi_clock_for_status_and_chat(self):
         mocked_now = datetime(2026, 3, 8, 0, 30, 0)

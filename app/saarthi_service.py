@@ -1280,9 +1280,6 @@ def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
             providers.append(cleaned)
 
     preferred = str(preferred_provider or "").strip().lower()
-    if preferred:
-        add(preferred)
-        return providers
     if preferred == "bedrock" and (has_bedrock_keys or not has_any_keys):
         add("bedrock")
     elif preferred == "gemini" and (has_gemini_keys or not has_any_keys):
