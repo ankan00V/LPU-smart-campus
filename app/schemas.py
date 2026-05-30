@@ -1931,6 +1931,7 @@ class TimetableClassOut(BaseModel):
     start_time: time
     end_time: time
     classroom_label: Optional[str]
+    section: Optional[str] = None
     class_date: date
     is_open_now: bool
     is_active_now: bool

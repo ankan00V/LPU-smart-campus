@@ -16903,9 +16903,10 @@ function slotTextLines(item) {
   const roomNo = secondPart
     || (firstPart ? String(firstPart).split(' - ')[0].trim() : '')
     || 'Room TBA';
+  const sectionLabel = String(item.section || item.section_label || '').trim().toUpperCase();
   return {
     primary: `${item.course_code} - ${item.course_title}`,
-    secondary: roomNo,
+    secondary: sectionLabel || roomNo,
   };
 }
 
@@ -23770,6 +23771,7 @@ function bindEvents() {
         return;
       }
       setSupportDeskOpen(true);
+      renderSupportDeskWidget();
       setSupportDeskStatus('Loading realtime messages...');
       void refreshSupportDeskContext({ silent: true, refreshThread: true })
         .then(() => {

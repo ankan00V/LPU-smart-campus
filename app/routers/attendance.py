@@ -25,6 +25,7 @@ from ..academic_policy import (
     ACADEMIC_START_DATE_DEFAULT,
     ACADEMIC_TERM_CONFIG_KEY,
     academic_window,
+    sync_faculty_sections_for_student,
     sync_student_academic_term,
 )
 from ..attendance_recovery import (
@@ -2469,6 +2470,7 @@ def _build_timetable_class_item(
     db: Session,
     *,
     student_id: int,
+    student_section: str,
     current_week_start: date,
     academic_start: date,
     now_dt: datetime,
@@ -2530,6 +2532,7 @@ def _build_timetable_class_item(
         start_time=schedule.start_time,
         end_time=schedule.end_time,
         classroom_label=schedule.classroom_label,
+        section=student_section or None,
         class_date=class_date,
         is_open_now=is_open_now,
         is_active_now=is_active_now,
@@ -4162,7 +4165,10 @@ def get_student_profile(
 
     _reissue_profile_identifiers_if_needed(db)
     db.refresh(student)
-    if sync_student_academic_term(db, student, now=_campus_now()):
+    sync_time = _campus_now()
+    changed = sync_student_academic_term(db, student, now=sync_time)
+    changed = sync_faculty_sections_for_student(db, student, now=sync_time) > 0 or changed
+    if changed:
         db.commit()
         db.refresh(student)
     _sync_student_to_mongo(db, student, source="student-profile-read")
@@ -4502,6 +4508,7 @@ def get_student_weekly_timetable(
         item = _build_timetable_class_item(
             db,
             student_id=current_user.student_id,
+            student_section=student_section,
             current_week_start=current_week_start,
             academic_start=academic_start,
             now_dt=now_dt,
