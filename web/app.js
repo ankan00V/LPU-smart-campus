@@ -151,6 +151,33 @@ const MODULE_LABELS = {
   rms: 'RMS',
   remedial: 'Remedial',
 };
+const ROLE_SIDEBAR_ACTIONS = {
+  student: [
+    { key: 'dashboard', label: 'Dashboard', glyph: 'DB', module: 'attendance', targetId: 'main-dashboard-header' },
+    { key: 'courses', label: 'My Courses', glyph: 'CR', module: 'attendance', targetId: 'student-courses-card' },
+    { key: 'attendance', label: 'Attendance', glyph: 'AT', module: 'attendance', targetId: 'student-attendance-card' },
+  ],
+  faculty: [
+    { key: 'class-control', label: 'Class Control', glyph: 'CL', module: 'attendance', targetId: 'faculty-dashboard-card', submoduleScope: 'attendance', submodule: 'attendance-ops' },
+    { key: 'gps-locks', label: 'GPS Locks', glyph: 'GP', module: 'attendance', targetId: 'faculty-gps-locks-panel', submoduleScope: 'attendance', submodule: 'attendance-ops' },
+    { key: 'review-queue', label: 'Review Queue', glyph: 'RV', module: 'attendance', targetId: 'faculty-attendance-card', submoduleScope: 'attendance', submodule: 'attendance-ops' },
+  ],
+  admin: [
+    { key: 'rms-desk', label: 'RMS Desk', glyph: 'RM', module: 'rms', targetId: 'rms-query-list' },
+    { key: 'attendance-ops', label: 'Attendance Ops', glyph: 'AO', module: 'attendance', targetId: 'admin-attendance-actions-card', submoduleScope: 'attendance', submodule: 'attendance-admin' },
+    { key: 'recovery', label: 'Recovery', glyph: 'RC', module: 'administrative', targetId: 'admin-recovery-card' },
+  ],
+  owner: [
+    { key: 'orders', label: 'Orders', glyph: 'OR', module: 'food', targetId: 'food-orders-panel' },
+    { key: 'menu', label: 'Menu Control', glyph: 'MN', module: 'food', targetId: 'food-admin-panel' },
+    { key: 'demand', label: 'Demand', glyph: 'DM', module: 'food', targetId: 'food-demand-chart-module' },
+  ],
+  guest: [
+    { key: 'dashboard', label: 'Dashboard', glyph: 'DB', module: 'attendance', targetId: 'main-dashboard-header' },
+    { key: 'courses', label: 'My Courses', glyph: 'CR', module: 'attendance', targetId: 'student-courses-card' },
+    { key: 'attendance', label: 'Attendance', glyph: 'AT', module: 'attendance', targetId: 'student-attendance-card' },
+  ],
+};
 let FOOD_POPULAR_SPOT_IDS = ['oven-express', 'kitchen-ette-block41', 'nk-food-court-bh2-6'];
 let FOOD_SHOP_GROUPS = [
   { key: 'popular', title: 'Popular Spots', subtitle: 'Most loved by students right now' },
@@ -5734,6 +5761,7 @@ function applyRoleUI() {
   }
 
   syncAdminSubmodulesForRole();
+  syncRoleSidebarActions();
 
   setTopNavActive(activeModule);
   const moduleButtons = [
@@ -5792,7 +5820,47 @@ function applyRoleUI() {
   void syncRealtimeEventBus();
 }
 
+function getSidebarActionsForRole(role = authState.user?.role) {
+  return ROLE_SIDEBAR_ACTIONS[role] || ROLE_SIDEBAR_ACTIONS.guest;
+}
+
+function getSidebarAction(navKey, role = authState.user?.role) {
+  const actions = getSidebarActionsForRole(role);
+  return actions.find((action) => action.key === navKey) || actions[0] || null;
+}
+
+function syncRoleSidebarActions() {
+  const buttons = [els.navDashboardBtn, els.navCoursesBtn, els.navAttendanceBtn].filter(Boolean);
+  const actions = getSidebarActionsForRole();
+  buttons.forEach((button, index) => {
+    const action = actions[index];
+    if (!action) {
+      setHidden(button, true);
+      button.disabled = true;
+      return;
+    }
+    setHidden(button, false);
+    button.disabled = false;
+    button.dataset.nav = action.key;
+    button.dataset.module = action.module;
+    button.setAttribute('aria-label', action.label);
+    const glyph = button.querySelector('.nav-glyph');
+    if (glyph) {
+      glyph.textContent = action.glyph;
+    }
+    const label = button.querySelector('.nav-label');
+    if (label) {
+      label.textContent = action.label;
+    }
+  });
+  const activeKey = getSidebarAction(state.ui.activeSidebarAction)?.key
+    || getSidebarActionsForRole()[0]?.key
+    || 'dashboard';
+  setSidebarActive(activeKey);
+}
+
 function setSidebarActive(navKey) {
+  state.ui.activeSidebarAction = navKey;
   const navItems = document.querySelectorAll('.ums-side-item[data-nav]');
   for (const item of navItems) {
     const active = item.dataset.nav === navKey;
@@ -5802,6 +5870,13 @@ function setSidebarActive(navKey) {
 }
 
 function resolveSidebarTarget(navKey) {
+  const action = getSidebarAction(navKey);
+  if (action?.targetId) {
+    return document.getElementById(action.targetId)
+      || document.getElementById('main-dashboard-header')
+      || document.getElementById('dashboard-root');
+  }
+
   if (navKey === 'dashboard') {
     return document.getElementById('main-dashboard-header') || document.getElementById('dashboard-root');
   }
@@ -5911,7 +5986,12 @@ function navigateSidebar(navKey) {
     return;
   }
 
-  setActiveModule(resolveSidebarModuleTarget(), { updateHash: true });
+  const action = getSidebarAction(navKey);
+  const nextModule = action?.module || resolveSidebarModuleTarget();
+  setActiveModule(nextModule, { updateHash: true });
+  if (action?.submoduleScope && action?.submodule) {
+    setAdminSubmodule(action.submoduleScope, action.submodule);
+  }
 
   const target = resolveSidebarTarget(navKey);
   if (!target) {
@@ -20379,11 +20459,42 @@ async function loadFacultySchedules() {
     return;
   }
 
-  const schedules = await api('/attendance/faculty/schedules');
+  const loadStartMs = Date.now();
+  renderFacultySchedulesLoadingState();
+
+  let schedules;
+  try {
+    schedules = await api('/attendance/faculty/schedules');
+    await waitForMinimumSectionLoading(loadStartMs);
+  } catch (error) {
+    clearFacultyScheduleLoadingState();
+    if (els.facultyScheduleSelect) {
+      els.facultyScheduleSelect.innerHTML = '<option value="">Schedules failed to load</option>';
+    }
+    if (els.facultyGpsLocksBody) {
+      els.facultyGpsLocksBody.innerHTML = '<tr><td colspan="5">GPS locks could not load. Refresh class data.</td></tr>';
+    }
+    if (els.facultySubmissionsBody) {
+      els.facultySubmissionsBody.innerHTML = '<tr><td colspan="7">Faculty dashboard could not load.</td></tr>';
+    }
+    showSectionError(
+      els.facultyRecoveryList,
+      'Recovery radar could not load.',
+      error.message || 'Retry from the faculty dashboard.'
+    );
+    showSectionError(
+      els.classroomAnalysisHistory,
+      'Analysis history could not load.',
+      error.message || 'Retry from the faculty dashboard.'
+    );
+    throw error;
+  }
+
   state.faculty.schedules = schedules;
 
   const previousSelectedId = Number(state.faculty.selectedScheduleId || els.facultyScheduleSelect?.value || 0);
   els.facultyScheduleSelect.innerHTML = '';
+  clearFacultyScheduleLoadingState();
   for (const schedule of schedules) {
     const option = document.createElement('option');
     const courseName = getCourseLabel(schedule.course_id);
@@ -20437,6 +20548,112 @@ function facultyScheduleCourse(schedule = {}) {
 function formatFacultyGpsCoordinate(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(6) : '--';
+}
+
+function facultyLoadingCell(colspan, message, subtitle = '') {
+  return `
+    <tr class="faculty-loading-row" aria-busy="true">
+      <td colspan="${Number(colspan || 1)}">
+        <div class="faculty-table-loading">
+          <span class="skeleton-pulse skeleton-text"></span>
+          <span class="skeleton-pulse skeleton-text"></span>
+          ${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : ''}
+          <strong>${escapeHtml(message)}</strong>
+        </div>
+      </td>
+    </tr>
+  `;
+}
+
+function setFacultyMetricsLoading(isLoading) {
+  const metrics = [els.facultyTotal, els.facultyPresent, els.facultyPending, els.facultyAbsent]
+    .filter(Boolean);
+  for (const metric of metrics) {
+    metric.classList.toggle('is-loading', Boolean(isLoading));
+    if (isLoading) {
+      metric.textContent = '--';
+    }
+  }
+}
+
+function renderFacultySchedulesLoadingState() {
+  if (els.facultyScheduleSelect) {
+    els.facultyScheduleSelect.innerHTML = '<option value="">Loading assigned schedules...</option>';
+    els.facultyScheduleSelect.disabled = true;
+  }
+  if (els.facultyClassDate) {
+    els.facultyClassDate.disabled = true;
+  }
+  if (els.facultyRefreshBtn) {
+    els.facultyRefreshBtn.disabled = true;
+  }
+  if (els.facultyUseCurrentLocationBtn) {
+    els.facultyUseCurrentLocationBtn.disabled = true;
+  }
+  if (els.facultySaveLocationBtn) {
+    els.facultySaveLocationBtn.disabled = true;
+  }
+  if (els.facultyOpenAttendanceSessionBtn) {
+    els.facultyOpenAttendanceSessionBtn.disabled = true;
+  }
+  if (els.facultyScheduleLocationStatus) {
+    els.facultyScheduleLocationStatus.textContent = 'Loading your faculty class controls...';
+  }
+  if (els.facultyGpsLocksSummary) {
+    els.facultyGpsLocksSummary.textContent = 'Checking configured classrooms...';
+  }
+  if (els.facultyGpsLocksBody) {
+    els.facultyGpsLocksBody.innerHTML = facultyLoadingCell(5, 'Loading GPS locks...', 'Checking assigned classrooms');
+  }
+  if (els.facultyAttendanceSessionCode) {
+    els.facultyAttendanceSessionCode.textContent = 'Loading...';
+  }
+  if (els.facultyAttendanceSessionStatus) {
+    els.facultyAttendanceSessionStatus.textContent = 'Preparing attendance session controls.';
+  }
+  renderFacultyDashboardLoadingState({ includeQueues: true });
+}
+
+function clearFacultyScheduleLoadingState() {
+  if (els.facultyScheduleSelect) {
+    els.facultyScheduleSelect.disabled = false;
+  }
+  if (els.facultyClassDate) {
+    els.facultyClassDate.disabled = false;
+  }
+  if (els.facultyRefreshBtn) {
+    els.facultyRefreshBtn.disabled = false;
+  }
+}
+
+function renderFacultyDashboardLoadingState({ includeQueues = false } = {}) {
+  setFacultyMetricsLoading(true);
+  if (els.facultySubmissionsBody) {
+    els.facultySubmissionsBody.innerHTML = facultyLoadingCell(7, 'Loading attendance submissions...', 'Syncing selected class');
+  }
+  if (includeQueues && els.facultyRectificationBody) {
+    els.facultyRectificationBody.innerHTML = facultyLoadingCell(6, 'Loading rectification requests...', 'Checking ledger proof requests');
+  }
+  if (els.facultyRecoveryList) {
+    showSectionLoading(
+      els.facultyRecoveryList,
+      'Loading Recovery Radar...',
+      'Checking students who need faculty support'
+    );
+  }
+  if (includeQueues && els.classroomAnalysisHistory) {
+    showSectionLoading(
+      els.classroomAnalysisHistory,
+      'Loading Analysis History...',
+      'Fetching saved classroom insights'
+    );
+  }
+}
+
+function renderFacultyRectificationLoadingState() {
+  if (els.facultyRectificationBody) {
+    els.facultyRectificationBody.innerHTML = facultyLoadingCell(6, 'Loading rectification requests...', 'Checking ledger proof requests');
+  }
 }
 
 function renderFacultyGpsLocks(schedules = state.faculty.schedules || []) {
@@ -20686,6 +20903,7 @@ async function saveFacultyScheduleAttendanceLocation() {
 }
 
 function renderFacultyDashboard(data) {
+  setFacultyMetricsLoading(false);
   if (!data) {
     animateNumber(els.facultyTotal, 0);
     animateNumber(els.facultyPresent, 0);
@@ -20788,7 +21006,19 @@ async function loadFacultyRectificationQueue() {
   if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     return;
   }
-  const payload = await api('/attendance/faculty/rectification-requests?include_resolved=true');
+  renderFacultyRectificationLoadingState();
+  const loadStartMs = Date.now();
+  let payload;
+  try {
+    payload = await api('/attendance/faculty/rectification-requests?include_resolved=true');
+    await waitForMinimumSectionLoading(loadStartMs);
+  } catch (error) {
+    if (els.facultyRectificationBody) {
+      els.facultyRectificationBody.innerHTML = '<tr><td colspan="6">Rectification requests could not load. Refresh class data.</td></tr>';
+    }
+    log(error.message || 'Rectification requests could not load.');
+    return;
+  }
   state.faculty.rectificationRequests = payload.requests || [];
   renderFacultyRectificationQueue(state.faculty.rectificationRequests);
 }
@@ -20836,12 +21066,24 @@ async function refreshFacultyDashboard() {
   els.facultyClassDate.value = classDate;
   state.faculty.classDate = classDate;
 
+  const loadStartMs = Date.now();
+  renderFacultyDashboardLoadingState({ includeQueues: true });
+
   const [dashboardRes, recoveryRes] = await Promise.allSettled([
     api(`/attendance/faculty/dashboard?schedule_id=${scheduleId}&class_date=${classDate}`),
     api(`/attendance/faculty/recovery-plans?schedule_id=${scheduleId}&limit=40`),
   ]);
 
   if (dashboardRes.status !== 'fulfilled') {
+    setFacultyMetricsLoading(false);
+    if (els.facultySubmissionsBody) {
+      els.facultySubmissionsBody.innerHTML = '<tr><td colspan="7">Attendance submissions could not load. Refresh class data.</td></tr>';
+    }
+    showSectionError(
+      els.facultyRecoveryList,
+      'Recovery radar could not load.',
+      dashboardRes.reason?.message || 'Retry from the faculty dashboard.'
+    );
     throw dashboardRes.reason;
   }
 
@@ -20855,6 +21097,8 @@ async function refreshFacultyDashboard() {
     state.faculty.recoveryPlans = [];
     recoveryLoadError = recoveryRes.reason?.message || 'Recovery radar failed to load.';
   }
+
+  await waitForMinimumSectionLoading(loadStartMs);
 
   const validPendingIds = new Set(
     (data.submissions || [])
@@ -20961,7 +21205,26 @@ async function loadClassroomAnalysisHistory() {
     return;
   }
 
-  const rows = await api(`/attendance/faculty/classroom-analysis?schedule_id=${scheduleId}&class_date=${classDate}`);
+  const loadStartMs = Date.now();
+  showSectionLoading(
+    els.classroomAnalysisHistory,
+    'Loading Analysis History...',
+    'Fetching saved classroom insights'
+  );
+
+  let rows;
+  try {
+    rows = await api(`/attendance/faculty/classroom-analysis?schedule_id=${scheduleId}&class_date=${classDate}`);
+    await waitForMinimumSectionLoading(loadStartMs);
+  } catch (error) {
+    showSectionError(
+      els.classroomAnalysisHistory,
+      'Analysis history could not load.',
+      error.message || 'Retry from the faculty dashboard.'
+    );
+    log(error.message || 'Classroom analysis history could not load.');
+    return;
+  }
   state.faculty.analysisHistory = rows || [];
 
   els.classroomAnalysisHistory.innerHTML = '';
