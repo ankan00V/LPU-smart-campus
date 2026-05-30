@@ -188,8 +188,6 @@ let otpCooldownTimer = null;
 let forgotOtpCooldownTimer = null;
 let foodPopupTimer = null;
 let foodToastTimer = null;
-let authRoleNoticeTimer = null;
-let authRoleNoticeCountdownTimer = null;
 let foodOrdersPulseTimer = null;
 let foodDemandLiveTimer = null;
 let foodDemandLiveBusy = false;
@@ -1974,7 +1972,7 @@ function setPasswordBootstrapModal(open) {
   setHidden(els.passwordBootstrapModal, !shouldOpen);
   if (shouldOpen) {
     const roleLabel = loginRoleLabel(String(authState.user?.role || '').trim().toLowerCase());
-    setPasswordBootstrapMessage(`Create your ${roleLabel} password now. This is required once for older accounts.`);
+    setPasswordBootstrapMessage(`Create your ${roleLabel} password now.`);
     renderPasswordStrengthHint(els.passwordBootstrapStrength, els.passwordBootstrapNewPassword?.value || '');
   } else {
     if (els.passwordBootstrapNewPassword) {
@@ -2047,14 +2045,6 @@ function hideOtpPopup() {
   if (!els.otpPopup) {
     return;
   }
-  if (authRoleNoticeTimer) {
-    window.clearTimeout(authRoleNoticeTimer);
-    authRoleNoticeTimer = null;
-  }
-  if (authRoleNoticeCountdownTimer) {
-    window.clearInterval(authRoleNoticeCountdownTimer);
-    authRoleNoticeCountdownTimer = null;
-  }
   if (els.otpPopupLoader) {
     els.otpPopupLoader.classList.add('hidden');
   }
@@ -2073,10 +2063,6 @@ function showOtpPopup(title, text, options = {}) {
   if (!els.otpPopup || !els.otpPopupTitle || !els.otpPopupText) {
     return;
   }
-  if (!options.preserveTimedNotice && authRoleNoticeCountdownTimer) {
-    window.clearInterval(authRoleNoticeCountdownTimer);
-    authRoleNoticeCountdownTimer = null;
-  }
   const tone = String(options.tone || 'info');
   const loading = Boolean(options.loading);
   const closable = options.closable !== false;
@@ -2094,33 +2080,6 @@ function showOtpPopup(title, text, options = {}) {
   els.otpPopupTitle.textContent = title;
   els.otpPopupText.textContent = text;
   els.otpPopup.classList.remove('hidden');
-}
-
-function showTimedRoleNotice(title, text, autoHideMs = 15000) {
-  if (authRoleNoticeTimer) {
-    window.clearTimeout(authRoleNoticeTimer);
-    authRoleNoticeTimer = null;
-  }
-  if (authRoleNoticeCountdownTimer) {
-    window.clearInterval(authRoleNoticeCountdownTimer);
-    authRoleNoticeCountdownTimer = null;
-  }
-  const durationMs = Math.max(1000, Number(autoHideMs || 15000));
-  const startedAt = Date.now();
-  const renderCountdown = () => {
-    const elapsedMs = Date.now() - startedAt;
-    const remainingSeconds = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000));
-    showOtpPopup(
-      title,
-      `${text}\n\nThis notice closes in ${remainingSeconds}s.`,
-      { tone: 'info', loading: false, closable: false, preserveTimedNotice: true }
-    );
-  };
-  renderCountdown();
-  authRoleNoticeCountdownTimer = window.setInterval(renderCountdown, 1000);
-  authRoleNoticeTimer = window.setTimeout(() => {
-    hideOtpPopup();
-  }, durationMs);
 }
 
 function showFoodPopup(title, text, { isError = false, autoHideMs = 2200 } = {}) {
@@ -5063,14 +5022,12 @@ function renderLoginRoleUi() {
     setHidden(els.loginViaOtpBtn, role !== 'student' || signupOtpPending);
   }
   if (els.authPassword) {
-    els.authPassword.placeholder = role === 'faculty' || role === 'admin'
-      ? 'Enter password or leave blank for older accounts'
-      : 'Enter password';
+    els.authPassword.placeholder = 'Enter password';
   }
   if (els.authPasswordStrength) {
     if (role === 'faculty' || role === 'admin') {
       els.authPasswordStrength.classList.remove('strong', 'medium', 'weak');
-      els.authPasswordStrength.textContent = 'Password is required for standard accounts. Older faculty/admin accounts without a password may leave this blank, request OTP, then set a password immediately after login.';
+      els.authPasswordStrength.textContent = '';
     } else {
       renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword?.value || '');
     }
@@ -22910,13 +22867,6 @@ function bindEvents() {
         setAuthMessage('Students sign in with password and Turnstile.');
       } else {
         setAuthMessage(`Complete Turnstile, then request OTP to continue as ${loginRoleLabel(role)}.`);
-        if (role === 'faculty' || role === 'admin') {
-          showTimedRoleNotice(
-            'Important notice for older accounts',
-            'If you are an older faculty or admin user and do not have a password set yet, leave the password field blank, request OTP using your email, and set your password immediately after login to avoid future inconvenience.',
-            15000,
-          );
-        }
       }
     });
   }
