@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -1223,6 +1224,10 @@ def _saarthi_llm_provider() -> str:
     explicit = str(os.getenv("SAARTHI_LLM_PROVIDER") or "").strip().lower()
     if explicit:
         return explicit
+    if _saarthi_nvidia_api_keys():
+        return "nvidia"
+    if _saarthi_bedrock_api_keys():
+        return "bedrock"
     if _saarthi_gemini_api_keys():
         return "gemini"
     if _saarthi_openrouter_api_keys():
@@ -1231,7 +1236,7 @@ def _saarthi_llm_provider() -> str:
 
 
 def _saarthi_llm_required() -> bool:
-    raw = (os.getenv("SAARTHI_LLM_REQUIRED", "false") or "").strip().lower()
+    raw = (os.getenv("SAARTHI_LLM_REQUIRED", "true") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1255,6 +1260,16 @@ def _saarthi_openrouter_model() -> str:
     return normalized
 
 
+def _saarthi_nvidia_model() -> str:
+    explicit = str(resolve_secret("SAARTHI_NVIDIA_MODEL", default="") or "").strip()
+    if explicit:
+        return explicit
+    shared_model = _saarthi_llm_model().strip()
+    if shared_model and not shared_model.startswith("us.anthropic."):
+        return shared_model
+    return "meta/llama-3.1-8b-instruct"
+
+
 def _saarthi_llm_timeout_seconds() -> float:
     raw = (os.getenv("SAARTHI_LLM_TIMEOUT_SECONDS", "8") or "").strip()
     try:
@@ -1264,22 +1279,42 @@ def _saarthi_llm_timeout_seconds() -> float:
     return max(3.0, min(30.0, value))
 
 
+def _saarthi_llm_max_tokens() -> int:
+    raw = (os.getenv("SAARTHI_LLM_MAX_TOKENS", "220") or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 220
+    return max(96, min(360, value))
+
+
 def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
     providers: list[str] = []
+    has_nvidia_keys = bool(_saarthi_nvidia_api_keys())
+    has_bedrock_keys = bool(_saarthi_bedrock_api_keys())
     has_gemini_keys = bool(_saarthi_gemini_api_keys())
     has_openrouter_keys = bool(_saarthi_openrouter_api_keys())
-    has_any_keys = has_gemini_keys or has_openrouter_keys
+    has_any_keys = has_nvidia_keys or has_bedrock_keys or has_gemini_keys or has_openrouter_keys
 
     def add(provider: str) -> None:
         cleaned = str(provider or "").strip().lower()
-        if cleaned in {"gemini", "openrouter"} and cleaned not in providers:
+        if cleaned in {"nvidia", "bedrock", "gemini", "openrouter"} and cleaned not in providers:
             providers.append(cleaned)
 
     preferred = str(preferred_provider or "").strip().lower()
-    if preferred == "gemini" and (has_gemini_keys or not has_any_keys):
+    if preferred == "nvidia":
+        add("nvidia")
+        return providers
+    if preferred == "bedrock" and (has_bedrock_keys or not has_any_keys):
+        add("bedrock")
+    elif preferred == "gemini" and (has_gemini_keys or not has_any_keys):
         add("gemini")
     elif preferred == "openrouter" and (has_openrouter_keys or not has_any_keys):
         add("openrouter")
+    if has_nvidia_keys:
+        add("nvidia")
+    if has_bedrock_keys:
+        add("bedrock")
     if has_gemini_keys:
         add("gemini")
     if has_openrouter_keys:
@@ -1288,7 +1323,12 @@ def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
 
 
 def _saarthi_has_any_llm_api_key() -> bool:
-    return bool(_saarthi_gemini_api_keys() or _saarthi_openrouter_api_keys())
+    return bool(
+        _saarthi_nvidia_api_keys()
+        or _saarthi_bedrock_api_keys()
+        or _saarthi_gemini_api_keys()
+        or _saarthi_openrouter_api_keys()
+    )
 
 
 def _saarthi_gemini_base_url() -> str:
@@ -1374,6 +1414,35 @@ def _saarthi_openrouter_api_key() -> str:
     return keys[0]
 
 
+def _saarthi_bedrock_api_keys() -> list[str]:
+    collected: list[str] = []
+    primary = str(resolve_secret("AWS_BEARER_TOKEN_BEDROCK", default="") or "").strip()
+    if primary:
+        collected.append(primary)
+    for name in ("SAARTHI_BEDROCK_API_KEY", "COPILOT_BEDROCK_API_KEY"):
+        value = str(resolve_secret(name, default="") or "").strip()
+        if value:
+            collected.append(value)
+    return _dedup_preserve_order(collected)
+
+
+def _saarthi_bedrock_region() -> str:
+    return (
+        str(resolve_secret("SAARTHI_BEDROCK_REGION", default="") or "").strip()
+        or str(resolve_secret("COPILOT_BEDROCK_REGION", default="") or "").strip()
+        or str(os.getenv("AWS_REGION") or "").strip()
+        or "us-east-1"
+    )
+
+
+def _saarthi_bedrock_model_id() -> str:
+    return (
+        str(resolve_secret("SAARTHI_BEDROCK_MODEL_ID", default="") or "").strip()
+        or str(resolve_secret("COPILOT_BEDROCK_MODEL_ID", default="") or "").strip()
+        or "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    )
+
+
 def _saarthi_openrouter_base_url() -> str:
     raw = str(resolve_secret("OPENROUTER_API_BASE_URL", default="https://openrouter.ai/api/v1") or "https://openrouter.ai/api/v1").strip()
     return raw.rstrip("/")
@@ -1385,6 +1454,38 @@ def _saarthi_openrouter_site_url() -> str:
 
 def _saarthi_openrouter_app_name() -> str:
     return str(resolve_secret("OPENROUTER_APP_NAME", default="LPU Smart Campus Saarthi") or "LPU Smart Campus Saarthi").strip()
+
+
+def _saarthi_nvidia_api_keys() -> list[str]:
+    collected: list[str] = []
+    for name in ("SAARTHI_NVIDIA_API_KEY", "NVIDIA_API_KEY"):
+        value = str(resolve_secret(name, default="") or "").strip()
+        if value:
+            collected.append(value)
+
+    json_blob = str(resolve_secret("SAARTHI_NVIDIA_API_KEYS_JSON", default="") or "").strip()
+    if json_blob:
+        try:
+            parsed = json.loads(json_blob)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            collected.extend(str(item or "").strip() for item in parsed)
+        elif isinstance(parsed, str):
+            collected.append(parsed.strip())
+
+    csv_blob = str(resolve_secret("SAARTHI_NVIDIA_API_KEYS", default="") or "").strip()
+    if csv_blob:
+        collected.extend(part.strip() for part in csv_blob.split(","))
+    return _dedup_preserve_order(item for item in collected if item)
+
+
+def _saarthi_nvidia_base_url() -> str:
+    raw = str(
+        resolve_secret("SAARTHI_NVIDIA_BASE_URL", default="https://integrate.api.nvidia.com/v1")
+        or "https://integrate.api.nvidia.com/v1"
+    ).strip()
+    return raw.rstrip("/")
 
 
 def _detect_saarthi_emotion(
@@ -2145,6 +2246,27 @@ def _build_saarthi_llm_system_instruction() -> str:
     ).strip()
 
 
+def _build_saarthi_fast_system_instruction() -> str:
+    return "\n".join(
+        [
+            "You are Saarthi, a warm senior-student style mentor for this campus platform.",
+            "Match the student's latest message: short greeting gets a short reply; specific question gets a specific answer.",
+            "Use provided student data when relevant. Name exact subjects, counts, percentages, dates, and next steps.",
+            "If the student asks what to focus on and no timetable is loaded, use the lowest-attendance subject from attendance_summary.",
+            "Do not over-praise risky academic data; be warm but clear when a percentage is below threshold.",
+            "Never invent exams, deadlines, timetable entries, faculty messages, remedial slots, or class dates.",
+            "If a JSON list is empty, treat that information as not loaded or not available instead of filling it in.",
+            "Never scold, lecture, sound formal, or use bureaucratic wording.",
+            "Do not claim what other students experience unless it is in the provided data.",
+            "Do not use bullets, headings, markdown, role labels, or app navigation guesses.",
+            "Keep normal replies to 2-5 concise sentences. Avoid introducing yourself unless the student only greeted you.",
+            "If the student is stressed, acknowledge first, then ask one gentle question or give one practical next step.",
+            "If suicide, self-harm, or wanting to die appears, stay in crisis mode, share iCall 9152987821, and ask if they are somewhere safe.",
+            "End with one clear next step or one gentle question, not both.",
+        ]
+    ).strip()
+
+
 def _build_saarthi_llm_user_prompt(
     *,
     student_name: str,
@@ -2174,13 +2296,19 @@ def _build_saarthi_llm_user_prompt(
     research_context_lines = _saarthi_research_prompt_context_lines(student_message, recent_messages)
 
     transcript_lines: list[str] = []
-    for row in recent_messages[-12:]:
+    for row in recent_messages[-8:]:
         role = "Student" if str(row.sender_role or "").strip().lower() == "student" else "Saarthi"
         content = " ".join(str(row.message or "").strip().split())
         if not content:
             continue
         transcript_lines.append(f"{role}: {content}")
-    transcript = "\n".join(transcript_lines) if transcript_lines else "Student: Hello."
+    latest_message = " ".join(str(student_message or "").strip().split())
+    if latest_message:
+        transcript_lines.append(f"Student: {latest_message}")
+    transcript = "\n".join(transcript_lines)
+    include_identity_intro = _saarthi_is_first_turn(recent_messages) and (
+        _is_simple_greeting_message(student_message) or _is_simple_ack_message(student_message)
+    )
 
     return "\n".join(
         [
@@ -2193,7 +2321,11 @@ def _build_saarthi_llm_user_prompt(
                 if _saarthi_is_first_turn(recent_messages)
                 else "Conversation stage: ongoing interaction, continue naturally from existing context."
             ),
-            f"Identity intro (first reply only): {SAARTHI_IDENTITY_INTRO}",
+            (
+                f"Identity intro allowed because this is a simple greeting: {SAARTHI_IDENTITY_INTRO}"
+                if include_identity_intro
+                else "Do not introduce yourself in this reply; answer the latest student message directly."
+            ),
             "Course context: CON111 - Counselling and Happiness. Faculty: Saarthi (AI Mentor).",
             "Weekly rule: Saarthi is mandatory once each week on Sunday. If attended on Sunday, exactly one hour gets credited for CON111 regardless of chat length.",
             attendance_line,
@@ -2208,6 +2340,90 @@ def _build_saarthi_llm_user_prompt(
             "Conversation transcript:",
             transcript,
             "Now respond to the latest student message as Saarthi.",
+        ]
+    ).strip()
+
+
+def _build_saarthi_fast_user_prompt(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    display_name = _format_student_first_name(student_name)
+    transcript_lines: list[str] = []
+    for row in recent_messages[-6:]:
+        role = "Student" if str(row.sender_role or "").strip().lower() == "student" else "Saarthi"
+        content = " ".join(str(row.message or "").strip().split())
+        if content:
+            transcript_lines.append(f"{role}: {content}")
+    latest_message = " ".join(str(student_message or "").strip().split())
+    if latest_message:
+        transcript_lines.append(f"Student: {latest_message}")
+
+    context_notes: list[str] = []
+    attendance_line = _saarthi_attendance_context_line(
+        student_message=student_message,
+        student_name=student_name,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+    )
+    if attendance_awarded_now or attendance_already_awarded or _contains_any(
+        _normalize_saarthi_text(student_message), ("con111", "saarthi", "sunday", "credit")
+    ):
+        context_notes.append(attendance_line)
+
+    attendance_facts: list[str] = []
+    attendance_rows = []
+    if isinstance(student_context, dict):
+        raw_attendance = student_context.get("attendance_summary")
+        if isinstance(raw_attendance, list):
+            attendance_rows = [row for row in raw_attendance if isinstance(row, dict)]
+    lowest_subject = ""
+    lowest_percentage: float | None = None
+    for row in attendance_rows[:8]:
+        subject = str(row.get("subject") or "").strip()
+        if not subject:
+            continue
+        attended = row.get("attended")
+        total = row.get("total")
+        percentage = row.get("percentage")
+        threshold = row.get("threshold")
+        attendance_facts.append(
+            f"{subject}: {attended} attended / {total} total, {percentage}% attendance, threshold {threshold}%."
+        )
+        try:
+            numeric_percentage = float(percentage)
+        except (TypeError, ValueError):
+            continue
+        if lowest_percentage is None or numeric_percentage < lowest_percentage:
+            lowest_percentage = numeric_percentage
+            lowest_subject = subject
+    if lowest_subject:
+        attendance_facts.append(f"Lowest attendance subject: {lowest_subject}.")
+
+    return "\n".join(
+        [
+            f"Student name: {display_name or 'Student'}",
+            f"Current time: {current_dt.isoformat()}",
+            "Attendance facts, if relevant:",
+            *(attendance_facts or ["No attendance summary loaded."]),
+            "Use attendance facts exactly: do not confuse percentage with attended/total counts.",
+            "Student data JSON:",
+            _saarthi_student_context_json(student_context),
+            "Data rule: do not mention exams, deadlines, timetable items, faculty messages, remedial slots, or class dates unless they appear in the JSON.",
+            *(context_notes or []),
+            "Recent transcript:",
+            "\n".join(transcript_lines),
+            "Reply to the latest student message now.",
         ]
     ).strip()
 
@@ -2288,6 +2504,9 @@ def _is_gemini_key_rotation_error(status_code: int, detail: str) -> bool:
         "api_key_invalid",
         "invalid api key",
         "permission denied",
+        "permission_denied",
+        "reported as leaked",
+        "leaked",
         "billing",
         "exceeded",
     )
@@ -2394,6 +2613,7 @@ def _finalize_saarthi_reply(
         cleaned = "I'm here with you."
     if (
         first_turn
+        and (_is_simple_greeting_message(student_message or "") or _is_simple_ack_message(student_message or ""))
         and not _reply_self_introduces_as_saarthi(cleaned)
         and SAARTHI_IDENTITY_INTRO.lower() not in cleaned.lower()
     ):
@@ -2465,9 +2685,51 @@ def _looks_like_low_quality_reply(
             "what part would you like to explore more deeply",
         )
         return any(marker in normalized for marker in blocked)
-    if word_count < 24 or sentence_count < 4:
+    normalized_student_message = _normalize_saarthi_text(student_message)
+    data_or_planning_question = _contains_any(
+        normalized_student_message,
+        (
+            "attendance",
+            "timetable",
+            "schedule",
+            "class",
+            "classes",
+            "remedial",
+            "rectification",
+            "deadline",
+            "exam",
+            "message",
+            "faculty",
+            "food",
+            "order",
+            "what should i do",
+            "next",
+        ),
+    )
+    emotional_or_struggle_message = _contains_any(
+        normalized_student_message,
+        (
+            "stress",
+            "stressed",
+            "anxious",
+            "overwhelmed",
+            "depressed",
+            "low",
+            "off",
+            "confused",
+            "focus",
+            "sleep",
+            "burnout",
+            "tired",
+            "scared",
+            "worried",
+        ),
+    )
+    minimum_word_count = 12 if emotional_or_struggle_message else 24
+    minimum_sentence_count = 2 if emotional_or_struggle_message else (3 if data_or_planning_question else 4)
+    if word_count < minimum_word_count or sentence_count < minimum_sentence_count:
         return True
-    if "?" not in cleaned:
+    if "?" not in cleaned and not data_or_planning_question:
         return True
     if re.search(r"\b[A-Za-z]\.\s*$", cleaned):
         return True
@@ -2484,21 +2746,223 @@ def _looks_like_low_quality_reply(
     if len(student_tokens) >= 2:
         overlap = len(student_tokens.intersection(set(_tokenize_saarthi_text(cleaned))))
         overlap_ratio = overlap / max(1, len(student_tokens))
-        if overlap_ratio >= 0.8 and word_count < 55:
+        if overlap_ratio >= 0.8 and word_count < 55 and not (data_or_planning_question or emotional_or_struggle_message):
             return True
 
     guidance_markers = (
         "you might try",
         "something that could help",
         "one small step you could consider",
+        "one clear next step",
+        "next step",
+        "clear next step",
         "a small step",
         "try",
         "could consider",
         "helpful",
+        "plan",
+        "tell me",
+        "let's break",
+        "break it down",
+        "focus on",
+        "review",
+        "prioritize",
+        "use the extra time",
     )
+    if emotional_or_struggle_message and "?" in cleaned:
+        return False
+    if data_or_planning_question and re.search(r"\d|%", cleaned):
+        return False
     if not any(marker in normalized for marker in guidance_markers):
         return True
     return False
+
+
+def _is_usable_nvidia_reply(reply: str) -> bool:
+    cleaned = " ".join(str(reply or "").split()).strip()
+    if not cleaned:
+        return False
+    normalized = cleaned.lower()
+    if cleaned != _sanitize_saarthi_reply_text(cleaned):
+        return False
+    if any(phrase in normalized for phrase in _SAARTHI_BANNED_REPLY_PHRASES):
+        return False
+    return len(_tokenize_saarthi_text(cleaned)) >= 10
+
+
+def _extract_bedrock_text(payload: dict[str, Any]) -> str:
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return ""
+    message = output.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _generate_saarthi_reply_with_bedrock(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    api_keys = _saarthi_bedrock_api_keys()
+    if not api_keys:
+        raise RuntimeError("AWS_BEARER_TOKEN_BEDROCK is required when SAARTHI_LLM_PROVIDER=bedrock.")
+
+    system_instruction = _build_saarthi_llm_system_instruction()
+    user_prompt = _build_saarthi_llm_user_prompt(
+        student_name=student_name,
+        student_message=student_message,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
+    )
+    endpoint = (
+        f"https://bedrock-runtime.{_saarthi_bedrock_region()}.amazonaws.com/model/"
+        f"{urllib_parse.quote(_saarthi_bedrock_model_id(), safe='')}/converse"
+    )
+    body = {
+        "system": [{"text": system_instruction}],
+        "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
+        "inferenceConfig": {
+            "temperature": SAARTHI_LLM_TEMPERATURE,
+            "topP": SAARTHI_LLM_TOP_P,
+            "maxTokens": _saarthi_llm_max_tokens(),
+        },
+    }
+    last_rotation_error = ""
+    for api_key in api_keys:
+        request = urllib_request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=_saarthi_llm_timeout_seconds()) as response:
+                raw_payload = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            detail = _gemini_error_detail(exc)
+            if _is_openrouter_key_rotation_error(exc.code, detail):
+                last_rotation_error = f"HTTP {exc.code}: {detail}"
+                continue
+            raise RuntimeError(f"Saarthi Bedrock request failed with HTTP {exc.code}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Saarthi Bedrock network error: {exc.reason}") from exc
+
+        try:
+            parsed = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Saarthi Bedrock returned non-JSON output.") from exc
+
+        reply = _extract_bedrock_text(parsed if isinstance(parsed, dict) else {})
+        if not reply:
+            raise RuntimeError("Saarthi Bedrock returned an empty reply.")
+        return reply.strip()
+
+    if last_rotation_error:
+        raise RuntimeError(f"All configured Bedrock API keys were exhausted or rejected. Last error: {last_rotation_error}")
+    raise RuntimeError("Saarthi Bedrock could not generate a reply with the configured key pool.")
+
+
+def _generate_saarthi_reply_with_nvidia(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    api_keys = _saarthi_nvidia_api_keys()
+    if not api_keys:
+        raise RuntimeError("SAARTHI_NVIDIA_API_KEY or NVIDIA_API_KEY is required when SAARTHI_LLM_PROVIDER=nvidia.")
+
+    system_instruction = _build_saarthi_fast_system_instruction()
+    user_prompt = _build_saarthi_fast_user_prompt(
+        student_name=student_name,
+        student_message=student_message,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
+    )
+    body = {
+        "model": _saarthi_nvidia_model(),
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": SAARTHI_LLM_TEMPERATURE,
+        "top_p": SAARTHI_LLM_TOP_P,
+        "presence_penalty": SAARTHI_LLM_PRESENCE_PENALTY,
+        "frequency_penalty": SAARTHI_LLM_FREQUENCY_PENALTY,
+        "max_tokens": _saarthi_llm_max_tokens(),
+        "stream": False,
+    }
+    last_rotation_error = ""
+    for api_key in api_keys:
+        request = urllib_request.Request(
+            f"{_saarthi_nvidia_base_url()}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=_saarthi_llm_timeout_seconds()) as response:
+                raw_payload = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            detail = _gemini_error_detail(exc)
+            if _is_openrouter_key_rotation_error(exc.code, detail):
+                last_rotation_error = f"HTTP {exc.code}: {detail}"
+                continue
+            raise RuntimeError(f"Saarthi NVIDIA request failed with HTTP {exc.code}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Saarthi NVIDIA network error: {exc.reason}") from exc
+
+        try:
+            parsed = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Saarthi NVIDIA returned non-JSON output.") from exc
+
+        reply = _extract_openrouter_text(parsed if isinstance(parsed, dict) else {})
+        if not reply:
+            raise RuntimeError("Saarthi NVIDIA returned an empty reply.")
+        return reply.strip()
+
+    if last_rotation_error:
+        raise RuntimeError(f"All configured NVIDIA API keys were exhausted or rejected. Last error: {last_rotation_error}")
+    raise RuntimeError("Saarthi NVIDIA could not generate a reply with the configured key pool.")
 
 
 def _generate_saarthi_reply_with_gemini(
@@ -2540,7 +3004,7 @@ def _generate_saarthi_reply_with_gemini(
         "generationConfig": {
             "temperature": SAARTHI_LLM_TEMPERATURE,
             "topP": SAARTHI_LLM_TOP_P,
-            "maxOutputTokens": 360,
+            "maxOutputTokens": _saarthi_llm_max_tokens(),
         },
     }
     last_rotation_error = ""
@@ -2639,7 +3103,7 @@ def _generate_saarthi_reply_with_openrouter(
         "top_p": SAARTHI_LLM_TOP_P,
         "presence_penalty": SAARTHI_LLM_PRESENCE_PENALTY,
         "frequency_penalty": SAARTHI_LLM_FREQUENCY_PENALTY,
-        "max_tokens": 360,
+        "max_tokens": _saarthi_llm_max_tokens(),
     }
     last_rotation_error = ""
     for api_key in api_keys:
@@ -2998,14 +3462,37 @@ def generate_saarthi_reply(
     detected_emotion = _detect_saarthi_emotion(student_message, recent_rows)
     first_turn = _saarthi_is_first_turn(recent_rows)
     provider_errors: list[Exception] = []
+    rejected_replies: list[str] = []
 
-    if provider and provider not in {"gemini", "openrouter"}:
+    if provider and provider not in {"nvidia", "bedrock", "gemini", "openrouter"}:
         if llm_required:
             raise RuntimeError(f"Unsupported Saarthi LLM provider: {provider}")
 
     for candidate_provider in _saarthi_llm_provider_order(provider):
         try:
-            if candidate_provider == "gemini":
+            if candidate_provider == "nvidia":
+                raw = _generate_saarthi_reply_with_nvidia(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
+                )
+            elif candidate_provider == "bedrock":
+                raw = _generate_saarthi_reply_with_bedrock(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
+                )
+            elif candidate_provider == "gemini":
                 raw = _generate_saarthi_reply_with_gemini(
                     student_name=student_name,
                     student_message=student_message,
@@ -3040,13 +3527,22 @@ def generate_saarthi_reply(
                 first_turn=first_turn,
             ):
                 return candidate
+            if candidate_provider == "nvidia" and _is_usable_nvidia_reply(candidate):
+                return candidate
+            rejected_replies.append(f"{candidate_provider} returned a low-quality Saarthi reply.")
         except Exception as exc:
             provider_errors.append(exc)
             continue
 
     provider_error = provider_errors[-1] if provider_errors else None
-    if provider_error is not None and llm_required and not _saarthi_has_any_llm_api_key():
-        raise RuntimeError(str(provider_error)) from provider_error
+    if llm_required:
+        if provider_error is not None:
+            raise RuntimeError(str(provider_error)) from provider_error
+        if rejected_replies:
+            raise RuntimeError(rejected_replies[-1])
+        if not _saarthi_has_any_llm_api_key():
+            raise RuntimeError("Saarthi LLM is required but no supported provider API key is configured.")
+        raise RuntimeError("Saarthi LLM is required but no configured provider could generate a reply.")
 
     raw = _generate_saarthi_reply_deterministic(
         student_name=student_name,

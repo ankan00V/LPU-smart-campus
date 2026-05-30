@@ -18,14 +18,24 @@ from app.routers.attendance import (
     get_student_attendance_history,
     mark_attendance_bulk,
 )
-from app.routers.saarthi import get_saarthi_status, send_saarthi_message
+from app.routers.saarthi import SAARTHI_UNAVAILABLE_MESSAGE, get_saarthi_status, send_saarthi_message
 from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
+    SAARTHI_IDENTITY_INTRO,
     _build_saarthi_llm_user_prompt,
     _build_saarthi_student_context,
+    _finalize_saarthi_reply,
     _generate_saarthi_reply_deterministic,
+    _is_gemini_key_rotation_error,
+    _is_usable_nvidia_reply,
+    _looks_like_low_quality_reply,
+    _saarthi_bedrock_api_keys,
+    _saarthi_bedrock_model_id,
     _saarthi_gemini_api_keys,
+    _saarthi_llm_provider_order,
+    _saarthi_nvidia_api_keys,
+    _saarthi_nvidia_model,
     _saarthi_openrouter_api_keys,
     _saarthi_openrouter_model,
     create_saarthi_turn,
@@ -45,6 +55,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 "APP_ENV": "development",
                 "MONGO_PERSISTENCE_REQUIRED": "false",
                 "SQL_OUTBOX_ENABLED": "false",
+                "SAARTHI_LLM_REQUIRED": "false",
             },
             clear=True,
         )
@@ -712,12 +723,11 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 academic_start=date(2026, 3, 2),
             )
 
-        self.assertTrue(out["reply"].startswith("Hi, I'm Saarthi."))
         self.assertIn("That sounds heavy, and I'm glad you said it out loud.", out["reply"])
         self.assertIn("Something that could help is choosing one gentle task", out["reply"])
         self.assertIn("What feels hardest to carry right now?", out["reply"])
 
-    def test_partial_llm_reply_falls_back_to_readable_saarthi_response(self):
+    def test_required_llm_rejects_partial_reply_without_deterministic_fallback(self):
         class DummyResponse:
             def __enter__(self):
                 return self
@@ -747,20 +757,24 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 "GEMINI_API_KEY": "test-key",
             },
             clear=False,
-        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()):
-            out = create_saarthi_turn(
-                self.db,
-                student=self.student,
-                message="feeling low",
-                current_dt=datetime(2026, 3, 8, 9, 15, 0),
-                academic_start=date(2026, 3, 2),
-        )
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()), mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply, mock.patch(
+            "app.routers.saarthi._saarthi_now",
+            return_value=datetime(2026, 3, 8, 9, 15, 0),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                send_saarthi_message(
+                    payload=schemas.SaarthiChatRequest(message="feeling low"),
+                    db=self.db,
+                    current_user=self._student_user(),
+                )
 
-        self.assertNotEqual(out["reply"], "Hi Ankan, I'm Saarthi. I'")
-        self.assertNotIn("Hi Ankan, I'm Saarthi.", out["reply"])
-        self.assertIn("I'm here to listen and support you.", out["reply"])
-        self.assertIn("?", out["reply"])
-        self.assertGreater(len(out["reply"]), 120)
+        deterministic_reply.assert_not_called()
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
+        self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
+        self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
 
     def test_required_llm_missing_keys_returns_503_without_fallback_reply(self):
         mocked_now = datetime(2026, 3, 8, 9, 0, 0)
@@ -787,13 +801,13 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 )
 
         self.assertEqual(ctx.exception.status_code, 503)
-        self.assertIn("GEMINI_API_KEY", ctx.exception.detail)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
         self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
         self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceEvent).count(), 0)
 
-    def test_openrouter_auth_failure_falls_back_to_configured_gemini_api(self):
+    def test_explicit_openrouter_provider_falls_back_to_configured_gemini(self):
         class DummyGeminiResponse:
             def __enter__(self):
                 return self
@@ -846,19 +860,20 @@ class SaarthiAttendanceTests(unittest.TestCase):
             "app.saarthi_service.urllib_request.urlopen",
             side_effect=[openrouter_error, DummyGeminiResponse()],
         ) as mocked_urlopen:
-            out = create_saarthi_turn(
-                self.db,
-                student=self.student,
-                message="hi im feeling too low",
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="hi im feeling too low",
                 current_dt=datetime(2026, 3, 8, 9, 0, 0),
-                academic_start=date(2026, 3, 2),
+                mandatory_date=date(2026, 3, 8),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
             )
 
         self.assertEqual(mocked_urlopen.call_count, 2)
-        second_url = mocked_urlopen.call_args_list[1].args[0].full_url
-        self.assertIn("generativelanguage.googleapis.com", second_url)
-        self.assertIn("That sounds heavy", out["reply"])
-        self.assertIn("What feels hardest to carry right now?", out["reply"])
+        self.assertIn("openrouter.ai", mocked_urlopen.call_args_list[0].args[0].full_url)
+        self.assertIn("generativelanguage.googleapis.com", mocked_urlopen.call_args_list[1].args[0].full_url)
+        self.assertIn("That sounds heavy", reply)
 
     def test_router_uses_local_saarthi_clock_for_status_and_chat(self):
         mocked_now = datetime(2026, 3, 8, 0, 30, 0)
@@ -976,6 +991,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 )
 
         self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
         self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
         self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
@@ -1012,6 +1028,312 @@ class SaarthiAttendanceTests(unittest.TestCase):
             clear=False,
         ):
             self.assertEqual(_saarthi_openrouter_model(), "google/gemini-2.0-flash-001")
+
+    def test_saarthi_llm_prompt_includes_latest_student_message_on_first_turn(self):
+        prompt = _build_saarthi_llm_user_prompt(
+            student_name="Ankan Ghosh",
+            student_message="can you explain my attendance situation and what should i do next",
+            recent_messages=[],
+            current_dt=datetime(2026, 5, 30, 20, 30, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            student_context={
+                "attendance_summary": [
+                    {"subject": "Digital Electronics", "attended": 17, "total": 25, "percentage": 68, "threshold": 75}
+                ]
+            },
+        )
+
+        self.assertIn("Student: can you explain my attendance situation and what should i do next", prompt)
+        self.assertNotIn("Student: Hello.", prompt)
+
+    def test_saarthi_quality_gate_accepts_direct_attendance_next_step(self):
+        reply = (
+            "Ankan, your Digital Electronics attendance is 68% right now, with 17 attended out of 25 total classes. "
+            "The threshold is 75%, so you are short but still close enough to plan around it. "
+            "You do not need to panic or solve the whole semester today. "
+            "One clear next step is to protect the next two Digital Electronics classes and then check whether a remedial slot is available."
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="can you explain my attendance situation and what should i do next",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_quality_gate_accepts_specific_attendance_answer_with_question(self):
+        reply = (
+            "Hi Ankan, let's take a look at your attendance summary. "
+            "You attended 17 out of 25 classes in Digital Electronics, which is 68%. "
+            "Your percentage is below the threshold of 75. "
+            "How do you feel about attending the next two Digital Electronics classes?"
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="can you explain my attendance situation and what should i do next",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_quality_gate_accepts_short_emotional_question(self):
+        reply = (
+            "Hey Ankan, sorry to hear that you're feeling stressed about your attendance. "
+            "How many classes have you been missing in Digital Electronics?"
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="im feeling stressed about my attendance",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_quality_gate_accepts_concrete_planning_reply(self):
+        reply = (
+            "Hey Ankan, since you have no classes scheduled today, you could use the extra time to review your notes for "
+            "Digital Electronics. You've attended 68% of its sessions so far, so prioritizing it today makes sense. "
+            "Start with one topic from the last lecture."
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="what classes should i focus on today",
+                first_turn=True,
+            )
+        )
+
+    def test_saarthi_first_turn_intro_is_limited_to_greetings(self):
+        reply = _finalize_saarthi_reply(
+            "Ankan, your Digital Electronics attendance is 68%, with 17 attended out of 25 total classes.",
+            student_message="can you explain my attendance situation and what should i do next",
+            detected_emotion="curiosity",
+            first_turn=True,
+            recent_messages=[],
+        )
+
+        self.assertNotIn(SAARTHI_IDENTITY_INTRO, reply)
+
+    def test_saarthi_bedrock_provider_uses_aws_bearer_token_first(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-primary",
+                "SAARTHI_BEDROCK_API_KEY": "bedrock-secondary",
+                "SAARTHI_BEDROCK_MODEL_ID": "",
+                "COPILOT_BEDROCK_MODEL_ID": "copilot-model",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_saarthi_bedrock_api_keys(), ["bedrock-primary", "bedrock-secondary"])
+            self.assertEqual(_saarthi_bedrock_model_id(), "copilot-model")
+            self.assertEqual(_saarthi_llm_provider_order("bedrock")[0], "bedrock")
+
+    def test_saarthi_nvidia_provider_uses_dedicated_key_and_model(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_MODEL": "meta/llama-3.1-8b-instruct",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-primary",
+                "NVIDIA_API_KEY": "nvidia-shared",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_saarthi_nvidia_api_keys(), ["nvidia-primary", "nvidia-shared"])
+            self.assertEqual(_saarthi_nvidia_model(), "meta/llama-3.1-8b-instruct")
+            self.assertEqual(_saarthi_llm_provider_order("nvidia"), ["nvidia"])
+
+    def test_required_nvidia_reply_is_used_without_deterministic_fallback(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": (
+                                        "Ankan, I hear you. This week feels heavy, but we can keep this simple. "
+                                        "Something that could help is choosing one class to protect today. "
+                                        "What is getting in the way right now?"
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_LLM_MODEL": "meta/llama-3.1-8b-instruct",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-key",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()) as mocked_urlopen, mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply:
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="I feel confused about the week",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        deterministic_reply.assert_not_called()
+        self.assertIn("This week feels heavy", reply)
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("integrate.api.nvidia.com", request.full_url)
+
+    def test_nvidia_usable_reply_returns_even_when_quality_gate_is_strict(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": (
+                                        "Ankan, your Digital Electronics attendance is at 68%, with 17 attended out of 25 classes. "
+                                        "That is below the 75% threshold, so focus on protecting the next few classes."
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-key",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()):
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="can you explain my attendance situation and what should i do next",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        self.assertIn("Digital Electronics attendance is at 68%", reply)
+        self.assertTrue(_is_usable_nvidia_reply(reply))
+
+    def test_required_bedrock_reply_is_used_without_deterministic_fallback(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "output": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": (
+                                            "Ankan, I hear you. Feeling confused can make the whole week feel heavier than it is. "
+                                            "Something that could help is choosing one immediate task and doing it for 20 minutes. "
+                                            "What feels most urgent right now?"
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "bedrock",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-key",
+                "SAARTHI_BEDROCK_REGION": "us-east-1",
+                "SAARTHI_BEDROCK_MODEL_ID": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()) as mocked_urlopen, mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply:
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="I feel confused about the week",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        deterministic_reply.assert_not_called()
+        self.assertIn("Feeling confused", reply)
+        self.assertIn("What feels most urgent right now?", reply)
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("bedrock-runtime.us-east-1.amazonaws.com", request.full_url)
+
+    def test_gemini_leaked_key_error_rotates_to_next_key(self):
+        detail = json.dumps(
+            {
+                "error": {
+                    "code": 403,
+                    "message": "Your API key was reported as leaked. Please use another API key.",
+                    "status": "PERMISSION_DENIED",
+                }
+            }
+        )
+
+        self.assertTrue(_is_gemini_key_rotation_error(403, detail))
 
     def test_saarthi_shared_gemini_pool_uses_even_index_partition(self):
         with mock.patch.dict(

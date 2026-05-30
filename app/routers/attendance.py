@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pymongo.errors import DuplicateKeyError
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -6242,50 +6242,65 @@ def get_faculty_recovery_plan_list(
     response_model=schemas.FacultyAttendanceRectificationListOut,
 )
 def list_faculty_rectification_requests(
-    schedule_id: int,
+    schedule_id: int | None = Query(default=None, gt=0),
     class_date: date | None = Query(default=None),
     include_resolved: bool = Query(default=False),
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.ADMIN, models.UserRole.FACULTY)),
 ):
-    class_date = class_date or _campus_today()
+    schedule: models.ClassSchedule | None = None
+    query = db.query(models.AttendanceRectificationRequest)
 
-    schedule = db.get(models.ClassSchedule, schedule_id)
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Schedule not found")
+    if schedule_id is not None:
+        schedule = db.get(models.ClassSchedule, int(schedule_id))
+        if not schedule:
+            raise HTTPException(status_code=404, detail="Schedule not found")
 
-    if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
-        raise HTTPException(status_code=403, detail="Faculty can only access their own rectification queue")
+        if current_user.role == models.UserRole.FACULTY and current_user.faculty_id != schedule.faculty_id:
+            raise HTTPException(status_code=403, detail="Faculty can only access their own rectification queue")
 
-    query = (
-        db.query(models.AttendanceRectificationRequest)
-        .filter(
-            models.AttendanceRectificationRequest.schedule_id == schedule_id,
-            models.AttendanceRectificationRequest.class_date == class_date,
+        query = query.filter(models.AttendanceRectificationRequest.schedule_id == int(schedule_id))
+    elif current_user.role == models.UserRole.FACULTY:
+        if not current_user.faculty_id:
+            raise HTTPException(status_code=403, detail="Faculty account is not linked correctly")
+        query = query.filter(
+            models.AttendanceRectificationRequest.faculty_id == int(current_user.faculty_id)
         )
-    )
+
+    if class_date is not None:
+        query = query.filter(models.AttendanceRectificationRequest.class_date == class_date)
+
     if not include_resolved:
         query = query.filter(
             models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING
         )
     requests = query.order_by(
+        case(
+            (models.AttendanceRectificationRequest.status == models.AttendanceRectificationStatus.PENDING, 0),
+            else_=1,
+        ),
         models.AttendanceRectificationRequest.requested_at.desc(),
         models.AttendanceRectificationRequest.id.desc(),
     ).all()
 
     student_ids = sorted({item.student_id for item in requests})
+    course_ids = sorted({item.course_id for item in requests})
     students = (
         {row.id: row for row in db.query(models.Student).filter(models.Student.id.in_(student_ids)).all()}
         if student_ids
         else {}
     )
-    course = db.get(models.Course, schedule.course_id)
+    courses = (
+        {row.id: row for row in db.query(models.Course).filter(models.Course.id.in_(course_ids)).all()}
+        if course_ids
+        else {}
+    )
 
     payload = [
         _faculty_rectification_out(
             item,
             student=students.get(item.student_id),
-            course=course,
+            course=courses.get(item.course_id),
         )
         for item in requests
     ]

@@ -9,14 +9,15 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app import models, schemas
-from app.auth_utils import CurrentUser, hash_otp, hash_password
+from app.auth_utils import CurrentUser, hash_otp, hash_password, verify_password
 from app.enterprise_controls import hash_backup_code
 from app.routers import auth
 
 
 class _UpdateResult:
-    def __init__(self, *, matched_count: int = 0):
+    def __init__(self, *, matched_count: int = 0, modified_count: int | None = None):
         self.matched_count = matched_count
+        self.modified_count = matched_count if modified_count is None else modified_count
 
 
 class _Collection:
@@ -68,7 +69,7 @@ class _Collection:
             self._apply_update(updated, update, is_insert=False)
             self._rows[idx] = updated
             matched += 1
-        return _UpdateResult(matched_count=matched)
+        return _UpdateResult(matched_count=matched, modified_count=matched)
 
     @staticmethod
     def _apply_update(row: dict, update: dict, *, is_insert: bool):
@@ -137,6 +138,42 @@ class _FakeMongo:
         return self._collections[name]
 
 
+class _FakeSqlDb:
+    def __init__(self, auth_user=None):
+        self.auth_user = auth_user
+        self.committed = False
+        self.rolled_back = False
+
+    def query(self, *_args, **_kwargs):
+        return self
+
+    def filter(self, *_args, **_kwargs):
+        return self
+
+    def first(self):
+        return self.auth_user
+
+    def get(self, _model, row_id):
+        if self.auth_user is not None and int(getattr(self.auth_user, "id", 0) or 0) == int(row_id):
+            return self.auth_user
+        return None
+
+    def add(self, row):
+        self.auth_user = row
+
+    def flush(self):
+        return None
+
+    def get_bind(self):
+        return None
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+
 def _request(path: str) -> Request:
     scope = {
         "type": "http",
@@ -173,6 +210,15 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
                 "is_active": True,
                 "password_updated_at": datetime.utcnow(),
                 "created_at": datetime.utcnow(),
+            }
+        )
+        mongo["auth_sessions"].insert_one(
+            {
+                "id": 1,
+                "sid": "faculty-active-session",
+                "user_id": 51,
+                "revoked_at": None,
+                "last_seen_at": datetime.utcnow(),
             }
         )
         now = datetime.utcnow()
@@ -263,6 +309,203 @@ class AuthOtpMfaReliabilityTests(unittest.TestCase):
         self.assertTrue(otp["delivered_to_alternate"])
         delivery = mongo["auth_otp_delivery"].find_one({"id": 32})
         self.assertEqual(delivery["destination"], "faculty.personal@gmail.com")
+
+    def test_faculty_can_use_password_reset_without_registration_number(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 51,
+                "email": "faculty.reset@lpu.in",
+                "password_hash": hash_password("OldFaculty@123"),
+                "role": models.UserRole.FACULTY.value,
+                "student_id": None,
+                "faculty_id": 51,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow() - timedelta(days=10),
+                "created_at": datetime.utcnow() - timedelta(days=30),
+            }
+        )
+        mongo["auth_sessions"].insert_one(
+            {
+                "id": 1,
+                "sid": "faculty-active-session",
+                "user_id": 51,
+                "revoked_at": None,
+                "last_seen_at": datetime.utcnow(),
+            }
+        )
+
+        issued_otp = "135790"
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=51),
+            patch("app.routers.auth.align_faculty_profile_id_with_sql", return_value=None),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None) as captcha,
+            patch("app.routers.auth.generate_otp_code", return_value=issued_otp),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}),
+            patch("app.routers.auth._next_unique_id", side_effect=[71, 72, 73]),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            request_result = auth.request_password_reset_otp(
+                schemas.PasswordResetOTPRequest(
+                    email="faculty.reset@lpu.in",
+                    role=models.UserRole.FACULTY,
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/password/request-otp"),
+                sql_db=_FakeSqlDb(),
+            )
+
+            verify_result = auth.verify_password_reset_otp(
+                schemas.PasswordResetVerifyOTPRequest(
+                    email="faculty.reset@lpu.in",
+                    role=models.UserRole.FACULTY,
+                    otp_code=issued_otp,
+                ),
+                request=_request("/auth/password/verify-otp"),
+                sql_db=_FakeSqlDb(),
+            )
+
+            reset_result = auth.reset_password(
+                schemas.PasswordResetConfirmRequest(
+                    email="faculty.reset@lpu.in",
+                    role=models.UserRole.FACULTY,
+                    reset_token=verify_result.reset_token,
+                    new_password="NewFaculty@123",
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/password/reset"),
+                sql_db=_FakeSqlDb(),
+            )
+
+        self.assertEqual(request_result.message, "Password reset OTP sent successfully")
+        self.assertEqual(reset_result.message, "Password updated successfully. Login with your new password.")
+        user = mongo["auth_users"].find_one({"id": 51})
+        self.assertTrue(verify_password("NewFaculty@123", user["password_hash"]))
+        self.assertFalse(verify_password("OldFaculty@123", user["password_hash"]))
+        self.assertFalse(user.get("password_setup_required", True))
+        session = mongo["auth_sessions"].find_one({"sid": "faculty-active-session"})
+        self.assertIsNotNone(session["revoked_at"])
+        self.assertEqual(session["revoked_reason"], "password_reset")
+        self.assertEqual(captcha.call_args_list[0].kwargs["action"], "faculty_password_reset_request")
+        self.assertEqual(captcha.call_args_list[1].kwargs["action"], "faculty_password_reset_confirm")
+
+    def test_admin_password_reset_rejects_role_mismatch(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 61,
+                "email": "admin.reset@lpu.in",
+                "password_hash": hash_password("Admin@123"),
+                "role": models.UserRole.ADMIN.value,
+                "student_id": None,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow(),
+                "created_at": datetime.utcnow(),
+            }
+        )
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                auth.request_password_reset_otp(
+                    schemas.PasswordResetOTPRequest(
+                        email="admin.reset@lpu.in",
+                        role=models.UserRole.FACULTY,
+                        captcha_token="turnstile-token-1234567890",
+                    ),
+                    request=_request("/auth/password/request-otp"),
+                    sql_db=_FakeSqlDb(),
+                )
+
+        self.assertEqual(ctx.exception.status_code, 401)
+        self.assertEqual(ctx.exception.detail, "Invalid email or role")
+
+    def test_admin_can_use_password_reset_without_registration_number(self):
+        mongo = _FakeMongo()
+        mongo["auth_users"].insert_one(
+            {
+                "id": 62,
+                "email": "admin.reset@lpu.in",
+                "password_hash": hash_password("OldAdmin@123"),
+                "role": models.UserRole.ADMIN.value,
+                "student_id": None,
+                "faculty_id": None,
+                "is_active": True,
+                "password_updated_at": datetime.utcnow() - timedelta(days=10),
+                "created_at": datetime.utcnow() - timedelta(days=30),
+            }
+        )
+        sql_user = SimpleNamespace(
+            id=62,
+            email="admin.reset@lpu.in",
+            password_hash=hash_password("OldAdmin@123"),
+            role=models.UserRole.ADMIN,
+            student_id=None,
+            faculty_id=None,
+            is_active=True,
+            last_login_at=None,
+            created_at=datetime.utcnow() - timedelta(days=30),
+            password_updated_at=datetime.utcnow() - timedelta(days=10),
+        )
+        sql_db = _FakeSqlDb(auth_user=sql_user)
+
+        issued_otp = "246802"
+
+        with (
+            patch("app.routers.auth._mongo_db_or_503", return_value=mongo),
+            patch("app.routers.auth._ensure_auth_user_id", return_value=62),
+            patch("app.routers.auth.enforce_rate_limit", return_value=None),
+            patch("app.routers.auth._verify_student_auth_recaptcha", return_value=None) as captcha,
+            patch("app.routers.auth.generate_otp_code", return_value=issued_otp),
+            patch("app.routers.auth._send_login_otp_with_timeout", return_value={"channel": "smtp-email"}),
+            patch("app.routers.auth._next_unique_id", side_effect=[81, 82, 83]),
+            patch("app.routers.auth.mirror_event", return_value=None),
+        ):
+            auth.request_password_reset_otp(
+                schemas.PasswordResetOTPRequest(
+                    email="admin.reset@lpu.in",
+                    role=models.UserRole.ADMIN,
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/password/request-otp"),
+                sql_db=sql_db,
+            )
+            verify_result = auth.verify_password_reset_otp(
+                schemas.PasswordResetVerifyOTPRequest(
+                    email="admin.reset@lpu.in",
+                    role=models.UserRole.ADMIN,
+                    otp_code=issued_otp,
+                ),
+                request=_request("/auth/password/verify-otp"),
+                sql_db=sql_db,
+            )
+            reset_result = auth.reset_password(
+                schemas.PasswordResetConfirmRequest(
+                    email="admin.reset@lpu.in",
+                    role=models.UserRole.ADMIN,
+                    reset_token=verify_result.reset_token,
+                    new_password="NewAdmin@123",
+                    captcha_token="turnstile-token-1234567890",
+                ),
+                request=_request("/auth/password/reset"),
+                sql_db=sql_db,
+            )
+
+        self.assertEqual(reset_result.message, "Password updated successfully. Login with your new password.")
+        user = mongo["auth_users"].find_one({"id": 62})
+        self.assertTrue(verify_password("NewAdmin@123", user["password_hash"]))
+        self.assertTrue(verify_password("NewAdmin@123", sql_user.password_hash))
+        self.assertTrue(sql_db.committed)
+        self.assertFalse(user.get("password_setup_required", True))
+        self.assertEqual(captcha.call_args_list[0].kwargs["action"], "admin_password_reset_request")
+        self.assertEqual(captcha.call_args_list[1].kwargs["action"], "admin_password_reset_confirm")
 
     def test_admin_can_send_login_otp_to_secondary_from_primary_login(self):
         mongo = _FakeMongo()

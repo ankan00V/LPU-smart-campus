@@ -51,16 +51,45 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
                     department="CSE",
                     section="P132",
                 ),
+                models.Faculty(
+                    id=12,
+                    name="Other Faculty",
+                    email="other.faculty@example.com",
+                    department="CSE",
+                    section="P132",
+                ),
                 models.Course(
                     id=21,
                     code="CSE321",
                     title="Compiler Design",
                     faculty_id=11,
                 ),
+                models.Course(
+                    id=22,
+                    code="CSE322",
+                    title="Operating Systems",
+                    faculty_id=11,
+                ),
+                models.Course(
+                    id=23,
+                    code="CSE323",
+                    title="Database Systems",
+                    faculty_id=12,
+                ),
                 models.Enrollment(
                     id=31,
                     student_id=1,
                     course_id=21,
+                ),
+                models.Enrollment(
+                    id=32,
+                    student_id=1,
+                    course_id=22,
+                ),
+                models.Enrollment(
+                    id=33,
+                    student_id=1,
+                    course_id=23,
                 ),
                 models.ClassSchedule(
                     id=41,
@@ -70,6 +99,26 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
                     start_time=time(11, 0),
                     end_time=time(12, 0),
                     classroom_label="34-101",
+                    is_active=True,
+                ),
+                models.ClassSchedule(
+                    id=42,
+                    course_id=22,
+                    faculty_id=11,
+                    weekday=self.class_date.weekday(),
+                    start_time=time(13, 0),
+                    end_time=time(14, 0),
+                    classroom_label="34-102",
+                    is_active=True,
+                ),
+                models.ClassSchedule(
+                    id=43,
+                    course_id=23,
+                    faculty_id=12,
+                    weekday=self.class_date.weekday(),
+                    start_time=time(15, 0),
+                    end_time=time(16, 0),
+                    classroom_label="34-103",
                     is_active=True,
                 ),
             ]
@@ -227,6 +276,52 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
         )
         self.assertEqual(len(queue.requests), 1)
         self.assertEqual(queue.requests[0].status, models.AttendanceRectificationStatus.APPROVED)
+
+    @mock.patch("app.routers.attendance.publish_domain_event", autospec=True)
+    @mock.patch("app.routers.attendance._upsert_mongo_by_id", autospec=True)
+    def test_faculty_queue_includes_assigned_ledger_requests_across_schedules(
+        self,
+        _mongo_upsert,
+        _publish_event,
+    ):
+        first = schemas.AttendanceRectificationRequestCreate(
+            course_id=21,
+            class_date=self.class_date,
+            start_time=time(11, 0),
+            proof_note="I attended and have notes from this lecture as proof.",
+            proof_photo_data_url=VALID_PNG_DATA_URL,
+        )
+        second = schemas.AttendanceRectificationRequestCreate(
+            course_id=22,
+            class_date=self.class_date,
+            start_time=time(13, 0),
+            proof_note="I attended the lab and can show a valid lab entry record.",
+            proof_photo_data_url=VALID_PNG_DATA_URL,
+        )
+        other_faculty = schemas.AttendanceRectificationRequestCreate(
+            course_id=23,
+            class_date=self.class_date,
+            start_time=time(15, 0),
+            proof_note="I attended this class too and can share valid proof.",
+            proof_photo_data_url=VALID_PNG_DATA_URL,
+        )
+
+        create_student_rectification_request(payload=first, db=self.db, current_user=self._student_user())
+        create_student_rectification_request(payload=second, db=self.db, current_user=self._student_user())
+        create_student_rectification_request(payload=other_faculty, db=self.db, current_user=self._student_user())
+
+        queue = list_faculty_rectification_requests(
+            schedule_id=None,
+            class_date=None,
+            include_resolved=False,
+            db=self.db,
+            current_user=self._faculty_user(),
+        )
+
+        self.assertEqual({item.course_code for item in queue.requests}, {"CSE321", "CSE322"})
+        self.assertTrue(all(item.status == models.AttendanceRectificationStatus.PENDING for item in queue.requests))
+        self.assertIsNone(queue.schedule_id)
+        self.assertIsNone(queue.class_date)
 
 
 if __name__ == "__main__":

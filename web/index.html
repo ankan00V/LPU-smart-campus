@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260522c">
-    <script src="/web/app.js?v=20260523b" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260530b">
+    <script src="/web/app.js?v=20260530b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -242,13 +242,13 @@
                     <h3 id="forgot-modal-title">Reset Password via OTP</h3>
                     <button id="forgot-modal-close-btn" class="btn btn-ghost" type="button">Close</button>
                 </div>
-                <p class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
+                <p id="forgot-modal-sub" class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
                 <label class="field">
                     <span>Email</span>
                     <input id="forgot-email" type="email" placeholder="you@university.edu" autocomplete="email">
                 </label>
-                <label class="field">
-                    <span>Registration Number</span>
+                <label id="forgot-registration-field" class="field">
+                    <span id="forgot-registration-label">Registration Number</span>
                     <input id="forgot-registration-number" type="text" placeholder="e.g. R9P132A48">
                 </label>
                 <div class="auth-actions">
@@ -1377,42 +1377,91 @@ Ask about any module available to your role.</div>
             <article id="faculty-dashboard-card" class="ops-card glass tilt nav-anchor admin-submodule-panel is-active" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
                 <div class="panel-head">
                     <h3>Faculty Attendance Control Center</h3>
-                    <small>Review pending AI submissions</small>
+                    <small>Choose a class, lock the classroom GPS, then review attendance from one place.</small>
                 </div>
-                <div class="faculty-controls">
-                    <label class="field">
-                        <span>Class Schedule</span>
-                        <select id="faculty-schedule-select"></select>
-                    </label>
-                    <label class="field">
-                        <span>Class Date</span>
-                        <input id="faculty-class-date" type="date">
-                    </label>
-                    <label class="field">
-                        <span>GPS Latitude</span>
-                        <input id="faculty-schedule-location-latitude" type="number" step="0.000001" min="-90" max="90" placeholder="31.253000">
-                    </label>
-                    <label class="field">
-                        <span>GPS Longitude</span>
-                        <input id="faculty-schedule-location-longitude" type="number" step="0.000001" min="-180" max="180" placeholder="75.705000">
-                    </label>
-                    <label class="field">
-                        <span>Radius (m)</span>
-                        <input id="faculty-schedule-location-radius" type="number" min="10" max="500" step="1" placeholder="75">
-                    </label>
-                    <label class="field">
-                        <span>Location Label</span>
-                        <input id="faculty-schedule-location-label" type="text" maxlength="120" placeholder="e.g. B1-201">
-                    </label>
-                    <button id="faculty-use-current-location-btn" class="btn" type="button">Use My Location</button>
-                    <button id="faculty-save-location-btn" class="btn btn-primary" type="button">Save GPS Lock</button>
+                <div class="faculty-workflow-grid">
+                    <section class="faculty-workflow-panel faculty-class-panel">
+                        <div class="faculty-panel-head">
+                            <div>
+                                <h4>Class Context</h4>
+                                <small>Schedule and date used for live attendance review.</small>
+                            </div>
+                        </div>
+                        <div class="faculty-controls faculty-controls--class">
+                            <label class="field">
+                                <span>Class Schedule</span>
+                                <select id="faculty-schedule-select"></select>
+                            </label>
+                            <label class="field">
+                                <span>Class Date</span>
+                                <input id="faculty-class-date" type="date">
+                            </label>
+                            <button id="faculty-refresh-btn" class="btn" type="button">Refresh Class Data</button>
+                        </div>
+                    </section>
+
+                    <section class="faculty-workflow-panel faculty-location-panel">
+                        <div class="faculty-panel-head">
+                            <div>
+                                <h4>GPS Attendance Lock</h4>
+                                <small>Coordinates saved here apply immediately to student marking.</small>
+                            </div>
+                        </div>
+                        <div class="faculty-controls faculty-controls--location">
+                            <label class="field">
+                                <span>GPS Latitude</span>
+                                <input id="faculty-schedule-location-latitude" type="number" step="0.000001" min="-90" max="90" placeholder="31.253000">
+                            </label>
+                            <label class="field">
+                                <span>GPS Longitude</span>
+                                <input id="faculty-schedule-location-longitude" type="number" step="0.000001" min="-180" max="180" placeholder="75.705000">
+                            </label>
+                            <label class="field compact-field">
+                                <span>Radius (m)</span>
+                                <input id="faculty-schedule-location-radius" type="number" min="10" max="500" step="1" placeholder="75">
+                            </label>
+                            <label class="field">
+                                <span>Room / Location Label</span>
+                                <input id="faculty-schedule-location-label" type="text" maxlength="120" placeholder="e.g. B1-201">
+                            </label>
+                            <button id="faculty-use-current-location-btn" class="btn" type="button">Use My Location</button>
+                            <button id="faculty-save-location-btn" class="btn btn-primary" type="button">Save GPS Lock</button>
+                        </div>
+                        <p id="faculty-schedule-location-status" class="helper-text">Set GPS lock before students can mark official attendance.</p>
+                    </section>
+                </div>
+
+                <div id="faculty-gps-locks-panel" class="faculty-gps-locks-panel">
+                    <div class="faculty-gps-locks-head faculty-panel-head">
+                        <div>
+                            <h4>Active GPS Locks</h4>
+                            <small id="faculty-gps-locks-summary">No configured classrooms yet.</small>
+                        </div>
+                    </div>
+                    <div class="table-wrap faculty-gps-locks-table-wrap">
+                        <table class="submissions-table faculty-gps-locks-table">
+                            <thead>
+                                <tr>
+                                    <th>Course Code</th>
+                                    <th>Room No.</th>
+                                    <th>Latitude - Longitude</th>
+                                    <th>Radius</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="faculty-gps-locks-body">
+                                <tr><td colspan="5">No GPS locks set yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="faculty-session-row">
+                    <div id="faculty-attendance-session-panel" class="ai-output compact" aria-live="polite">
+                        <strong id="faculty-attendance-session-code">Code not opened.</strong>
+                        <span id="faculty-attendance-session-status">Open it during the first 10 minutes of class.</span>
+                    </div>
                     <button id="faculty-open-attendance-session-btn" class="btn btn-primary" type="button">Open Attendance Code</button>
-                    <button id="faculty-refresh-btn" class="btn">Refresh Class Data</button>
-                </div>
-                <p id="faculty-schedule-location-status" class="helper-text">Set GPS lock before students can mark official attendance.</p>
-                <div id="faculty-attendance-session-panel" class="ai-output compact" aria-live="polite">
-                    <strong id="faculty-attendance-session-code">Code not opened.</strong>
-                    <span id="faculty-attendance-session-status">Open it during the first 10 minutes of class.</span>
                 </div>
             </article>
 
@@ -1668,9 +1717,12 @@ Ask about any module available to your role.</div>
                         <tbody id="faculty-submissions-body"></tbody>
                     </table>
                 </div>
+            </article>
+
+            <article id="faculty-rectification-card" class="ops-card glass tilt nav-anchor admin-submodule-panel" data-tilt data-admin-submodule-scope="attendance" data-admin-submodule="attendance-ops">
                 <div class="panel-head faculty-rectification-head">
-                    <h4>Rectification Requests</h4>
-                    <small>Proof-based absent to present updates</small>
+                    <h3>Rectification Requests</h3>
+                    <small>Ledger proof requests assigned to this faculty account</small>
                 </div>
                 <div class="table-wrap">
                     <table class="submissions-table rectification-table">

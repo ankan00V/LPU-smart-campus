@@ -1769,12 +1769,14 @@ class MFABackupCodeRotateResponse(BaseModel):
 
 class PasswordResetOTPRequest(BaseModel):
     email: str
-    registration_number: str = Field(min_length=3, max_length=40)
+    role: UserRole = UserRole.STUDENT
+    registration_number: Optional[str] = Field(default=None, min_length=3, max_length=40)
     captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
 
 
 class PasswordResetVerifyOTPRequest(BaseModel):
     email: str
+    role: UserRole = UserRole.STUDENT
     otp_code: str = Field(min_length=4, max_length=10)
 
 
@@ -1786,6 +1788,7 @@ class PasswordResetVerifyResponse(BaseModel):
 
 class PasswordResetConfirmRequest(BaseModel):
     email: str
+    role: UserRole = UserRole.STUDENT
     reset_token: str = Field(min_length=20, max_length=300)
     new_password: str = Field(min_length=8, max_length=128)
     captcha_token: Optional[str] = Field(default=None, min_length=20, max_length=4096)
@@ -2335,8 +2338,8 @@ class FacultyAttendanceRectificationOut(BaseModel):
 
 
 class FacultyAttendanceRectificationListOut(BaseModel):
-    schedule_id: int
-    class_date: date
+    schedule_id: Optional[int] = None
+    class_date: Optional[date] = None
     requests: list[FacultyAttendanceRectificationOut]
 
 
