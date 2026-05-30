@@ -10642,6 +10642,16 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
     line-height: 1;
 }
 
+#faculty-section .faculty-stats-grid .metric-value.is-loading {
+    width: min(86px, 72%);
+    height: 2.35rem;
+    color: transparent !important;
+    border-radius: 12px;
+    background: linear-gradient(90deg, rgba(73, 125, 165, 0.2) 0%, rgba(130, 183, 224, 0.44) 50%, rgba(73, 125, 165, 0.2) 100%);
+    background-size: 220% 100%;
+    animation: skeleton-shimmer 1.35s var(--motion-ease) infinite;
+}
+
 #faculty-present {
     color: #9af1c8;
 }
@@ -10692,6 +10702,35 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
 
 #faculty-section .submissions-table tbody tr:hover td {
     background: rgba(75, 163, 243, 0.08);
+}
+
+#faculty-section .faculty-loading-row td {
+    padding: 0.82rem;
+}
+
+.faculty-table-loading {
+    display: grid;
+    gap: 0.4rem;
+    min-height: 72px;
+    align-content: center;
+}
+
+.faculty-table-loading .skeleton-text {
+    max-width: 340px;
+}
+
+.faculty-table-loading .skeleton-text:nth-child(2) {
+    max-width: 220px;
+}
+
+.faculty-table-loading strong {
+    color: #dcecf8;
+    font-size: 0.84rem;
+}
+
+.faculty-table-loading small {
+    color: #a8c6dc;
+    font-size: 0.75rem;
 }
 
 #faculty-section .faculty-rectification-head {
@@ -11022,6 +11061,11 @@ body.ums-theme #faculty-section .faculty-stats-grid .metric-value {
     color: #173852;
 }
 
+body.ums-theme #faculty-section .faculty-stats-grid .metric-value.is-loading {
+    background: linear-gradient(90deg, rgba(173, 203, 225, 0.42) 0%, rgba(224, 240, 252, 0.9) 50%, rgba(173, 203, 225, 0.42) 100%);
+    background-size: 220% 100%;
+}
+
 body.ums-theme #faculty-present {
     color: #17754d;
 }
@@ -11075,6 +11119,14 @@ body.ums-theme #faculty-section .submissions-table tbody tr:nth-child(even) td {
 
 body.ums-theme #faculty-section .submissions-table tbody tr:hover td {
     background: #e6f4ff;
+}
+
+body.ums-theme .faculty-table-loading strong {
+    color: #29455d;
+}
+
+body.ums-theme .faculty-table-loading small {
+    color: #5d758c;
 }
 
 body.ums-theme #remedial-faculty-panel .remedial-faculty-card {
