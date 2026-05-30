@@ -2438,6 +2438,7 @@ def request_password_reset_otp(
     db = _mongo_db_or_503()
     try:
         email = _normalize_email(payload.email)
+        requested_role = payload.role
         enforce_rate_limit(
             request,
             scope="auth.password.request_otp",
@@ -2448,7 +2449,7 @@ def request_password_reset_otp(
         _verify_student_auth_recaptcha(
             request,
             payload.captcha_token,
-            action="student_password_reset_request",
+            action=f"{requested_role.value}_password_reset_request",
         )
         user = db["auth_users"].find_one({"email": email})
         if not user:
@@ -2456,6 +2457,8 @@ def request_password_reset_otp(
                 sql_db.query(models.AuthUser).filter(models.AuthUser.email == email).first()
             )
             if sql_auth_user:
+                if sql_auth_user.role != requested_role:
+                    raise HTTPException(status_code=401, detail="Invalid email or role")
                 user = {
                     "id": int(sql_auth_user.id),
                     "email": str(sql_auth_user.email or "").strip().lower(),
@@ -2469,9 +2472,11 @@ def request_password_reset_otp(
                     "password_updated_at": sql_auth_user.password_updated_at,
                 }
                 _upsert_mongo_by_id(db, "auth_users", int(sql_auth_user.id), user)
-            else:
+            elif requested_role == models.UserRole.STUDENT:
                 sql_student = sql_db.query(models.Student).filter(models.Student.email == email).first()
                 if sql_student and str(sql_student.registration_number or "").strip():
+                    if not payload.registration_number:
+                        raise HTTPException(status_code=401, detail="Invalid email or registration number")
                     provided_registration = _normalize_registration_number(payload.registration_number)
                     linked_registration = _normalize_registration_number(str(sql_student.registration_number))
                     if provided_registration == linked_registration:
@@ -2513,8 +2518,9 @@ def request_password_reset_otp(
                             "password_setup_required": True,
                         }
                         _upsert_mongo_by_id(db, "auth_users", user_id, user)
-                if not user:
-                    raise HTTPException(status_code=401, detail="Invalid email or registration number")
+            if not user:
+                detail = "Invalid email or registration number" if requested_role == models.UserRole.STUDENT else "Invalid email or role"
+                raise HTTPException(status_code=401, detail=detail)
 
         if not bool(user.get("is_active", True)):
             raise HTTPException(status_code=403, detail="User account is inactive")
@@ -2523,6 +2529,8 @@ def request_password_reset_otp(
             role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
+        if role != requested_role:
+            raise HTTPException(status_code=401, detail="Invalid email or role")
         _validate_role_email(email, role, allow_legacy_primary=_primary_email_update_required(user))
         user_id = _ensure_auth_user_id(db, user, sql_db)
         if role == models.UserRole.STUDENT:
@@ -2578,6 +2586,8 @@ def request_password_reset_otp(
             if not registration_number:
                 raise HTTPException(status_code=401, detail="Invalid email or registration number")
 
+            if not payload.registration_number:
+                raise HTTPException(status_code=401, detail="Invalid email or registration number")
             provided_registration = _normalize_registration_number(payload.registration_number)
             linked_registration = _normalize_registration_number(registration_number)
             if provided_registration != linked_registration:
@@ -2698,6 +2708,7 @@ def verify_password_reset_otp(
     db = _mongo_db_or_503()
     try:
         email = _normalize_email(payload.email)
+        requested_role = payload.role
         enforce_rate_limit(
             request,
             scope="auth.password.verify_otp",
@@ -2709,9 +2720,11 @@ def verify_password_reset_otp(
         if not user:
             raise HTTPException(status_code=401, detail="Invalid OTP flow")
         try:
-            models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+            role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
+        if role != requested_role:
+            raise HTTPException(status_code=401, detail="Invalid OTP flow")
         user_id = _ensure_auth_user_id(db, user, sql_db)
 
         otp_row = db["auth_otps"].find_one(
@@ -2805,6 +2818,7 @@ def reset_password(
     db = _mongo_db_or_503()
     try:
         email = _normalize_email(payload.email)
+        requested_role = payload.role
         enforce_rate_limit(
             request,
             scope="auth.password.reset",
@@ -2815,15 +2829,17 @@ def reset_password(
         _verify_student_auth_recaptcha(
             request,
             payload.captcha_token,
-            action="student_password_reset_confirm",
+            action=f"{requested_role.value}_password_reset_confirm",
         )
         user = db["auth_users"].find_one({"email": email})
         if not user:
             raise HTTPException(status_code=401, detail="Invalid password reset request")
         try:
-            models.UserRole(user.get("role", models.UserRole.STUDENT.value))
+            role = models.UserRole(user.get("role", models.UserRole.STUDENT.value))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid user role for password reset") from exc
+        if role != requested_role:
+            raise HTTPException(status_code=401, detail="Invalid password reset request")
         user_id = _ensure_auth_user_id(db, user, sql_db)
 
         _validate_password_strength(payload.new_password)
@@ -2850,6 +2866,11 @@ def reset_password(
 
         password_hash = hash_password(payload.new_password)
         db["auth_password_resets"].update_one({"id": reset_row["id"]}, {"$set": {"used_at": now}})
+        revoked_session_count = revoke_all_user_sessions(
+            db,
+            user_id=int(user_id),
+            reason="password_reset",
+        )
         db["auth_users"].update_one(
             {"id": user_id},
             {
@@ -2860,13 +2881,20 @@ def reset_password(
                 }
             },
         )
-        sql_user = sql_db.get(models.AuthUser, int(user_id))
-        if sql_user is not None:
-            sql_user.password_hash = password_hash
-            sql_user.password_updated_at = now
-            sql_db.commit()
-        else:
-            sql_db.rollback()
+        upsert_sql_auth_user_record(
+            sql_db,
+            email=email,
+            password_hash=password_hash,
+            role=role,
+            student_id=int(user.get("student_id")) if user.get("student_id") else None,
+            faculty_id=int(user.get("faculty_id")) if user.get("faculty_id") else None,
+            is_active=bool(user.get("is_active", True)),
+            last_login_at=_coerce_datetime(user.get("last_login_at")),
+            created_at=_coerce_datetime(user.get("created_at")) or now,
+            password_updated_at=now,
+            requested_id=int(user_id),
+        )
+        sql_db.commit()
         db["auth_otps"].update_many(
             {"user_id": user_id, "purpose": {"$in": ["login", "password_reset"]}, "used_at": None},
             {"$set": {"used_at": now}},
@@ -2874,7 +2902,13 @@ def reset_password(
 
         mirror_event(
             "auth.password_reset_success",
-            {"user_id": user_id, "email": email, "updated_at": now},
+            {
+                "user_id": user_id,
+                "email": email,
+                "updated_at": now,
+                "role": role.value,
+                "revoked_session_count": revoked_session_count,
+            },
             actor={"user_id": user_id, "email": email, "role": user.get("role")},
         )
 

@@ -619,7 +619,10 @@ const els = {
   registerBtn: document.getElementById('register-btn'),
   forgotPasswordToggleBtn: document.getElementById('forgot-password-toggle-btn'),
   forgotPasswordPanel: document.getElementById('forgot-password-panel'),
+  forgotModalSub: document.getElementById('forgot-modal-sub'),
   forgotEmail: document.getElementById('forgot-email'),
+  forgotRegistrationField: document.getElementById('forgot-registration-field'),
+  forgotRegistrationLabel: document.getElementById('forgot-registration-label'),
   forgotRegistrationNumber: document.getElementById('forgot-registration-number'),
   forgotRequestOtpBtn: document.getElementById('forgot-request-otp-btn'),
   forgotVerifyOtpBtn: document.getElementById('forgot-verify-otp-btn'),
@@ -999,6 +1002,8 @@ const els = {
   facultySaveLocationBtn: document.getElementById('faculty-save-location-btn'),
   facultyOpenAttendanceSessionBtn: document.getElementById('faculty-open-attendance-session-btn'),
   facultyScheduleLocationStatus: document.getElementById('faculty-schedule-location-status'),
+  facultyGpsLocksSummary: document.getElementById('faculty-gps-locks-summary'),
+  facultyGpsLocksBody: document.getElementById('faculty-gps-locks-body'),
   facultyAttendanceSessionPanel: document.getElementById('faculty-attendance-session-panel'),
   facultyAttendanceSessionCode: document.getElementById('faculty-attendance-session-code'),
   facultyAttendanceSessionStatus: document.getElementById('faculty-attendance-session-status'),
@@ -1991,6 +1996,45 @@ function isForgotPasswordPanelOpen() {
   return Boolean(els.forgotPasswordPanel && !els.forgotPasswordPanel.classList.contains('hidden'));
 }
 
+function forgotPasswordRole() {
+  const role = selectedLoginRole();
+  if (role === 'faculty' || role === 'admin') {
+    return role;
+  }
+  return 'student';
+}
+
+function forgotPasswordRoleLabel(role = forgotPasswordRole()) {
+  if (role === 'faculty') {
+    return 'faculty';
+  }
+  if (role === 'admin') {
+    return 'admin';
+  }
+  return 'student';
+}
+
+function syncForgotPasswordRoleUi() {
+  const role = forgotPasswordRole();
+  const isStudent = role === 'student';
+  setHidden(els.forgotRegistrationField, !isStudent);
+  if (els.forgotRegistrationNumber) {
+    els.forgotRegistrationNumber.disabled = !isStudent;
+    els.forgotRegistrationNumber.required = isStudent;
+    if (!isStudent) {
+      els.forgotRegistrationNumber.value = '';
+    }
+  }
+  if (els.forgotRegistrationLabel) {
+    els.forgotRegistrationLabel.textContent = 'Registration Number';
+  }
+  if (els.forgotModalSub) {
+    els.forgotModalSub.textContent = isStudent
+      ? 'Use your registered email and registration number to reset password securely.'
+      : `Use your registered ${forgotPasswordRoleLabel(role)} email to receive a reset OTP.`;
+  }
+}
+
 function resetForgotPasswordState({ clearFields = false } = {}) {
   authState.forgotResetToken = '';
   authState.forgotResetTokenExpiresAt = '';
@@ -2026,13 +2070,17 @@ function setForgotPasswordPanel(open) {
     return;
   }
   const shouldOpen = Boolean(open) && !isSignupMode();
+  syncForgotPasswordRoleUi();
   setHidden(els.forgotPasswordPanel, !shouldOpen);
   if (shouldOpen) {
     const loginEmail = (els.authEmail?.value || '').trim().toLowerCase();
     if (loginEmail && els.forgotEmail && !els.forgotEmail.value.trim()) {
       els.forgotEmail.value = loginEmail;
     }
-    setForgotMessage('Enter email + registration number, then request OTP.');
+    const role = forgotPasswordRole();
+    setForgotMessage(role === 'student'
+      ? 'Enter email + registration number, then request OTP.'
+      : `Enter your registered ${forgotPasswordRoleLabel(role)} email, then request OTP.`);
     renderPasswordStrengthHint(els.forgotPasswordStrength, els.forgotNewPassword?.value || '');
   } else {
     resetForgotPasswordState({ clearFields: false });
@@ -5016,7 +5064,7 @@ function renderLoginRoleUi() {
     setHidden(els.loginBtn, role !== 'student' || signupOtpPending);
   }
   if (els.forgotPasswordToggleBtn) {
-    setHidden(els.forgotPasswordToggleBtn, role !== 'student' || signupOtpPending);
+    setHidden(els.forgotPasswordToggleBtn, !['student', 'faculty', 'admin'].includes(role) || signupOtpPending);
   }
   if (els.loginViaOtpBtn) {
     setHidden(els.loginViaOtpBtn, role !== 'student' || signupOtpPending);
@@ -5032,6 +5080,7 @@ function renderLoginRoleUi() {
       renderPasswordStrengthHint(els.authPasswordStrength, els.authPassword?.value || '');
     }
   }
+  syncForgotPasswordRoleUi();
 }
 
 function renderAuthOtpSection() {
@@ -16867,6 +16916,14 @@ function slotTextLines(item) {
   };
 }
 
+function studentGpsLockLabel(item = {}) {
+  if (!item?.attendance_location_configured) {
+    return '';
+  }
+  const room = String(item.attendance_location_label || item.classroom_label || '').trim();
+  return room ? `GPS Locked: ${room}` : 'GPS Locked';
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -17082,22 +17139,26 @@ function findAttendanceManagementState(nowArg = studentCampusNow()) {
   if (openNow) {
     const selected = openNow.item;
     const isRemedial = String(selected.class_kind || 'regular').toLowerCase() === 'remedial';
+    const roomLabel = selected.attendance_location_label || selected.classroom_label || 'Room TBA';
+    const gpsStatus = selected.attendance_location_configured ? 'GPS lock active' : 'GPS lock pending';
     return {
       mode: 'mark',
       schedule: selected,
       headline: `${isRemedial ? 'Remedial Attendance' : 'Mark Attendance'} | ${selected.course_code}`,
-      subtitle: `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | ${selected.course_code} | ${selected.classroom_label || 'Room TBA'}`,
+      subtitle: `${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | ${selected.course_code} | ${roomLabel} | ${gpsStatus}`,
     };
   }
 
   const upcoming = timeline.find((slot) => now < slot.start);
   if (upcoming) {
     const selected = upcoming.item;
+    const roomLabel = selected.attendance_location_label || selected.classroom_label || 'Room TBA';
+    const gpsStatus = selected.attendance_location_configured ? 'GPS lock active' : 'GPS lock pending';
     return {
       mode: 'upcoming',
       schedule: selected,
       headline: `Upcoming Class | ${formatTime(selected.start_time)} - ${formatTime(selected.end_time)} | ${selected.course_code}`,
-      subtitle: `${selected.course_code} | ${selected.classroom_label || 'Room TBA'} | ${parseISODateLocal(selected.class_date).toLocaleDateString('en-GB')}`,
+      subtitle: `${selected.course_code} | ${roomLabel} | ${parseISODateLocal(selected.class_date).toLocaleDateString('en-GB')} | ${gpsStatus}`,
     };
   }
 
@@ -18123,6 +18184,13 @@ function renderStudentTimetableMobile(classes, currentDayIndex) {
       statusBadge.className = `slot-status ${kpi.key}`;
       statusBadge.textContent = kpi.label;
       metaRow.appendChild(statusBadge);
+      const gpsLockLabel = studentGpsLockLabel(item);
+      if (gpsLockLabel) {
+        const gpsBadge = document.createElement('span');
+        gpsBadge.className = 'slot-status gps-lock';
+        gpsBadge.textContent = gpsLockLabel;
+        metaRow.appendChild(gpsBadge);
+      }
       card.appendChild(metaRow);
 
       dayList.appendChild(card);
@@ -18272,6 +18340,13 @@ function renderStudentTimetable() {
     slotState.className = `slot-status ${kpi.key}`;
     slotState.textContent = kpi.label;
     metaRow.appendChild(slotState);
+    const gpsLockLabel = studentGpsLockLabel(item);
+    if (gpsLockLabel) {
+      const gpsBadge = document.createElement('span');
+      gpsBadge.className = 'slot-status gps-lock';
+      gpsBadge.textContent = gpsLockLabel;
+      metaRow.appendChild(gpsBadge);
+    }
 
     card.appendChild(metaRow);
 
@@ -20310,6 +20385,7 @@ async function loadFacultySchedules() {
   if (!schedules.length) {
     state.faculty.selectedScheduleId = null;
     syncFacultyScheduleLocationForm(null);
+    renderFacultyGpsLocks([]);
     syncFacultyAttendanceSessionPanel(null, null);
     renderFacultyDashboard(null);
     els.classroomAnalysisHistory.innerHTML = '<div class="list-item">No schedules available.</div>';
@@ -20327,6 +20403,7 @@ async function loadFacultySchedules() {
 
   state.faculty.selectedScheduleId = Number(els.facultyScheduleSelect.value);
   syncFacultyScheduleLocationForm(getSelectedFacultySchedule());
+  renderFacultyGpsLocks(schedules);
   syncFacultyAttendanceSessionPanel(null, getSelectedFacultySchedule());
   await refreshFacultyDashboard();
 }
@@ -20337,6 +20414,88 @@ function getSelectedFacultySchedule() {
     return null;
   }
   return (state.faculty.schedules || []).find((item) => Number(item.id || 0) === scheduleId) || null;
+}
+
+function facultyScheduleCourse(schedule = {}) {
+  const course = state.coursesById?.[schedule.course_id] || {};
+  const code = String(schedule.course_code || course.code || `Course #${schedule.course_id || '-'}`).trim();
+  const title = String(schedule.course_title || course.title || '').trim();
+  return { code, title };
+}
+
+function formatFacultyGpsCoordinate(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(6) : '--';
+}
+
+function renderFacultyGpsLocks(schedules = state.faculty.schedules || []) {
+  if (!els.facultyGpsLocksBody) {
+    return;
+  }
+  const rows = (Array.isArray(schedules) ? schedules : [])
+    .filter((schedule) => Boolean(schedule?.attendance_location_configured))
+    .sort((left, right) => {
+      const leftCode = facultyScheduleCourse(left).code;
+      const rightCode = facultyScheduleCourse(right).code;
+      if (leftCode !== rightCode) {
+        return leftCode.localeCompare(rightCode);
+      }
+      return Number(left.id || 0) - Number(right.id || 0);
+    });
+
+  if (els.facultyGpsLocksSummary) {
+    const count = rows.length;
+    els.facultyGpsLocksSummary.textContent = count
+      ? `${count} configured ${count === 1 ? 'classroom' : 'classrooms'} under your faculty account.`
+      : 'No configured classrooms yet.';
+  }
+
+  if (!rows.length) {
+    els.facultyGpsLocksBody.innerHTML = '<tr><td colspan="5">No GPS locks set yet.</td></tr>';
+    return;
+  }
+
+  els.facultyGpsLocksBody.innerHTML = '';
+  for (const schedule of rows) {
+    const tr = document.createElement('tr');
+    const course = facultyScheduleCourse(schedule);
+    const room = String(schedule.attendance_location_label || schedule.classroom_label || 'Room TBA').trim();
+    const latLong = `${formatFacultyGpsCoordinate(schedule.attendance_latitude)}, ${formatFacultyGpsCoordinate(schedule.attendance_longitude)}`;
+    const radius = Math.round(Number(schedule.attendance_radius_m || 75));
+    tr.innerHTML = `
+      <td>
+        <strong>${escapeHtml(course.code)}</strong>
+        ${course.title ? `<span>${escapeHtml(course.title)}</span>` : ''}
+      </td>
+      <td>${escapeHtml(room)}</td>
+      <td><code>${escapeHtml(latLong)}</code></td>
+      <td>${escapeHtml(String(radius))}m</td>
+      <td>
+        <button class="btn btn-secondary faculty-gps-lock-update-btn" type="button" data-schedule-id="${Number(schedule.id || 0)}">Update</button>
+      </td>
+    `;
+    els.facultyGpsLocksBody.appendChild(tr);
+  }
+}
+
+async function selectFacultyScheduleForGpsLock(scheduleId) {
+  const normalizedScheduleId = Number(scheduleId || 0);
+  if (!normalizedScheduleId || !els.facultyScheduleSelect) {
+    return;
+  }
+  const schedule = (state.faculty.schedules || [])
+    .find((item) => Number(item.id || 0) === normalizedScheduleId);
+  if (!schedule) {
+    throw new Error('Selected GPS lock is no longer available. Refresh class data and try again.');
+  }
+  els.facultyScheduleSelect.value = String(normalizedScheduleId);
+  state.faculty.selectedScheduleId = normalizedScheduleId;
+  state.faculty.selectedSubmissionIds.clear();
+  syncFacultyScheduleLocationForm(schedule);
+  syncFacultyAttendanceSessionPanel(null, schedule);
+  await refreshFacultyDashboard();
+  els.facultyScheduleLocationLatitude?.focus();
+  setFacultyScheduleLocationStatus('GPS lock loaded. Update the coordinates or room details, then save again.', false, 'warn');
 }
 
 function syncFacultyScheduleLocationForm(schedule = getSelectedFacultySchedule()) {
@@ -21462,8 +21621,12 @@ async function requestForgotPasswordOtp() {
   }
 
   const email = normalizedForgotEmailInput();
+  const role = forgotPasswordRole();
   const registrationNumber = normalizedRegistrationInput(els.forgotRegistrationNumber?.value || '');
-  if (!email || !registrationNumber) {
+  if (!email) {
+    throw new Error('Enter email first.');
+  }
+  if (role === 'student' && !registrationNumber) {
     throw new Error('Enter email and registration number first.');
   }
   authState.forgotResetToken = '';
@@ -21477,13 +21640,14 @@ async function requestForgotPasswordOtp() {
     { tone: 'sending', loading: true, closable: false }
   );
   try {
-    const captchaToken = await acquireStudentCaptchaToken('student_password_reset_request');
+    const captchaToken = await acquireStudentCaptchaToken(`${role}_password_reset_request`);
     const data = await api('/auth/password/request-otp', {
       method: 'POST',
       timeoutMs: 60000,
       body: JSON.stringify({
         email,
-        registration_number: registrationNumber,
+        role,
+        registration_number: role === 'student' ? registrationNumber : undefined,
         captcha_token: captchaToken || undefined,
       }),
       skipAuth: true,
@@ -21517,6 +21681,7 @@ async function requestForgotPasswordOtp() {
 
 async function verifyForgotPasswordOtp() {
   const email = normalizedForgotEmailInput();
+  const role = forgotPasswordRole();
   const otpCode = (els.forgotOtp?.value || '').trim();
   if (!email || !otpCode) {
     throw new Error('Email and OTP code are required for verification.');
@@ -21525,6 +21690,7 @@ async function verifyForgotPasswordOtp() {
     method: 'POST',
     body: JSON.stringify({
       email,
+      role,
       otp_code: otpCode,
     }),
     skipAuth: true,
@@ -21543,6 +21709,7 @@ async function verifyForgotPasswordOtp() {
 
 async function resetForgotPassword() {
   const email = normalizedForgotEmailInput();
+  const role = forgotPasswordRole();
   const token = String(authState.forgotResetToken || '').trim();
   if (!email || !token) {
     throw new Error('Verify reset OTP first.');
@@ -21556,12 +21723,13 @@ async function resetForgotPassword() {
     throw new Error('New password and confirm password do not match.');
   }
   validatePasswordStrengthOrThrow(newPassword, 'New password');
-  const captchaToken = await acquireStudentCaptchaToken('student_password_reset_confirm');
+  const captchaToken = await acquireStudentCaptchaToken(`${role}_password_reset_confirm`);
 
   await api('/auth/password/reset', {
     method: 'POST',
     body: JSON.stringify({
       email,
+      role,
       reset_token: token,
       new_password: newPassword,
       captcha_token: captchaToken || undefined,
@@ -24836,6 +25004,22 @@ function bindEvents() {
         await saveFacultyScheduleAttendanceLocation();
       } catch (error) {
         const message = String(error?.message || 'Failed to save GPS lock.');
+        setFacultyScheduleLocationStatus(message, true);
+        log(message);
+      }
+    });
+  }
+
+  if (els.facultyGpsLocksBody) {
+    els.facultyGpsLocksBody.addEventListener('click', async (event) => {
+      const button = event.target?.closest?.('.faculty-gps-lock-update-btn');
+      if (!button) {
+        return;
+      }
+      try {
+        await selectFacultyScheduleForGpsLock(button.dataset.scheduleId);
+      } catch (error) {
+        const message = String(error?.message || 'Unable to load GPS lock.');
         setFacultyScheduleLocationStatus(message, true);
         log(message);
       }

@@ -6,8 +6,8 @@
     <title>LPU Smart Campus Command Deck</title>
     <link rel="icon" href="/favicon.ico?v=20260305b" sizes="any">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=20260305b">
-    <link rel="stylesheet" href="/web/styles.css?v=20260522c">
-    <script src="/web/app.js?v=20260530a" defer></script>
+    <link rel="stylesheet" href="/web/styles.css?v=20260530b">
+    <script src="/web/app.js?v=20260530b" defer></script>
 </head>
 <body>
     <a class="skip-link" href="#dashboard-root">Skip to main content</a>
@@ -242,13 +242,13 @@
                     <h3 id="forgot-modal-title">Reset Password via OTP</h3>
                     <button id="forgot-modal-close-btn" class="btn btn-ghost" type="button">Close</button>
                 </div>
-                <p class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
+                <p id="forgot-modal-sub" class="auth-modal-sub">Use your registered email and registration number to reset password securely.</p>
                 <label class="field">
                     <span>Email</span>
                     <input id="forgot-email" type="email" placeholder="you@university.edu" autocomplete="email">
                 </label>
-                <label class="field">
-                    <span>Registration Number</span>
+                <label id="forgot-registration-field" class="field">
+                    <span id="forgot-registration-label">Registration Number</span>
                     <input id="forgot-registration-number" type="text" placeholder="e.g. R9P132A48">
                 </label>
                 <div class="auth-actions">
@@ -1410,6 +1410,30 @@ Ask about any module available to your role.</div>
                     <button id="faculty-refresh-btn" class="btn">Refresh Class Data</button>
                 </div>
                 <p id="faculty-schedule-location-status" class="helper-text">Set GPS lock before students can mark official attendance.</p>
+                <div id="faculty-gps-locks-panel" class="faculty-gps-locks-panel">
+                    <div class="faculty-gps-locks-head">
+                        <div>
+                            <h4>Active GPS Locks</h4>
+                            <small id="faculty-gps-locks-summary">No configured classrooms yet.</small>
+                        </div>
+                    </div>
+                    <div class="table-wrap faculty-gps-locks-table-wrap">
+                        <table class="submissions-table faculty-gps-locks-table">
+                            <thead>
+                                <tr>
+                                    <th>Course Code</th>
+                                    <th>Room No.</th>
+                                    <th>Latitude - Longitude</th>
+                                    <th>Radius</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="faculty-gps-locks-body">
+                                <tr><td colspan="5">No GPS locks set yet.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
                 <div id="faculty-attendance-session-panel" class="ai-output compact" aria-live="polite">
                     <strong id="faculty-attendance-session-code">Code not opened.</strong>
                     <span id="faculty-attendance-session-status">Open it during the first 10 minutes of class.</span>

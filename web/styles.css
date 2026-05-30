@@ -9175,6 +9175,13 @@ body.ums-theme .remedial-attendance-modal-empty {
     animation: badge-breathe 1.6s ease-in-out infinite;
 }
 
+.slot-status.gps-lock {
+    border-color: rgba(99, 216, 224, 0.58);
+    background: rgba(31, 126, 139, 0.34);
+    color: #d9fbff;
+    text-transform: none;
+}
+
 @keyframes badge-breathe {
     0%,
     100% {
@@ -10416,6 +10423,65 @@ body:not(.ums-theme) #student-saarthi-card .saarthi-send-btn {
     color: #b8d5ea;
 }
 
+.faculty-gps-locks-panel {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    gap: 0.58rem;
+    padding: 0.72rem;
+    border: 1px solid rgba(143, 202, 243, 0.28);
+    border-radius: 16px;
+    background: linear-gradient(145deg, rgba(7, 28, 46, 0.34), rgba(12, 43, 66, 0.28));
+}
+
+.faculty-gps-locks-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.faculty-gps-locks-head h4 {
+    margin: 0;
+    color: var(--faculty-ink);
+    font-size: 0.92rem;
+}
+
+.faculty-gps-locks-head small {
+    color: var(--faculty-muted);
+}
+
+#faculty-section .faculty-gps-locks-table-wrap {
+    max-height: 250px;
+}
+
+#faculty-section .faculty-gps-locks-table td {
+    vertical-align: middle;
+}
+
+#faculty-section .faculty-gps-locks-table td strong,
+#faculty-section .faculty-gps-locks-table td span {
+    display: block;
+}
+
+#faculty-section .faculty-gps-locks-table td span {
+    margin-top: 0.15rem;
+    color: #a9c4d9;
+    font-size: 0.75rem;
+}
+
+#faculty-section .faculty-gps-locks-table code {
+    color: #d8f3ff;
+    font-family: var(--font-mono);
+    letter-spacing: 0;
+}
+
+#faculty-section .faculty-gps-lock-update-btn {
+    min-height: 34px;
+    padding: 0.36rem 0.68rem;
+    white-space: nowrap;
+}
+
 #faculty-attendance-session-panel {
     position: relative;
     z-index: 1;
@@ -10643,6 +10709,19 @@ body.ums-theme #faculty-attendance-session-status,
 body.ums-theme #remedial-faculty-panel .remedial-form-actions .helper-text,
 body.ums-theme #remedial-faculty-panel #remedial-faculty-status {
     color: #5e778d;
+}
+
+body.ums-theme .faculty-gps-locks-panel {
+    border-color: #c5d8e8;
+    background: linear-gradient(145deg, #f8fcff, #eef6ff);
+}
+
+body.ums-theme #faculty-section .faculty-gps-locks-table td span {
+    color: #607b92;
+}
+
+body.ums-theme #faculty-section .faculty-gps-locks-table code {
+    color: #1d587e;
 }
 
 body.ums-theme #faculty-attendance-session-panel {
@@ -13140,6 +13219,12 @@ body.ums-theme .slot-status.mark {
     background: #0f9a5a;
     border-color: #0c7f4a;
     color: #ffffff;
+}
+
+body.ums-theme .slot-status.gps-lock {
+    background: #e7f8fb;
+    border-color: #a7dce5;
+    color: #176472;
 }
 
 body.ums-theme .attendance-pill {
