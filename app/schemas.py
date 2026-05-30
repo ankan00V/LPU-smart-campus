@@ -2338,8 +2338,8 @@ class FacultyAttendanceRectificationOut(BaseModel):
 
 
 class FacultyAttendanceRectificationListOut(BaseModel):
-    schedule_id: int
-    class_date: date
+    schedule_id: Optional[int] = None
+    class_date: Optional[date] = None
     requests: list[FacultyAttendanceRectificationOut]
 
 

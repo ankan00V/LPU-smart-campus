@@ -5576,7 +5576,7 @@ function updateDashboardHeroByRole() {
     els.dashboardSubtitle.textContent = 'Run classes, review attendance queues, and track section performance.';
   } else if (role === 'student') {
     els.dashboardTitle.textContent = 'Student Success Dashboard';
-    els.dashboardSubtitle.textContent = 'Track attendance, Saarthi mentoring, schedules, remedials, and campus food workflows from one place.';
+    els.dashboardSubtitle.textContent = 'Your all-in-one campus ecosystem.';
   } else if (role === 'owner') {
     els.dashboardTitle.textContent = 'Vendor Operations Console';
     els.dashboardSubtitle.textContent = 'Manage order intake, preparation flow, and delivery timelines for your shop.';
@@ -16920,8 +16920,15 @@ function studentGpsLockLabel(item = {}) {
   if (!item?.attendance_location_configured) {
     return '';
   }
+  return 'GPS locked';
+}
+
+function studentGpsLockTitle(item = {}) {
+  if (!item?.attendance_location_configured) {
+    return '';
+  }
   const room = String(item.attendance_location_label || item.classroom_label || '').trim();
-  return room ? `GPS Locked: ${room}` : 'GPS Locked';
+  return room ? `GPS locked: ${room}` : 'GPS locked';
 }
 
 function escapeHtml(value) {
@@ -18186,9 +18193,11 @@ function renderStudentTimetableMobile(classes, currentDayIndex) {
       metaRow.appendChild(statusBadge);
       const gpsLockLabel = studentGpsLockLabel(item);
       if (gpsLockLabel) {
+        card.classList.add('has-gps-lock');
         const gpsBadge = document.createElement('span');
         gpsBadge.className = 'slot-status gps-lock';
         gpsBadge.textContent = gpsLockLabel;
+        gpsBadge.title = studentGpsLockTitle(item);
         metaRow.appendChild(gpsBadge);
       }
       card.appendChild(metaRow);
@@ -18342,9 +18351,11 @@ function renderStudentTimetable() {
     metaRow.appendChild(slotState);
     const gpsLockLabel = studentGpsLockLabel(item);
     if (gpsLockLabel) {
+      card.classList.add('has-gps-lock');
       const gpsBadge = document.createElement('span');
       gpsBadge.className = 'slot-status gps-lock';
       gpsBadge.textContent = gpsLockLabel;
+      gpsBadge.title = studentGpsLockTitle(item);
       metaRow.appendChild(gpsBadge);
     }
 
@@ -20728,7 +20739,7 @@ function renderFacultyRectificationQueue(rows = []) {
   }
   els.facultyRectificationBody.innerHTML = '';
   if (!rows.length) {
-    els.facultyRectificationBody.innerHTML = '<tr><td colspan="6">No rectification requests for this class date.</td></tr>';
+    els.facultyRectificationBody.innerHTML = '<tr><td colspan="6">No rectification requests assigned to you.</td></tr>';
     return;
   }
 
@@ -20738,6 +20749,7 @@ function renderFacultyRectificationQueue(rows = []) {
     const isPending = statusRaw === 'pending';
     const classDateText = parseISODateLocal(row.class_date).toLocaleDateString('en-GB');
     const classTimeText = `${formatTime24(row.class_start_time)}-${formatTime24(row.class_end_time)}`;
+    const courseText = [row.course_code, row.course_title].filter(Boolean).join(' - ');
     const requestedAtText = row.requested_at
       ? new Date(row.requested_at).toLocaleString()
       : '-';
@@ -20759,7 +20771,10 @@ function renderFacultyRectificationQueue(rows = []) {
 
     tr.innerHTML = `
       <td>${escapeHtml(row.student_name)}</td>
-      <td>${escapeHtml(classDateText)}<br><small>${escapeHtml(classTimeText)}</small></td>
+      <td>
+        <strong>${escapeHtml(courseText || `Course #${row.course_id || '-'}`)}</strong>
+        <small>${escapeHtml(classDateText)} · ${escapeHtml(classTimeText)}</small>
+      </td>
       <td><div class="rectification-proof-inline"><p>${escapeHtml(proofText || '-')}</p>${attachedImage}</div></td>
       <td>${escapeHtml(requestedAtText)}</td>
       <td><span class="badge ${statusRaw || 'pending'}">${escapeHtml(statusLabel(statusRaw || 'pending'))}</span></td>
@@ -20773,16 +20788,7 @@ async function loadFacultyRectificationQueue() {
   if (!authState.user || (authState.user.role !== 'faculty' && authState.user.role !== 'admin')) {
     return;
   }
-  const scheduleId = Number(els.facultyScheduleSelect.value);
-  const classDate = els.facultyClassDate.value;
-  if (!scheduleId || !classDate) {
-    renderFacultyRectificationQueue([]);
-    return;
-  }
-
-  const payload = await api(
-    `/attendance/faculty/rectification-requests?schedule_id=${scheduleId}&class_date=${classDate}&include_resolved=true`
-  );
+  const payload = await api('/attendance/faculty/rectification-requests?include_resolved=true');
   state.faculty.rectificationRequests = payload.requests || [];
   renderFacultyRectificationQueue(state.faculty.rectificationRequests);
 }
