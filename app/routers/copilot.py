@@ -1699,8 +1699,6 @@ def _faculty_can_manage_student_scope(db: Session, *, faculty_id: int, student: 
     faculty = db.get(models.Faculty, int(faculty_id))
     allowed_sections = remedial_faculty_allowed_sections(faculty)
     student_section = _student_section_token(student)
-    if allowed_sections:
-        return bool(student_section and student_section in allowed_sections)
     teaches_student = (
         db.query(models.Enrollment.id)
         .join(models.Course, models.Course.id == models.Enrollment.course_id)
@@ -1711,6 +1709,8 @@ def _faculty_can_manage_student_scope(db: Session, *, faculty_id: int, student: 
         .first()
         is not None
     )
+    if allowed_sections:
+        return bool(student_section and student_section in allowed_sections) or teaches_student
     return teaches_student
 
 

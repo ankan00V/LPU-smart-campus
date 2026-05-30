@@ -1023,6 +1023,11 @@ class SupportQueryContactOut(BaseModel):
     name: str
     section: Optional[str] = None
     descriptor: Optional[str] = None
+    contact_key: Optional[str] = None
+    subject: Optional[str] = None
+    course_id: Optional[int] = None
+    course_code: Optional[str] = None
+    course_title: Optional[str] = None
 
 
 class SupportQueryThreadOut(BaseModel):
@@ -1926,6 +1931,7 @@ class TimetableClassOut(BaseModel):
     start_time: time
     end_time: time
     classroom_label: Optional[str]
+    section: Optional[str] = None
     class_date: date
     is_open_now: bool
     is_active_now: bool
@@ -2285,7 +2291,7 @@ class AttendanceRectificationRequestCreate(BaseModel):
     class_date: date
     start_time: Optional[time] = None
     proof_note: str = Field(min_length=10, max_length=1200)
-    proof_photo_data_url: Optional[str] = Field(default=None, min_length=20)
+    proof_photo_data_url: str = Field(min_length=20)
 
 
 class StudentAttendanceRectificationOut(BaseModel):

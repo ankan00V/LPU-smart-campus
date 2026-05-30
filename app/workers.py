@@ -224,6 +224,7 @@ def _redis_transport_candidates(preferred_url: str) -> list[str]:
             preferred_url,
             os.getenv("REDIS_URL") or "",
             os.getenv("REDIS_URL_SECONDARY") or "",
+            os.getenv("REDIS_URL_TERTIARY") or "",
         ]
     )
 
@@ -266,7 +267,7 @@ def _select_worker_redis_url(preferred_url: str) -> str:
         if available:
             if candidate != preferred_url:
                 logger.warning(
-                    "Worker Redis transport failed over to secondary Redis because preferred transport is unavailable."
+                    "Worker Redis transport failed over to an alternate Redis candidate because preferred transport is unavailable."
                 )
             return candidate
         last_error = error

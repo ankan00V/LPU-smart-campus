@@ -25,6 +25,7 @@ from ..academic_policy import (
     ACADEMIC_START_DATE_DEFAULT,
     ACADEMIC_TERM_CONFIG_KEY,
     academic_window,
+    sync_faculty_sections_for_student,
     sync_student_academic_term,
 )
 from ..attendance_recovery import (
@@ -2469,6 +2470,7 @@ def _build_timetable_class_item(
     db: Session,
     *,
     student_id: int,
+    student_section: str,
     current_week_start: date,
     academic_start: date,
     now_dt: datetime,
@@ -2529,7 +2531,8 @@ def _build_timetable_class_item(
         weekday=schedule.weekday,
         start_time=schedule.start_time,
         end_time=schedule.end_time,
-        classroom_label=schedule.classroom_label,
+        classroom_label=student_section or schedule.classroom_label,
+        section=student_section or None,
         class_date=class_date,
         is_open_now=is_open_now,
         is_active_now=is_active_now,
@@ -4162,7 +4165,10 @@ def get_student_profile(
 
     _reissue_profile_identifiers_if_needed(db)
     db.refresh(student)
-    if sync_student_academic_term(db, student, now=_campus_now()):
+    sync_time = _campus_now()
+    changed = sync_student_academic_term(db, student, now=sync_time)
+    changed = sync_faculty_sections_for_student(db, student, now=sync_time) > 0 or changed
+    if changed:
         db.commit()
         db.refresh(student)
     _sync_student_to_mongo(db, student, source="student-profile-read")
@@ -4502,6 +4508,7 @@ def get_student_weekly_timetable(
         item = _build_timetable_class_item(
             db,
             student_id=current_user.student_id,
+            student_section=student_section,
             current_week_start=current_week_start,
             academic_start=academic_start,
             now_dt=now_dt,
@@ -4537,7 +4544,7 @@ def get_student_weekly_timetable(
 
     for remedial in remedial_classes:
         sections = set(_parse_remedial_sections(remedial.sections_json))
-        if sections:
+        if sections and int(remedial.id) not in targeted_remedial_class_ids:
             if not student_section:
                 continue
             if student_section not in sections:
@@ -5367,20 +5374,21 @@ def create_student_rectification_request(
     proof_note = str(payload.proof_note or "").strip()
     if len(proof_note) < 10:
         raise HTTPException(status_code=400, detail="Please provide proper proof details for rectification")
-    proof_photo = (payload.proof_photo_data_url or "").strip() or None
-    if proof_photo and not proof_photo.startswith("data:image/"):
+    proof_photo = str(payload.proof_photo_data_url or "").strip()
+    if not proof_photo:
+        raise HTTPException(status_code=400, detail="Supporting proof image is required for rectification")
+    if not proof_photo.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="proof_photo_data_url must be an image data URL")
     proof_photo_object_key: str | None = None
-    if proof_photo:
-        proof_media = store_data_url_object(
-            db,
-            owner_table="attendance_rectification_requests",
-            owner_id=int(current_user.student_id),
-            media_kind="attendance-rectification-proof",
-            data_url=proof_photo,
-            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
-        )
-        proof_photo_object_key = proof_media.object_key
+    proof_media = store_data_url_object(
+        db,
+        owner_table="attendance_rectification_requests",
+        owner_id=int(current_user.student_id),
+        media_kind="attendance-rectification-proof",
+        data_url=proof_photo,
+        retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+    )
+    proof_photo_object_key = proof_media.object_key
 
     request = (
         db.query(models.AttendanceRectificationRequest)
@@ -5446,7 +5454,6 @@ def create_student_rectification_request(
         scopes={
             f"student:{int(request.student_id)}",
             f"faculty:{int(request.faculty_id or 0)}",
-            "role:admin",
         },
         topics={"attendance"},
         actor={
@@ -6403,7 +6410,6 @@ def faculty_rectification_review(
         scopes={
             f"student:{int(request.student_id)}",
             f"faculty:{int(reviewer_faculty_id or request.faculty_id or 0)}",
-            "role:admin",
         },
         topics={"attendance", "messages"},
         actor={

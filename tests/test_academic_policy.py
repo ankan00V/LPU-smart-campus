@@ -5,7 +5,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app import models
-from app.academic_policy import assign_student_section, sync_student_academic_term
+from app.academic_policy import assign_student_section, sync_faculty_sections_for_student, sync_student_academic_term
 from app.auth_utils import CurrentUser
 from app.routers.attendance import get_academic_term_config, update_academic_term_config
 from app import schemas
@@ -57,7 +57,7 @@ class AcademicPolicyTests(unittest.TestCase):
         self.assertEqual(student.semester, 5)
         self.assertEqual(student.section, "526CSE")
 
-    def test_existing_section_is_preserved_until_next_term(self):
+    def test_legacy_section_is_replaced_by_current_policy_section(self):
         student = models.Student(
             name="Student",
             email="student@example.com",
@@ -72,8 +72,36 @@ class AcademicPolicyTests(unittest.TestCase):
 
         changed = sync_student_academic_term(self.db, student, now=datetime(2026, 5, 30, 9, 0, 0))
 
-        self.assertFalse(changed)
-        self.assertEqual(student.section, "P132")
+        self.assertTrue(changed)
+        self.assertEqual(student.section, "426CSE")
+
+    def test_syncs_enrolled_course_faculty_to_student_policy_section(self):
+        student = models.Student(
+            id=1,
+            name="Student",
+            email="student@example.com",
+            department="CSE",
+            semester=4,
+            section="426CSE",
+            section_updated_at=datetime(2026, 5, 29, 9, 0, 0),
+            created_at=datetime(2026, 5, 29, 9, 0, 0),
+        )
+        faculty = models.Faculty(
+            id=11,
+            name="Faculty",
+            email="faculty@example.com",
+            department="CSE",
+            section="423ZK",
+        )
+        course = models.Course(id=21, code="CSE101", title="Algorithms", faculty_id=11)
+        enrollment = models.Enrollment(id=31, student_id=1, course_id=21)
+        self.db.add_all([student, faculty, course, enrollment])
+        self.db.flush()
+
+        changed = sync_faculty_sections_for_student(self.db, student, now=datetime(2026, 5, 30, 9, 0, 0))
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(faculty.section, "426CSE")
 
     def test_admin_can_update_academic_class_window(self):
         admin = CurrentUser(

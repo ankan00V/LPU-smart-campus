@@ -13,7 +13,7 @@ class DefaultTimetableRaceSafetyTests(unittest.TestCase):
         session.begin_nested.return_value = savepoint
         session.flush.side_effect = IntegrityError(
             "INSERT INTO faculty ...",
-            {"email": "ravindra.yadav@lpu.in"},
+            {"email": "rudranilmondal23@lpu.in"},
             Exception("duplicate key value violates unique constraint"),
         )
 

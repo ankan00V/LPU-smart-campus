@@ -79,6 +79,14 @@ def section_for_bucket(base: str, bucket_index: int) -> str:
     return f"{base}{bucket_index + 1}"
 
 
+def section_matches_policy_base(section: str | None, base: str) -> bool:
+    normalized = re.sub(r"\s+", "", str(section or "").strip().upper())
+    normalized_base = re.sub(r"\s+", "", str(base or "").strip().upper())
+    if not normalized or not normalized_base:
+        return False
+    return normalized == normalized_base or bool(re.fullmatch(rf"{re.escape(normalized_base)}[2-9][0-9]*", normalized))
+
+
 def assign_student_section(
     db: Session,
     student: models.Student,
@@ -94,7 +102,7 @@ def assign_student_section(
         student.semester = min(12, int(student.semester or 1) + elapsed)
 
     base = section_base(semester=int(student.semester or 1), department=student.department, day=today)
-    if student.section and not elapsed and not force:
+    if student.section and not elapsed and not force and section_matches_policy_base(student.section, base):
         return student.section
 
     existing_sections = [
@@ -136,6 +144,35 @@ def assign_student_section(
 
     student.section_updated_at = current_dt
     return str(student.section)
+
+
+def sync_faculty_sections_for_student(
+    db: Session,
+    student: models.Student,
+    *,
+    now: datetime | None = None,
+) -> int:
+    current_dt = now or datetime.utcnow()
+    section = re.sub(r"\s+", "", str(student.section or "").strip().upper())
+    if not section:
+        return 0
+    faculty_rows = (
+        db.query(models.Faculty)
+        .join(models.Course, models.Course.faculty_id == models.Faculty.id)
+        .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
+        .filter(models.Enrollment.student_id == student.id)
+        .distinct()
+        .all()
+    )
+    changed = 0
+    for faculty in faculty_rows:
+        current_section = re.sub(r"\s+", "", str(faculty.section or "").strip().upper())
+        if current_section == section:
+            continue
+        faculty.section = section
+        faculty.section_updated_at = current_dt
+        changed += 1
+    return changed
 
 
 def sync_student_academic_term(db: Session, student: models.Student, *, now: datetime | None = None) -> bool:

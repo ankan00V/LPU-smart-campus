@@ -3,41 +3,47 @@
 This blueprint matches the latest uploaded timetable grid.
 """
 
+DEFAULT_FACULTY = {
+    "name": "RUDRANIL MONDAL",
+    "email": "rudranilmondal23@lpu.in",
+}
+
+
 COURSES = {
     "CSE332": {
         "title": "Industry Ethics and Legal Issues",
-        "faculty_name": "Arvind Kumar Bhatia",
-        "faculty_email": "arvind.bhatia@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "CSE357": {
         "title": "Combinatorial Studies",
-        "faculty_name": "Konne Madhavi",
-        "faculty_email": "konne.madhavi@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "CSES001": {
         "title": "Fundamentals of Computers-I",
-        "faculty_name": "Hunny Batra",
-        "faculty_email": "hunny.batra@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "INT312": {
         "title": "Big Data Fundamentals",
-        "faculty_name": "Dr. Ravindra Singh Yadav",
-        "faculty_email": "ravindra.yadav@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "MKT905": {
         "title": "Search Engine Optimization",
-        "faculty_name": "Abhishek Sahai",
-        "faculty_email": "abhishek.sahai@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "PES319": {
         "title": "Soft Skills-II",
-        "faculty_name": "Hariz Aftab",
-        "faculty_email": "hariz.aftab@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
     "PETV08": {
         "title": "Modern Web Programming with HTML, CSS & Javascript",
-        "faculty_name": "Dr. Avinash Kaur",
-        "faculty_email": "avinash.kaur@lpu.in",
+        "faculty_name": DEFAULT_FACULTY["name"],
+        "faculty_email": DEFAULT_FACULTY["email"],
     },
 }
 

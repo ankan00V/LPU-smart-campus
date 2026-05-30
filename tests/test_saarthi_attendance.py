@@ -504,6 +504,33 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertNotIn("20-minute", reply)
         self.assertNotIn("open the relevant card", reply.lower())
 
+    def test_first_crisis_message_saved_before_reply_still_uses_icall(self):
+        current_message = "its me wanting to suicide"
+        reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message=current_message,
+            current_dt=datetime(2026, 5, 30, 19, 50, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[
+                models.SaarthiMessage(sender_role="student", message="hi"),
+                models.SaarthiMessage(
+                    sender_role="assistant",
+                    message="Hey, Ankan, good to see you. Anything on your mind?",
+                ),
+                models.SaarthiMessage(sender_role="student", message="im feeling kinda off"),
+                models.SaarthiMessage(sender_role="assistant", message="Ankan, I hear you."),
+                models.SaarthiMessage(sender_role="student", message=current_message),
+            ],
+        )
+
+        self.assertIn("did the right thing", reply)
+        self.assertIn("iCall", reply)
+        self.assertIn("9152987821", reply)
+        self.assertIn("Are you somewhere safe right now?", reply)
+        self.assertNotIn("What's been hurting the most?", reply)
+
     def test_crisis_mode_stays_active_for_not_safe_and_lost_followups(self):
         first_reply = generate_saarthi_reply(
             student_name="Ankan Ghosh",
@@ -588,26 +615,31 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertNotIn("what would help most", reply.lower())
         self.assertNotIn("Data Structures", reply)
 
-    def test_crisis_safety_net_blocks_deterministic_fallback(self):
-        with (
-            mock.patch("app.saarthi_service._saarthi_crisis_mode_reply", return_value=""),
-            mock.patch("app.saarthi_service._saarthi_recent_crisis_context", return_value=True),
-            mock.patch("app.saarthi_service._generate_saarthi_reply_deterministic") as deterministic_reply,
-        ):
-            reply = generate_saarthi_reply(
-                student_name="Ankan Ghosh",
-                student_message="I don't know",
-                current_dt=datetime(2026, 5, 30, 2, 50, 0),
-                mandatory_date=date(2026, 5, 31),
-                attendance_awarded_now=False,
-                attendance_already_awarded=False,
-                recent_messages=[],
-            )
+    def test_crisis_followup_does_not_repeat_generic_pain_question(self):
+        reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="idk im confused",
+            current_dt=datetime(2026, 5, 30, 19, 51, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[
+                models.SaarthiMessage(sender_role="student", message="its me wanting to suicide"),
+                models.SaarthiMessage(
+                    sender_role="assistant",
+                    message=(
+                        "Ankan, I'm staying with you here. That sounds really painful to carry right now, "
+                        "and we do not need to solve it all in this moment. Please stay near another person "
+                        "while we talk. What's been hurting the most?"
+                    ),
+                ),
+            ],
+        )
 
-        deterministic_reply.assert_not_called()
-        self.assertIn("I'm still right here with you", reply)
-        self.assertIn("9152987821", reply)
+        self.assertIn("don't have to explain it right now", reply)
+        self.assertIn("where you are right now", reply)
         self.assertEqual(reply.count("?"), 1)
+        self.assertNotIn("What's been hurting the most?", reply)
 
     def test_deterministic_reply_bridges_prior_student_context(self):
         recent_messages = [
