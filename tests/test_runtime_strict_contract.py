@@ -173,6 +173,51 @@ class RuntimeStrictContractTests(unittest.TestCase):
             "rediss://default:secondary@example-secondary.upstash.io:6379/0",
         ])
 
+    def test_worker_broker_fails_over_to_tertiary_redis_when_first_two_are_exhausted(self):
+        os.environ["CELERY_BROKER_URL"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
+        os.environ["REDIS_URL"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
+        os.environ["REDIS_URL_SECONDARY"] = "rediss://default:secondary@example-secondary.upstash.io:6379/0"
+        os.environ["REDIS_URL_TERTIARY"] = "rediss://default:tertiary@example-tertiary.upstash.io:6379/0"
+        os.environ["WORKER_REDIS_FAILOVER_LIVE_PROBE_IN_TESTS"] = "true"
+
+        clients = []
+
+        class DummyRedis:
+            def __init__(self, url):  # noqa: ANN001
+                self.url = url
+                clients.append(self)
+
+            def ping(self):
+                if "example-primary" in self.url or "example-secondary" in self.url:
+                    raise RuntimeError("max requests limit exceeded. Limit: 500000, Usage: 500000")
+                return True
+
+            def set(self, *_args, **_kwargs):
+                return True
+
+            def delete(self, *_args, **_kwargs):
+                return 1
+
+            def close(self):
+                return None
+
+        class DummyRedisModule:
+            class Redis:
+                @staticmethod
+                def from_url(url, **_kwargs):  # noqa: ANN001
+                    return DummyRedis(url)
+
+        with mock.patch.object(workers, "redis_pkg", DummyRedisModule):
+            self.assertEqual(
+                workers._broker_url(),
+                "rediss://default:tertiary@example-tertiary.upstash.io:6379/0",
+            )
+        self.assertEqual([client.url for client in clients], [
+            "rediss://default:primary@example-primary.upstash.io:6379/0",
+            "rediss://default:secondary@example-secondary.upstash.io:6379/0",
+            "rediss://default:tertiary@example-tertiary.upstash.io:6379/0",
+        ])
+
     def test_worker_backend_fails_over_to_secondary_redis_when_primary_quota_exhausted(self):
         os.environ["CELERY_RESULT_BACKEND"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
         os.environ["REDIS_URL"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
@@ -207,6 +252,43 @@ class RuntimeStrictContractTests(unittest.TestCase):
             self.assertEqual(
                 workers._backend_url(),
                 "rediss://default:secondary@example-secondary.upstash.io:6379/0",
+            )
+
+    def test_worker_backend_fails_over_to_tertiary_redis_when_first_two_are_exhausted(self):
+        os.environ["CELERY_RESULT_BACKEND"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
+        os.environ["REDIS_URL"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
+        os.environ["REDIS_URL_SECONDARY"] = "rediss://default:secondary@example-secondary.upstash.io:6379/0"
+        os.environ["REDIS_URL_TERTIARY"] = "rediss://default:tertiary@example-tertiary.upstash.io:6379/0"
+        os.environ["WORKER_REDIS_FAILOVER_LIVE_PROBE_IN_TESTS"] = "true"
+
+        class DummyRedis:
+            def __init__(self, url):  # noqa: ANN001
+                self.url = url
+
+            def ping(self):
+                if "example-primary" in self.url or "example-secondary" in self.url:
+                    raise RuntimeError("max requests limit exceeded. Limit: 500000, Usage: 500000")
+                return True
+
+            def set(self, *_args, **_kwargs):
+                return True
+
+            def delete(self, *_args, **_kwargs):
+                return 1
+
+            def close(self):
+                return None
+
+        class DummyRedisModule:
+            class Redis:
+                @staticmethod
+                def from_url(url, **_kwargs):  # noqa: ANN001
+                    return DummyRedis(url)
+
+        with mock.patch.object(workers, "redis_pkg", DummyRedisModule):
+            self.assertEqual(
+                workers._backend_url(),
+                "rediss://default:tertiary@example-tertiary.upstash.io:6379/0",
             )
 
     def test_dual_redis_status_preserves_secondary_quota_error(self):
@@ -245,6 +327,45 @@ class RuntimeStrictContractTests(unittest.TestCase):
         self.assertFalse(secondary["connected"])
         self.assertTrue(secondary["quota_exceeded"])
         self.assertIn("max requests limit exceeded", secondary["error"])
+
+    def test_dual_redis_manager_uses_tertiary_when_first_two_are_exhausted(self):
+        os.environ["REDIS_URL"] = "rediss://default:primary@example-primary.upstash.io:6379/0"
+        os.environ["REDIS_URL_SECONDARY"] = "rediss://default:secondary@example-secondary.upstash.io:6379/0"
+        os.environ["REDIS_URL_TERTIARY"] = "rediss://default:tertiary@example-tertiary.upstash.io:6379/0"
+
+        class DummyRedis:
+            def __init__(self, url):  # noqa: ANN001
+                self.url = url
+
+            def ping(self):
+                if "example-primary" in self.url or "example-secondary" in self.url:
+                    raise RuntimeError("max requests limit exceeded. Limit: 500000, Usage: 500000")
+                return True
+
+            def set(self, *_args, **_kwargs):
+                return True
+
+            def delete(self, *_args, **_kwargs):
+                return 1
+
+        class DummyRedisModule:
+            class Redis:
+                @staticmethod
+                def from_url(url, **_kwargs):  # noqa: ANN001
+                    return DummyRedis(url)
+
+        manager = redis_dual_client.DualRedisManager()
+        with mock.patch.object(redis_dual_client, "redis", DummyRedisModule):
+            self.assertTrue(manager.initialize())
+
+        status = manager.get_status()
+        self.assertTrue(status["any_connected"])
+        self.assertEqual(status["active_instance"], "tertiary")
+        self.assertEqual([item["name"] for item in status["instances"]], ["primary", "secondary", "tertiary"])
+        failed = [item for item in status["instances"] if item["name"] in {"primary", "secondary"}]
+        self.assertTrue(all(item["quota_exceeded"] for item in failed))
+        tertiary = next(item for item in status["instances"] if item["name"] == "tertiary")
+        self.assertTrue(tertiary["connected"])
 
     @mock.patch("app.workers.get_celery_app")
     def test_dispatch_login_otp_returns_confirmed_delivery_channel(self, get_celery_app):

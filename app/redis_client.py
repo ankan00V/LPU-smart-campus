@@ -120,9 +120,10 @@ def _redis_url() -> str:
 
 
 def _redis_dual_enabled() -> bool:
-    """Check if dual Redis failover is enabled"""
+    """Check if Redis failover is enabled"""
     secondary_url = (os.getenv("REDIS_URL_SECONDARY") or "").strip()
-    return bool(secondary_url)
+    tertiary_url = (os.getenv("REDIS_URL_TERTIARY") or "").strip()
+    return bool(secondary_url or tertiary_url)
 
 
 def _redis_required() -> bool:

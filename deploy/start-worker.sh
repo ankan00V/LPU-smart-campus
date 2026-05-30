@@ -16,7 +16,7 @@ except Exception:
     sys.exit(0)
 
 urls = []
-for name in ("CELERY_BROKER_URL", "WORKER_BROKER_URL", "REDIS_URL", "REDIS_URL_SECONDARY"):
+for name in ("CELERY_BROKER_URL", "WORKER_BROKER_URL", "REDIS_URL", "REDIS_URL_SECONDARY", "REDIS_URL_TERTIARY"):
     url = (os.getenv(name) or "").strip()
     if url and url not in urls:
         urls.append(url)

@@ -1,9 +1,9 @@
 """
-Dual Redis Failover System for Production-Grade Reliability
+Redis Failover System for Production-Grade Reliability
 
-This module implements automatic failover between two Redis instances (Upstash free tier accounts)
+This module implements automatic failover across configured Redis instances
 to handle monthly quota exhaustion gracefully. When one Redis instance hits quota limits,
-the system automatically switches to the backup instance.
+the system automatically switches to the next available instance.
 
 Features:
 - Automatic failover on quota exhaustion
@@ -76,11 +76,11 @@ class RateLimitDecision:
 
 class DualRedisManager:
     """
-    Manages two Redis instances with automatic failover.
+    Manages configured Redis instances with automatic failover.
     
-    When the primary instance fails (especially due to quota exhaustion),
-    automatically switches to the secondary instance. Periodically checks
-    if the primary has recovered and switches back.
+    When the preferred instance fails (especially due to quota exhaustion),
+    automatically switches to the next configured instance. Periodically checks
+    if the preferred instance has recovered and switches back.
     """
     
     def __init__(self):
@@ -214,48 +214,43 @@ class DualRedisManager:
         instance.error = message
         if self._is_quota_exceeded_error(message):
             instance.quota_exceeded = True
+
+    def _configured_instances(self) -> list[RedisInstance]:
+        configs = [
+            ("primary", "REDIS_URL"),
+            ("secondary", "REDIS_URL_SECONDARY"),
+            ("tertiary", "REDIS_URL_TERTIARY"),
+        ]
+        instances: list[RedisInstance] = []
+        for name, env_name in configs:
+            url = (os.getenv(env_name) or "").strip()
+            if url:
+                instances.append(RedisInstance(url=url, name=name))
+            elif name != "primary":
+                logger.info("No %s Redis configured (%s not set)", name, env_name)
+        return instances
     
     def initialize(self) -> bool:
-        """Initialize both Redis instances"""
+        """Initialize configured Redis instances"""
         self._load_environment_files()
-        
-        # Primary Redis (existing)
-        primary_url = (os.getenv("REDIS_URL") or "").strip()
-        
-        # Secondary Redis (new backup)
-        secondary_url = (os.getenv("REDIS_URL_SECONDARY") or "").strip()
-        
-        if not primary_url:
+
+        configured_instances = self._configured_instances()
+        if not any(instance.name == "primary" for instance in configured_instances):
             logger.error("REDIS_URL not configured")
             return False
         
         with self._lock:
             self._instances = []
-            
-            # Add primary instance
-            primary = RedisInstance(url=primary_url, name="primary")
-            primary.client = self._create_redis_client(primary_url)
-            if primary.client:
-                primary.last_success = time.time()
-                logger.info("Primary Redis instance initialized successfully")
-            else:
-                self._mark_instance_create_failed(primary)
-                logger.warning("Primary Redis instance failed to initialize")
-            self._instances.append(primary)
-            
-            # Add secondary instance if configured
-            if secondary_url:
-                secondary = RedisInstance(url=secondary_url, name="secondary")
-                secondary.client = self._create_redis_client(secondary_url)
-                if secondary.client:
-                    secondary.last_success = time.time()
-                    logger.info("Secondary Redis instance initialized successfully")
+
+            for instance in configured_instances:
+                instance.client = self._create_redis_client(instance.url)
+                if instance.client:
+                    instance.last_success = time.time()
+                    logger.info("%s Redis instance initialized successfully", instance.name.capitalize())
                 else:
-                    self._mark_instance_create_failed(secondary)
-                    logger.warning("Secondary Redis instance failed to initialize")
-                self._instances.append(secondary)
-            else:
-                logger.info("No secondary Redis configured (REDIS_URL_SECONDARY not set)")
+                    self._mark_instance_create_failed(instance)
+                    logger.warning("%s Redis instance failed to initialize", instance.name.capitalize())
+                self._instances.append(instance)
             
             # Set active instance to first working one
             self._active_index = 0
@@ -364,7 +359,7 @@ class DualRedisManager:
                             self._mark_instance_success(instance)
                             logger.info("Redis instance %s recovered", instance.name)
                             
-                            # If this is primary and we're on secondary, switch back
+                            # If this is primary and we're on a fallback, switch back
                             if i == 0 and self._active_index != 0:
                                 self._active_index = 0
                                 logger.info("Switched back to primary Redis instance")

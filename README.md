@@ -529,6 +529,8 @@ MONGO_DB_NAME=lpu_smart
 MONGO_PERSISTENCE_REQUIRED=true
 MONGO_STARTUP_STRICT=true
 REDIS_URL=rediss://default:<password>@<redis-host>:6379/0
+REDIS_URL_SECONDARY=rediss://default:<password>@<backup-redis-host>:6379/0
+REDIS_URL_TERTIARY=rediss://default:<password>@<third-redis-host>:6379/0
 REDIS_REQUIRED=true
 # If your managed Redis provider only supports DB 0, reuse /0 for
 # CELERY_BROKER_URL and CELERY_RESULT_BACKEND as well.
