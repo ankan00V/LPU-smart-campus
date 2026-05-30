@@ -5367,20 +5367,21 @@ def create_student_rectification_request(
     proof_note = str(payload.proof_note or "").strip()
     if len(proof_note) < 10:
         raise HTTPException(status_code=400, detail="Please provide proper proof details for rectification")
-    proof_photo = (payload.proof_photo_data_url or "").strip() or None
-    if proof_photo and not proof_photo.startswith("data:image/"):
+    proof_photo = str(payload.proof_photo_data_url or "").strip()
+    if not proof_photo:
+        raise HTTPException(status_code=400, detail="Supporting proof image is required for rectification")
+    if not proof_photo.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="proof_photo_data_url must be an image data URL")
     proof_photo_object_key: str | None = None
-    if proof_photo:
-        proof_media = store_data_url_object(
-            db,
-            owner_table="attendance_rectification_requests",
-            owner_id=int(current_user.student_id),
-            media_kind="attendance-rectification-proof",
-            data_url=proof_photo,
-            retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
-        )
-        proof_photo_object_key = proof_media.object_key
+    proof_media = store_data_url_object(
+        db,
+        owner_table="attendance_rectification_requests",
+        owner_id=int(current_user.student_id),
+        media_kind="attendance-rectification-proof",
+        data_url=proof_photo,
+        retention_days=ATTENDANCE_MEDIA_RETENTION_DAYS,
+    )
+    proof_photo_object_key = proof_media.object_key
 
     request = (
         db.query(models.AttendanceRectificationRequest)
@@ -5446,7 +5447,6 @@ def create_student_rectification_request(
         scopes={
             f"student:{int(request.student_id)}",
             f"faculty:{int(request.faculty_id or 0)}",
-            "role:admin",
         },
         topics={"attendance"},
         actor={
@@ -6403,7 +6403,6 @@ def faculty_rectification_review(
         scopes={
             f"student:{int(request.student_id)}",
             f"faculty:{int(reviewer_faculty_id or request.faculty_id or 0)}",
-            "role:admin",
         },
         topics={"attendance", "messages"},
         actor={

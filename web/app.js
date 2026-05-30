@@ -335,6 +335,8 @@ const state = {
     threads: [],
     messages: [],
     selectedCounterpartyId: null,
+    selectedContactKey: '',
+    selectedSubject: '',
     selectedCategory: 'Attendance',
     selectedCounterpartyName: '',
     selectedCounterpartySection: '',
@@ -4234,20 +4236,71 @@ function recomputeSupportDeskUnread() {
   );
 }
 
+function supportDeskContactKey(contact) {
+  const explicit = String(contact?.contact_key || '').trim();
+  if (explicit) {
+    return explicit;
+  }
+  const id = Number(contact?.id || contact?.counterparty_id || 0);
+  const subject = String(contact?.subject || '').trim();
+  return id > 0 ? `contact:${id}:${subject}` : '';
+}
+
+function supportDeskThreadKey(thread) {
+  const id = Number(thread?.counterparty_id || 0);
+  const subject = String(thread?.subject || '').trim();
+  return id > 0 ? `thread:${id}:${normalizeSupportDeskCategory(thread?.category)}:${subject}` : '';
+}
+
+function selectedSupportDeskContact() {
+  const contacts = Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : [];
+  const selectedKey = String(state.supportDesk.selectedContactKey || '').trim();
+  if (selectedKey) {
+    const byKey = contacts.find((item) => supportDeskContactKey(item) === selectedKey);
+    if (byKey) {
+      return byKey;
+    }
+  }
+  const selectedId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const selectedSubject = String(state.supportDesk.selectedSubject || '').trim();
+  return contacts.find((item) => (
+    Number(item?.id || 0) === selectedId
+    && String(item?.subject || '').trim() === selectedSubject
+  )) || contacts.find((item) => Number(item?.id || 0) === selectedId) || null;
+}
+
 function ensureSupportDeskSelection() {
   const currentId = Number(state.supportDesk.selectedCounterpartyId || 0);
+  const currentKey = String(state.supportDesk.selectedContactKey || '').trim();
+  const currentSubject = String(state.supportDesk.selectedSubject || '').trim();
   const currentCategory = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
   const threads = Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : [];
   const contacts = Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : [];
-  const validContactIds = new Set(contacts.map((entry) => Number(entry?.id || 0)).filter((id) => id > 0));
-  if (currentId > 0 && validContactIds.has(currentId)) {
+  const validContactKeys = new Set(contacts.map((entry) => supportDeskContactKey(entry)).filter(Boolean));
+  const matchingContact = contacts.find((entry) => (
+    Number(entry?.id || 0) === currentId
+    && String(entry?.subject || '').trim() === currentSubject
+  ));
+  if (currentId > 0 && ((currentKey && validContactKeys.has(currentKey)) || matchingContact)) {
+    const contact = matchingContact || contacts.find((entry) => supportDeskContactKey(entry) === currentKey);
     state.supportDesk.selectedCounterpartyId = currentId;
+    state.supportDesk.selectedContactKey = supportDeskContactKey(contact);
+    state.supportDesk.selectedSubject = String(contact?.subject || '').trim();
     state.supportDesk.selectedCategory = currentCategory;
     return;
   }
   const firstThread = threads[0];
   if (firstThread && Number(firstThread.counterparty_id || 0) > 0) {
+    const threadSubject = String(firstThread.subject || '').trim();
+    const threadContact = contacts.find((entry) => (
+      Number(entry?.id || 0) === Number(firstThread.counterparty_id)
+      && String(entry?.subject || '').trim() === threadSubject
+    ));
     state.supportDesk.selectedCounterpartyId = Number(firstThread.counterparty_id);
+    state.supportDesk.selectedContactKey = threadContact
+      ? supportDeskContactKey(threadContact)
+      : supportDeskThreadKey(firstThread);
+    state.supportDesk.selectedSubject = threadSubject;
     state.supportDesk.selectedCategory = normalizeSupportDeskCategory(firstThread.category);
     state.supportDesk.selectedCounterpartyName = String(firstThread.counterparty_name || '').trim();
     state.supportDesk.selectedCounterpartySection = String(firstThread.section || '').trim();
@@ -4256,12 +4309,16 @@ function ensureSupportDeskSelection() {
   const firstContact = contacts[0];
   if (firstContact && Number(firstContact.id || 0) > 0) {
     state.supportDesk.selectedCounterpartyId = Number(firstContact.id);
+    state.supportDesk.selectedContactKey = supportDeskContactKey(firstContact);
+    state.supportDesk.selectedSubject = String(firstContact.subject || '').trim();
     state.supportDesk.selectedCategory = 'Attendance';
     state.supportDesk.selectedCounterpartyName = String(firstContact.name || '').trim();
     state.supportDesk.selectedCounterpartySection = String(firstContact.section || '').trim();
     return;
   }
   state.supportDesk.selectedCounterpartyId = null;
+  state.supportDesk.selectedContactKey = '';
+  state.supportDesk.selectedSubject = '';
   state.supportDesk.selectedCounterpartyName = '';
   state.supportDesk.selectedCounterpartySection = '';
 }
@@ -4288,12 +4345,16 @@ function renderSupportDeskRecipientOptions() {
       if (!id) {
         return '';
       }
+      const key = supportDeskContactKey(item);
       const section = String(item?.section || '').trim();
       const descriptor = String(item?.descriptor || '').trim();
       const extra = descriptor || section;
       const label = extra ? `${item.name} • ${extra}` : item.name;
-      const selected = id === selectedId ? 'selected' : '';
-      return `<option value="${id}" ${selected}>${escapeHtml(label)}</option>`;
+      const subject = String(item?.subject || '').trim();
+      const selected = key && key === state.supportDesk.selectedContactKey
+        ? 'selected'
+        : (id === selectedId && subject === String(state.supportDesk.selectedSubject || '').trim() ? 'selected' : '');
+      return `<option value="${escapeHtml(key || String(id))}" data-recipient-id="${id}" data-subject="${escapeHtml(String(item?.subject || ''))}" ${selected}>${escapeHtml(label)}</option>`;
     })
     .filter(Boolean)
     .join('');
@@ -4355,24 +4416,27 @@ function renderSupportDeskWidget() {
 
   const selectedId = Number(state.supportDesk.selectedCounterpartyId || 0);
   const selectedCategory = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  const selectedSubject = String(state.supportDesk.selectedSubject || '').trim();
   const selectedThread = (Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : []).find((item) => (
     Number(item?.counterparty_id || 0) === selectedId
     && normalizeSupportDeskCategory(item?.category) === selectedCategory
+    && String(item?.subject || '').trim() === selectedSubject
   ));
-  const selectedContact = (Array.isArray(state.supportDesk.contacts) ? state.supportDesk.contacts : []).find(
-    (item) => Number(item?.id || 0) === selectedId
-  );
+  const selectedContact = selectedSupportDeskContact();
   if (els.supportDeskThreadMeta) {
     if (selectedThread) {
       const unreadLabel = Number(selectedThread.unread_count || 0) > 0
         ? `${selectedThread.unread_count} unread`
         : 'up to date';
       const section = selectedThread.section ? ` • ${selectedThread.section}` : '';
+      const subjectLabel = selectedThread.subject ? ` • ${selectedThread.subject}` : '';
       els.supportDeskThreadMeta.textContent =
-        `${selectedThread.counterparty_name}${section} • ${selectedCategory} • ${unreadLabel}`;
+        `${selectedThread.counterparty_name}${section}${subjectLabel} • ${selectedCategory} • ${unreadLabel}`;
     } else if (selectedContact) {
+      const descriptor = String(selectedContact.descriptor || selectedContact.subject || '').trim();
+      const descriptorLabel = descriptor ? ` • ${descriptor}` : '';
       els.supportDeskThreadMeta.textContent =
-        `${selectedContact.name} • ${selectedCategory} • Start a new conversation`;
+        `${selectedContact.name}${descriptorLabel} • ${selectedCategory} • Start a new conversation`;
     } else {
       els.supportDeskThreadMeta.textContent = 'Choose a recipient to start realtime messaging.';
     }
@@ -4389,18 +4453,21 @@ async function refreshSupportDeskThread({ silent = false } = {}) {
   }
   const counterpartyId = Number(state.supportDesk.selectedCounterpartyId || 0);
   const category = normalizeSupportDeskCategory(state.supportDesk.selectedCategory);
+  const subject = String(state.supportDesk.selectedSubject || '').trim();
   if (!counterpartyId) {
     state.supportDesk.messages = [];
     renderSupportDeskWidget();
     return;
   }
+  const subjectQuery = subject ? `&subject=${encodeURIComponent(subject)}` : '';
   const rows = await api(
-    `/messages/support/thread?counterparty_id=${counterpartyId}&category=${encodeURIComponent(category)}&limit=160`,
+    `/messages/support/thread?counterparty_id=${counterpartyId}&category=${encodeURIComponent(category)}${subjectQuery}&limit=160`,
   );
   state.supportDesk.messages = Array.isArray(rows) ? rows : [];
   const thread = (Array.isArray(state.supportDesk.threads) ? state.supportDesk.threads : []).find(
     (item) => Number(item?.counterparty_id || 0) === counterpartyId
       && normalizeSupportDeskCategory(item?.category) === category
+      && String(item?.subject || '').trim() === subject
   );
   if (thread) {
     thread.unread_count = 0;
@@ -4450,13 +4517,27 @@ async function sendSupportDeskMessage() {
   if (role !== 'student' && role !== 'faculty') {
     return;
   }
-  const recipientId = Number(state.supportDesk.selectedCounterpartyId || els.supportDeskRecipientSelect?.value || 0);
+  const selectedOption = els.supportDeskRecipientSelect?.selectedOptions?.[0] || null;
+  const selectedContact = selectedSupportDeskContact();
+  const recipientId = Number(
+    selectedOption?.dataset?.recipientId
+    || selectedContact?.id
+    || state.supportDesk.selectedCounterpartyId
+    || els.supportDeskRecipientSelect?.value
+    || 0
+  );
   if (!recipientId) {
     throw new Error('Select a recipient first.');
   }
   const category = normalizeSupportDeskCategory(
     els.supportDeskCategorySelect?.value || state.supportDesk.selectedCategory
   );
+  const subject = String(
+    selectedOption?.dataset?.subject
+    || selectedContact?.subject
+    || state.supportDesk.selectedSubject
+    || ''
+  ).trim();
   const message = String(els.supportDeskComposeInput?.value || '').trim();
   if (!message) {
     throw new Error('Type your query before sending.');
@@ -4470,6 +4551,7 @@ async function sendSupportDeskMessage() {
       body: JSON.stringify({
         recipient_id: recipientId,
         category,
+        subject: subject || undefined,
         message,
       }),
     });
@@ -4477,6 +4559,13 @@ async function sendSupportDeskMessage() {
       els.supportDeskComposeInput.value = '';
     }
     state.supportDesk.selectedCounterpartyId = recipientId;
+    state.supportDesk.selectedContactKey = String(
+      els.supportDeskRecipientSelect?.value
+      || supportDeskContactKey(selectedContact)
+      || state.supportDesk.selectedContactKey
+      || ''
+    ).trim();
+    state.supportDesk.selectedSubject = subject;
     state.supportDesk.selectedCategory = category;
     await refreshSupportDeskContext({ silent: true, refreshThread: false });
     await refreshSupportDeskThread({ silent: true });
@@ -19571,6 +19660,9 @@ function openAttendanceRectificationModal({ courseId, scheduleId, classDate, sta
       : '';
   }
   setAttendanceRectificationProofPreview(existing?.proof_photo_data_url || '');
+  if (!String(existing?.proof_photo_data_url || '').startsWith('data:image/')) {
+    state.student.attendanceRectificationProofDataUrl = '';
+  }
   if (els.attendanceRectificationProofPhotoInput) {
     els.attendanceRectificationProofPhotoInput.value = '';
   }
@@ -19587,6 +19679,10 @@ async function submitStudentRectificationRequest() {
   if (proofNote.length < 10) {
     throw new Error('Please provide clear proof details (minimum 10 characters).');
   }
+  const proofPhotoDataUrl = String(state.student.attendanceRectificationProofDataUrl || '').trim();
+  if (!proofPhotoDataUrl || !proofPhotoDataUrl.startsWith('data:image/')) {
+    throw new Error('Please upload a supporting proof image before submitting.');
+  }
 
   await api('/attendance/student/rectification-requests', {
     method: 'POST',
@@ -19595,7 +19691,7 @@ async function submitStudentRectificationRequest() {
       class_date: target.classDate,
       start_time: target.startTime || null,
       proof_note: proofNote,
-      proof_photo_data_url: state.student.attendanceRectificationProofDataUrl || null,
+      proof_photo_data_url: proofPhotoDataUrl,
     }),
   });
 
@@ -23686,7 +23782,10 @@ function bindEvents() {
   }
   if (els.supportDeskRecipientSelect) {
     els.supportDeskRecipientSelect.addEventListener('change', async () => {
-      state.supportDesk.selectedCounterpartyId = Number(els.supportDeskRecipientSelect.value || 0) || null;
+      const option = els.supportDeskRecipientSelect.selectedOptions?.[0] || null;
+      state.supportDesk.selectedContactKey = String(els.supportDeskRecipientSelect.value || '').trim();
+      state.supportDesk.selectedCounterpartyId = Number(option?.dataset?.recipientId || 0) || null;
+      state.supportDesk.selectedSubject = String(option?.dataset?.subject || '').trim();
       state.supportDesk.messages = [];
       renderSupportDeskWidget();
       try {

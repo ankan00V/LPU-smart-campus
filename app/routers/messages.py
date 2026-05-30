@@ -377,19 +377,25 @@ def _build_support_contacts_for_student(
     student_id: int,
 ) -> tuple[list[schemas.SupportQueryContactOut], dict[int, models.Faculty]]:
     course_rows = (
-        db.query(models.Course.faculty_id, models.Course.code)
+        db.query(
+            models.Course.id,
+            models.Course.faculty_id,
+            models.Course.code,
+            models.Course.title,
+        )
         .join(models.Enrollment, models.Enrollment.course_id == models.Course.id)
         .filter(
             models.Enrollment.student_id == int(student_id),
             models.Course.faculty_id.isnot(None),
         )
+        .order_by(models.Course.code.asc(), models.Course.id.asc())
         .all()
     )
     faculty_ids = {int(row.faculty_id) for row in course_rows if row.faculty_id}
-    course_map: dict[int, set[str]] = defaultdict(set)
+    courses_by_faculty: dict[int, list[Any]] = defaultdict(list)
     for row in course_rows:
         if row.faculty_id:
-            course_map[int(row.faculty_id)].add(str(row.code or "").strip().upper())
+            courses_by_faculty[int(row.faculty_id)].append(row)
 
     prior_ids = {
         int(value)
@@ -420,16 +426,34 @@ def _build_support_contacts_for_student(
     faculty_map = {int(row.id): row for row in faculty_rows}
     contacts: list[schemas.SupportQueryContactOut] = []
     for faculty in sorted(faculty_rows, key=lambda row: (str(row.name or "").lower(), int(row.id))):
-        tokens = sorted(course_map.get(int(faculty.id), set()))
-        descriptor = f"Courses: {', '.join(tokens[:4])}" if tokens else "Message for attendance or academic query"
-        if len(tokens) > 4:
-            descriptor = f"{descriptor}, +{len(tokens) - 4} more"
+        faculty_courses = courses_by_faculty.get(int(faculty.id), [])
+        if faculty_courses:
+            for course in faculty_courses:
+                code = str(course.code or "").strip().upper()
+                title = str(course.title or "").strip()
+                subject = f"{code} - {title}" if code and title else code or title or "Subject Query"
+                contacts.append(
+                    schemas.SupportQueryContactOut(
+                        id=int(faculty.id),
+                        name=str(faculty.name or f"Faculty #{faculty.id}"),
+                        section=(str(faculty.section or "").strip() or None),
+                        descriptor=subject,
+                        contact_key=f"faculty:{int(faculty.id)}:course:{int(course.id)}",
+                        subject=subject,
+                        course_id=int(course.id),
+                        course_code=code or None,
+                        course_title=title or None,
+                    )
+                )
+            continue
         contacts.append(
             schemas.SupportQueryContactOut(
                 id=int(faculty.id),
                 name=str(faculty.name or f"Faculty #{faculty.id}"),
                 section=(str(faculty.section or "").strip() or None),
-                descriptor=descriptor,
+                descriptor="Message for attendance or academic query",
+                contact_key=f"faculty:{int(faculty.id)}:general",
+                subject=None,
             )
         )
     return contacts, faculty_map
@@ -502,9 +526,10 @@ def _build_support_threads(
     student_map: dict[int, models.Student],
 ) -> list[schemas.SupportQueryThreadOut]:
     role_value = str(current_user.role.value)
-    grouped: dict[tuple[int, str], dict[str, Any]] = {}
+    grouped: dict[tuple[int, str, str], dict[str, Any]] = {}
     for row in rows:
         category = _normalize_support_category(row.category)
+        subject = str(row.subject or "").strip() or f"{category.value} Query"
         if current_user.role == models.UserRole.STUDENT:
             counterparty_id = int(row.faculty_id)
             counterparty = faculty_map.get(counterparty_id)
@@ -518,7 +543,7 @@ def _build_support_threads(
             if section == "UNASSIGNED":
                 section = ""
 
-        key = (counterparty_id, category.value)
+        key = (counterparty_id, category.value, subject)
         summary = grouped.get(key)
         if summary is None:
             summary = {
@@ -526,7 +551,7 @@ def _build_support_threads(
                 "counterparty_name": counterparty_name,
                 "section": section or None,
                 "category": category,
-                "subject": str(row.subject or "").strip() or f"{category.value} Query",
+                "subject": subject,
                 "last_message": str(row.message or "").strip(),
                 "last_sender_role": str(row.sender_role or "").strip().lower() or role_value,
                 "last_created_at": row.created_at or datetime.utcnow(),
@@ -787,11 +812,13 @@ def get_support_query_context(
 def get_support_query_thread(
     counterparty_id: int = Query(..., ge=1),
     category: str = Query(default=schemas.SupportQueryCategory.ATTENDANCE.value),
+    subject: str | None = Query(default=None, max_length=140),
     limit: int = Query(default=120, ge=10, le=300),
     db: Session = Depends(get_db),
     current_user: models.AuthUser = Depends(require_roles(models.UserRole.STUDENT, models.UserRole.FACULTY)),
 ):
     category_label = _normalize_support_category(category).value
+    subject_label = re.sub(r"\s+", " ", str(subject or "").strip())
     if current_user.role == models.UserRole.STUDENT:
         if not current_user.student_id:
             raise HTTPException(status_code=403, detail="Student account is not linked correctly.")
@@ -817,6 +844,8 @@ def get_support_query_thread(
             models.SupportQueryMessage.category == category_label,
         )
         incoming_sender = models.UserRole.STUDENT.value
+    if subject_label:
+        thread_filter = thread_filter + (models.SupportQueryMessage.subject == subject_label,)
 
     unread_filter = thread_filter + (
         models.SupportQueryMessage.sender_role == incoming_sender,
@@ -854,6 +883,7 @@ def send_support_query_message(
     message_text = str(payload.message or "").strip()
     if not message_text:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    subject_label = re.sub(r"\s+", " ", str(payload.subject or "").strip())
 
     if current_user.role == models.UserRole.STUDENT:
         if not current_user.student_id:
@@ -875,7 +905,7 @@ def send_support_query_message(
             faculty_id=int(faculty.id),
             section=_safe_student_section(student),
             category=category.value,
-            subject=(str(payload.subject or "").strip() or f"{category.value} Query"),
+            subject=(subject_label or f"{category.value} Query"),
             message=message_text,
             sender_role=models.UserRole.STUDENT.value,
             created_at=datetime.utcnow(),
@@ -894,7 +924,7 @@ def send_support_query_message(
             faculty_id=faculty_id,
             section=_safe_student_section(student),
             category=category.value,
-            subject=(str(payload.subject or "").strip() or f"{category.value} Response"),
+            subject=(subject_label or f"{category.value} Response"),
             message=message_text,
             sender_role=models.UserRole.FACULTY.value,
             created_at=datetime.utcnow(),
@@ -933,12 +963,12 @@ def send_support_query_message(
             "student_id": int(row.student_id),
             "faculty_id": int(row.faculty_id),
             "category": str(row.category or ""),
+            "subject": str(row.subject or ""),
             "sender_role": str(row.sender_role or ""),
         },
         scopes={
             f"student:{int(row.student_id)}",
             f"faculty:{int(row.faculty_id)}",
-            "role:admin",
         },
         topics={"messages", "rms"},
         actor={

@@ -131,8 +131,29 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
         self.assertEqual(publish_event.call_args.args[0], "attendance.rectification.requested")
         self.assertEqual(
             publish_event.call_args.kwargs["scopes"],
-            {"student:1", "faculty:11", "role:admin"},
+            {"student:1", "faculty:11"},
         )
+
+    @mock.patch("app.routers.attendance.publish_domain_event", autospec=True)
+    @mock.patch("app.routers.attendance._upsert_mongo_by_id", autospec=True)
+    def test_student_rectification_requires_proof_image(self, _mongo_upsert, publish_event):
+        payload = schemas.AttendanceRectificationRequestCreate(
+            course_id=21,
+            class_date=self.class_date,
+            start_time=time(11, 0),
+            proof_note="I was in class and have proof details ready.",
+            proof_photo_data_url="not-an-image-data-url",
+        )
+
+        with self.assertRaisesRegex(Exception, "image data URL"):
+            create_student_rectification_request(
+                payload=payload,
+                db=self.db,
+                current_user=self._student_user(),
+            )
+
+        publish_event.assert_not_called()
+        self.assertEqual(self.db.query(models.AttendanceRectificationRequest).count(), 0)
 
     @mock.patch("app.routers.attendance.enqueue_recompute", autospec=True)
     @mock.patch("app.routers.attendance.publish_domain_event", autospec=True)
@@ -150,6 +171,7 @@ class AttendanceRectificationFlowTests(unittest.TestCase):
             class_date=self.class_date,
             start_time=time(11, 0),
             proof_note="I attended but camera failed. Sharing class notes as proof.",
+            proof_photo_data_url=VALID_PNG_DATA_URL,
         )
         created = create_student_rectification_request(
             payload=create_payload,
