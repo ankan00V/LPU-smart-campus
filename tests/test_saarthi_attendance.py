@@ -563,6 +563,52 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertNotIn("decision", lost_reply.lower())
         self.assertNotIn("20-minute", lost_reply)
 
+    def test_crisis_followup_works_without_saved_assistant_icall_reply(self):
+        reply = generate_saarthi_reply(
+            student_name="Ankan Ghosh",
+            student_message="no",
+            current_dt=datetime(2026, 5, 30, 2, 49, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            recent_messages=[
+                models.SaarthiMessage(sender_role="student", message="im feeling suicidal"),
+            ],
+            student_context={
+                "attendance_summary": [
+                    {"subject": "CSE301 - Data Structures", "attended": 4, "total": 8, "percentage": 50.0}
+                ]
+            },
+        )
+
+        self.assertIn("urgent", reply.lower())
+        self.assertIn("112", reply)
+        self.assertIn("9152987821", reply)
+        self.assertEqual(reply.count("?"), 1)
+        self.assertNotIn("what would help most", reply.lower())
+        self.assertNotIn("Data Structures", reply)
+
+    def test_crisis_safety_net_blocks_deterministic_fallback(self):
+        with (
+            mock.patch("app.saarthi_service._saarthi_crisis_mode_reply", return_value=""),
+            mock.patch("app.saarthi_service._saarthi_recent_crisis_context", return_value=True),
+            mock.patch("app.saarthi_service._generate_saarthi_reply_deterministic") as deterministic_reply,
+        ):
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="I don't know",
+                current_dt=datetime(2026, 5, 30, 2, 50, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        deterministic_reply.assert_not_called()
+        self.assertIn("I'm still right here with you", reply)
+        self.assertIn("9152987821", reply)
+        self.assertEqual(reply.count("?"), 1)
+
     def test_deterministic_reply_bridges_prior_student_context(self):
         recent_messages = [
             models.SaarthiMessage(sender_role="student", message="I am stressed about exams and deadlines."),
