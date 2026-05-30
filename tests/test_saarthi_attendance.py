@@ -26,10 +26,13 @@ from app.saarthi_service import (
     _build_saarthi_student_context,
     _generate_saarthi_reply_deterministic,
     _is_gemini_key_rotation_error,
+    _looks_like_low_quality_reply,
     _saarthi_bedrock_api_keys,
     _saarthi_bedrock_model_id,
     _saarthi_gemini_api_keys,
     _saarthi_llm_provider_order,
+    _saarthi_nvidia_api_keys,
+    _saarthi_nvidia_model,
     _saarthi_openrouter_api_keys,
     _saarthi_openrouter_model,
     create_saarthi_turn,
@@ -1024,6 +1027,41 @@ class SaarthiAttendanceTests(unittest.TestCase):
         ):
             self.assertEqual(_saarthi_openrouter_model(), "google/gemini-2.0-flash-001")
 
+    def test_saarthi_llm_prompt_includes_latest_student_message_on_first_turn(self):
+        prompt = _build_saarthi_llm_user_prompt(
+            student_name="Ankan Ghosh",
+            student_message="can you explain my attendance situation and what should i do next",
+            recent_messages=[],
+            current_dt=datetime(2026, 5, 30, 20, 30, 0),
+            mandatory_date=date(2026, 5, 31),
+            attendance_awarded_now=False,
+            attendance_already_awarded=False,
+            student_context={
+                "attendance_summary": [
+                    {"subject": "Digital Electronics", "attended": 17, "total": 25, "percentage": 68, "threshold": 75}
+                ]
+            },
+        )
+
+        self.assertIn("Student: can you explain my attendance situation and what should i do next", prompt)
+        self.assertNotIn("Student: Hello.", prompt)
+
+    def test_saarthi_quality_gate_accepts_direct_attendance_next_step(self):
+        reply = (
+            "Ankan, your Digital Electronics attendance is 68% right now, with 17 attended out of 25 total classes. "
+            "The threshold is 75%, so you are short but still close enough to plan around it. "
+            "You do not need to panic or solve the whole semester today. "
+            "One clear next step is to protect the next two Digital Electronics classes and then check whether a remedial slot is available."
+        )
+
+        self.assertFalse(
+            _looks_like_low_quality_reply(
+                reply,
+                student_message="can you explain my attendance situation and what should i do next",
+                first_turn=True,
+            )
+        )
+
     def test_saarthi_bedrock_provider_uses_aws_bearer_token_first(self):
         with mock.patch.dict(
             os.environ,
@@ -1041,6 +1079,81 @@ class SaarthiAttendanceTests(unittest.TestCase):
             self.assertEqual(_saarthi_bedrock_api_keys(), ["bedrock-primary", "bedrock-secondary"])
             self.assertEqual(_saarthi_bedrock_model_id(), "copilot-model")
             self.assertEqual(_saarthi_llm_provider_order("bedrock")[0], "bedrock")
+
+    def test_saarthi_nvidia_provider_uses_dedicated_key_and_model(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_MODEL": "meta/llama-3.1-8b-instruct",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-primary",
+                "NVIDIA_API_KEY": "nvidia-shared",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_saarthi_nvidia_api_keys(), ["nvidia-primary", "nvidia-shared"])
+            self.assertEqual(_saarthi_nvidia_model(), "meta/llama-3.1-8b-instruct")
+            self.assertEqual(_saarthi_llm_provider_order("nvidia"), ["nvidia"])
+
+    def test_required_nvidia_reply_is_used_without_deterministic_fallback(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": (
+                                        "Ankan, I hear you. This week feels heavy, but we can keep this simple. "
+                                        "Something that could help is choosing one class to protect today. "
+                                        "What is getting in the way right now?"
+                                    )
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "nvidia",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "SAARTHI_LLM_MODEL": "meta/llama-3.1-8b-instruct",
+                "SAARTHI_NVIDIA_API_KEY": "nvidia-key",
+                "AWS_BEARER_TOKEN_BEDROCK": "",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()) as mocked_urlopen, mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply:
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="I feel confused about the week",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        deterministic_reply.assert_not_called()
+        self.assertIn("This week feels heavy", reply)
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("integrate.api.nvidia.com", request.full_url)
 
     def test_required_bedrock_reply_is_used_without_deterministic_fallback(self):
         class DummyResponse:

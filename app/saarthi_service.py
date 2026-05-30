@@ -1224,6 +1224,8 @@ def _saarthi_llm_provider() -> str:
     explicit = str(os.getenv("SAARTHI_LLM_PROVIDER") or "").strip().lower()
     if explicit:
         return explicit
+    if _saarthi_nvidia_api_keys():
+        return "nvidia"
     if _saarthi_bedrock_api_keys():
         return "bedrock"
     if _saarthi_gemini_api_keys():
@@ -1258,6 +1260,16 @@ def _saarthi_openrouter_model() -> str:
     return normalized
 
 
+def _saarthi_nvidia_model() -> str:
+    explicit = str(resolve_secret("SAARTHI_NVIDIA_MODEL", default="") or "").strip()
+    if explicit:
+        return explicit
+    shared_model = _saarthi_llm_model().strip()
+    if shared_model and not shared_model.startswith("us.anthropic."):
+        return shared_model
+    return "meta/llama-3.3-70b-instruct"
+
+
 def _saarthi_llm_timeout_seconds() -> float:
     raw = (os.getenv("SAARTHI_LLM_TIMEOUT_SECONDS", "8") or "").strip()
     try:
@@ -1269,23 +1281,29 @@ def _saarthi_llm_timeout_seconds() -> float:
 
 def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
     providers: list[str] = []
+    has_nvidia_keys = bool(_saarthi_nvidia_api_keys())
     has_bedrock_keys = bool(_saarthi_bedrock_api_keys())
     has_gemini_keys = bool(_saarthi_gemini_api_keys())
     has_openrouter_keys = bool(_saarthi_openrouter_api_keys())
-    has_any_keys = has_bedrock_keys or has_gemini_keys or has_openrouter_keys
+    has_any_keys = has_nvidia_keys or has_bedrock_keys or has_gemini_keys or has_openrouter_keys
 
     def add(provider: str) -> None:
         cleaned = str(provider or "").strip().lower()
-        if cleaned in {"bedrock", "gemini", "openrouter"} and cleaned not in providers:
+        if cleaned in {"nvidia", "bedrock", "gemini", "openrouter"} and cleaned not in providers:
             providers.append(cleaned)
 
     preferred = str(preferred_provider or "").strip().lower()
+    if preferred == "nvidia":
+        add("nvidia")
+        return providers
     if preferred == "bedrock" and (has_bedrock_keys or not has_any_keys):
         add("bedrock")
     elif preferred == "gemini" and (has_gemini_keys or not has_any_keys):
         add("gemini")
     elif preferred == "openrouter" and (has_openrouter_keys or not has_any_keys):
         add("openrouter")
+    if has_nvidia_keys:
+        add("nvidia")
     if has_bedrock_keys:
         add("bedrock")
     if has_gemini_keys:
@@ -1296,7 +1314,12 @@ def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
 
 
 def _saarthi_has_any_llm_api_key() -> bool:
-    return bool(_saarthi_bedrock_api_keys() or _saarthi_gemini_api_keys() or _saarthi_openrouter_api_keys())
+    return bool(
+        _saarthi_nvidia_api_keys()
+        or _saarthi_bedrock_api_keys()
+        or _saarthi_gemini_api_keys()
+        or _saarthi_openrouter_api_keys()
+    )
 
 
 def _saarthi_gemini_base_url() -> str:
@@ -1422,6 +1445,38 @@ def _saarthi_openrouter_site_url() -> str:
 
 def _saarthi_openrouter_app_name() -> str:
     return str(resolve_secret("OPENROUTER_APP_NAME", default="LPU Smart Campus Saarthi") or "LPU Smart Campus Saarthi").strip()
+
+
+def _saarthi_nvidia_api_keys() -> list[str]:
+    collected: list[str] = []
+    for name in ("SAARTHI_NVIDIA_API_KEY", "NVIDIA_API_KEY"):
+        value = str(resolve_secret(name, default="") or "").strip()
+        if value:
+            collected.append(value)
+
+    json_blob = str(resolve_secret("SAARTHI_NVIDIA_API_KEYS_JSON", default="") or "").strip()
+    if json_blob:
+        try:
+            parsed = json.loads(json_blob)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            collected.extend(str(item or "").strip() for item in parsed)
+        elif isinstance(parsed, str):
+            collected.append(parsed.strip())
+
+    csv_blob = str(resolve_secret("SAARTHI_NVIDIA_API_KEYS", default="") or "").strip()
+    if csv_blob:
+        collected.extend(part.strip() for part in csv_blob.split(","))
+    return _dedup_preserve_order(item for item in collected if item)
+
+
+def _saarthi_nvidia_base_url() -> str:
+    raw = str(
+        resolve_secret("SAARTHI_NVIDIA_BASE_URL", default="https://integrate.api.nvidia.com/v1")
+        or "https://integrate.api.nvidia.com/v1"
+    ).strip()
+    return raw.rstrip("/")
 
 
 def _detect_saarthi_emotion(
@@ -2217,7 +2272,10 @@ def _build_saarthi_llm_user_prompt(
         if not content:
             continue
         transcript_lines.append(f"{role}: {content}")
-    transcript = "\n".join(transcript_lines) if transcript_lines else "Student: Hello."
+    latest_message = " ".join(str(student_message or "").strip().split())
+    if latest_message:
+        transcript_lines.append(f"Student: {latest_message}")
+    transcript = "\n".join(transcript_lines)
 
     return "\n".join(
         [
@@ -2507,7 +2565,27 @@ def _looks_like_low_quality_reply(
         return any(marker in normalized for marker in blocked)
     if word_count < 24 or sentence_count < 4:
         return True
-    if "?" not in cleaned:
+    data_or_planning_question = _contains_any(
+        _normalize_saarthi_text(student_message),
+        (
+            "attendance",
+            "timetable",
+            "schedule",
+            "class",
+            "classes",
+            "remedial",
+            "rectification",
+            "deadline",
+            "exam",
+            "message",
+            "faculty",
+            "food",
+            "order",
+            "what should i do",
+            "next",
+        ),
+    )
+    if "?" not in cleaned and not data_or_planning_question:
         return True
     if re.search(r"\b[A-Za-z]\.\s*$", cleaned):
         return True
@@ -2531,10 +2609,14 @@ def _looks_like_low_quality_reply(
         "you might try",
         "something that could help",
         "one small step you could consider",
+        "one clear next step",
+        "next step",
+        "clear next step",
         "a small step",
         "try",
         "could consider",
         "helpful",
+        "plan",
     )
     if not any(marker in normalized for marker in guidance_markers):
         return True
@@ -2636,6 +2718,84 @@ def _generate_saarthi_reply_with_bedrock(
     if last_rotation_error:
         raise RuntimeError(f"All configured Bedrock API keys were exhausted or rejected. Last error: {last_rotation_error}")
     raise RuntimeError("Saarthi Bedrock could not generate a reply with the configured key pool.")
+
+
+def _generate_saarthi_reply_with_nvidia(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    api_keys = _saarthi_nvidia_api_keys()
+    if not api_keys:
+        raise RuntimeError("SAARTHI_NVIDIA_API_KEY or NVIDIA_API_KEY is required when SAARTHI_LLM_PROVIDER=nvidia.")
+
+    system_instruction = _build_saarthi_llm_system_instruction()
+    user_prompt = _build_saarthi_llm_user_prompt(
+        student_name=student_name,
+        student_message=student_message,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
+    )
+    body = {
+        "model": _saarthi_nvidia_model(),
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": SAARTHI_LLM_TEMPERATURE,
+        "top_p": SAARTHI_LLM_TOP_P,
+        "presence_penalty": SAARTHI_LLM_PRESENCE_PENALTY,
+        "frequency_penalty": SAARTHI_LLM_FREQUENCY_PENALTY,
+        "max_tokens": 360,
+        "stream": False,
+    }
+    last_rotation_error = ""
+    for api_key in api_keys:
+        request = urllib_request.Request(
+            f"{_saarthi_nvidia_base_url()}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=_saarthi_llm_timeout_seconds()) as response:
+                raw_payload = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            detail = _gemini_error_detail(exc)
+            if _is_openrouter_key_rotation_error(exc.code, detail):
+                last_rotation_error = f"HTTP {exc.code}: {detail}"
+                continue
+            raise RuntimeError(f"Saarthi NVIDIA request failed with HTTP {exc.code}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Saarthi NVIDIA network error: {exc.reason}") from exc
+
+        try:
+            parsed = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Saarthi NVIDIA returned non-JSON output.") from exc
+
+        reply = _extract_openrouter_text(parsed if isinstance(parsed, dict) else {})
+        if not reply:
+            raise RuntimeError("Saarthi NVIDIA returned an empty reply.")
+        return reply.strip()
+
+    if last_rotation_error:
+        raise RuntimeError(f"All configured NVIDIA API keys were exhausted or rejected. Last error: {last_rotation_error}")
+    raise RuntimeError("Saarthi NVIDIA could not generate a reply with the configured key pool.")
 
 
 def _generate_saarthi_reply_with_gemini(
@@ -3137,13 +3297,24 @@ def generate_saarthi_reply(
     provider_errors: list[Exception] = []
     rejected_replies: list[str] = []
 
-    if provider and provider not in {"bedrock", "gemini", "openrouter"}:
+    if provider and provider not in {"nvidia", "bedrock", "gemini", "openrouter"}:
         if llm_required:
             raise RuntimeError(f"Unsupported Saarthi LLM provider: {provider}")
 
     for candidate_provider in _saarthi_llm_provider_order(provider):
         try:
-            if candidate_provider == "bedrock":
+            if candidate_provider == "nvidia":
+                raw = _generate_saarthi_reply_with_nvidia(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
+                )
+            elif candidate_provider == "bedrock":
                 raw = _generate_saarthi_reply_with_bedrock(
                     student_name=student_name,
                     student_message=student_message,
@@ -3201,7 +3372,7 @@ def generate_saarthi_reply(
         if rejected_replies:
             raise RuntimeError(rejected_replies[-1])
         if not _saarthi_has_any_llm_api_key():
-            raise RuntimeError("Saarthi LLM is required but no Gemini or OpenRouter API key is configured.")
+            raise RuntimeError("Saarthi LLM is required but no supported provider API key is configured.")
         raise RuntimeError("Saarthi LLM is required but no configured provider could generate a reply.")
 
     raw = _generate_saarthi_reply_deterministic(
