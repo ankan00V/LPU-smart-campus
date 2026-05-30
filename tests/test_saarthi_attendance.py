@@ -18,14 +18,18 @@ from app.routers.attendance import (
     get_student_attendance_history,
     mark_attendance_bulk,
 )
-from app.routers.saarthi import get_saarthi_status, send_saarthi_message
+from app.routers.saarthi import SAARTHI_UNAVAILABLE_MESSAGE, get_saarthi_status, send_saarthi_message
 from app.saarthi_service import (
     SAARTHI_ATTENDANCE_MINUTES,
     SAARTHI_COURSE_CODE,
     _build_saarthi_llm_user_prompt,
     _build_saarthi_student_context,
     _generate_saarthi_reply_deterministic,
+    _is_gemini_key_rotation_error,
+    _saarthi_bedrock_api_keys,
+    _saarthi_bedrock_model_id,
     _saarthi_gemini_api_keys,
+    _saarthi_llm_provider_order,
     _saarthi_openrouter_api_keys,
     _saarthi_openrouter_model,
     create_saarthi_turn,
@@ -45,6 +49,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 "APP_ENV": "development",
                 "MONGO_PERSISTENCE_REQUIRED": "false",
                 "SQL_OUTBOX_ENABLED": "false",
+                "SAARTHI_LLM_REQUIRED": "false",
             },
             clear=True,
         )
@@ -717,7 +722,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
         self.assertIn("Something that could help is choosing one gentle task", out["reply"])
         self.assertIn("What feels hardest to carry right now?", out["reply"])
 
-    def test_partial_llm_reply_falls_back_to_readable_saarthi_response(self):
+    def test_required_llm_rejects_partial_reply_without_deterministic_fallback(self):
         class DummyResponse:
             def __enter__(self):
                 return self
@@ -747,20 +752,24 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 "GEMINI_API_KEY": "test-key",
             },
             clear=False,
-        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()):
-            out = create_saarthi_turn(
-                self.db,
-                student=self.student,
-                message="feeling low",
-                current_dt=datetime(2026, 3, 8, 9, 15, 0),
-                academic_start=date(2026, 3, 2),
-        )
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()), mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply, mock.patch(
+            "app.routers.saarthi._saarthi_now",
+            return_value=datetime(2026, 3, 8, 9, 15, 0),
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                send_saarthi_message(
+                    payload=schemas.SaarthiChatRequest(message="feeling low"),
+                    db=self.db,
+                    current_user=self._student_user(),
+                )
 
-        self.assertNotEqual(out["reply"], "Hi Ankan, I'm Saarthi. I'")
-        self.assertNotIn("Hi Ankan, I'm Saarthi.", out["reply"])
-        self.assertIn("I'm here to listen and support you.", out["reply"])
-        self.assertIn("?", out["reply"])
-        self.assertGreater(len(out["reply"]), 120)
+        deterministic_reply.assert_not_called()
+        self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
+        self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
+        self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
 
     def test_required_llm_missing_keys_returns_503_without_fallback_reply(self):
         mocked_now = datetime(2026, 3, 8, 9, 0, 0)
@@ -787,7 +796,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 )
 
         self.assertEqual(ctx.exception.status_code, 503)
-        self.assertIn("GEMINI_API_KEY", ctx.exception.detail)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
         self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
         self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
@@ -976,6 +985,7 @@ class SaarthiAttendanceTests(unittest.TestCase):
                 )
 
         self.assertEqual(ctx.exception.status_code, 503)
+        self.assertEqual(ctx.exception.detail, SAARTHI_UNAVAILABLE_MESSAGE)
         self.assertEqual(self.db.query(models.SaarthiSession).count(), 0)
         self.assertEqual(self.db.query(models.SaarthiMessage).count(), 0)
         self.assertEqual(self.db.query(models.AttendanceRecord).count(), 0)
@@ -1012,6 +1022,96 @@ class SaarthiAttendanceTests(unittest.TestCase):
             clear=False,
         ):
             self.assertEqual(_saarthi_openrouter_model(), "google/gemini-2.0-flash-001")
+
+    def test_saarthi_bedrock_provider_uses_aws_bearer_token_first(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-primary",
+                "SAARTHI_BEDROCK_API_KEY": "bedrock-secondary",
+                "SAARTHI_BEDROCK_MODEL_ID": "",
+                "COPILOT_BEDROCK_MODEL_ID": "copilot-model",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(_saarthi_bedrock_api_keys(), ["bedrock-primary", "bedrock-secondary"])
+            self.assertEqual(_saarthi_bedrock_model_id(), "copilot-model")
+            self.assertEqual(_saarthi_llm_provider_order("bedrock")[0], "bedrock")
+
+    def test_required_bedrock_reply_is_used_without_deterministic_fallback(self):
+        class DummyResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "output": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "text": (
+                                            "Ankan, I hear you. Feeling confused can make the whole week feel heavier than it is. "
+                                            "Something that could help is choosing one immediate task and doing it for 20 minutes. "
+                                            "What feels most urgent right now?"
+                                        )
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ).encode("utf-8")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAARTHI_LLM_PROVIDER": "bedrock",
+                "SAARTHI_LLM_REQUIRED": "true",
+                "AWS_BEARER_TOKEN_BEDROCK": "bedrock-key",
+                "SAARTHI_BEDROCK_REGION": "us-east-1",
+                "SAARTHI_BEDROCK_MODEL_ID": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+                "GEMINI_API_KEY": "",
+                "GEMINI_API_KEYS_JSON": "",
+                "OPENROUTER_API_KEY": "",
+            },
+            clear=False,
+        ), mock.patch("app.saarthi_service.urllib_request.urlopen", return_value=DummyResponse()) as mocked_urlopen, mock.patch(
+            "app.saarthi_service._generate_saarthi_reply_deterministic"
+        ) as deterministic_reply:
+            reply = generate_saarthi_reply(
+                student_name="Ankan Ghosh",
+                student_message="I feel confused about the week",
+                current_dt=datetime(2026, 5, 30, 20, 30, 0),
+                mandatory_date=date(2026, 5, 31),
+                attendance_awarded_now=False,
+                attendance_already_awarded=False,
+                recent_messages=[],
+            )
+
+        deterministic_reply.assert_not_called()
+        self.assertIn("Feeling confused", reply)
+        self.assertIn("What feels most urgent right now?", reply)
+        request = mocked_urlopen.call_args.args[0]
+        self.assertIn("bedrock-runtime.us-east-1.amazonaws.com", request.full_url)
+
+    def test_gemini_leaked_key_error_rotates_to_next_key(self):
+        detail = json.dumps(
+            {
+                "error": {
+                    "code": 403,
+                    "message": "Your API key was reported as leaked. Please use another API key.",
+                    "status": "PERMISSION_DENIED",
+                }
+            }
+        )
+
+        self.assertTrue(_is_gemini_key_rotation_error(403, detail))
 
     def test_saarthi_shared_gemini_pool_uses_even_index_partition(self):
         with mock.patch.dict(

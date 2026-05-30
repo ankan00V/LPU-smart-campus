@@ -23,6 +23,10 @@ router = APIRouter(prefix="/saarthi", tags=["Saarthi"])
 
 ACADEMIC_START_DATE_DEFAULT = "2026-03-02"
 SAARTHI_TIMEZONE_DEFAULT = "Asia/Kolkata"
+SAARTHI_UNAVAILABLE_MESSAGE = (
+    "Saarthi is just taking a break and will be back soon. "
+    "By that time, contact lpu.smart.campus@gmail.com."
+)
 
 
 def _academic_start_date() -> date:
@@ -196,7 +200,7 @@ def send_saarthi_message(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         db.rollback()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=SAARTHI_UNAVAILABLE_MESSAGE) from exc
 
     db.commit()
     session = out["session"] if isinstance(out, dict) else None

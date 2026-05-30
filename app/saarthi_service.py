@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from typing import Any
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -1223,6 +1224,8 @@ def _saarthi_llm_provider() -> str:
     explicit = str(os.getenv("SAARTHI_LLM_PROVIDER") or "").strip().lower()
     if explicit:
         return explicit
+    if _saarthi_bedrock_api_keys():
+        return "bedrock"
     if _saarthi_gemini_api_keys():
         return "gemini"
     if _saarthi_openrouter_api_keys():
@@ -1231,7 +1234,7 @@ def _saarthi_llm_provider() -> str:
 
 
 def _saarthi_llm_required() -> bool:
-    raw = (os.getenv("SAARTHI_LLM_REQUIRED", "false") or "").strip().lower()
+    raw = (os.getenv("SAARTHI_LLM_REQUIRED", "true") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -1266,20 +1269,25 @@ def _saarthi_llm_timeout_seconds() -> float:
 
 def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
     providers: list[str] = []
+    has_bedrock_keys = bool(_saarthi_bedrock_api_keys())
     has_gemini_keys = bool(_saarthi_gemini_api_keys())
     has_openrouter_keys = bool(_saarthi_openrouter_api_keys())
-    has_any_keys = has_gemini_keys or has_openrouter_keys
+    has_any_keys = has_bedrock_keys or has_gemini_keys or has_openrouter_keys
 
     def add(provider: str) -> None:
         cleaned = str(provider or "").strip().lower()
-        if cleaned in {"gemini", "openrouter"} and cleaned not in providers:
+        if cleaned in {"bedrock", "gemini", "openrouter"} and cleaned not in providers:
             providers.append(cleaned)
 
     preferred = str(preferred_provider or "").strip().lower()
-    if preferred == "gemini" and (has_gemini_keys or not has_any_keys):
+    if preferred == "bedrock" and (has_bedrock_keys or not has_any_keys):
+        add("bedrock")
+    elif preferred == "gemini" and (has_gemini_keys or not has_any_keys):
         add("gemini")
     elif preferred == "openrouter" and (has_openrouter_keys or not has_any_keys):
         add("openrouter")
+    if has_bedrock_keys:
+        add("bedrock")
     if has_gemini_keys:
         add("gemini")
     if has_openrouter_keys:
@@ -1288,7 +1296,7 @@ def _saarthi_llm_provider_order(preferred_provider: str) -> list[str]:
 
 
 def _saarthi_has_any_llm_api_key() -> bool:
-    return bool(_saarthi_gemini_api_keys() or _saarthi_openrouter_api_keys())
+    return bool(_saarthi_bedrock_api_keys() or _saarthi_gemini_api_keys() or _saarthi_openrouter_api_keys())
 
 
 def _saarthi_gemini_base_url() -> str:
@@ -1372,6 +1380,35 @@ def _saarthi_openrouter_api_key() -> str:
     if not keys:
         return ""
     return keys[0]
+
+
+def _saarthi_bedrock_api_keys() -> list[str]:
+    collected: list[str] = []
+    primary = str(resolve_secret("AWS_BEARER_TOKEN_BEDROCK", default="") or "").strip()
+    if primary:
+        collected.append(primary)
+    for name in ("SAARTHI_BEDROCK_API_KEY", "COPILOT_BEDROCK_API_KEY"):
+        value = str(resolve_secret(name, default="") or "").strip()
+        if value:
+            collected.append(value)
+    return _dedup_preserve_order(collected)
+
+
+def _saarthi_bedrock_region() -> str:
+    return (
+        str(resolve_secret("SAARTHI_BEDROCK_REGION", default="") or "").strip()
+        or str(resolve_secret("COPILOT_BEDROCK_REGION", default="") or "").strip()
+        or str(os.getenv("AWS_REGION") or "").strip()
+        or "us-east-1"
+    )
+
+
+def _saarthi_bedrock_model_id() -> str:
+    return (
+        str(resolve_secret("SAARTHI_BEDROCK_MODEL_ID", default="") or "").strip()
+        or str(resolve_secret("COPILOT_BEDROCK_MODEL_ID", default="") or "").strip()
+        or "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    )
 
 
 def _saarthi_openrouter_base_url() -> str:
@@ -2288,6 +2325,9 @@ def _is_gemini_key_rotation_error(status_code: int, detail: str) -> bool:
         "api_key_invalid",
         "invalid api key",
         "permission denied",
+        "permission_denied",
+        "reported as leaked",
+        "leaked",
         "billing",
         "exceeded",
     )
@@ -2499,6 +2539,103 @@ def _looks_like_low_quality_reply(
     if not any(marker in normalized for marker in guidance_markers):
         return True
     return False
+
+
+def _extract_bedrock_text(payload: dict[str, Any]) -> str:
+    output = payload.get("output")
+    if not isinstance(output, dict):
+        return ""
+    message = output.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _generate_saarthi_reply_with_bedrock(
+    *,
+    student_name: str,
+    student_message: str,
+    recent_messages: list[models.SaarthiMessage],
+    current_dt: datetime,
+    mandatory_date: date,
+    attendance_awarded_now: bool,
+    attendance_already_awarded: bool,
+    student_context: dict[str, object] | None = None,
+) -> str:
+    api_keys = _saarthi_bedrock_api_keys()
+    if not api_keys:
+        raise RuntimeError("AWS_BEARER_TOKEN_BEDROCK is required when SAARTHI_LLM_PROVIDER=bedrock.")
+
+    system_instruction = _build_saarthi_llm_system_instruction()
+    user_prompt = _build_saarthi_llm_user_prompt(
+        student_name=student_name,
+        student_message=student_message,
+        recent_messages=recent_messages,
+        current_dt=current_dt,
+        mandatory_date=mandatory_date,
+        attendance_awarded_now=attendance_awarded_now,
+        attendance_already_awarded=attendance_already_awarded,
+        student_context=student_context,
+    )
+    endpoint = (
+        f"https://bedrock-runtime.{_saarthi_bedrock_region()}.amazonaws.com/model/"
+        f"{urllib_parse.quote(_saarthi_bedrock_model_id(), safe='')}/converse"
+    )
+    body = {
+        "system": [{"text": system_instruction}],
+        "messages": [{"role": "user", "content": [{"text": user_prompt}]}],
+        "inferenceConfig": {
+            "temperature": SAARTHI_LLM_TEMPERATURE,
+            "topP": SAARTHI_LLM_TOP_P,
+            "maxTokens": 360,
+        },
+    }
+    last_rotation_error = ""
+    for api_key in api_keys:
+        request = urllib_request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib_request.urlopen(request, timeout=_saarthi_llm_timeout_seconds()) as response:
+                raw_payload = response.read().decode("utf-8")
+        except urllib_error.HTTPError as exc:
+            detail = _gemini_error_detail(exc)
+            if _is_openrouter_key_rotation_error(exc.code, detail):
+                last_rotation_error = f"HTTP {exc.code}: {detail}"
+                continue
+            raise RuntimeError(f"Saarthi Bedrock request failed with HTTP {exc.code}: {detail}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"Saarthi Bedrock network error: {exc.reason}") from exc
+
+        try:
+            parsed = json.loads(raw_payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Saarthi Bedrock returned non-JSON output.") from exc
+
+        reply = _extract_bedrock_text(parsed if isinstance(parsed, dict) else {})
+        if not reply:
+            raise RuntimeError("Saarthi Bedrock returned an empty reply.")
+        return reply.strip()
+
+    if last_rotation_error:
+        raise RuntimeError(f"All configured Bedrock API keys were exhausted or rejected. Last error: {last_rotation_error}")
+    raise RuntimeError("Saarthi Bedrock could not generate a reply with the configured key pool.")
 
 
 def _generate_saarthi_reply_with_gemini(
@@ -2998,14 +3135,26 @@ def generate_saarthi_reply(
     detected_emotion = _detect_saarthi_emotion(student_message, recent_rows)
     first_turn = _saarthi_is_first_turn(recent_rows)
     provider_errors: list[Exception] = []
+    rejected_replies: list[str] = []
 
-    if provider and provider not in {"gemini", "openrouter"}:
+    if provider and provider not in {"bedrock", "gemini", "openrouter"}:
         if llm_required:
             raise RuntimeError(f"Unsupported Saarthi LLM provider: {provider}")
 
     for candidate_provider in _saarthi_llm_provider_order(provider):
         try:
-            if candidate_provider == "gemini":
+            if candidate_provider == "bedrock":
+                raw = _generate_saarthi_reply_with_bedrock(
+                    student_name=student_name,
+                    student_message=student_message,
+                    recent_messages=recent_rows,
+                    current_dt=current_dt,
+                    mandatory_date=mandatory_date,
+                    attendance_awarded_now=attendance_awarded_now,
+                    attendance_already_awarded=attendance_already_awarded,
+                    student_context=student_context,
+                )
+            elif candidate_provider == "gemini":
                 raw = _generate_saarthi_reply_with_gemini(
                     student_name=student_name,
                     student_message=student_message,
@@ -3040,13 +3189,20 @@ def generate_saarthi_reply(
                 first_turn=first_turn,
             ):
                 return candidate
+            rejected_replies.append(f"{candidate_provider} returned a low-quality Saarthi reply.")
         except Exception as exc:
             provider_errors.append(exc)
             continue
 
     provider_error = provider_errors[-1] if provider_errors else None
-    if provider_error is not None and llm_required and not _saarthi_has_any_llm_api_key():
-        raise RuntimeError(str(provider_error)) from provider_error
+    if llm_required:
+        if provider_error is not None:
+            raise RuntimeError(str(provider_error)) from provider_error
+        if rejected_replies:
+            raise RuntimeError(rejected_replies[-1])
+        if not _saarthi_has_any_llm_api_key():
+            raise RuntimeError("Saarthi LLM is required but no Gemini or OpenRouter API key is configured.")
+        raise RuntimeError("Saarthi LLM is required but no configured provider could generate a reply.")
 
     raw = _generate_saarthi_reply_deterministic(
         student_name=student_name,
