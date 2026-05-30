@@ -754,7 +754,13 @@ def _is_saarthi_crisis_message(student_message: str) -> bool:
     )
 
 
-def _saarthi_recent_crisis_context(recent_messages: list[models.SaarthiMessage] | None = None) -> bool:
+def _saarthi_recent_crisis_context(
+    recent_messages: list[models.SaarthiMessage] | None = None,
+    *,
+    current_student_message: str = "",
+) -> bool:
+    if current_student_message and _is_saarthi_crisis_message(current_student_message):
+        return True
     for row in recent_messages or []:
         role = str(getattr(row, "sender_role", "") or "").strip().lower()
         message = str(getattr(row, "message", "") or "")
@@ -856,9 +862,13 @@ def _saarthi_crisis_mode_reply(
     recent_messages: list[models.SaarthiMessage] | None = None,
 ) -> str:
     first_name = _format_student_first_name(student_name)
-    crisis_context = _saarthi_recent_crisis_context(recent_messages)
-    if _is_saarthi_crisis_message(student_message) and not crisis_context:
+    prior_crisis_context = _saarthi_recent_crisis_context(recent_messages, current_student_message="")
+    if _is_saarthi_crisis_message(student_message) and not prior_crisis_context:
         return _saarthi_crisis_reply(student_name=student_name)
+    crisis_context = _saarthi_recent_crisis_context(
+        recent_messages,
+        current_student_message=student_message,
+    )
     if not crisis_context:
         return ""
     if _saarthi_student_indicates_not_safe(student_message):
@@ -2933,6 +2943,14 @@ def generate_saarthi_reply(
     simple_reply = _saarthi_simple_message_reply(student_name=student_name, student_message=student_message)
     if simple_reply:
         return simple_reply
+    if _saarthi_recent_crisis_context(recent_rows, current_student_message=student_message):
+        first_name = _format_student_first_name(student_name)
+        return (
+            f"{first_name}, I'm still right here with you. "
+            "You don't have to have the words right now. "
+            "Please stay near someone, and call iCall at 9152987821 when you can. "
+            "What's going through your mind?"
+        )
 
     provider = _saarthi_llm_provider()
     llm_required = _saarthi_llm_required()
