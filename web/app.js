@@ -23757,7 +23757,7 @@ function bindEvents() {
   });
 
   if (els.supportDeskToggleBtn) {
-    els.supportDeskToggleBtn.addEventListener('click', async () => {
+    els.supportDeskToggleBtn.addEventListener('click', () => {
       if (!authState.user) {
         return;
       }
@@ -23765,14 +23765,21 @@ function bindEvents() {
       if (role !== 'student' && role !== 'faculty') {
         return;
       }
-      if (!state.ui.supportDeskOpen) {
-        try {
-          await refreshSupportDeskContext({ silent: true, refreshThread: true });
-        } catch (error) {
-          setSupportDeskStatus(error.message || 'Unable to load realtime messages right now.', true);
-        }
+      if (state.ui.supportDeskOpen) {
+        setSupportDeskOpen(false);
+        return;
       }
-      toggleSupportDeskOpen();
+      setSupportDeskOpen(true);
+      setSupportDeskStatus('Loading realtime messages...');
+      void refreshSupportDeskContext({ silent: true, refreshThread: true })
+        .then(() => {
+          if (state.ui.supportDeskOpen) {
+            setSupportDeskStatus('Realtime inbox refreshed.');
+          }
+        })
+        .catch((error) => {
+          setSupportDeskStatus(error.message || 'Unable to load realtime messages right now.', true);
+        });
     });
   }
   if (els.supportDeskMinimizeBtn) {
