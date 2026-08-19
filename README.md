@@ -150,7 +150,112 @@ flowchart LR
     E --> M[Razorpay Integration]
     A -. Optional AI Assist .-> N[Puter.js]
 ```
+```mermaid
+flowchart TD
 
+subgraph group_client["Browser SPA"]
+  node_spa["Vanilla-JS SPA<br/>browser client<br/>[app.js]"]
+  node_ui_live["Live workflow views<br/>UI routes<br/>[attendance-live.js]"]
+  node_ui_events["Realtime event bus<br/>browser event bus"]
+end
+
+subgraph group_api["FastAPI application"]
+  node_main["FastAPI startup<br/>application entry<br/>[main.py]"]
+  node_routers["Router assembly<br/>API composition<br/>[__init__.py]"]
+  node_identity["Auth &amp; identity<br/>security API<br/>[auth.py]"]
+  node_enterprise["Enterprise controls<br/>governance API<br/>[enterprise.py]"]
+  node_realtime["SSE &amp; realtime bus<br/>event delivery<br/>[realtime_bus.py]"]
+  node_ai["AI assistance<br/>AI service<br/>[saarthi_service.py]"]
+end
+
+subgraph group_workflow["Academic &amp; operations"]
+  node_attendance["Attendance API<br/>academic API<br/>[attendance.py]"]
+  node_verification["Face verification<br/>verification service"]
+  node_recovery["Recovery pipeline<br/>academic intervention"]
+  node_remedial["Remedial &amp; messages<br/>workflow API<br/>[remedial.py]"]
+  node_food["Food ordering<br/>transaction API<br/>[food.py]"]
+  node_admin["Admin, RMS &amp; resources<br/>operations API<br/>[admin.py]"]
+end
+
+subgraph group_data["Data &amp; async runtime"]
+  node_postgres[("PostgreSQL<br/>transaction store<br/>[database.py]")]
+  node_mongo[("MongoDB &amp; alignment<br/>identity/event store<br/>[mongo.py]")]
+  node_redis[("Redis<br/>cache and transport")]
+  node_outbox_workers["Outbox &amp; workers<br/>async processing<br/>[workers.py]"]
+end
+
+subgraph group_platform["External &amp; deployment"]
+  node_observability["Observability<br/>runtime telemetry<br/>[observability.py]"]
+  node_container_runtime{{"Container deployment<br/>deployment stack"}}
+end
+
+node_spa -->|"loads routes"| node_ui_live
+node_ui_live -->|"calls APIs"| node_main
+node_ui_events -->|"updates views"| node_ui_live
+node_main -->|"mounts"| node_routers
+node_routers -->|"exposes"| node_identity
+node_routers -->|"exposes"| node_attendance
+node_routers -->|"exposes"| node_remedial
+node_routers -->|"exposes"| node_food
+node_routers -->|"exposes"| node_admin
+node_routers -->|"exposes"| node_enterprise
+node_identity -->|"identity data"| node_mongo
+node_enterprise -->|"governs"| node_identity
+node_attendance -->|"verifies submissions"| node_verification
+node_attendance -->|"derives interventions"| node_recovery
+node_remedial -->|"verifies attendance"| node_verification
+node_attendance -->|"persists ledger"| node_postgres
+node_remedial -->|"persists workflow"| node_postgres
+node_food -->|"persists orders"| node_postgres
+node_admin -->|"manages operations"| node_postgres
+node_postgres -.->|"mirrors/aligned views"| node_mongo
+node_attendance -->|"queues work"| node_outbox_workers
+node_identity -->|"queues OTP delivery"| node_outbox_workers
+node_outbox_workers -->|"uses transport"| node_redis
+node_realtime -->|"cross-instance fanout"| node_redis
+node_realtime -->|"SSE events"| node_ui_events
+node_attendance -->|"publishes updates"| node_realtime
+node_remedial -->|"publishes updates"| node_realtime
+node_food -->|"publishes updates"| node_realtime
+node_main -->|"emits telemetry"| node_observability
+node_container_runtime -->|"runs app"| node_main
+node_container_runtime -->|"runs workers"| node_outbox_workers
+
+click node_spa "https://github.com/ankan00v/lpu-smart-campus/blob/main/web/app.js"
+click node_ui_live "https://github.com/ankan00v/lpu-smart-campus/blob/main/web/routes/attendance-live.js"
+click node_ui_events "https://github.com/ankan00v/lpu-smart-campus/blob/main/web/modules/realtime-event-bus.js"
+click node_main "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/main.py"
+click node_routers "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/__init__.py"
+click node_identity "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/auth.py"
+click node_enterprise "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/enterprise.py"
+click node_attendance "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/attendance.py"
+click node_verification "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/face_verification.py"
+click node_recovery "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/attendance_recovery.py"
+click node_remedial "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/remedial.py"
+click node_food "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/food.py"
+click node_admin "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/routers/admin.py"
+click node_realtime "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/realtime_bus.py"
+click node_ai "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/saarthi_service.py"
+click node_postgres "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/database.py"
+click node_mongo "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/mongo.py"
+click node_redis "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/redis_dual_client.py"
+click node_outbox_workers "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/workers.py"
+click node_observability "https://github.com/ankan00v/lpu-smart-campus/blob/main/app/observability.py"
+click node_container_runtime "https://github.com/ankan00v/lpu-smart-campus/blob/main/deploy/docker-compose.strict.yml"
+
+classDef toneNeutral fill:#f8fafc,stroke:#334155,stroke-width:1.5px,color:#0f172a
+classDef toneBlue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#172554
+classDef toneAmber fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
+classDef toneMint fill:#dcfce7,stroke:#16a34a,stroke-width:1.5px,color:#14532d
+classDef toneRose fill:#ffe4e6,stroke:#e11d48,stroke-width:1.5px,color:#881337
+classDef toneIndigo fill:#e0e7ff,stroke:#4f46e5,stroke-width:1.5px,color:#312e81
+classDef toneTeal fill:#ccfbf1,stroke:#0f766e,stroke-width:1.5px,color:#134e4a
+class node_spa,node_ui_live,node_ui_events toneBlue
+class node_main,node_routers,node_identity,node_enterprise,node_realtime,node_ai toneAmber
+class node_attendance,node_verification,node_recovery,node_remedial,node_food,node_admin toneMint
+class node_postgres,node_mongo,node_redis,node_outbox_workers toneRose
+class node_observability,node_container_runtime toneIndigo
+```
 ### 2) Remedial Module Runtime Flow
 
 ```mermaid
