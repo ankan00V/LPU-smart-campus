@@ -144,7 +144,10 @@ class RemedialTimetableTests(unittest.TestCase):
             "schedules": 0,
             "enrollments": 0,
             "total_classes": 0,
-        }), patch("app.routers.attendance._academic_start_date", return_value=self.week_start):
+        }), patch("app.routers.attendance._academic_start_date", return_value=self.week_start), patch(
+            "app.routers.attendance._academic_class_window",
+            return_value=(self.week_start, self.week_start + timedelta(days=6)),
+        ):
             payload = get_student_weekly_timetable(
                 week_start=self.week_start,
                 db=self.db,

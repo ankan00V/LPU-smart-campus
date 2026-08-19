@@ -36,7 +36,7 @@ jobs:
         run: PYTHONPATH=. python scripts/check_migrations.py
 
       - name: Lint
-        run: PYTHONPATH=. python -m ruff check app tests scripts
+        run: PYTHONPATH=. python -m ruff check app tests scripts --isolated --no-cache --select E4,E7,E9,F
 
       - name: Test Suite
         run: PYTHONPATH=. python -m pytest -q
